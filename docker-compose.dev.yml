@@ -1,0 +1,44 @@
+# Dev stack for Touchstone.
+#
+# Why this exists rather than just `yarn dev`: the claude-code container runs with
+# `network_mode: host`, which on Docker Desktop means the Linux VM's network, not
+# Windows. A dev server started inside it binds a port the host browser cannot see.
+# Publishing ports from a container is what makes them reachable at Windows
+# localhost, so dev runs here.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.dev.yml logs -f
+#   docker compose -f docker-compose.dev.yml down
+#
+# This file is for development only. Production packaging is the AppShield sidecar
+# stack described in ARCHITECTURE.md § Packaging, and is a separate file.
+
+name: touchstone-dev
+
+services:
+  dev:
+    image: node:22
+    container_name: touchstone-dev
+    working_dir: /app
+    volumes:
+      # Windows-style source path, matching the convention already used by
+      # claude-code-container/docker-compose.yml (`d:/workspace:/d/workspace`) —
+      # the daemon is Docker Desktop and resolves drive-letter paths, not the
+      # /d/... view that exists only inside the claude-code container.
+      - d:/workspace/sandbox/Touchstone:/app
+    ports:
+      - "5173:5173" # Vite dev server — the UI
+      - "8081:8081" # Fastify API — proxied by Vite under /api, exposed for curl
+    environment:
+      # 8080 is the production default but is taken by ttyd in this environment;
+      # vite.config.ts proxies /api to 8081 to match.
+      TOUCHSTONE_PORT: "8081"
+      # Filesystem events do not propagate reliably across a Windows bind mount,
+      # so the watchers poll instead of relying on inotify.
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    # node_modules is already populated in the bind mount and this is a linux
+    # x64 container like the one that installed it, so install is a no-op unless
+    # package.json changed.
+    command: sh -c "yarn install --frozen-lockfile && yarn dev"
+    restart: unless-stopped

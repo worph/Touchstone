@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.log
+
+# Runtime data. The report archive is the archive of record, but it is imported
+# from Docmost rather than authored here, so it is not committed. Fixtures used
+# by tests live under test/fixtures/ and ARE committed.
+data/reports/
+data/state/
+data/config.yaml
+
+.DS_Store
+data/cache/
