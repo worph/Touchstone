@@ -17,7 +17,6 @@ import {
   readReport,
   renderReport,
   reportRelPathFor,
-  riskScore,
   writeReport,
   ReportFormatError,
 } from '../src/server/store/reports.js';
@@ -103,18 +102,6 @@ describe('report files', () => {
 
   it('rejects a file with no frontmatter rather than inventing one', () => {
     expect(() => parseReportMeta('# just a heading\n')).toThrow(ReportFormatError);
-  });
-
-  it('scores risk as 100·Critical + 10·Major + 1·Minor over failing findings only', () => {
-    expect(
-      riskScore([
-        { rule: 'A', severity: 'critical', status: 'fail' },
-        { rule: 'B', severity: 'major', status: 'fail' },
-        { rule: 'C', severity: 'minor', status: 'fail' },
-        { rule: 'D', severity: 'critical', status: 'unverified' },
-        { rule: 'E', severity: 'critical', status: 'pass' },
-      ]),
-    ).toBe(111);
   });
 
   it('is a no-op when rewriting identical content', async () => {

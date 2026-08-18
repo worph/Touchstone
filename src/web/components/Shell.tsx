@@ -1,24 +1,17 @@
 import { NavLink } from 'react-router-dom';
-import { forceMode } from '../data/client';
-import { useDataMode } from '../hooks/useAsync';
 
 /**
- * Five nav items, per UX.md §2 — and MVP-0 ships two of them. The other three
- * are shown disabled rather than hidden: the shape of the app is part of what
- * the page communicates, and an item that quietly appears later is a worse
- * surprise than one that is visibly not built yet.
+ * Two nav items, per UX.md §2 — and only one is built. Activity is shown disabled
+ * rather than hidden: the shape of the app is part of what the page communicates,
+ * and an item that quietly appears later is a worse surprise than one that is
+ * visibly not built yet.
  */
 const NAV = [
   { to: '/', label: 'Overview', end: true, enabled: true },
-  { to: '/findings', label: 'Findings', end: false, enabled: true },
   { to: '/activity', label: 'Activity', end: false, enabled: false },
-  { to: '/environment', label: 'Environment', end: false, enabled: false },
-  { to: '/standards', label: 'Standards', end: false, enabled: false },
 ];
 
 export default function Shell({ children }: { children: React.ReactNode }) {
-  const { mode, settled } = useDataMode();
-
   return (
     <div className="app">
       <header className="topbar">
@@ -37,31 +30,13 @@ export default function Shell({ children }: { children: React.ReactNode }) {
               <a
                 key={item.to}
                 aria-disabled="true"
-                title={`${item.label} is designed in UX.md but deliberately out of MVP-0.`}
+                title={`${item.label} is designed in UX.md and lands with the prober (P2).`}
               >
                 {item.label}
               </a>
             ),
           )}
         </nav>
-
-        <div className="topbar-right">
-          <button
-            type="button"
-            className="datasource"
-            data-mode={settled ? mode : 'pending'}
-            title={
-              mode === 'api'
-                ? 'Reading the live API on :8080. Click to pin the static fixture instead.'
-                : 'The API is not answering, so this page is rendering the static fixture in ' +
-                  'src/web/fixtures. Numbers are representative, not real. Click to retry the API.'
-            }
-            onClick={() => forceMode(mode === 'api' ? 'fixture' : 'api')}
-          >
-            <span className="dot" aria-hidden="true" />
-            {!settled ? 'connecting…' : mode === 'api' ? 'live API' : 'fixture data'}
-          </button>
-        </div>
       </header>
 
       <main className="main">{children}</main>

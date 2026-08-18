@@ -17,38 +17,17 @@ import type { Severity } from '../../shared/types.js';
 /** Repo root, resolved from this file so cwd never matters. */
 export const REPO_ROOT = fileURLToPath(new NodeURL('../../../', import.meta.url));
 
-export interface RuleDef {
-  code: string;
-  title: string;
-  /** Severity applied when a finding does not carry one of its own. */
-  severity: Severity;
-  /** Long-form justification. Kept in the YAML so the vocabulary documents itself. */
-  description?: string;
-  /**
-   * Case-insensitive regular expressions used by `tools/import.ts` to normalise prose
-   * checklist items onto this code. Extraction-only — the server never uses them.
-   */
-  match?: string[];
-  /** Regexes whose presence disqualifies a match, to keep near-miss rules apart. */
-  exclude?: string[];
-  /**
-   * Codes this rule refines. Where one checklist item splits into several codes, a report
-   * that states both the general and the specific form should yield only the specific one.
-   */
-  supersedes?: string[];
-  /**
-   * Regexes that capture a comma/and separated list of *other* subjects named as sharing
-   * this defect. Used to propagate a finding as `unverified` onto its siblings.
-   */
-  family?: string[];
-}
-
 export interface Standard {
   id: string;
   name: string;
   version: number;
   leg: 'static' | 'functional';
-  rules: RuleDef[];
+  /** `depth` to pass the assay agent. Static runs one leaf; `full` runs both. */
+  depth: 'static' | 'full';
+  /** Docmost slugs the agent fetches the rubric from. Touchstone never copies it. */
+  source: { orchestrator?: string; protocol?: string };
+  /** Anything else the file declares — bench selection policy, and whatever comes next. */
+  [key: string]: unknown;
 }
 
 export interface TouchstoneConfig {
@@ -131,9 +110,15 @@ export async function loadConfig(dataDir?: string): Promise<TouchstoneConfig> {
 }
 
 /**
- * Load every `*.yaml` under the standards dir. An absent directory yields an empty
- * vocabulary rather than an error: rule codes are descriptive metadata, and a finding whose
- * code has no definition still indexes, groups and renders — it just shows its bare code.
+ * Load every `*.yaml` under the standards dir.
+ *
+ * A standard is a pointer and a version, not a copy of the rubric: the assay agent fetches
+ * the protocol from Docmost at run time, and holding a second copy here would only be a
+ * second thing to drift. What Touchstone needs is the version, because every assay records
+ * which version judged it (ARCHITECTURE.md principle 6).
+ *
+ * An absent directory yields an empty list rather than an error — the read API works fine
+ * without it; only the runner needs a standard.
  */
 export async function loadStandards(standardsDir: string): Promise<Standard[]> {
   let names: string[];
@@ -147,25 +132,16 @@ export async function loadStandards(standardsDir: string): Promise<Standard[]> {
   for (const name of names) {
     const parsed = YAML.parse(await fs.readFile(path.join(standardsDir, name), 'utf8')) as unknown;
     if (!isPlainObject(parsed)) continue;
-    const rules = Array.isArray(parsed.rules) ? (parsed.rules as RuleDef[]) : [];
+    const leg = parsed.leg === 'functional' ? 'functional' : 'static';
     out.push({
+      ...parsed,
       id: String(parsed.id ?? name.replace(/\.ya?ml$/i, '')),
       name: String(parsed.name ?? parsed.id ?? name),
       version: Number(parsed.version ?? 1),
-      leg: parsed.leg === 'functional' ? 'functional' : 'static',
-      rules,
+      leg,
+      depth: parsed.depth === 'full' ? 'full' : 'static',
+      source: isPlainObject(parsed.source) ? (parsed.source as Standard['source']) : {},
     });
   }
   return out;
-}
-
-/** Flatten every standard into one `code → rule` map. Codes are unique across standards. */
-export function ruleIndex(standards: Standard[]): Map<string, RuleDef & { standard: string }> {
-  const map = new Map<string, RuleDef & { standard: string }>();
-  for (const s of standards) {
-    for (const r of s.rules) {
-      if (!map.has(r.code)) map.set(r.code, { ...r, standard: s.id });
-    }
-  }
-  return map;
 }

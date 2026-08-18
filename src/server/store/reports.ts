@@ -15,7 +15,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 
-import type { AssayMeta, AssayRecord, Finding, Leg } from '../../shared/types.js';
+import type { AssayMeta, AssayRecord, Leg } from '../../shared/types.js';
 
 export interface ReportFile extends AssayRecord {
   /** Everything after the closing `---` line, byte-identical to what was written. */
@@ -48,9 +48,7 @@ function coerceMeta(data: Record<string, unknown>, where: string): AssayMeta {
   }
   // Everything else is passed through as-is. Unknown keys ride along untouched; this is a
   // widening cast, not a validation pass — the archive may legitimately be ahead of us.
-  const meta = data as unknown as AssayMeta;
-  if (!Array.isArray(meta.findings)) meta.findings = [];
-  return meta;
+  return data as unknown as AssayMeta;
 }
 
 /** Parse only the frontmatter of a report file. Never reads the body. */
@@ -163,21 +161,8 @@ function orderMeta(meta: AssayMeta): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of META_ORDER) if (key in meta) out[key] = meta[key];
   for (const key of Object.keys(meta)) {
-    if (key === 'findings' || key in out) continue;
+    if (key in out) continue;
     out[key] = meta[key];
   }
-  // `findings` last: it is the only long value, and a human scanning the head of a file
-  // wants the scalars.
-  out.findings = meta.findings ?? [];
   return out;
-}
-
-/** risk = 100·Critical + 10·Major + 1·Minor, summed over *failing* findings only. */
-export function riskScore(findings: Finding[]): number {
-  let risk = 0;
-  for (const f of findings) {
-    if (f.status !== 'fail') continue;
-    risk += f.severity === 'critical' ? 100 : f.severity === 'major' ? 10 : f.severity === 'minor' ? 1 : 0;
-  }
-  return risk;
 }

@@ -8,7 +8,6 @@ import './styles/markdown.css';
 
 import Shell from './components/Shell';
 import { EmptyState } from './components/Ui';
-import Findings from './pages/Findings';
 import Overview from './pages/Overview';
 import SubjectDetail from './pages/SubjectDetail';
 
@@ -22,8 +21,8 @@ createRoot(root).render(
         <Routes>
           <Route path="/" element={<Overview />} />
           <Route path="/s/:name" element={<SubjectDetail />} />
-          <Route path="/findings" element={<Findings />} />
           <Route path="/subjects" element={<Navigate to="/" replace />} />
+          <Route path="/findings" element={<Navigate to="/" replace />} />
           <Route
             path="*"
             element={
@@ -31,7 +30,7 @@ createRoot(root).render(
                 <EmptyState
                   glyph="⌕"
                   title="No such page"
-                  sub="Touchstone MVP-0 has three: the overview, a subject, and findings."
+                  sub="Touchstone has two so far: the overview and a subject."
                 />
               </div>
             }

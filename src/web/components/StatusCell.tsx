@@ -52,7 +52,6 @@ export function StatusLegend({ kinds }: { kinds?: DisplayState['kind'][] }) {
     { kind: 'fail', severity: 'critical', label: 'failed', mark: 'C' },
     { kind: 'blocked', severity: 'none', label: 'blocked — could not check', mark: '' },
     { kind: 'none', severity: 'none', label: 'not yet run', mark: '' },
-    { kind: 'unverified', severity: 'critical', label: 'unverified — suspected', mark: '?' },
     { kind: 'running', severity: 'none', label: 'running', mark: '◴' },
   ];
   const shown = kinds ? all.filter((s) => kinds.includes(s.kind)) : all;

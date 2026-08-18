@@ -1,68 +1,26 @@
 /**
  * A hand-written archive, small enough to reason about and shaped like the real one.
  *
- * It exists for two reasons: the tests in this stream need known-good data that does not
- * wait on stream A's importer, and `registerRoutes` needs something to serve when no store
- * is injected, so `yarn dev` shows a working page from the first commit. It is NOT the
- * fixture corpus of MVP.md §6 — that is five real reports under `test/fixtures/`, owned by
- * stream A, and it replaces this the moment the real store is wired in.
+ * It exists so `registerRoutes` has something to serve when no store is injected — `yarn dev`
+ * shows a working page before the importer has ever run — and so the route tests do not wait
+ * on a corpus. The real fixtures are five archived reports under `test/fixtures/`.
  *
- * The numbers are chosen to reproduce the MVP-0 acceptance facts: `cpu_shares on reserved
- * tier 10` spans five subjects, `E9 auth gate` is unverified on three, and every
- * functional leg but one is blocked.
+ * Each draft states its own verdict, tier and risk, because that is how a real assay arrives:
+ * the agent declares them and the report's headline is rendered from them (ARCHITECTURE.md
+ * principle 3). Nothing here derives a verdict from anything.
  */
 
-import type { AssayMeta, AssayRecord, Finding, Leg } from '../../shared/types.js';
+import type { AssayMeta, AssayRecord, Leg, Severity, Verdict } from '../../shared/types.js';
 import type { AssayStore, StoredReport } from './store.js';
-import { riskScore, topSeverity } from './severity.js';
-
-const CPU_SHARES: Finding = {
-  rule: '',
-  title: 'cpu_shares on reserved tier 10',
-  severity: 'minor',
-  status: 'fail',
-  note: 'reserved tier expects 10; compose sets 90',
-};
-
-const DESCRIPTIONS: Finding = {
-  rule: '',
-  title: 'no volume/env descriptions',
-  severity: 'minor',
-  status: 'fail',
-};
-
-const D2_FAIL: Finding = {
-  rule: 'D2',
-  title: 'root + user dir, no rationale.md',
-  severity: 'major',
-  status: 'fail',
-  note: 'mounts /DATA/Downloads and /DATA/Media as root',
-};
-
-const D1_PASS: Finding = { rule: 'D1', title: 'permission strategy', severity: 'none', status: 'pass' };
-
-const E9_UNVERIFIED: Finding = {
-  rule: 'E9',
-  title: 'auth gate unverified',
-  severity: 'critical',
-  status: 'unverified',
-  note: 'AuthenticationRequired defaults to DisabledForLocalAddresses; every request arrives from Caddy over pcs',
-};
-
-const A_CRITICAL: Finding = {
-  rule: 'A',
-  title: 'admin API reachable without a session',
-  severity: 'critical',
-  status: 'fail',
-};
 
 export interface Draft {
   subject: string;
   leg: Leg;
   at: string;
   status?: AssayMeta['status'];
-  verdict?: AssayMeta['verdict'];
-  findings?: Finding[];
+  verdict?: Verdict | null;
+  top_severity?: Severity;
+  risk_score?: number;
   blocked_reason?: string | null;
   body?: string;
 }
@@ -70,11 +28,11 @@ export interface Draft {
 const bodies = new Map<string, string>();
 
 function draft(d: Draft): AssayRecord {
-  const findings = d.findings ?? [];
   const status = d.status ?? 'done';
   const done = status === 'done';
-  const verdict =
-    d.verdict !== undefined ? d.verdict : done ? (topSeverity(findings) === 'none' ? 'compliant' : 'non-compliant') : null;
+  const severity = d.top_severity ?? 'none';
+  const verdict = d.verdict !== undefined ? d.verdict : done ? (severity === 'none' ? 'compliant' : 'non-compliant') : null;
+  const risk = done ? (d.risk_score ?? 0) : 0;
 
   const meta: AssayMeta = {
     subject: d.subject,
@@ -83,13 +41,12 @@ function draft(d: Draft): AssayRecord {
     standard_version: 3,
     status,
     verdict,
-    top_severity: topSeverity(findings),
-    risk_score: done ? riskScore(findings) : 0,
+    top_severity: severity,
+    risk_score: risk,
     blocked_reason: d.blocked_reason ?? null,
     subject_ref: `Yundera/AppStore@main:Apps/${d.subject}`,
     started_at: d.at,
     finished_at: done ? d.at : '',
-    findings,
   };
 
   const file = `${d.at.replace(/:/g, '-')}-${d.leg}.md`;
@@ -100,18 +57,18 @@ function draft(d: Draft): AssayRecord {
       [
         `# Yundera/AppStore — ${d.subject}`,
         '',
-        `**Verdict: ${String(verdict ?? status).toUpperCase()} · risk ${meta.risk_score}**`,
+        `**VERDICT: ${String(verdict ?? status).toUpperCase()} · ${severity} · risk_score ${risk}**`,
         '',
         '## Tech & Documentation',
         '',
-        findings.length
-          ? findings.map((f) => `- ${f.rule || '—'} — ${f.title ?? ''} (${f.status})`).join('\n')
-          : '_nothing recorded_',
+        '| Item | Verdict | Notes |',
+        '| --- | --- | --- |',
+        '| Permission strategy | pass | `$PUID:$PGID` within /DATA |',
         '',
         '## Evidence',
         '',
         '```yaml',
-        `cpu_shares: 90`,
+        'cpu_shares: 90',
         '```',
       ].join('\n'),
   );
@@ -119,82 +76,101 @@ function draft(d: Draft): AssayRecord {
   return { meta, path, subject: d.subject, file };
 }
 
-/**
- * Build one record. Verdict, tier and risk are derived from the findings unless overridden,
- * so a fixture cannot quietly disagree with the algebra it is meant to exercise.
- */
+/** Build one record. Anything unstated defaults the way a clean assay would. */
 export const makeRecord = draft;
 
 /** Newest last; the domain sorts. */
 export const FIXTURE_RECORDS: AssayRecord[] = [
-  // OpenClaw — a Critical regression on static, and a functional leg that was compliant
-  // in July and is blocked today. The blocked leg must NOT show July's verdict.
-  draft({ subject: 'OpenClaw', leg: 'static', at: '2026-07-20T09:00:00Z', findings: [D1_PASS] }),
+  // OpenClaw — a Critical static verdict, and a functional leg that was compliant in July
+  // and is blocked today. The blocked leg must NOT show July's verdict.
+  draft({ subject: 'OpenClaw', leg: 'static', at: '2026-07-20T09:00:00Z' }),
   draft({
     subject: 'OpenClaw',
     leg: 'static',
     at: '2026-08-05T09:14:22Z',
-    findings: [A_CRITICAL, D2_FAIL, E9_UNVERIFIED, CPU_SHARES, DESCRIPTIONS, D1_PASS],
+    top_severity: 'critical',
+    risk_score: 232,
   }),
-  draft({ subject: 'OpenClaw', leg: 'functional', at: '2026-07-01T10:00:00Z', findings: [] }),
+  draft({ subject: 'OpenClaw', leg: 'functional', at: '2026-07-01T10:00:00Z' }),
   draft({
     subject: 'OpenClaw',
     leg: 'functional',
     at: '2026-08-05T09:31:00Z',
     status: 'blocked',
-    blocked_reason: 'bench unavailable',
+    blocked_reason: 'bench_unavailable',
   }),
 
-  // Prowlarr — the report ARCHITECTURE.md §4 is about: static ran, functional never did,
-  // and the highest-value observation is filed as suspected-Critical.
+  // Prowlarr — static ran, functional never did. The pair the product exists to tell apart.
   draft({
     subject: 'Prowlarr',
     leg: 'static',
     at: '2026-08-01T08:00:00Z',
-    findings: [E9_UNVERIFIED, CPU_SHARES],
+    top_severity: 'major',
+    risk_score: 13,
   }),
   draft({
     subject: 'Prowlarr',
     leg: 'functional',
     at: '2026-08-01T08:20:00Z',
     status: 'blocked',
-    blocked_reason: 'bench unavailable',
+    blocked_reason: 'bench_unavailable',
   }),
 
   // Radarr — the one subject that is green on both legs.
-  draft({ subject: 'Radarr', leg: 'static', at: '2026-07-30T08:00:00Z', findings: [CPU_SHARES, D1_PASS] }),
-  draft({ subject: 'Radarr', leg: 'functional', at: '2026-07-30T08:40:00Z', findings: [D1_PASS] }),
+  draft({ subject: 'Radarr', leg: 'static', at: '2026-07-30T08:00:00Z' }),
+  draft({ subject: 'Radarr', leg: 'functional', at: '2026-07-30T08:40:00Z' }),
 
   draft({
     subject: 'Sonarr',
     leg: 'static',
     at: '2026-07-29T08:00:00Z',
-    findings: [E9_UNVERIFIED, CPU_SHARES, DESCRIPTIONS],
+    top_severity: 'minor',
+    risk_score: 3,
   }),
   draft({
     subject: 'Sonarr',
     leg: 'functional',
     at: '2026-07-29T08:30:00Z',
     status: 'blocked',
-    blocked_reason: 'bench unavailable',
+    blocked_reason: 'bench_unavailable',
   }),
 
-  draft({ subject: 'qBittorrent', leg: 'static', at: '2026-07-28T08:00:00Z', findings: [CPU_SHARES] }),
+  draft({
+    subject: 'qBittorrent',
+    leg: 'static',
+    at: '2026-07-28T08:00:00Z',
+    top_severity: 'minor',
+    risk_score: 1,
+  }),
   draft({
     subject: 'qBittorrent',
     leg: 'functional',
     at: '2026-07-28T08:30:00Z',
     status: 'blocked',
-    blocked_reason: 'bench unavailable',
+    blocked_reason: 'bench_unavailable',
   }),
 
-  draft({ subject: 'Caddy', leg: 'static', at: '2026-08-01T07:00:00Z', findings: [D2_FAIL] }),
+  draft({
+    subject: 'Caddy',
+    leg: 'static',
+    at: '2026-08-01T07:00:00Z',
+    top_severity: 'major',
+    risk_score: 21,
+  }),
   draft({
     subject: 'Caddy',
     leg: 'functional',
     at: '2026-08-01T07:30:00Z',
     status: 'blocked',
-    blocked_reason: 'bench unavailable',
+    blocked_reason: 'bench_unavailable',
+  }),
+
+  // A subject mid-run: the `◴ running` row, claimed but not finished.
+  draft({
+    subject: 'Netdata',
+    leg: 'static',
+    at: '2026-08-07T13:00:00Z',
+    status: 'running',
   }),
 
   // Beacon — never assayed statically; the "not yet run / —" row.
@@ -203,7 +179,7 @@ export const FIXTURE_RECORDS: AssayRecord[] = [
     leg: 'functional',
     at: '2026-08-04T06:00:00Z',
     status: 'blocked',
-    blocked_reason: 'bench unavailable',
+    blocked_reason: 'bench_unavailable',
   }),
 ];
 

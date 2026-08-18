@@ -148,26 +148,3 @@ export function latestDone(
     leg,
   ).hallmark;
 }
-
-/**
- * The set the Findings page is computed over — one assay per (subject, leg), the current
- * one. An older assay's findings are history, not current state.
- *
- * Normally that is the latest `done` assay. A blocked or running assay that nonetheless
- * recorded findings is preferred over the older verdict, because those observations *are*
- * current: this is how a partial run's `unverified` rows reach the suspected-Critical
- * queue. A blocked assay with no findings contributes nothing and the last verdict stands.
- */
-export function latestAssays(records: readonly AssayRecord[]): AssayRecord[] {
-  const out: AssayRecord[] = [];
-  for (const name of subjectNames(records)) {
-    const { legs } = subjectHallmark(name, records);
-    for (const leg of LEGS) {
-      const { current, hallmark } = legs[leg];
-      const partial = current && !isDone(current) && (current.meta.findings?.length ?? 0) > 0;
-      const pick = partial ? current : (hallmark ?? null);
-      if (pick) out.push(pick);
-    }
-  }
-  return out;
-}

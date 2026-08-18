@@ -5,7 +5,7 @@
  * `not yet run` are three different unknowns, and none of them is a failure.
  * Nothing outside this module decides what an assay looks like.
  */
-import type { AssayRecord, Finding, Severity } from '@shared/types';
+import type { AssayRecord, Severity } from '@shared/types';
 import { SEVERITY_RANK } from '@shared/types';
 import type { DisplayState } from '../types';
 
@@ -120,45 +120,6 @@ export function displayState(rec: AssayRecord | null | undefined, now = Date.now
         hint: 'The assay completed without recording a verdict.',
       };
   }
-}
-
-/** The same derivation for a single finding row. */
-export function findingState(f: Finding): DisplayState {
-  switch (f.status) {
-    case 'pass':
-      return { kind: 'ok', severity: 'none', label: 'pass', mark: '✓' };
-    case 'fail':
-      return {
-        kind: 'fail',
-        severity: f.severity,
-        label: SEVERITY_LABEL[f.severity],
-        mark: SEVERITY_MARK[f.severity],
-      };
-    case 'unverified':
-      return {
-        kind: 'unverified',
-        severity: f.severity,
-        label: 'unverified',
-        mark: '?',
-        note: `suspected ${SEVERITY_LABEL[f.severity]}`,
-        hint:
-          `Suspected ${SEVERITY_LABEL[f.severity]}, unproven — the check that would settle it ` +
-          'could not run. Counted as potential risk, never as observed risk.',
-      };
-    case 'advisory':
-      return { kind: 'deferred', severity: f.severity, label: 'advisory', mark: 'i' };
-    case 'n-a':
-    default:
-      return { kind: 'none', severity: 'none', label: 'n/a', mark: '' };
-  }
-}
-
-/** A finding contributes to observed risk only when it was actually observed. */
-export function isFailing(f: Finding): boolean {
-  return f.status === 'fail';
-}
-export function isPotential(f: Finding): boolean {
-  return f.status === 'unverified';
 }
 
 function elapsed(from: string, now: number): string {

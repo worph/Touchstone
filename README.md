@@ -1,8 +1,7 @@
 # Touchstone
 
-**A conformance agent.** Touchstone holds a versioned *standard*, runs *assays* against
-*subjects*, records *findings*, and issues a *hallmark* — a verdict a subject carries until the
-next assay contradicts it.
+**A conformance agent.** Touchstone holds a versioned *standard*, runs *assays* against *subjects*,
+and issues a *hallmark* — a verdict a subject carries until the next assay contradicts it.
 
 Its first tenant is the [Yundera AppStore](https://github.com/Yundera/AppStore): every app in the
 store is assayed against the store's contribution rules, statically (the compose file and its
@@ -14,98 +13,127 @@ metadata) and functionally (a real install on a demo instance, driven through a 
 
 ---
 
-## Why it exists
+## What it replaces
 
-The job is already being done, by an n8n workflow pair on `yunderalabs` that has audited 69 apps.
-It works, and its core scheduling idea is right. But it keeps its state in a **Docmost wiki page**,
-read back with a six-capture-group regex, with retry counters parsed out of strings like
-`⚠️ errored · try 2` and lease expiry parsed out of `since 2026-08-06T07:00Z`. Emoji are
-load-bearing.
+Touchstone is not a new idea. The job is already being done, correctly, by two n8n workflows on
+`yunderalabs` that have audited 69 apps:
 
-That design has three consequences Touchstone exists to fix.
+| Workflow | Role |
+| --- | --- |
+| `AppStore Continuous Store QA Loop` | hourly tick — derives the backlog, claims one app, records the result |
+| `AppStore App Audit` | builds the prompt, calls Claude Code, publishes the report |
 
-**1. There is no history.** The table holds one row per app, overwritten on every run. You cannot
-ask whether store risk is rising, when an app first went critical, or — the event that matters
-most — whether an app that was compliant has regressed.
+**Touchstone exists to absorb those two and nothing else.** Two further workflows — PR review and
+release notes — keep running in n8n and are out of scope.
 
-**2. Findings are prose, so they cannot be aggregated.** `cpu_shares: 10` is the reserved
-System-Background tier and is wrong on Radarr, Sonarr, Lidarr, Prowlarr *and* qBittorrent. One
-report says so, in a sentence, in the middle of a page. Nobody can see it from the roll-up. As
-rows, it is one `GROUP BY rule_id`.
+That constraint is the project's organising rule. The full capability inventory of both workflows,
+and what Touchstone covers of it, is
+[ARCHITECTURE.md §1.4](ARCHITECTURE.md#14-capability-inventory-and-parity-matrix). It is the
+specification: **we cannot switch n8n off until every row is covered**, and anything not on it is
+not being built.
 
-**3. Infra failures are recorded as app failures.** On 2026-08-05 the demo instance pool began
-rejecting every credential. Over the next two days the loop ran **49 audits that all failed at
-phase A**, before anything was installed, burning retry budget and parking 12 apps as "stuck after
-3 tries" for a reason that had nothing to do with them. The tally at the time of writing:
+## Why it is worth replacing
 
-| ✅ compliant | ⛔ non-compliant | ⚠️ errored |
-| --- | --- | --- |
-| 1 | 19 | 49 |
+The audits are good. Four things around them are not.
 
-Every one of those 49 completed its **static** leg and produced real, actionable findings — buried
-under an `ERRORED` headline. Touchstone splits the legs so an unavailable bench pauses the
-functional queue instead of poisoning the verdict.
+**1. The database is a wiki page.** State lives in a Docmost table, read back with a
+six-capture-group regex, with retry counters parsed out of strings like `⚠️ errored · try 2` and
+lease expiry parsed out of `since 2026-08-06T07:00Z`. Emoji are load-bearing. Adding a field means
+touching two regexes.
 
----
+**2. One assay conflates two independent verdicts.** Static and functional are two protocols
+producing two results, collapsed into one headline. A mandatory functional phase that errors can
+never yield `compliant`, so a bench outage overrides a complete and correct static result.
+
+**3. Infra failure is recorded as app failure.** On 2026-08-05 the demo instance pool began
+rejecting every credential. The loop has no preflight, so it kept claiming targets and burning
+retry budget on a condition that had nothing to do with any app:
+
+| | ✅ compliant | ⛔ non-compliant | ⚠️ errored | parked as stuck |
+| --- | --- | --- | --- | --- |
+| **2026-08-06** | 1 | 19 | 49 | 12 |
+| **2026-08-07** | 0 | 15 | **54** | **13** |
+
+It is not a historical incident. It compounds hourly, and it is still compounding. A twenty-line
+login preflight would stop it today, independent of this project — see
+[ARCHITECTURE.md §9](ARCHITECTURE.md#9-phases).
+
+**4. The browser is shared, and it is contended.** Three consecutive reports independently record
+another audit stealing page selection mid-run. Two assays sharing one browser is a correctness
+hazard, not a nuisance: an assay can act on another assay's page and record the result as its own.
 
 ## What it does
 
 Two independent legs, run as separate assays against separate standards:
 
 - **Static** — reads the compose file and its metadata against the contribution rules. Needs no
-  demo instance and no browser. Cheap; runs on every commit that touches a subject.
-- **Functional** — installs the app on a leased demo instance and drives it through a browser:
-  does it come up, is there an auth gate, does it boot clean, does data survive an
-  uninstall-keep-data → reinstall cycle. Expensive; runs weekly and on release.
+  demo instance and no browser. Cheap.
+- **Functional** — installs the app on a leased demo instance and drives it through a private
+  browser: does it come up, is there an auth gate, does it boot clean, does data survive an
+  uninstall-keep-data → reinstall cycle. Expensive; bounded by the bench pool.
 
-A subject's hallmark composes the two. Either leg can be stale, deferred, or blocked without
-invalidating the other.
+A subject's hallmark composes the two. Either leg can be blocked or deferred without invalidating
+the other.
 
 ## Vocabulary
 
 | Term | Meaning |
 | --- | --- |
-| **subject** | the thing being judged — an AppStore app, initially |
+| **subject** | the thing being judged — an AppStore app |
 | **standard** | a versioned rubric; the static and functional protocols are two standards |
-| **rule** | one checkable item within a standard, with a stable code |
 | **assay** | one run of one standard against one subject |
-| **finding** | one rule's result within an assay — `pass`, `fail`, `n-a`, `advisory`, `unverified` |
 | **hallmark** | the verdict a subject carries: compliant, or non-compliant at a severity |
 | **bench** | a leasable demo instance the functional leg installs onto |
-
-The model is generic on purpose. `subject.kind` and the standards are pluggable; the AppStore is
-the first tenant, not the schema.
+| **alert** | a deduplicated environment condition — one outage is one alert |
 
 ---
 
 ## Status
 
-**Design.** Nothing is built yet.
+**Phase 0 built. Phases 1 and 2 designed.** Nothing has been retired yet.
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — domain model, components, decisions and rationale, phasing
-- [UX.md](UX.md) — the web UI: pages, the incident/event split, reports as files
-- [IMPLEMENTATION.md](IMPLEMENTATION.md) — MVP scope, stack, schema, ingest contract, order of work
+| Phase | Deliverable | Retires |
+| --- | --- | --- |
+| **0** ✅ | report files, in-memory index, read API, Overview + Subject detail | Docmost as a *reader* |
+| **1** | scheduler, registry, lease, tries, parking, bench preflight, log + alerts + push | the QA Loop workflow |
+| **2** | runner, agent call, busy retry, browser sidecars, `(bench, browser)` leasing | the App Audit workflow |
 
-The existing n8n loop keeps running unchanged until phase 1, and its data is imported rather than
-discarded — 69 table rows and ~55 report pages of real history are the first test of the schema.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — the capability inventory, the domain model, decisions and rationale
+- [MVP.md](MVP.md) — what "minimum viable" means here, and the order of work
+- [IMPLEMENTATION.md](IMPLEMENTATION.md) — stack, storage, the scheduler port, the runner, packaging
+- [UX.md](UX.md) — the three pages
+
+Phase 0 was scoped before the parity rule and built some things that are no longer in the plan —
+findings-as-rows, the Findings page, history and regression detection. Those have been removed;
+[MVP.md §4](MVP.md#4-what-p1-removed--done) records exactly what went and what survives.
+
+Both n8n workflows keep running unchanged until phase 1, and their data is imported rather than
+discarded.
 
 ## Prior art in the house
 
-Touchstone follows the split that produced **Newsdesk**: n8n collapsed to thin source adapters
-that do nothing but fetch on a timer and `POST` one payload, while the domain — data model, state,
-agent invocation, UI, outlets — moved into a packaged app. Newsdesk's stringers are six nodes
-each. Touchstone's adapters should be the same size.
+Touchstone follows **Newsdesk**: a packaged app that owns the domain — data model, state, agent
+invocation, UI, outlets — with n8n reduced to thin adapters. The packaging is copied wholesale:
+AppShield sidecar for SSO, a single data dir, the `pcs` network for service-name access to Beacon,
+unprivileged `1000:1000` runtime, a `beaconify` sidecar for the admin surface, and its own
+`browser-mcp` container rather than the shared box-wide one.
 
-The packaging is copied wholesale: AppShield sidecar for SSO, a single data dir, the
-`pcs` network for service-name access to Beacon, unprivileged `1000:1000` runtime. The one
-deliberate divergence is the browser profile — see
-[ARCHITECTURE.md § Bench and browser leasing](ARCHITECTURE.md#bench-and-browser-leasing).
+The notification design is copied too — an authoritative local event log, best-effort Beacon
+outlets, and web push — including the rule that the app must stay fully diagnosable with every
+outbound port broken.
+
+The one deliberate divergence is the browser profile: Newsdesk's persists, Touchstone's is
+discarded between assays, because a surviving session cookie would make an unprotected app look
+protected on the one check that catches auth bypass. See
+[ARCHITECTURE.md §5.4](ARCHITECTURE.md#54-bench-and-browser-leasing).
 
 ## Non-goals
 
 - **Not a CI runner.** Touchstone judges conformance to a standard; it does not run the subject's
   own test suite.
-- **Not a remediation daemon — yet.** Turning findings into pull requests is phase 4, and is
-  deliberately gated behind having trustworthy findings first.
-- **Not a general web crawler.** The browser exists to install and exercise apps on a bench, and
-  its state is thrown away between assays.
+- **Not a PR gate.** PR review stays in n8n.
+- **Not a findings database.** Findings are prose inside the report, as they are today. Rule codes,
+  cross-subject aggregation and regression detection were designed and are deliberately dropped —
+  [ARCHITECTURE.md §1.4 G](ARCHITECTURE.md#g-deliberately-dropped).
+- **Not a general web crawler.** The browser exists to install and exercise apps on a bench, and its
+  profile is thrown away between assays.
