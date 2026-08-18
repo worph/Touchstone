@@ -3,84 +3,26 @@ name: Functional Review Protocol
 version: 2
 leg: functional
 
-# The functional leg already has a stable vocabulary — the phase letters the audit protocol
-# uses in its own tables — so this file transcribes it rather than inventing anything. One
-# rule per mandatory phase, plus the two n-a-capable ones.
+# As with the static leaf, the rubric lives in Docmost and the agent reads it at run time.
+# Touchstone holds the pointer and the version only.
 #
-# Severity here is the severity of a *failing* phase. A phase that could not run is not a
-# finding at all: the assay carries `status: blocked` and no phase rows, because a blocked
-# run is a statement about the bench and never about the subject. The single exception is
-# E9, which reports routinely flag as a suspected-Critical while explicitly recording that
-# nothing was observed — that becomes a finding with `status: unverified`, whose severity is
-# the *suspected* one and whose risk the UI parenthesises.
+# The phase letters — A, C, D, E8, E9, E10, F, G — are the protocol's own vocabulary and are
+# still parsed out of the report's phase table by `parsePhases`, because that table is how a
+# run says whether it happened at all. A phase that could not run is not a finding: the
+# assay carries `status: blocked` and no verdict, since a blocked run is a statement about
+# the bench and never about the subject.
 
-rules:
-  # Only E9 carries `match` patterns. The other phases are assigned from the phase table by
-  # their code, so loose prose matchers would only create false positives; E9 is the
-  # exception because reports raise it *outside* the table, as an unverified advisory in the
-  # static section, and that advisory is the suspected-Critical queue the UI exists to drain.
-  - code: A
-    title: session — reach the demo dashboard
-    severity: major
-    description: Log in to the demo PCS. Everything downstream depends on it, so an errored A errors the leg.
+source:
+  orchestrator: In2NAGjv0h
+  protocol: 7HxjTwe63H
 
-  - code: B
-    title: pre-flight — demo host selection
-    severity: major
-    description: Pick a Ready instance with more than an hour remaining, and never trigger a cleanup.
+# The protocol has no functional-only mode: `full` runs both leaves in one pass and the
+# response is split into two assays (ARCHITECTURE.md §1.3, and P5 of the plan).
+depth: full
 
-  - code: C
-    title: fresh install completes within budget
-    severity: major
-    description: Install from the store and reach an installed tile, with the wall-clock duration recorded.
-
-  - code: D
-    title: discover APP_URL
-    severity: major
-    description: The installed tile resolves to a reachable application URL.
-
-  - code: E8
-    title: works immediately
-    severity: major
-    description: A real UI inside the bounded wait — no error page, no endless spinner, no "run this command first".
-
-  - code: E9
-    title: auth gate
-    severity: critical
-    description: >-
-      A fresh install must not serve the application, its settings or its API to an
-      unauthenticated caller on a public hostname. This is the highest-value check in the
-      protocol and the one the bench outage suppressed across the whole corpus, which is why
-      its `unverified` rows are worth surfacing as a queue rather than as noise.
-    match:
-      - '\bE9\b'
-      - 'auth[- ]?gate'
-      - 'auth(entication)?[- ]bypass'
-      - 'reverse-proxy auth'
-
-  - code: E10
-    title: clean boot
-    severity: minor
-    description: No first-party console errors and no first-party 5xx on first load.
-
-  - code: F
-    title: zero-config usability
-    severity: major
-    description: A usable, secured state reachable purely in-browser — no file edits, no shell.
-
-  - code: G
-    title: data persistence across uninstall and reinstall
-    severity: critical
-    description: >-
-      A real uninstall-keep-data followed by a reinstall must return accounts, credentials
-      and configuration. The static persistence cross-check is evidence, never a substitute.
-
-  - code: "G′"
-    title: migration from a prior version
-    severity: major
-    description: n-a when no PRIOR_VERSION is supplied — the one legitimate n-a in a full run.
-
-  - code: H
-    title: verdict and cleanup
-    severity: minor
-    description: The subject is uninstalled from the bench on every exit path.
+# Bench selection is Touchstone's, not the agent's. The demo management board reports a host
+# as Ready while its credentials are being rejected — that is the 2026-08-05 failure mode —
+# so the board supplies discovery and the /api/firstfactor probe supplies truth.
+bench:
+  board: https://app.nasselle.com/demo/admin/manage
+  min_time_remaining_minutes: 60

@@ -18,5 +18,9 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.{test,spec}.{ts,tsx}', 'test/**/*.{test,spec}.{ts,tsx}'],
+    // The archive tests build an index over ~140 files. That is ~1s alone and several
+    // times that when the whole suite is competing for the same cores, so the 5s default
+    // fails them for being scheduled badly rather than for being wrong.
+    testTimeout: 30_000,
   },
 });

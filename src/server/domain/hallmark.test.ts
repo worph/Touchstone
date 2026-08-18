@@ -1,16 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { FIXTURE_RECORDS, makeRecord } from './fixtures.js';
-import { hallmarks, latestAssays, latestDone, legState, sortNewestFirst, subjectHallmark } from './hallmark.js';
+import { hallmarks, latestDone, legState, sortNewestFirst, subjectHallmark } from './hallmark.js';
 
 const NOW = Date.parse('2026-08-06T12:00:00Z');
-
-const fail = { rule: 'D2', title: 'root + user dir', severity: 'major', status: 'fail' } as const;
 
 describe('leg selection', () => {
   it('takes the newest done assay as the hallmark', () => {
     const records = [
-      makeRecord({ subject: 'App', leg: 'static', at: '2026-07-01T00:00:00Z', findings: [] }),
-      makeRecord({ subject: 'App', leg: 'static', at: '2026-08-01T00:00:00Z', findings: [fail] }),
+      makeRecord({ subject: 'App', leg: 'static', at: '2026-07-01T00:00:00Z' }),
+      makeRecord({
+        subject: 'App',
+        leg: 'static',
+        at: '2026-08-01T00:00:00Z',
+        top_severity: 'major',
+        risk_score: 10,
+      }),
     ];
     expect(legState(records, 'static').hallmark?.meta.started_at).toBe('2026-08-01T00:00:00Z');
     expect(latestDone(records, 'App', 'static')?.meta.verdict).toBe('non-compliant');
@@ -18,13 +22,13 @@ describe('leg selection', () => {
 
   it('a blocked leg reads as blocked and never falls back to the older verdict', () => {
     const records = [
-      makeRecord({ subject: 'App', leg: 'functional', at: '2026-07-01T00:00:00Z', findings: [] }),
+      makeRecord({ subject: 'App', leg: 'functional', at: '2026-07-01T00:00:00Z' }),
       makeRecord({
         subject: 'App',
         leg: 'functional',
         at: '2026-08-05T00:00:00Z',
         status: 'blocked',
-        blocked_reason: 'bench unavailable',
+        blocked_reason: 'bench_unavailable',
       }),
     ];
 
@@ -33,7 +37,7 @@ describe('leg selection', () => {
     // the displayed record is the blocked one …
     expect(state.functional?.meta.status).toBe('blocked');
     expect(state.functional?.meta.verdict).toBeNull();
-    expect(state.functional?.meta.blocked_reason).toBe('bench unavailable');
+    expect(state.functional?.meta.blocked_reason).toBe('bench_unavailable');
     // … and July's `compliant` is still reachable as the last verdict, just not as current
     expect(legs.functional.hallmark?.meta.verdict).toBe('compliant');
     expect(legs.functional.stale).toBe(true);
@@ -41,7 +45,13 @@ describe('leg selection', () => {
 
   it('a running assay does not become the displayed verdict either', () => {
     const records = [
-      makeRecord({ subject: 'App', leg: 'static', at: '2026-07-01T00:00:00Z', findings: [fail] }),
+      makeRecord({
+        subject: 'App',
+        leg: 'static',
+        at: '2026-07-01T00:00:00Z',
+        top_severity: 'major',
+        risk_score: 10,
+      }),
       makeRecord({ subject: 'App', leg: 'static', at: '2026-08-06T00:00:00Z', status: 'running' }),
     ];
     const { state } = subjectHallmark('App', records, { now: NOW });
@@ -52,7 +62,13 @@ describe('leg selection', () => {
   it('keeps the verdict when the newest assay is the done one', () => {
     const records = [
       makeRecord({ subject: 'App', leg: 'static', at: '2026-07-01T00:00:00Z', status: 'blocked' }),
-      makeRecord({ subject: 'App', leg: 'static', at: '2026-08-01T00:00:00Z', findings: [fail] }),
+      makeRecord({
+        subject: 'App',
+        leg: 'static',
+        at: '2026-08-01T00:00:00Z',
+        top_severity: 'major',
+        risk_score: 10,
+      }),
     ];
     const { state, legs } = subjectHallmark('App', records, { now: NOW });
     expect(state.static?.meta.status).toBe('done');
@@ -63,7 +79,7 @@ describe('leg selection', () => {
 describe('subject row', () => {
   it('sums risk over the legs and ages off the newest done assay', () => {
     const { state } = subjectHallmark('OpenClaw', FIXTURE_RECORDS, { now: NOW });
-    expect(state.risk).toBe(112); // 1 critical + 1 major + 2 minor on static; functional blocked
+    expect(state.risk).toBe(232); // static declared 232; the functional leg is blocked and scores 0
     expect(state.age_days).toBe(1); // static ran 2026-08-05, "now" is 2026-08-06
   });
 
@@ -81,38 +97,10 @@ describe('subject row', () => {
     expect(rows[0]?.name).toBe('OpenClaw');
     const risks = rows.map((r) => r.risk);
     expect(risks).toEqual([...risks].sort((a, b) => b - a));
-    // every functional leg but Radarr's is blocked — the story the Overview tells
-    const blocked = rows.filter((r) => r.functional?.meta.status === 'blocked');
-    expect(blocked).toHaveLength(rows.length - 1);
-  });
-});
-
-describe('current assay set', () => {
-  it('is one assay per (subject, leg), newest, and drops superseded ones', () => {
-    const current = latestAssays(FIXTURE_RECORDS);
-    const openclaw = current.filter((r) => r.subject === 'OpenClaw');
-    expect(openclaw).toHaveLength(2);
-    expect(openclaw.find((r) => r.meta.leg === 'static')?.meta.started_at).toBe(
-      '2026-08-05T09:14:22Z',
-    );
-    // the blocked functional leg carries no findings, so July's completed run stands in
-    expect(openclaw.find((r) => r.meta.leg === 'functional')?.meta.status).toBe('done');
-  });
-
-  it('prefers a blocked assay that did record findings over the older verdict', () => {
-    const records = [
-      makeRecord({ subject: 'App', leg: 'functional', at: '2026-07-01T00:00:00Z', findings: [] }),
-      makeRecord({
-        subject: 'App',
-        leg: 'functional',
-        at: '2026-08-05T00:00:00Z',
-        status: 'blocked',
-        findings: [{ rule: 'E9', title: 'auth gate', severity: 'critical', status: 'unverified' }],
-      }),
-    ];
-    const [picked] = latestAssays(records);
-    expect(picked?.meta.status).toBe('blocked');
-    expect(picked?.meta.findings[0]?.rule).toBe('E9');
+    // every functional leg that exists is blocked except Radarr's — the Overview's story
+    const withFunctional = rows.filter((r) => r.functional);
+    const blocked = withFunctional.filter((r) => r.functional?.meta.status === 'blocked');
+    expect(blocked).toHaveLength(withFunctional.length - 1);
   });
 });
 

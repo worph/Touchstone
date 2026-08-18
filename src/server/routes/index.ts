@@ -1,37 +1,28 @@
 /**
- * The MVP-0 read API. Registered by `src/server/index.ts` under `/api/v1`.
+ * The read API. Registered by `src/server/index.ts` under `/api/v1`.
  *
- * Four endpoints, exactly the ones in MVP.md §5, no pagination — there are 69 subjects.
- * Everything is derived on the fly from the assay index; nothing here holds state.
+ * Three endpoints, no pagination — there are 69 subjects. Everything is derived on the fly
+ * from the assay index; nothing here holds state.
  *
  * The store arrives by injection:
  *
  *   await app.register(registerRoutes, { prefix: '/api/v1', store: index });
  *
- * With no `store` option the routes serve `src/server/domain/fixtures.ts`, so this stream
- * runs standalone while stream A builds the real index.
+ * With no `store` option the routes serve `src/server/domain/fixtures.ts`, so `yarn dev`
+ * shows a working page before the importer has ever run.
  */
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
-import type { FindingStatus, ReportResponse, SubjectState } from '../../shared/types.js';
+import type { ReportResponse, SubjectState } from '../../shared/types.js';
 import { fixtureStore } from '../domain/fixtures.js';
-import { findingsByStatus, groupByRule } from '../domain/findings.js';
 import { hallmarks, sortNewestFirst, subjectHallmark } from '../domain/hallmark.js';
 import { renderMarkdown } from '../domain/markdown.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
 
 export interface RoutesOptions {
-  /** Stream A's index. Omitted in dev and in this stream's tests. */
+  /** The index built at boot. Omitted in dev and in the route tests. */
   store?: AssayStore;
 }
-
-const FINDING_STATUSES: readonly FindingStatus[] = [
-  'pass',
-  'fail',
-  'n-a',
-  'advisory',
-  'unverified',
-];
 
 function fail(reply: FastifyReply, code: number, error: string) {
   return reply.code(code).send({ error });
@@ -92,27 +83,6 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
         raw: stored.raw ?? body,
       };
       return response;
-    },
-  );
-
-  // GET /findings — grouped by rule, or the queue for one finding status.
-  app.get<{ Querystring: { group?: string; status?: string } }>(
-    '/findings',
-    async (request, reply) => {
-      const { group, status } = request.query;
-
-      if (status !== undefined) {
-        if (!FINDING_STATUSES.includes(status as FindingStatus)) {
-          return fail(reply, 400, `unknown status: ${status}`);
-        }
-        return findingsByStatus(store.all(), status as FindingStatus);
-      }
-
-      if (group !== undefined && group !== 'rule') {
-        return fail(reply, 400, `unknown grouping: ${group}`);
-      }
-
-      return groupByRule(store.all());
     },
   );
 };

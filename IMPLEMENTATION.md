@@ -1,70 +1,27 @@
 # Touchstone — Implementation Notes
 
-Companion to [ARCHITECTURE.md](ARCHITECTURE.md) (why) and [UX.md](UX.md) (what it looks like).
-This document is *how*, and it is deliberately scoped to an MVP.
+Companion to [ARCHITECTURE.md](ARCHITECTURE.md) (why, and the parity matrix that is the
+specification) and [UX.md](UX.md) (what it looks like). This document is *how*.
 
 ---
 
-## 1. What the MVP is
+## 1. What is being built
 
-> **Touchstone stores, indexes and displays what the existing n8n loop already produces, and
-> tells you when the environment — not the app — is broken.**
+> **Touchstone runs the conformance loop that two n8n workflows run today — the hourly tick, the
+> target selection, the agent call, the browser, the report — and tells you when the environment,
+> not the app, is broken.**
 
-It does **not** schedule, queue, lease, or drive assays in the MVP. The n8n loop keeps doing that,
-untouched, exactly as it does today. Touchstone becomes the place the results *land*.
+It schedules, leases, drives and records. That is the whole point: the previous plan stopped at
+"the place results land", which left n8n owning every interesting decision and left the defect of
+record ([ARCHITECTURE.md §2.3](ARCHITECTURE.md#23-infra-failure-is-recorded-as-subject-failure))
+unfixed.
 
-That split is the whole point: it gets the durable model, the history, the findings table and the
-incident handling into production without a rewrite of the working part, and it makes phase 1 —
-moving the scheduler in — a change of driver rather than a big bang.
-
-### In
-
-- report files on disk with frontmatter, and the in-memory index over them
-- ingest endpoint the audit workflow posts to
-- one-time importer for the existing 69 rows and ~55 reports
-- Overview, Subject detail (+ markdown viewer), Findings, Activity, Environment
-- bench prober, incident engine, Telegram/Discord push
-- re-assay button (delegating to the existing n8n webhook)
-
-### Out — and these are decisions, not omissions
-
-| Deferred | Why |
-| --- | --- |
-| scheduler, queue, worker pool | n8n already does it; replacing it is phase 1–2 |
-| bench + browser leasing | needs the runner first |
-| dedicated browser sidecar | only the runner uses a browser; nothing in the MVP does |
-| PR gate / check API | phase 3, and the schema already accommodates it |
-| findings → PRs | phase 4 |
-| Standards page | drift detection is valuable but not load-bearing on day one |
-| charts | three weeks of history; the history strip carries the signal |
-| per-subject mute | speculative until the Critical list actually gets noisy |
+The specification is [ARCHITECTURE.md §1.4](ARCHITECTURE.md#14-capability-inventory-and-parity-matrix).
+Every section below closes named rows from it.
 
 ---
 
-## 2. The seam with the existing loop
-
-Two small changes on the n8n side, both mirroring the Newsdesk stringer pattern — a single HTTP
-node that posts one payload with a header token.
-
-**a. Result fan-out.** Add one node to `AppStore App Audit` (`QjzNu9yWZ5005J7m`), parallel to the
-existing Docmost publish:
-
-```
-Extract LLM response ──┬─▶ Publish to Docmost      (existing, unchanged)
-                       └─▶ POST /api/v1/assays     (new)
-```
-
-Nothing existing is modified or removed, so the fallback if Touchstone is down is "we lost a
-notification," never "we lost an audit." Docmost publishing gets switched off later, once the
-importer and the UI have been trusted for a while.
-
-**b. Re-assay button.** The audit workflow already exposes a `Webhook (programmatic)` trigger.
-Touchstone's re-assay action POSTs to it. The MVP gets a working action for the cost of one
-`fetch`, and no scheduling logic.
-
----
-
-## 3. Stack
+## 2. Stack
 
 Chosen to match Newsdesk so the packaging, base image and deploy story are already solved.
 
@@ -72,77 +29,78 @@ Chosen to match Newsdesk so the packaging, base image and deploy story are alrea
 | --- | --- | --- |
 | runtime | Node 22 LTS, TypeScript, ESM | same as `newsdesk-backend` |
 | HTTP | Fastify | static-file serving, schema validation, good TS types |
-| **storage** | **files on disk + an in-memory index** | no database — see §5 |
+| **storage** | **files on disk + an in-memory index** | no database — §4 |
+| scheduler | an in-process timer | no cron container, no job broker |
+| agent | Claude Code over MCP, through Beacon | `http://beacon-backend:9300/mcp` |
+| browser | `ghcr.io/worph/browser-mcp:1.1.5` sidecars, ephemeral profile | §6 |
 | frontend | React + Vite, built into the image | one container serves API and SPA on one port |
 | markdown | `markdown-it` + `gray-matter` + `yaml` | render server-side, sanitize output |
-| MCP | one small JSON-RPC-over-SSE client | extracted **once**; today it is inlined twice in n8n |
+| push | `web-push` (VAPID) | Android and desktop; iOS out of scope |
+| MCP | one small JSON-RPC-over-SSE client | already written as `tools/mcp.ts`; promote it |
 
-Single container, single port, single data volume. No Redis, no Postgres, no job broker, **no
-SQLite** — the MVP has no queue and no relational data.
-
-Dropping the database also drops the only native dependency. The AppStore requires
-`architectures: [amd64, arm64]`, and a native module means prebuilds or a compile step in a
-multi-arch image. This stack is pure JavaScript.
+Single backend container, single port, single data volume, plus N browser sidecars. No Redis, no
+Postgres, **no SQLite** — there is no queue and no relational data. Dropping the database also
+drops the only native dependency, which matters because the AppStore requires
+`architectures: [amd64, arm64]`.
 
 ---
 
-## 4. Repo layout
+## 3. Repo layout
 
 ```
 src/
   server/
-    index.ts            fastify bootstrap, static SPA, /api mount
+    index.ts            fastify bootstrap, static SPA, /api mount, start the scheduler
     store/
-      index.ts          the in-memory index: build, query, invalidate
-      reports.ts        read/write report files + frontmatter
-      state.ts          incidents.json / events.jsonl, atomic writes
-      config.ts         config.yaml + standards/*.yaml
-    routes/
-      assays.ts         POST ingest, GET list, GET report
-      subjects.ts       registry + hallmark view
-      findings.ts       grouped + flat
-      incidents.ts      list, ack, mute
-      events.ts         feed
-      benches.ts        status, manual probe
-    domain/
-      severity.ts       tier ordering, risk score, gate precedence
-      hallmark.ts       compose latest assay per (subject, leg)
-      regression.ts     compare against previous — emits verdict.* events
+      index.ts          the in-memory index: build, query, invalidate      [built]
+      reports.ts        read/write report files + frontmatter              [built]
+      registry.ts       subjects from the GitHub contents API + overrides  ← B1
+      state.ts          alerts.json / events.jsonl / benches.json, atomic writes
+      config.ts         config.yaml + standards/*.yaml                     [built]
+    scheduler/
+      tick.ts           the hourly timer; one tick end to end              ← A1
+      eligibility.ts    freshness, cooldown, parking, ordering             ← B4,B5,B7
+      lease.ts          claim, reclaim, release                            ← B3,C1,C2
+      tries.ts          try accounting and the no-burn rules               ← B6,E5,E6
+    runner/
+      prompt.ts         assemble the protocol prompt                       ← D1
+      agent.ts          call Claude Code, extract, busy-detect, backoff     ← D2–D5
+      record.ts         headline → frontmatter → file → index              ← E1,E4,E7
     services/
-      prober.ts         bench health loop
-      incidents.ts      open / refresh / resolve, dedup by key
-      notify.ts         routing table → beacon outlets
-      mcp.ts            the one MCP client
+      bench.ts          probe, lease, health loop                          ← D7
+      browser.ts        lease a browser container, assert an empty profile  ← D6
+      mcp.ts            the one MCP client (promoted from tools/)
+      events.ts         the append-only log                                ← F5
+      alerts.ts         open / refresh / resolve, dedup by key
+      notify.ts         routing table → Beacon outlets                     ← F1–F4
+      push.ts           VAPID subscriptions and sends
+    routes/
+      subjects.ts       registry + hallmark view                           [built]
+      reports.ts        the markdown file, rendered and raw                [built]
+      assays.ts         POST — request an assay now (the re-assay button)
+      benches.ts        pool health
+      events.ts         the log feed
+      alerts.ts         open alerts
+    domain/
+      severity.ts       tier ordering, risk score, gate precedence          [built]
+      hallmark.ts       latest done assay per (subject, leg)                [built]
+      markdown.ts       render + anchors                                    [built]
   web/
-    routes/             Overview, Subject, Findings, Activity, Environment
-    components/         StatusCell, HistoryStrip, MarkdownView, IncidentCard
+    pages/              Overview, Subject, Activity
+    components/         StatusCell, MarkdownView, EventRow, AlertCard
 tools/
-  import-rollup.ts      one-time: the 69-row table
-  import-reports.ts     one-time: Docmost pages → files → findings
+  import.ts             one-shot migration; delete after it has run once
 test/
   fixtures/reports/     real archived reports, committed
 ```
 
 Rule worth keeping: **nothing outside `store/` touches the filesystem.** The thing being replaced
-failed partly because its data access was smeared through two 200-line code nodes; routes and
-domain logic get the index, never a path.
+failed partly because its data access was smeared through two 200-line Code nodes; routes, the
+scheduler and the runner get the index, never a path.
 
 ---
 
-## 5. Storage — files, no database
-
-### Why there isn't one
-
-Of the nine entities in ARCHITECTURE.md §4, **three are configuration** (`standard`, `rule`, and
-the override half of `subject`), **two are already the report files** (`assay` and `finding` — the
-frontmatter *is* the record), **two are tiny runtime state** (`bench`, `incident`), and **one is an
-append-only log** (`event`). Nothing is relational, nothing needs a transaction spanning entities,
-and nothing needs a query planner.
-
-The query that sounds expensive — *which subjects fail rule X* — only ever runs over the **latest
-assay per subject per leg: 138 files**, not the whole corpus. Parsing 138 frontmatters is
-milliseconds. Subject history reads one folder. The activity feed is a log tail. No view in the
-MVP touches the full archive.
+## 4. Storage — files, no database
 
 ### Layout
 
@@ -150,16 +108,17 @@ MVP touches the full archive.
 /data/
   config.yaml                benches + credentials, routing, constants   (hand-edited)
   standards/
-    static-v3.yaml           rule codes, titles, default severities
+    static-v3.yaml           name, version, leg, prompt fragment
     functional-v2.yaml
   reports/
     OpenClaw/
-      2026-08-05T09-14-22Z-static.md        ← frontmatter = assay + findings
+      2026-08-05T09-14-22Z-static.md        ← frontmatter = the assay record
       2026-08-05T09-31-08Z-functional.md
   state/
-    incidents.json           small, mutable
+    alerts.json              small, mutable
     events.jsonl             append-only
     benches.json             last probe result per bench
+    browsers.json            last lease per browser
     index.json               CACHE ONLY — safe to delete at any time
 ```
 
@@ -167,157 +126,219 @@ Filenames use ISO-8601 with `:` replaced by `-`, so they sort lexically and are 
 
 ### The index
 
-At boot, scan `reports/**`, parse frontmatter only (never the body), and hold the whole index in
-memory. Update it in place on every write. That is the entire data layer.
-
+At boot, scan `reports/**`, parse frontmatter only, hold it in memory, update in place on write.
 `index.json` is an **mtime-keyed cache** so a restart re-parses only changed files. The test for
-whether something is a cache rather than a database: deleting it must always be safe. It is —
-delete it and the next boot rebuilds from `reports/`.
+whether something is a cache rather than a database is that deleting it must always be safe. It is.
 
-Bodies are read lazily, per request, when the viewer asks for one.
+Bodies are read lazily, per request, when the viewer asks for one. Nothing else ever reads a body —
+findings are no longer extracted from prose
+([ARCHITECTURE.md §1.4 G](ARCHITECTURE.md#g-deliberately-dropped)).
+
+### Frontmatter is the assay record
+
+The full shape is in [MVP.md §5](MVP.md#5-contracts). Three fields are new relative to phase 0 and
+all three exist because the scheduler needs them: `try_n`, `trigger`, and the `bench` / `browser` /
+`lease_until` triple. They are additive — the frontmatter type already preserves unknown keys, so
+files written by phase 0 stay readable.
 
 ### Writes
 
-- **Report files** are written first, then the index updates. If the write fails the ingest fails
-  and n8n retries. Files are never modified after creation.
-- **`incidents.json`** is mutable, so write to a temp file and `rename()` — atomic on the same
-  filesystem, so a crash mid-write cannot leave a truncated file.
+- **Report files** are written first, then the index updates. Files are never modified after
+  creation.
+- **A claim** is a report file written with `status: running`, `try_n`, and `lease_until`. That is
+  what makes a claim crash-safe: the lease is on disk, and a tick that finds an expired one
+  reclaims it. It is also why `finished_at` is null until the run completes.
+- **`alerts.json`** is mutable: write a temp file and `rename()`, atomic on the same filesystem.
 - **`events.jsonl`** is append-only with `O_APPEND`; a partial trailing line is skipped on read.
 
 ### What this costs, honestly
 
 - **Boot scan is linear.** Fine at ~7k files, not fine at 100k. The mtime cache pushes that years
-  out, and the fix when it arrives is to add an index, not to rewrite — because the frontmatter is
-  the source of truth either way, adding one is purely additive and migrates nothing.
+  out; the fix when it arrives is to add an index, not to rewrite.
+- **Single writer.** One process, one scheduler. Never run two replicas — there is no lock outside
+  the process, and two schedulers would double-claim.
 - **No cross-entity atomicity.** Writing a report and appending its event are two operations.
-  Report first; the event log is replay-tolerant. A lost event is a lost notification, not lost
-  data.
-- **Single writer.** One process. Never run two replicas.
-- **Incident dedup is application logic, not a constraint.** A keyed map in a single process is
-  correct; a database unique index would only have been belt-and-braces against a bug in our own
-  code. Worth a test rather than worth a database.
-
-### Invariants worth a test each
-
-1. **Round-trip.** Parse a written file, rebuild the assay + findings, get identical values.
-2. **Reindex.** Delete `state/index.json`, rebuild, get a byte-identical index. This is what makes
-   the folder the archive of record rather than a nice-to-have.
+  Report first; the log is replay-tolerant.
 
 ---
 
-## 6. Ingest contract
+## 5. The scheduler — porting `Pick next target` and `Record result`
 
-`POST /api/v1/assays`, header token auth (`TOUCHSTONE_INGEST_TOKEN`), same shape of trust as
-Newsdesk's `/api/v1/filings`.
+Closes A1–A4, B1–B9, C1–C2, E1, E5–E7. This is the densest part of the port and the part where a
+subtle divergence is expensive, so the two Code nodes' comments are worth reading before writing
+any of it — they document decisions that are not obvious from the code.
 
-```jsonc
-{
-  "subject": "Prowlarr",
-  "leg": "static",                          // static | functional
-  "standard": { "name": "Static Review Protocol", "version": 3 },
-  "verdict": "non-compliant",               // compliant | non-compliant | errored | deferred
-  "top_severity": "major",                  // critical | major | minor | none
-  "risk_score": 13,
-  "blocked_reason": null,                   // e.g. "bench_unavailable" | "agent_busy"
-  "subject_ref": "Yundera/AppStore@main:Apps/Prowlarr",
-  "commit": "0f5955e3e243",
-  "images": ["lscr.io/linuxserver/prowlarr:2.4.0"],
-  "started_at": "2026-08-06T07:00:16Z",
-  "finished_at": "2026-08-06T07:16:27Z",
-  "findings": [
-    { "rule": "D2", "severity": "major", "status": "fail",
-      "note": "relies on first-launch auth onboarding, no rationale.md" },
-    { "rule": "E9", "severity": "critical", "status": "unverified",
-      "note": "DisabledForLocalAddresses may skip the gate for proxied traffic" }
-  ],
-  "report_markdown": "# Yundera/AppStore — Prowlarr\n\n..."
-}
+### One tick
+
+```
+1  refresh the subject registry (GitHub contents; DEFAULT_APPS as cold-start fallback)   B1
+2  reclaim expired leases: any running assay older than LEASE_MIN is released            B3
+3  if a subject is still validly claimed → log the tick and stop (single-flight)         B8
+4  if the last finish is < COOLDOWN_MIN ago → log the tick and stop                      B5
+5  build the eligible set from the index, per leg:                                       B4
+      never assayed                                        → eligible
+      last verdict older than FRESH_DAYS                    → eligible
+      last assay errored and try_n < MAX_TRIES              → eligible
+      parked (try_n >= MAX_TRIES) and parked >= STUCK_DAYS  → eligible, try_n reset
+      functional leg and the bench pool is unhealthy        → NOT eligible               D7
+6  pick the stalest eligible subject; forced lists jump the queue                        A3
+7  claim it: write status=running, try_n, lease_until — do NOT stamp last-run            C1,C2
+8  hand (subject, leg, bench, browser) to the runner
+9  record the outcome                                                                    E1
 ```
 
-Server-side, in order:
+Step 5 is a query over the in-memory index. That is the whole reason the "no queue, re-derive every
+tick" property (B9) survives the move: it was expensive in n8n because it meant re-parsing a
+document, and it is nearly free here.
 
-1. validate; resolve the `subject`, creating its report folder if new
-2. **write the report file** — frontmatter assembled from the payload, body verbatim
-3. update the in-memory index
-4. **compute events** by comparing to the previous `done` assay for the same `(subject, leg)`
-5. append events, route notifications
+### The constants live in `config.yaml`
 
-Step 2 is the commit point: once the file is on disk the assay exists, whatever happens next.
+`FRESH_DAYS=7`, `STUCK_DAYS=7`, `LEASE_MIN=120`, `COOLDOWN_MIN=55`, `MAX_TRIES=3`. Seeded on first
+boot with the loop's current values so that behaviour is identical on day one, then tunable without
+a deploy. Do not hardcode them; the whole point of moving them out of a Code node is that they stop
+being a code change.
 
-**Blocked assays never consume a try.** If `blocked_reason` is set, the row is recorded with
-`status='blocked'`, `try_n` is *not* incremented, and no `verdict.*` event fires. This is
-architecture principle 5, and it is enforced here — the one place it can be enforced.
+### Recording — the three rules that must not drift
 
-### Regression detection
+These are carried over verbatim from `Record result`, and each one is a comment in the original
+because each one was learned the hard way.
 
-Rank `compliant(0) < minor(1) < major(2) < critical(3)`. `errored` and `blocked` are excluded from
-comparison entirely — an infra failure must never read as a regression. Then:
+1. **An infra condition restores the row and burns nothing.** `agent_busy`,
+   `bench_unavailable`, `browser_unavailable` → `status: blocked`, `blocked_reason` set,
+   `try_n` unchanged, last-run untouched, no verdict. Rows E5 and D7, and
+   [ARCHITECTURE.md principle 5](ARCHITECTURE.md#3-design-principles). This is the one place the
+   principle can be enforced.
+2. **Last-run is stamped on completion, including errors.** So a failing subject goes to the back
+   of the backlog and every subject gets one attempt before any gets a second. Row E7. The try
+   counter is what parks it, not the ordering.
+3. **The headline is authoritative.** `verdict`, `top_severity` and `risk_score` come from the
+   report's own `**VERDICT: … · risk_score N**` line, parsed once. Row E4 and
+   [ARCHITECTURE.md §6.2](ARCHITECTURE.md#62-risk-and-severity-come-from-the-headline). Nothing
+   derives them from prose; a parse failure is an error, never a silent `compliant`.
 
-| Transition | Event |
-| --- | --- |
-| rank increased | `verdict.regression` |
-| any new Critical finding | `verdict.critical` |
-| rank → 0 | `verdict.compliant` |
-| rank changed, not above | `verdict.changed` |
-| no change | `assay.finished` |
+### Triggers
+
+| Row | Trigger | Behaviour |
+| --- | --- | --- |
+| A1 | in-process hourly timer | a normal tick |
+| A2 | `POST /api/v1/assays` with a token | queue one named subject/leg immediately |
+| A3 | the same endpoint with a list | forced run, bypasses freshness and cooldown |
+| A4 | the re-assay button | the same endpoint, from the UI |
+
+The n8n `Weekly QA webhook` and the audit's `Webhook (programmatic)` both collapse into A2. There
+is no separate ingest contract in the target state — the runner is in-process, so nothing external
+posts a result. A temporary ingest endpoint exists only during M2, to watch the still-running n8n
+loop before the scheduler takes over.
 
 ---
 
-## 7. Prober and incidents
+## 6. The runner
 
-A timer (default 5 min, configurable) probes each configured bench:
+Closes D1–D6 and E4.
+
+### The agent call
+
+```
+POST http://beacon-backend:9300/mcp        JSON-RPC over SSE, one call
+  → claude-code tool, prompt assembled from standards/<leg>-v<n>.yaml
+  ← the report markdown, headline included
+```
+
+`tools/mcp.ts` is already the right client — beacon is stateless streamable-HTTP, one POST per
+call, response framed as a single SSE `data:` line. Promote it to `src/server/services/mcp.ts`.
+
+The Telegram and Discord tool names for §8 must be resolved at implementation time via beacon's
+`server_doc` for `telegram-mcp` / `discord-mcp` — do not guess them, and do not copy whatever
+string the n8n nodes use without checking it still exists.
+
+### Busy handling is not optional and does not go away
+
+`AppStore PR Review` stays in n8n and calls **the same** Claude Code endpoint
+([ARCHITECTURE.md §5.3](ARCHITECTURE.md#53-the-agent-stays-shared--the-busy-retry-must-be-ported-not-deleted)).
+Touchstone therefore faces contention it does not control:
+
+```
+call → 409 or a busy marker in the response
+     → wait (configurable, default matching the n8n Wait node)
+     → call once more
+     → still busy → status=blocked, blocked_reason=agent_busy, try_n unchanged
+```
+
+Rows D4 and D5. An earlier draft said an in-process queue makes this unnecessary. It does not.
+
+### The browser
+
+One `browser-mcp` container per functional worker, leased with the bench as a pair. Configuration
+mirrors Newsdesk's sidecar — `shm_size: 2gb`, `MCP_PORT: 9746`, `IDLE_TTL_MS`, `PAGE_COLLECTOR=on`,
+`PAGE_TTL_MS`, nothing exposed, reachable only from the backend on `pcs` — with one divergence:
+
+**No profile volume.** The profile is discarded between assays. The functional protocol asks
+whether the app has an auth gate, and a session cookie surviving from a previous assay makes an
+unprotected app look protected — a false pass on the check that catches auth bypass. `browser.ts`
+asserts the profile is empty at lease time rather than trusting the container to have been reaped.
+
+Image floor is **1.1.5**, not `latest`: the tab registry (`/api/pages`), `hover`, and the per-tab
+screencast all arrive in that release, and the shared box-wide `browsermcp` predates them.
+
+### Bench preflight
 
 ```
 POST https://local-auth-<bench>/api/firstfactor   { username, password }
 expect 200 · treat 401 as auth failure · treat timeout/5xx as unreachable
 ```
 
-Credentials come from `config.yaml` in the data dir, never from the repo. On failure open or
-refresh an incident keyed `bench.auth` or `bench.unreachable`; on success resolve it and emit the
-recovery notification.
-
-**Impact accounting** on the open incident: count of subjects whose functional leg is currently
-blocked, refreshed on each probe. That is what turns the card into *"49 assays blocked, 0 tries
-consumed"* instead of a bare error string.
-
-The MVP does not act on the incident beyond reporting it, because the MVP does not schedule. Phase
-1 is where an open `bench.*` incident pauses the functional queue.
+Runs on a timer (default 5 min) and again immediately before any functional claim. Credentials come
+from `config.yaml` in the data dir, never from the repo. On failure, open or refresh an alert keyed
+`bench.auth` or `bench.unreachable`, and hold the functional queue; on success resolve it and emit
+the recovery notification. Row D7 — the defect of record.
 
 ---
 
-## 8. Notifications
+## 7. Events and alerts
+
+The distinction is the same one that turned one bench outage into 49 identical notifications:
+
+- **An event is point-in-time.** Every tick, claim, dispatch, result, retry, block and probe. It is
+  appended and never modified.
+- **An alert is stateful and deduplicated by key.** `bench.auth`, `bench.unreachable`,
+  `agent.unavailable`, `browser.unavailable`. A two-day outage is one row that refreshes, not 49.
+  It auto-resolves when its probe succeeds, and the resolution is itself worth pushing.
+
+There is no ack, no mute and no impact accounting — dropped, because n8n has no equivalent and
+because a mute is speculative until the alert list is actually noisy.
+
+**Two rules on every event row**, copied from Newsdesk because they are what makes a log readable:
+
+- `message` is one sentence a human reads. No ids, no interpolated error strings, no JSON.
+- `detail` is the technical payload, rendered only on `warn` and `error`.
+
+Splicing an upstream error into `message` collapses the two and is the single thing that makes an
+event log useless.
+
+---
+
+## 8. Notification
+
+Closes F1–F5. Three layers, in strict order of trust.
+
+| Layer | Carries | Fails how |
+| --- | --- | --- |
+| **1. the event log** | everything | it does not — it is a local append |
+| **2. Beacon outlets** | tick summary, errors, results, run-log (F1–F4) | best-effort; log and move on |
+| **3. web push** | alert opened/resolved, assay failed after retry | best-effort; a missed push is still a row |
 
 `notify.ts` maps `(class, kind) → outlets` from the routing table in
-[UX.md §2.4](UX.md#24-activity--incidents-and-events), then calls Beacon over MCP.
+[UX.md §2.3](UX.md#23-activity--the-log-alerts-and-the-environment), then calls Beacon over MCP —
+the same path n8n uses today for the Talk room, so Touchstone holds no Telegram or Discord
+credentials.
 
-The Telegram and Discord tool names must be resolved at implementation time via beacon's
-`server_doc` for `telegram-mcp` / `discord-mcp` — do not guess them from memory, and do not copy
-whatever string the n8n nodes use without checking it still exists.
-
-Delivery is best-effort and must never fail an ingest: log, mark the event undelivered, move on. A
-notification outage is not a data-loss event.
-
----
-
-## 9. Frontend
-
-Routes map 1:1 to UX.md: `/`, `/s/:subject`, `/findings`, `/activity`, `/env`.
-
-Three components carry most of the design:
-
-- **`StatusCell`** — renders one leg's state. The only component that knows *failed* and *unknown*
-  must look different; get this right once and the rest of the UI inherits it.
-- **`HistoryStrip`** — the per-subject glyph run with the regression marker.
-- **`MarkdownView`** — server-rendered HTML, injected. Tables first: wrap every table in an
-  `overflow-x: auto` container, because the reports are mostly tables and a wide one must not
-  break the page. Heading anchors for deep-linking from a finding row.
-
-Polling on a short interval is fine for the MVP; there is no live-updating requirement that
-justifies websockets when the fastest thing in the system takes eight minutes.
+Delivery must never fail a tick or an assay: log it, mark the event undelivered, move on. **Layer 1
+must render with layers 2 and 3 broken** — that is [ARCHITECTURE.md principle 7](ARCHITECTURE.md#3-design-principles),
+and it is why the Activity page reads a file rather than a delivery receipt.
 
 ---
 
-## 10. Configuration
+## 9. Configuration
 
 Env, following the `NEWSDESK_*` convention:
 
@@ -326,72 +347,73 @@ TOUCHSTONE_DATA_DIR=/data
 TOUCHSTONE_PORT=8080
 TOUCHSTONE_PUBLIC_URL=https://touchstone-${APP_DOMAIN}
 TOUCHSTONE_TRUSTED_GATE=touchstone
-TOUCHSTONE_INGEST_TOKEN=...
+TOUCHSTONE_API_TOKEN=...
 TOUCHSTONE_BEACON_URL=http://beacon-backend:9300/mcp
+TOUCHSTONE_MCP_TOKEN=...
 TZ
 ```
 
-Everything else — benches and their credentials, notification routing, the scheduling constants,
-the n8n re-assay webhook — lives in `config.yaml`, seeded on first boot into the data dir. Secrets
-stay out of the repo and out of the compose file.
+Everything else lives in `config.yaml`, seeded on first boot into the data dir: the five scheduling
+constants, bench hostnames and credentials, the browser pool, notification routing, and subject
+overrides. Secrets stay out of the repo and out of the compose file.
+
+Seeding on first boot is a real requirement, not a nicety — phase 0's `config.ts` only *reads* the
+file and falls back to defaults, which is fine when nothing needs credentials and wrong the moment
+the bench prober exists.
 
 ---
 
-## 11. Packaging
+## 10. Packaging
 
-Copy the Newsdesk compose and change the names: AppShield sidecar in front, backend with no Caddy
-labels on the `pcs` network, `name` == `container_name` == `hostname` == `touchstone`,
-`user: 1000:1000`, `pre-install-cmd` creating and chowning `/DATA/AppData/$AppID/data`.
+Copy the Newsdesk compose and change the names. Four services, per
+[ARCHITECTURE.md §8](ARCHITECTURE.md#8-packaging):
+
+```
+touchstone            AppShield sidecar, the only public surface, Caddy labels here
+touchstone-backend    no labels, pcs only, user 1000:1000, one data volume
+touchstone-mcp        beaconify sidecar (optional) — admin surface for agents
+touchstone-browser-1  browser-mcp:1.1.5, no ports, no profile volume
+touchstone-browser-2  …one per functional worker
+```
+
+`name` == `container_name` == `hostname` == `touchstone`; `pre-install-cmd` creating and chowning
+`/DATA/AppData/$AppID/data`.
 
 Two notes:
 
-- Reconcile the Newsdesk compose drift first — the running `newsdesk-browser` is not in the
-  compose file on disk. Copy from the *running* stack, not the stale file.
-- Touchstone needs **no** browser sidecar in the MVP. It arrives with the runner in phase 2, and
-  with an ephemeral profile — see ARCHITECTURE.md § Bench and browser leasing.
+- Reconcile the Newsdesk compose drift first — the running `newsdesk-browser` is not in the compose
+  file on disk. Copy from the *running* stack, not the stale file.
+- Browser containers get `mem_limit: 2g` each. Two of them on a box that also runs the store is a
+  real budget question — [ARCHITECTURE.md §10](ARCHITECTURE.md#10-open-questions), open question 3.
 
 ---
 
-## 12. Testing
+## 11. Testing
 
-Unit tests where the logic is subtle rather than everywhere: severity ordering and gate
-precedence, regression comparison (including that `errored` never counts), incident dedup and
-resolve, frontmatter round-trip, and reindex-after-cache-delete.
+Unit tests where the logic is subtle rather than everywhere.
 
-**The acceptance test for the whole model** is concrete and uses real data: import the archived
-reports, then assert that the grouped-findings query independently rediscovers the `cpu_shares: 10`
-cluster across Radarr, Sonarr, Lidarr, Prowlarr and qBittorrent — a fact that currently exists only
-as one sentence inside one report. If that query does not find it, the rule vocabulary is not good
-enough yet, and that is the thing to fix before building anything on top.
+**The acceptance test for the port** is a replay: feed the 69-row corpus and its last-run data
+through `eligibility.ts` and assert the chosen target matches what `Pick next target` chooses for
+the same input, across all five constants. That is the test that says "this is the same scheduler."
 
-A second one worth having: import the 2026-08-05/06 window and assert that it produces **one** open
-incident and **zero** `verdict.regression` events. That is the exact scenario the system exists to
-handle correctly.
+**The acceptance test for the product** is the outage: import the 2026-08-05/06 window, run the
+prober against a bench returning 401, and assert it produces **one** open alert, **zero** consumed
+tries, and a functional queue that is paused while static assays keep completing. That is the exact
+scenario the system exists to handle correctly, and it is the scenario the current n8n loop was
+still failing on 2026-08-07.
 
-Commit the fixture reports. They are the only realistic corpus, and they are full of the messy
+Also worth a test each: lease reclaim after `LEASE_MIN`; parking after `MAX_TRIES` and release
+after `STUCK_DAYS`; last-run stamped on error but not on `blocked`; headline parsing against a
+fixture whose headline and prose disagree; alert dedup; frontmatter round-trip; and
+reindex-after-cache-delete.
+
+Commit the fixture reports. They are the only realistic corpus and they are full of the messy
 formatting a parser has to survive.
 
 ---
 
-## 13. Order of work
+## 12. Order of work
 
-Each milestone is independently useful and independently abandonable.
-
-| # | Milestone | Done when |
-| --- | --- | --- |
-| **M1** | store, ingest, report writer | POSTing a real archived report produces a file and an index entry |
-| **M2** | importers | 69 subjects and ~55 reports on disk; the `cpu_shares` test passes |
-| **M3** | Overview + Subject detail + markdown viewer | the current state is visible without opening Docmost |
-| **M4** | Findings view | the recurring-findings query has a UI |
-| **M5** | prober, incidents, Activity, push | the bench outage shows as one incident, in-app and on Telegram |
-| **M6** | packaging, deploy behind AppShield | reachable at `touchstone-yunderalabs.nsl.sh` |
-| **M7** | the n8n fan-out node | live results land without the importer |
-
-M7 last on purpose: point the live feed at it only once the UI has proven the model against
-imported history.
-
-### Before any of it
-
-The twenty-line login preflight in the existing `Pick next target` node. It is not part of
-Touchstone, it stops the bleeding now, and everything above assumes the bench outage is understood
-rather than ongoing.
+See [MVP.md §8](MVP.md#8-order-of-work). The short version: delete the out-of-scope code, get the
+log and the prober in before the scheduler, retire the loop workflow at M4, retire the audit
+workflow at M7.

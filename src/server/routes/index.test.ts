@@ -1,8 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { ReportResponse, RuleGroup, SubjectState } from '../../shared/types.js';
+import type { ReportResponse, SubjectState } from '../../shared/types.js';
 import { FIXTURE_RECORDS, fixtureStore } from '../domain/fixtures.js';
-import type { LocatedFinding } from '../domain/findings.js';
 import routes from './index.js';
 
 let app: FastifyInstance;
@@ -77,7 +76,7 @@ describe('GET /reports/:subject/:file', () => {
     const { status, body } = await get<ReportResponse>(`/api/v1/reports/OpenClaw/${file}`);
     expect(status).toBe(200);
     expect(body.meta.subject).toBe('OpenClaw');
-    expect(body.meta.risk_score).toBe(112);
+    expect(body.meta.risk_score).toBe(232);
     expect(body.html).toContain('<h1');
     expect(body.html).toContain('id="yundera-appstore-openclaw"');
     expect(body.raw).toContain('# Yundera/AppStore — OpenClaw');
@@ -97,45 +96,5 @@ describe('GET /reports/:subject/:file', () => {
       const { status } = await get(url);
       expect([400, 404]).toContain(status); // rejected by the guard or unmatched by the router
     }
-  });
-});
-
-describe('GET /findings', () => {
-  it('groups by rule over the current assays — five subjects share one cpu_shares fix', async () => {
-    const { status, body } = await get<RuleGroup[]>('/api/v1/findings?group=rule');
-    expect(status).toBe(200);
-    const cpu = body.find((g) => g.title === 'cpu_shares on reserved tier 10');
-    expect(cpu?.subjects).toEqual(['OpenClaw', 'Prowlarr', 'qBittorrent', 'Radarr', 'Sonarr']);
-    expect(cpu?.severity).toBe('minor');
-    expect(cpu?.status).toBe('fail');
-    expect(cpu?.risk).toBe(5);
-  });
-
-  it('keeps a rule that passes on one subject and fails on another as separate rows', async () => {
-    const { body } = await get<RuleGroup[]>('/api/v1/findings?group=rule');
-    const d1 = body.filter((g) => g.rule === 'D1');
-    expect(d1).toHaveLength(1);
-    expect(d1[0]?.status).toBe('pass');
-    expect(d1[0]?.risk).toBe(0);
-  });
-
-  it('defaults to grouping by rule and rejects an unknown grouping', async () => {
-    expect((await get<RuleGroup[]>('/api/v1/findings')).body.length).toBeGreaterThan(0);
-    expect((await get('/api/v1/findings?group=subject')).status).toBe(400);
-  });
-
-  it('serves the suspected-Critical queue', async () => {
-    const { status, body } = await get<LocatedFinding[]>('/api/v1/findings?status=unverified');
-    expect(status).toBe(200);
-    expect(body.map((f) => f.subject)).toEqual(['OpenClaw', 'Prowlarr', 'Sonarr']);
-    expect(body.every((f) => f.rule === 'E9' && f.severity === 'critical')).toBe(true);
-    // the queue is actionable only because each row says where it was seen
-    expect(body[0]?.file).toBeTruthy();
-  });
-
-  it('400s an unknown status', async () => {
-    const { status, body } = await get<{ error: string }>('/api/v1/findings?status=whatever');
-    expect(status).toBe(400);
-    expect(body.error).toMatch(/unknown status/);
   });
 });

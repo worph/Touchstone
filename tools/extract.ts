@@ -1,26 +1,25 @@
 /**
- * Turning the Docmost corpus into assays and findings.
+ * Reading a report page: its roll-up row, its two legs, and its headline.
  *
  * The reports are written by an LLM against a protocol, not by a serialiser, so nothing
- * about their shape is guaranteed. Across 57 pages the same finding appears as a numbered
- * bold paragraph, a table row, an H3 heading, and a bullet with a `[Minor]` prefix. The
- * strategy that survives that is:
+ * about their shape is guaranteed. What *is* reliable is what the agent was asked for by
+ * contract — a verdict, a severity tier and a risk score, stated in the headline — so that
+ * is all this module reads. It does not mine the prose for findings: per ARCHITECTURE.md
+ * principle 3 the assay's own declaration is authoritative, and an earlier version of this
+ * file that re-derived a tier from the body promoted four Critical apps to `compliant`.
  *
- *   1. split the page into the two legs by heading, and keep the prose verbatim;
- *   2. chop each leg into *items* — one bullet, one table row, one numbered paragraph;
- *   3. read each item's status and severity from whatever marker it happens to carry,
- *      falling back to the enclosing "Passing / Failing / Advisory" heading;
- *   4. normalise the item's text onto a rule code from data/standards/*.yaml.
+ * Four parsers, in the order the importer uses them:
  *
- * Step 4 is the point of the exercise. Everything before it is plumbing, and everything
- * after it — grouping, risk, the Findings page — depends on it being right, so an item that
- * matches no rule is never silently dropped: it keeps a synthetic `x:<slug>` code so the
- * long tail stays countable and the frequent members of it can be promoted into the
- * vocabulary later.
+ *   parseRollup    — the 69-row table, one row per subject
+ *   shapeReport    — split a page into its static and functional sections
+ *   parseHeadline  — the verdict line, plus the refs around it
+ *   parsePhases    — the functional phase table, which says whether the leg ran at all
+ *
+ * `shapeReport` and `parsePhases` outlive the migration: the runner reuses them to split
+ * one `depth=full` agent response into two assay files (P5).
  */
 
-import type { Finding, FindingStatus, Severity } from '../src/shared/types.js';
-import type { RuleDef } from '../src/server/store/config.js';
+import type { Severity } from '../src/shared/types.js';
 
 // ── roll-up table ──────────────────────────────────────────────────────────────────────
 
@@ -190,11 +189,16 @@ const IMAGE_RE = /`([a-z0-9][a-z0-9._\-]*(?:[/][a-z0-9._\-]+)*:[A-Za-z0-9][\w.\-
 export function parseHeadline(md: string): Headline {
   const head = md.slice(0, 4000);
 
+  // The window between the verdict word and the tier is generous because the reports put
+  // a parenthetical there: DocmostMCP writes `ERRORED (audit could not complete — functional
+  // half unrunnable) · top severity Major`, which is 55 characters of aside. Still anchored
+  // to one line and to the verdict keyword, so a wider window cannot wander into a
+  // neighbouring sentence.
   const verdictM =
-    /\*{0,2}(NON-COMPLIANT|COMPLIANT|ERRORED|DEFERRED)\b[^\n]{0,40}?(?:top severity\s*)?\b(Critical|Major|Minor|None)\b[^\n]{0,20}?risk[ _]score\s*(\d+)/i.exec(
+    /\*{0,2}(NON-COMPLIANT|COMPLIANT|ERRORED|DEFERRED)\b[^\n]{0,120}?(?:top severity\s*)?\b(Critical|Major|Minor|None)\b[^\n]{0,30}?risk[ _]score\s*(\d+)/i.exec(
       head,
     ) ??
-    /\*{0,2}(NON-COMPLIANT|COMPLIANT|ERRORED|DEFERRED)\b[^\n]{0,40}?\b(Critical|Major|Minor|None)\b/i.exec(
+    /\*{0,2}(NON-COMPLIANT|COMPLIANT|ERRORED|DEFERRED)\b[^\n]{0,120}?\b(Critical|Major|Minor|None)\b/i.exec(
       head,
     );
 
@@ -222,334 +226,27 @@ export function parseHeadline(md: string): Headline {
 
   const composeSha =
     /compose (?:blob )?sha\**:?\**\s*`?([0-9a-f]{7,40})`?/i.exec(head)?.[1] ?? null;
-  const ref = /\bref\**:?\**\s*`?([\w.\-/]+)`?/i.exec(head)?.[1] ?? null;
-  const scope = /\bscope\**:?\**\s*`?([\w.\-]+)`?/i.exec(head)?.[1] ?? null;
+  // `ref` and `scope` must be *labelled*, with a real separator. Without one, `\bref`
+  // happily matches the front of "referrer", "reference", "therefore" and "reflects", and
+  // ten of sixty-nine subjects imported a git ref of `erence` or `errer`.
+  const ref = cleanRef(/\bref\**\s*[:=]\s*\**\s*`?([\w.\-/]+)`?/i.exec(head)?.[1]);
+  const scope = cleanScope(/\bscope\**\s*[:=]\s*\**\s*`?([\w.\-]+)`?/i.exec(head)?.[1]);
 
   return { verdict, topSeverity, riskScore, auditDate, images, composeSha, ref, scope };
 }
 
-// ── items ──────────────────────────────────────────────────────────────────────────────
-
-interface Item {
-  /** The heading the item sits under, used as the status fallback. */
-  mode: FindingStatus | null;
-  title: string;
-  note: string;
-  /** Everything, for rule matching. */
-  text: string;
-  /** Set when the source states the status unambiguously, e.g. a table's Verdict column. */
-  status?: FindingStatus;
+/** A git ref is a branch or a sha, never a path to a file. */
+function cleanRef(value: string | undefined): string | null {
+  if (!value || value.length > 60) return null;
+  if (/\.(ya?ml|md|png|json)$/i.test(value)) return null;
+  return value;
 }
 
-const MODE_HEADINGS: [RegExp, FindingStatus][] = [
-  [/advisor|opinion|flagged|weak pass/i, 'advisory'],
-  [/^n-?\/?a\b|not assessable|not applicable/i, 'n-a'],
-  [/fail|finding|deficien|remediation|deviation/i, 'fail'],
-  [/pass|compliant item/i, 'pass'],
-];
-
-function modeFor(heading: string): FindingStatus | null {
-  for (const [re, status] of MODE_HEADINGS) if (re.test(heading)) return status;
-  return null;
-}
-
-/** Chop a leg section into candidate items. */
-export function chopItems(section: string): Item[] {
-  const lines = section.split('\n');
-  const items: Item[] = [];
-  let mode: FindingStatus | null = null;
-  let fenced = false;
-  let buf: string[] = [];
-  let bufMode: FindingStatus | null = null;
-
-  const flush = (): void => {
-    if (!buf.length) return;
-    const text = buf.join('\n').trim();
-    buf = [];
-    if (!text) return;
-    const { title, note } = titleAndNote(text);
-    if (!title) return;
-    items.push({ mode: bufMode, title, note, text });
-  };
-
-  for (const raw of lines) {
-    if (/^```/.test(raw)) {
-      fenced = !fenced;
-      if (buf.length) buf.push(raw);
-      continue;
-    }
-    if (fenced) {
-      if (buf.length) buf.push(raw);
-      continue;
-    }
-
-    const heading = /^#{2,6}\s+(.*)$/.exec(raw);
-    if (heading) {
-      flush();
-      const h = clean(heading[1]!);
-      const m = modeFor(h);
-      // An H3/H4 that is itself a finding ("### F3 — cpu_shares: 10 is the wrong tier ·
-      // **Minor**") rather than a section label. Section labels are short and generic.
-      if (m && /^(passing|failing|advisor|findings?|n-?a|not assessable)/i.test(h)) {
-        mode = m;
-      } else if (/^(passing|failing|advisor|findings?|n-?a|not assessable|cleanup|phase)/i.test(h)) {
-        mode = m;
-      } else if (mode) {
-        bufMode = mode;
-        buf = [raw.replace(/^#+\s+/, '')];
-        continue;
-      }
-      continue;
-    }
-
-    // Table row.
-    if (/^\s*\|/.test(raw)) {
-      if (/^\s*\|[\s:|-]+\|\s*$/.test(raw)) continue;
-      flush();
-      const cells = raw.split('|').slice(1, -1).map((c) => clean(c));
-      if (cells.length < 2) continue;
-      if (/^(item|check|checklist|rule|#|phase|id)$/i.test(cells[0] ?? '')) continue;
-      const item = tableItem(cells, mode);
-      if (item) items.push(item);
-      continue;
-    }
-
-    // Bullet or numbered-bold item.
-    if (/^\s*[-*]\s+\S/.test(raw) || /^\*\*\d+\.\s/.test(raw) || /^\d+\.\s+\S/.test(raw)) {
-      flush();
-      bufMode = mode;
-      buf = [raw];
-      continue;
-    }
-
-    // Continuation of the current item, or prose between items.
-    if (buf.length) {
-      if (raw.trim() === '') buf.push('');
-      else buf.push(raw);
-      continue;
-    }
-  }
-  flush();
-  return items;
-}
-
-const TABLE_STATUS: [RegExp, FindingStatus][] = [
-  [/^unverified/i, 'unverified'],
-  [/^(weak )?pass/i, 'pass'],
-  [/^fail/i, 'fail'],
-  [/^n-?\/?a\b/i, 'n-a'],
-  [/^advisory/i, 'advisory'],
-  // `errored` is a phase outcome, not a finding about the subject. Recorded so the row is
-  // recognised as a checklist row, then dropped by the caller.
-  [/^errored?/i, 'unverified'],
-];
-
-function tableItem(cells: string[], mode: FindingStatus | null): Item | null {
-  // Emphasis is decorative and inconsistent — `pass`, **fail**, **FAIL** and `pass (D4)`
-  // all appear — so match against a de-emphasised copy while keeping the original text.
-  const bare = cells.map((c) => c.replace(/[*`]/g, '').trim());
-  let statusIdx = -1;
-  let status: FindingStatus | null = null;
-  let sevIdx = -1;
-  for (let i = 0; i < bare.length; i++) {
-    const c = bare[i]!;
-    if (statusIdx < 0) {
-      const hit = TABLE_STATUS.find(([re]) => re.test(c));
-      if (hit && c.length < 40) {
-        statusIdx = i;
-        status = hit[1];
-        continue;
-      }
-    }
-    if (sevIdx < 0 && /^(critical|major|minor|none|—|-|n-?\/?a)$/i.test(c)) sevIdx = i;
-  }
-  if (statusIdx < 0 || !status) return null;
-  const titleCells = cells.filter((_, i) => i !== statusIdx && i !== sevIdx);
-  // A leading short code cell ("S3", "F5", "1") is an in-report index, not a title.
-  const first = titleCells[0] ?? '';
-  const titleIdx = /^[A-Z]?\d{1,2}$/.test(first.replace(/[*`]/g, '').trim()) ? 1 : 0;
-  const title = cleanTitle(titleCells[titleIdx] ?? first);
-  if (!title) return null;
-  const note = titleCells.slice(titleIdx + 1).join(' — ');
-  // Severity lives in its own column here, so hand it to the matcher explicitly.
-  const sevCell = sevIdx >= 0 ? bare[sevIdx]! : '';
-  const text = cells.join(' | ');
-  return { mode, status, title, note: sevCell && /^(critical|major|minor)$/i.test(sevCell) ? `severity: ${sevCell}. ${note}` : note, text };
-}
-
-/** First sentence-ish fragment is the title; the rest is the note. */
-function titleAndNote(text: string): { title: string; note: string } {
-  const firstLine = text.split('\n')[0] ?? '';
-  const rest = text.split('\n').slice(1).join('\n').trim();
-  let head = firstLine
-    .replace(/^\s*[-*]\s+/, '')
-    .replace(/^\*{0,2}\d+\.\s*\*{0,2}/, '')
-    .replace(/^\s*\[(Critical|Major|Minor)\]\s*/i, '')
-    .trim();
-
-  // Split at the first em-dash / bullet separator that is followed by prose, keeping the
-  // finding's own leading `F5 —` style index attached so the matcher can see it.
-  const sep = /\s+[—–·]\s+|\.\s+(?=[A-Z`])/.exec(head.replace(/`[^`]*`/g, (s) => ' '.repeat(s.length)));
-  let title = head;
-  let note = rest;
-  if (sep && sep.index > 8) {
-    title = head.slice(0, sep.index).trim();
-    const tailOfLine = head.slice(sep.index + sep[0].length).trim();
-    note = [tailOfLine, rest].filter(Boolean).join(' ');
-  }
-  return { title: cleanTitle(title), note: note.trim() };
-}
-
-// ── status, severity, rules ────────────────────────────────────────────────────────────
-
-function statusOf(item: Item): FindingStatus {
-  if (item.status) return item.status;
-  const head = item.title + ' ' + item.text.split('\n')[0];
-  if (/\bunverified\b/i.test(head)) return 'unverified';
-  if (/❌|✗|\bFAIL\b|\*\*fail\*\*|\bfail\b\s*[·|—]|→\s*\*{0,2}FAIL/i.test(head)) return 'fail';
-  if (/✅|✔|\*\*pass\*\*|→\s*\*{0,2}pass/i.test(head)) return 'pass';
-  if (/\bn-?\/?a\b/i.test(head)) return 'n-a';
-  if (item.mode) return item.mode;
-  return 'advisory';
-}
-
-const SEVERITY_PATTERNS: RegExp[] = [
-  /(?:severity|sev)\s*:?\s*\*{0,2}(Critical|Major|Minor)/i,
-  /[—–·|]\s*\*{0,2}(Critical|Major|Minor)\*{0,2}\s*(?:\(|$|\n|\.)/im,
-  /\*\*(Critical|Major|Minor)\*\*/,
-  /\[(Critical|Major|Minor)\]/i,
-  /\b(?:FAIL|fail)\b\s*[·|—–]\s*(Critical|Major|Minor)/i,
-  /\b(Critical|Major|Minor)\b/,
-];
-
-function severityOf(item: Item, fallback: Severity): Severity {
-  const scope = `${item.title}\n${item.note.slice(0, 400)}`;
-  for (const re of SEVERITY_PATTERNS) {
-    const m = re.exec(scope);
-    if (m) return SEVERITIES[m[1]!.toLowerCase()]!;
-  }
-  return fallback;
-}
-
-export interface CompiledRule {
-  code: string;
-  title: string;
-  severity: Severity;
-  match: RegExp[];
-  exclude: RegExp[];
-  family: RegExp[];
-  supersedes: string[];
-}
-
-export function compileRules(rules: RuleDef[]): CompiledRule[] {
-  return rules.map((r) => ({
-    code: r.code,
-    title: r.title,
-    severity: r.severity ?? 'minor',
-    match: (r.match ?? []).map((p) => new RegExp(p, 'i')),
-    exclude: (r.exclude ?? []).map((p) => new RegExp(p, 'i')),
-    family: (r.family ?? []).map((p) => new RegExp(p, 'i')),
-    supersedes: r.supersedes ?? [],
-  }));
-}
-
-/**
- * First rule whose `match` fires and whose `exclude` does not. Order in the YAML is the
- * precedence order, so the specific codes (AS2 "thumbnail duplicates icon") are listed
- * before the general ones (AS1 "thumbnail missing").
- */
-export function matchRule(text: string, rules: CompiledRule[]): CompiledRule | null {
-  for (const rule of rules) {
-    if (!rule.match.some((re) => re.test(text))) continue;
-    if (rule.exclude.some((re) => re.test(text))) continue;
-    return rule;
-  }
-  return null;
-}
-
-/** Stable synthetic code for an item the vocabulary does not cover yet. */
-export function syntheticCode(title: string): string {
-  const slug = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .split('-')
-    .slice(0, 6)
-    .join('-');
-  return `x:${slug || 'unnamed'}`;
-}
-
-export interface ExtractOptions {
-  rules: CompiledRule[];
-  /** Passing items that match no rule carry no cross-subject signal, so they are dropped. */
-  keepUncodedPasses?: boolean;
-}
-
-const HAS_SEVERITY = /\b(Critical|Major|Minor)\b/;
-
-/**
- * Whether an item that matched no rule is worth importing.
- *
- * The reports interleave findings with their *evidence* — "`GET /` → HTTP 200, full UI
- * rendered, no login" is a bullet under a finding, not a finding. Uncoded items therefore
- * have to earn their place: a fail must carry an explicit severity (every real finding in
- * this corpus does), and an advisory must come from a section headed as advisory.
- */
-function uncodedIsFinding(item: Item, status: FindingStatus): boolean {
-  if (item.title.length < 8) return false;
-  if (status === 'pass' || status === 'n-a') return false;
-  if (status === 'advisory') return item.mode === 'advisory';
-  return HAS_SEVERITY.test(`${item.title} ${item.note.slice(0, 300)}`);
-}
-
-export function extractFindings(section: string, opts: ExtractOptions): Finding[] {
-  const out: Finding[] = [];
-  const seen = new Set<string>();
-  for (const item of chopItems(section)) {
-    const status = statusOf(item);
-    const rule = matchRule(`${item.title}\n${item.note}`, opts.rules);
-    const keep =
-      Boolean(rule) ||
-      uncodedIsFinding(item, status) ||
-      (status === 'pass' && Boolean(opts.keepUncodedPasses));
-    if (!keep) continue;
-
-    const code = rule ? rule.code : syntheticCode(item.title);
-    const severity =
-      status === 'pass' || status === 'n-a'
-        ? 'none'
-        : severityOf(item, rule?.severity ?? 'minor');
-
-    const key = `${code}|${status}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    out.push({
-      rule: code,
-      title: rule ? rule.title : cleanTitle(item.title),
-      severity,
-      status,
-      ...(item.note ? { note: squash(item.note, 400) } : {}),
-    });
-  }
-  // A rule cannot both pass and fail in one report. Reports routinely record the halves of
-  // a compound checklist item separately — "`cpu_shares` present on every service — pass
-  // (presence) … tier is wrong, see F3" — and the failing half is the one that matters.
-  const failed = new Set(out.filter((f) => f.status === 'fail').map((f) => f.rule));
-  let kept = out.filter(
-    (f) => !(failed.has(f.rule) && (f.status === 'pass' || f.status === 'n-a')),
-  );
-
-  // Where one checklist item was split into a general and a specific code, keep only the
-  // specific one — a report saying both "cpu_shares set appropriately: fail" and
-  // "cpu_shares: 10 is the reserved tier" has stated one defect, not two.
-  const byCode = new Map(opts.rules.map((r) => [r.code, r]));
-  const superseded = new Set<string>();
-  for (const f of kept) {
-    for (const code of byCode.get(f.rule)?.supersedes ?? []) superseded.add(`${code}|${f.status}`);
-  }
-  kept = kept.filter((f) => !superseded.has(`${f.rule}|${f.status}`));
-  return kept;
+/** The protocol's `scope` is `full`, `pr-diff` or `n-a`. A bare dash is the table's blank. */
+function cleanScope(value: string | undefined): string | null {
+  if (!value) return null;
+  const v = value.toLowerCase();
+  return v === 'full' || v === 'pr-diff' || v === 'n-a' ? v : null;
 }
 
 // ── functional phases ──────────────────────────────────────────────────────────────────
@@ -597,7 +294,7 @@ function clean(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
 }
 
-export function cleanTitle(s: string): string {
+function cleanTitle(s: string): string {
   return clean(
     s
       .replace(/^\s*[-*]\s+/, '')

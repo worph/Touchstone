@@ -30,7 +30,6 @@ const SHOW_OPTIONS: { value: ShowFilter; label: string }[] = [
   { value: 'not-run', label: 'not yet run' },
   { value: 'running', label: 'running' },
   { value: 'stale', label: `stale (≥ ${FRESH_DAYS}d)` },
-  { value: 'unverified', label: 'has suspected Critical' },
 ];
 
 export default function Overview() {
@@ -101,13 +100,6 @@ export default function Overview() {
                 {titleForReason(incident.reason)} — functional queue paused{' '}
                 <span className="num">{duration(incident.since)}</span>
               </>
-            }
-            action={
-              incident.potentialFindings > 0 ? (
-                <Link className="btn" to="/findings?filter=unverified">
-                  {plural(incident.potentialFindings, 'suspected Critical')} waiting
-                </Link>
-              ) : null
             }
           >
             {plural(incident.count, 'assay')} blocked on{' '}
@@ -286,18 +278,6 @@ function Summary({
       <div className="summary-risk">
         <span className="n">{num(t.risk)}</span>
         <span className="section-title">total risk</span>
-        {t.potentialRisk > 0 ? (
-          <button
-            type="button"
-            className="summary-tally sub-potential"
-            style={{ justifyContent: 'flex-end' }}
-            onClick={() => onPick('unverified', 'any')}
-            aria-pressed={show === 'unverified'}
-            title="Suspected but unproven. Never added to the observed total."
-          >
-            ({num(t.potentialRisk)}) potential
-          </button>
-        ) : null}
       </div>
     </div>
   );
