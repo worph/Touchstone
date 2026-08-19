@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import type { AlertsResponse, BenchesResponse, EventsResponse, PushStatus } from '@shared/activity';
+import type { AlertsResponse, BenchesResponse, BenchHealth, EventsResponse, PushStatus } from '@shared/activity';
 import AlertCard from '../components/AlertCard';
 import EventRow from '../components/EventRow';
 import { EmptyState, Loading, Notice } from '../components/Ui';
@@ -47,11 +47,26 @@ const CATEGORIES = [
 /** What the probe found, in words. The status word is never carried by colour alone. */
 const BENCH_LABEL: Record<string, string> = {
   healthy: 'ready',
-  auth: 'auth failing',
-  unreachable: 'not answering',
-  unconfigured: 'no credentials',
+  auth: 'cannot log in',
+  unreachable: 'not usable',
+  unconfigured: 'not configured',
   unknown: 'not probed yet',
 };
+
+/**
+ * The runway note. A bench can pass the login probe and still be the wrong one to start a
+ * forty-minute assay on, because the daily cleanup is about to wipe it — so the row says how
+ * long it has, and says plainly when that is not enough.
+ */
+function claimNote(bench: BenchHealth): string {
+  if (bench.processing === true) return ' · mid-cleanup, not claimable';
+  if (bench.remaining_min === undefined) return '';
+  if (bench.remaining_min === null) return ' · no countdown from the board';
+  const hours = (bench.remaining_min / 60).toFixed(1);
+  return bench.remaining_min > 60
+    ? ` · ${hours}h of runway`
+    : ` · only ${hours}h left, not claimable`;
+}
 
 export default function Activity() {
   const [alerts, setAlerts] = useState<AlertsResponse | null>(null);
@@ -150,10 +165,11 @@ export default function Activity() {
 
         {(benches?.benches.length ?? 0) === 0 ? (
           <div className="act-quiet">
-            No bench is configured, so the functional queue stays paused. Add one under
-            <code> benches:</code> in <code>data/config.yaml</code> — an assay run against a
-            bench we cannot log into produces a verdict about the bench and attributes it to
-            the app.
+            The demo pool has not been read yet, so the functional queue stays paused. The
+            roster comes from <code>bench.pool_url</code> in <code>data/config.yaml</code> —
+            instances are wiped daily, so they are discovered rather than listed. An assay run
+            against a bench we cannot log into produces a verdict about the bench and
+            attributes it to the app.
           </div>
         ) : (
           <div className="env">
@@ -168,9 +184,12 @@ export default function Activity() {
                   {b.status === 'healthy'
                     ? `answered in ${b.latency_ms ?? 0}ms`
                     : `last ok ${b.healthy_at ? stamp(b.healthy_at) : 'never'}`}
+                  {/* Runway, because healthy and claimable are different questions: an
+                      instance the daily cleanup wipes mid-run costs a whole assay. */}
+                  {claimNote(b)}
                 </span>
                 <span className="env-probe">
-                  {b.detail ? `probe POST /api/firstfactor → ${b.detail}` : 'probe POST /api/firstfactor'}
+                  {b.detail ? `login flow → ${b.detail}` : 'login flow → ok'}
                   {/* The board said Ready for the whole of the 2026-08-05 outage. Showing
                       the disagreement is the point; agreeing silently is the bug. */}
                   {b.board_says !== undefined && b.status !== 'healthy' ? (

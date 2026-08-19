@@ -79,31 +79,31 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 
 | # | Capability | n8n | Touchstone |
 | --- | --- | --- | --- |
-| A1 | Hourly tick | `Schedule (hourly)` | ⬜ |
-| A2 | Programmatic kick | webhook `POST /weekly-store-qa` | ⬜ |
-| A3 | Forced run of a named app list, bypassing freshness | form trigger, `apps` CSV | ⬜ |
+| A1 | Hourly tick | `Schedule (hourly)` | ✅ `Scheduler.start`, `tick_min` — dry-run until armed |
+| A2 | Programmatic kick | webhook `POST /weekly-store-qa` | ✅ `POST /schedule/tick` |
+| A3 | Forced run of a named app list, bypassing freshness | form trigger, `apps` CSV | ✅ `POST /schedule/tick {forced:[…]}` |
 | A4 | Audit entry points (form, webhook, sub-workflow) | 3 triggers on the audit | ⬜ |
 
 #### B. Target selection and scheduling policy — `Pick next target`, 9,374 chars
 
 | # | Capability | n8n | Touchstone |
 | --- | --- | --- | --- |
-| B1 | Subject registry | `api.github` contents on `Apps/`; `DEFAULT_APPS` (55) cold-start fallback | ⬜ |
+| B1 | Subject registry | `api.github` contents on `Apps/`; `DEFAULT_APPS` (55) cold-start fallback | ✅ `SubjectRegistry` — GitHub `Apps/`, `DEFAULT_APPS` cold start |
 | B2 | Read current state | `get_page` + a six-capture-group row regex | ✅ superseded — the index reads frontmatter |
-| B3 | Lease reclaim | `LEASE_MIN=120`, expired claim releases the row | ⬜ |
-| B4 | Eligibility / backlog | stale-or-never at `FRESH_DAYS=7`; errored retried; stuck retried after `STUCK_DAYS=7` | ⬜ |
-| B5 | Cooldown | `COOLDOWN_MIN=55` since the last finish | ⬜ |
-| B6 | Try accounting | `MAX_TRIES=3` | ⬜ — `AssayMeta` has no `try_n` |
-| B7 | Parking | `stuck after 3 tries`, released after `STUCK_DAYS` | ⬜ |
-| B8 | Single-flight | one in-progress app at a time | ⬜ |
-| B9 | Re-derive the backlog every tick — **no queue** | by construction | ⬜ — must be preserved, see §3.1 |
+| B3 | Lease reclaim | `LEASE_MIN=120`, expired claim releases the row | ✅ burns the try; a claim on a dropped subject is released too |
+| B4 | Eligibility / backlog | stale-or-never at `FRESH_DAYS=7`; errored retried; stuck retried after `STUCK_DAYS=7` | ✅ |
+| B5 | Cooldown | `COOLDOWN_MIN=55` since the last finish | ✅ anchored on n8n s own finish time during shadow mode |
+| B6 | Try accounting | `MAX_TRIES=3` | ✅ in `schedule.json`, not `AssayMeta` — see §5.1 |
+| B7 | Parking | `stuck after 3 tries`, released after `STUCK_DAYS` | ✅ |
+| B8 | Single-flight | one in-progress app at a time | ✅ one claim, and it is what blocks the next tick |
+| B9 | Re-derive the backlog every tick — **no queue** | by construction | ✅ by construction, as n8n does |
 
 #### C. Claim — `Mark in-progress`
 
 | # | Capability | n8n | Touchstone |
 | --- | --- | --- | --- |
-| C1 | Write the claim | `⏳ in progress · try N · since T` | ⬜ — `status:'running'` is typed, nothing writes it |
-| C2 | **Do not** stamp last-run at claim time | commented, deliberate | ⬜ |
+| C1 | Write the claim | `⏳ in progress · try N · since T` | ✅ `openClaim`, only when armed |
+| C2 | **Do not** stamp last-run at claim time | commented, deliberate | ✅ asserted by test |
 
 #### D. Execution — the runner
 
@@ -115,30 +115,39 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 | D4 | Agent-busy (409) detection | `Agent busy (retriable)?` | ⬜ |
 | D5 | Backoff and one retry | `Wait` → `Call Claude Code (retry)` → `Retry still failed?` | ⬜ |
 | D6 | A browser to drive the functional leg | shared box-wide `browsermcp` — **contended, see §2.4** | ⬜ — own sidecar, §5.4 |
-| D7 | Bench preflight before claiming | **absent — this is the defect of record, §2.3** | ◑ the prober, the health state and the alert are built; the *gate* that refuses to claim is in the scheduler (P3) |
+| D7 | Bench preflight before claiming | **absent — this is the defect of record, §2.3** | ✅ the gate is in the policy; `leasable()` feeds it |
+| D8 | Only claim an instance with **> 1h** of runway and not mid-cleanup | inside `Build prompt`, so it never reached this matrix | ✅ `BenchProber.leasable()`, §5.4 |
 
 #### E. Recording — `Record result`
 
 | # | Capability | n8n | Touchstone |
 | --- | --- | --- | --- |
-| E1 | Accept a result | `Record result` code node | ⬜ **no ingest path** |
+| E1 | Accept a result | `Record result` code node | ◑ `Scheduler.record` is built and tested; nothing calls it until the runner (P4) |
 | E2 | Store the verdict | one wiki row, overwritten | ✅ frontmatter on a file |
 | E3 | Store the report | `Publish to Docmost`, one page per app | ✅ markdown on disk |
 | E4 | Risk score and severity tier | parsed from the agent's headline | ✅ from the assay's own headline, per principle 3 |
-| E5 | Agent-busy restores the row, burns no try, stamps no last-run | commented, deliberate | ⬜ |
-| E6 | Park after `MAX_TRIES` | `gaveUp` branch | ⬜ |
-| E7 | Last-run stamped on completion including errors | deliberate — fair round-robin | ⬜ |
+| E5 | Agent-busy restores the row, burns no try, stamps no last-run | commented, deliberate | ✅ |
+| E6 | Park after `MAX_TRIES` | `gaveUp` branch | ✅ |
+| E7 | Last-run stamped on completion including errors | deliberate — fair round-robin | ✅ |
 | E8 | Render the roll-up for humans | rebuild 69 rows + legend + loop status into a page | ✅ the Overview page |
 
 #### F. Notification
 
 | # | Capability | n8n | Touchstone |
 | --- | --- | --- | --- |
-| F1 | Per-tick log | `Log tick` → `POST notify-hub` | ◑ the log and the routing table are built; nothing writes a tick row until the scheduler exists (P3) |
-| F2 | Error notification | `Notify Agent Logs and Error`, `Notify error to Hub` | ◑ same — alerts and bench failures route today; assay errors arrive with the runner (P4) |
-| F3 | Success notification | `Notify App Audit room` → Beacon MCP | ◑ same — the outlet works; there is no completion to announce yet |
-| F4 | Per-run audit log | `Build audit run-log` → `Post run-log to Hub` | ◑ same |
+| F1 | Per-tick log | `Log tick` → `POST notify-hub` | ✅ `TICK_*` / `CLAIM_*`, every tick |
+| F2 | Error notification | `Notify Agent Logs and Error`, `Notify error to Hub` | ◑ alerts, bench failures and push work today; assay errors arrive with the runner (P4) |
+| F3 | Success notification | `Notify App Audit room` → Beacon MCP | ◑ the log and push work; there is no completion to announce yet |
+| F4 | Per-run audit log | `Build audit run-log` → `Post run-log to Hub` | ◑ same — an assay run-log needs the runner |
 | F5 | An in-app place to read all of the above | **none — you read n8n executions** | ✅ the Activity page — §5.5, the one addition |
+
+**F1–F4 are satisfied in-app, not by re-posting.** Decided 2026-08-19: Touchstone notifies the way
+Newsdesk does — the event log and web push — rather than fanning every tick and result back out to
+the Telegram room (`-5438454538`) and `notify-hub` the way n8n does. The parity question these rows
+ask is *does the operator find out*, and the answer is the Activity page and a push, which is
+strictly more than n8n offers. `services/notify.ts` stays in the tree with `outlets: []`, so
+restoring the room is a config line rather than a rewrite. **The consequence to accept: that
+Telegram room goes quiet when n8n is switched off.**
 
 #### G. Deliberately dropped
 
@@ -392,11 +401,46 @@ a 409 must never burn a try.
 
 ### 5.4 Bench and browser leasing
 
-Benches are rows, and **the app probes the bench before claiming it** (row D7). A login preflight
-against `/api/firstfactor` costs one request and would have prevented every wasted assay since
-2026-08-05. If the pool is unhealthy: pause the functional queue, mark queued functional assays
-`blocked` with `blocked_reason='bench_unavailable'` — which by principle 5 consumes no try — and
-open **one** alert.
+**The app probes the bench before claiming it** (row D7). A login preflight costs one request and
+would have prevented every wasted assay since 2026-08-05. If the pool is unhealthy: pause the
+functional queue, mark queued functional assays `blocked` with
+`blocked_reason='bench_unavailable'` — which by principle 5 consumes no try — and open **one**
+alert.
+
+Two corrections were read off the live system on 2026-08-19, and both are now in
+`services/bench.ts`.
+
+**Benches are discovered, not configured.** An earlier draft had a hand-written `benches:` list in
+`config.yaml`, which is the wrong shape: n8n's own prompt says *"Demo hosts are wiped daily […]
+**never hardcode a host** — pick a Ready one off the board at runtime"*. That board
+(`app.nasselle.com/demo/admin/manage`) is backed by a JSON API, `/demo/api/demos`, carrying exactly
+the facts the rule needs — `isProcessing`, `lastCleanupSuccess`, `hoursUntilCleanup`. Touchstone
+reads the API for the roster and probes each instance itself. The static list survives only as an
+override for pinning a fixed box in a test. A discovery that comes back empty keeps the previous
+roster: the API being unreadable is our blindness, not their outage.
+
+**`POST /api/firstfactor` does not authenticate against these hosts, and the old probe scored it as
+healthy.** It answers `302 → /nhl-auth/oidc/login`; the demo instances sit behind OIDC, not
+Authelia's first factor. A probe that reads a redirect as a pass is a false green in the one module
+that exists to prevent false greens. **The probe is now the login flow itself** — start at
+`/nhl-auth/oidc/login?redirect=/`, follow every hop by hand with a scoped cookie jar, and count
+only a final `200` as healthy. It needs no password (the demo IdP mints a session without one) but
+it does need the jar: without cookies the flow redirects forever, which the probe reports as
+`auth · the login never completes` rather than as a timeout.
+
+**Row D8 — more than an hour of runway.** The same prompt requires an instance that is not
+mid-cleanup and has *"more than 1 hour, so the daily cleanup cannot wipe the run mid-audit (a full
+run includes the Phase G uninstall-then-reinstall)"*. That rule lived only inside the prompt, so it
+never reached §1.4. It is `BenchProber.leasable()`, and it is deliberately distinct from
+`poolUp`: a bench can be perfectly healthy and still be the wrong bench to start a forty-minute
+assay on. An unknown countdown does not qualify while the pool API is the source — "we could not
+read the clock" is not "there is time" — while a hand-configured bench, which has no clock to read,
+is exempt.
+
+**What both corrections found, the first time they ran.** `demostaging1` answered healthy with 2.6
+hours left; `demostaging2` answered **HTTP 500 from the login gate** while the board called it
+`✅ Ready · 18.6h remaining`. That is the 2026-08-05 failure mode, live, and it is why the board is
+a second opinion displayed beside our own probe rather than a source of truth.
 
 **A lease is `(bench, browser)` together.** One browser per functional worker, taken and released
 with the bench. The page-stealing race in §2.4 then cannot occur, because no two assays share a
@@ -449,7 +493,11 @@ Three layers, in the Newsdesk shape:
    interrupting someone over: an alert opening or resolving, and an assay that failed after its
    retry. Best-effort — a push that does not send is still a row in the log.
 3. **Beacon MCP outlets** — Telegram, Discord, the Talk room — reached by service name on `pcs`,
-   so Touchstone holds no third-party credentials. This is rows F1–F4.
+   so Touchstone holds no third-party credentials. **Shipped unconfigured, and that is the
+   decision** (2026-08-19): layers 1 and 2 are how the operator finds out, exactly as at Newsdesk,
+   where MCP outlets carry *published work* and never operator notification. Rows F1–F4 are
+   satisfied by the log and the push; this layer exists so that restoring the Telegram room is a
+   config line.
 
 Layer 1 must work when layers 2 and 3 are down. That is principle 7, and it is why the log is a
 file rather than a notification that was already sent.
@@ -617,19 +665,36 @@ So result recovery during phase 1 is one of three, in order of preference:
 If a Docmost-dependent window is unacceptable, the honest alternative is **merging phases 1 and 2**
 and skipping the webhook seam. The seam exists to de-risk, and it de-risks less than was thought.
 
-### Worth doing this week, independent of all of it
+### The bench preflight — done in n8n on 2026-08-19
 
-Add a login preflight to `Pick next target`: probe `/api/firstfactor` before claiming a target and
-skip the tick on 401. Roughly twenty lines. **As of 2026-08-07 this has not been done** — there is
-no `firstfactor` reference anywhere in the workflow — and §2.3 shows the cost of every day it
-waits. Everything above is a rewrite; this is not.
+This was carried for weeks as "twenty lines, worth doing this week". It is now done, and it was
+never twenty lines, because the endpoint it was specified against does not authenticate anything:
+`POST /api/firstfactor` answers `302 → /nhl-auth/oidc/login`, so the specified probe would have
+reported all-clear through the entire outage. §5.4 has the correction.
 
-**Recommended, pending the operator's call**, because it is the one place the no-n8n-edits rule
-should be waived. The third reason is the one that is easy to miss: every wasted assay writes a
-false `errored` or `non-compliant` row into the roll-up, and that roll-up is the baseline phase 1's
-shadow-mode diff validates against. The bleeding corrupts the ruler as well as the patient. And
-because the preflight moves n8n *toward* the D7 gate Touchstone will implement anyway, it makes the
-diff more comparable, not less.
+**What the operator approved and what shipped**, the one sanctioned waiver of the no-n8n-edits
+rule:
+
+| Node | Workflow | Change |
+| --- | --- | --- |
+| `Pick next target` | QA Loop | reads `/demo/api/demos`, runs the real OIDC login flow against each candidate with more than an hour of runway, and emits `demo_host`. No instance passes → `action='idle'`, so the tick claims nothing and burns no try |
+| `Mark in-progress` | QA Loop | forwards `demo_host` |
+| `Build prompt` | App Audit | uses the supplied host verbatim when given one; the unchanged path now also tells the agent to confirm the login before using an instance |
+
+It fails **open** on its own faults — pool API unreadable, no HTTP helper — because a broken
+preflight must leave the loop as it was rather than halt it, and it says so in the tick log. It
+fails **closed** on a definite answer: the API listed instances and none let us in.
+
+**What it is worth.** The board reports `✅ Ready` for an instance whose login gate returns 500,
+and the prompt's "pick the MOST Time Remaining" rule prefers exactly that instance. The agent has
+been recovering by falling back on its own — the 12:00 run on 2026-08-19 recorded *"Host
+demostaging1 (demostaging2 auth gateway 500)"* — so this was costing a wasted first attempt per
+run rather than a failed audit. The preflight removes the improvisation, makes the fallback an
+instruction rather than a hope, and adds the gate for the case where nothing is usable, which is
+the 2026-08-05 shape.
+
+It also moves n8n *toward* the D7/D8 gate Touchstone implements, so the shadow-mode diff in phase 1
+gets more comparable, not less.
 
 ---
 

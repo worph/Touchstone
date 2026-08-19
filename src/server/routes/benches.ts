@@ -21,6 +21,7 @@ const routes: FastifyPluginAsync<BenchRoutesOptions> = async (app, options) => {
   const answer = (): BenchesResponse => ({
     benches: options.prober?.list() ?? [],
     pool_up: options.prober?.poolUp ?? false,
+    leasable: options.prober?.leasable().length ?? 0,
     board_url: options.boardUrl || null,
   });
 

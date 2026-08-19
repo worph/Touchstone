@@ -36,12 +36,17 @@ export interface Standard {
   [key: string]: unknown;
 }
 
-/** One demo instance a functional assay can install into. Credentials live only here. */
+/**
+ * One demo instance a functional assay can install into.
+ *
+ * Normally empty: the pool is *discovered* from `bench.pool_url`, because the instances are
+ * wiped daily and n8n's own prompt forbids hardcoding a host. This list is an override for
+ * testing against a fixed box. No credentials — the demo gate is OIDC and issues a session
+ * without asking for a password, which `services/bench.ts` explains.
+ */
 export interface BenchEntry {
   name: string;
   url: string;
-  username?: string;
-  password?: string;
   enabled?: boolean;
 }
 
@@ -90,8 +95,12 @@ export interface TouchstoneConfig {
   };
   benches: BenchEntry[];
   bench: {
-    /** The demo management board — a second opinion, never a gate. Empty disables it. */
+    /** The pool API the roster is discovered from. Empty disables discovery. */
+    pool_url: string;
+    /** The human-readable board, linked from the UI. Never read as a gate. */
     board_url: string;
+    /** Runway a bench needs before a functional assay may claim it — n8n's `> 1h` rule. */
+    min_remaining_min: number;
     probe_interval_min: number;
     probe_timeout_ms: number;
   };
@@ -134,7 +143,9 @@ function defaults(dataDir: string): TouchstoneConfig {
     runner: { enabled: false, depth: 'full' },
     benches: [],
     bench: {
-      board_url: process.env.TOUCHSTONE_BOARD_URL ?? '',
+      pool_url: process.env.TOUCHSTONE_POOL_URL ?? 'https://app.nasselle.com/demo/api/demos',
+      board_url: process.env.TOUCHSTONE_BOARD_URL ?? 'https://app.nasselle.com/demo/admin/manage',
+      min_remaining_min: 60,
       probe_interval_min: 5,
       probe_timeout_ms: 8000,
     },
@@ -257,27 +268,28 @@ runner:
   enabled: false
   depth: full        # static | full
 
-# ── benches ─────────────────────────────────────────────────────────────────────────────
-# The demo instances a functional assay installs into. WITHOUT CREDENTIALS THE PROBER
-# REPORTS \`unconfigured\` AND THE FUNCTIONAL QUEUE STAYS PAUSED — which is the correct
-# behaviour, not a bug: a functional assay run against a bench we cannot log into produces
-# a verdict about the bench and attributes it to the app.
+# ── benches ──────────────────────────────────────────────────────────────────
+# The demo instances a functional assay installs into. Leave this EMPTY: the pool is
+# discovered from \`bench.pool_url\` below, because the instances are wiped daily and n8n's
+# own prompt forbids hardcoding a host — "one mid-cleanup still serves a login page but
+# silently fails to install". Fill it in only to pin a fixed box for testing.
 benches: []
 # benches:
 #   - name: demostaging1
 #     url: https://demostaging1.inojob.com
-#     username: ""
-#     password: ""
-#   - name: demostaging2
-#     url: https://demostaging2.inojob.com
-#     username: ""
-#     password: ""
 
 bench:
-  # The demo management board, read as a SECOND OPINION only. It reported "Ready" for the
-  # whole of the 2026-08-05 outage; Touchstone shows the disagreement rather than trusting
-  # either source. Empty disables the read.
-  board_url: ""
+  # The pool API behind the management board — the machine-readable half of the source the
+  # n8n agent is told to read. Empty disables discovery, leaving only \`benches\` above.
+  pool_url: https://app.nasselle.com/demo/api/demos
+  # The same board a person opens. Linked from the UI, and its claim is shown beside our
+  # own probe: it reported "Ready" for the whole of the 2026-08-05 outage, so Touchstone
+  # displays the disagreement rather than trusting either source.
+  board_url: https://app.nasselle.com/demo/admin/manage
+  # A functional assay may not claim a bench with less runway than this. n8n requires more
+  # than an hour so the daily cleanup cannot wipe a run mid-audit — a full run includes an
+  # uninstall-then-reinstall. Shorter than the assay is worse than no bench at all.
+  min_remaining_min: 60
   probe_interval_min: 5
   probe_timeout_ms: 8000
 

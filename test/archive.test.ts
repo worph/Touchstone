@@ -39,7 +39,12 @@ describe('the imported archive', () => {
     const index = await buildIndex(DATA_REPORTS, { cacheFile: null });
     const rows = await rollupRows();
     expect(index.subjects()).toHaveLength(rows.length);
-    expect(index.size).toBe(rows.length * 2);
+    // Latest per (subject, leg), not the file count. Reports accumulate — that is what
+    // writing timestamped files does, and ARCHITECTURE §4 says so — so the archive grows by
+    // 138 files every time n8n re-audits the store. Asserting the total was asserting that
+    // the importer had only ever run once.
+    expect(index.latestPerSubjectLeg({ status: 'any' })).toHaveLength(rows.length * 2);
+    expect(index.size).toBeGreaterThanOrEqual(rows.length * 2);
     expect(index.broken).toEqual([]);
   });
 
@@ -52,7 +57,9 @@ describe('the imported archive', () => {
         .map((s) => index.latestAny(s, 'functional')!)
         .filter((r) => r.meta.status === 'blocked');
 
-      expect(blocked.length).toBeGreaterThan(45);
+      // No absolute floor: how many legs are bench-blocked is a fact about the demo pool on
+      // the day, and it moves. What must hold is the shape of every one of them.
+      expect(blocked.length).toBeGreaterThan(0);
       for (const r of blocked) {
         // The distinction the product exists to make: no verdict, and a reason that is
         // about the bench rather than about the subject.
@@ -99,7 +106,17 @@ describe('the imported archive', () => {
     expect(understated).toEqual([]);
   });
 
-  it.runIf(HAS_ARCHIVE)('reproduces the roll-up score exactly where it has one', async () => {
+  /**
+   * Where the two disagree, **the report headline wins** — principle 3, and the whole point
+   * of P1. This test therefore asserts the direction of the disagreement, not its absence.
+   *
+   * They do disagree, live: on 2026-08-19 the roll-up listed Spliit at risk 223 with a last
+   * run of 08-19, while the report page that row links to still declared `risk score 112`
+   * from 08-12. n8n updated the row and left the page behind. An importer that "fixed" that
+   * by trusting the row would be reintroducing the exact bug P1 removed, so the archive
+   * carries 112 and this test records why.
+   */
+  it.runIf(HAS_ARCHIVE)('takes the headline over the roll-up row where they disagree', async () => {
     const index = await buildIndex(DATA_REPORTS, { cacheFile: null });
     const rows = await rollupRows();
 
@@ -115,6 +132,17 @@ describe('the imported archive', () => {
       }
     }
 
-    expect(mismatched).toEqual([]);
+    // Every mismatch must be a case where we took the page's own headline. That is the
+    // invariant — not agreement with the row, which is n8n's to keep in step.
+    const cfg = await loadConfig();
+    for (const line of mismatched) {
+      const subject = line.split(':')[0]!;
+      const row = rows.find((r) => r.subject === subject)!;
+      const got = index.latest(subject, 'static')!.meta;
+      const page = await fs.readFile(path.join(cfg.docmost.cacheDir, `${row.slug}.md`), 'utf8');
+      const headline = /risk score\s+(\d+)/i.exec(page)?.[1];
+      expect(headline, `${line} — no headline in the page`).toBeDefined();
+      expect(Number(headline), line).toBe(got.risk_score);
+    }
   });
 });
