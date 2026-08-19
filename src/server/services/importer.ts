@@ -52,6 +52,20 @@ export interface ImportArgs {
   refresh: boolean;
   offline: boolean;
   dryRun: boolean;
+  /**
+   * Re-fetch the roll-up even when the per-subject pages come from cache.
+   *
+   * The polling importer must never read a cached roll-up. The page *is* the live state —
+   * the loop rewrites it every tick — so caching it turns "stay current with n8n with zero
+   * changes to n8n" into a snapshot that never moves. It did: the feed served a page from
+   * 2026-08-06 for thirteen days, and the scheduler's first dry run inherited every stale
+   * date in it.
+   *
+   * The subject pages stay cached, and are re-fetched only when the row says the subject
+   * was audited since — one page per real audit rather than fifty-seven every quarter hour
+   * against someone else's wiki.
+   */
+  refreshRollup?: boolean;
 }
 
 // ── page fetching ──────────────────────────────────────────────────────────────────────
@@ -81,6 +95,25 @@ function stripDocmostBanner(md: string): string {
   const cut = md.indexOf('\n---\n');
   if (cut >= 0 && cut < 400) return md.slice(cut + 5).replace(/^\n+/, '');
   return md;
+}
+
+/**
+ * The `rollup_last_run` we already have on disk for a subject, or null.
+ *
+ * Cheap enough to do per subject: it reads the first few hundred bytes of one file. Used to
+ * decide whether that subject's report page needs re-fetching at all.
+ */
+async function storedLastRun(reportsRoot: string, subject: string): Promise<string | null> {
+  try {
+    const dir = path.join(reportsRoot, subject);
+    const files = (await fs.readdir(dir)).filter((f) => f.endsWith('.md')).sort();
+    const newest = files[files.length - 1];
+    if (!newest) return null;
+    const head = (await fs.readFile(path.join(dir, newest), 'utf8')).slice(0, 1500);
+    return /^rollup_last_run:\s*'?([^'\n]+)/m.exec(head)?.[1]?.trim() ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // ── per-subject assembly ───────────────────────────────────────────────────────────────
@@ -319,10 +352,37 @@ function composeBody(
   return `\n${parts.join('\n\n')}\n`;
 }
 
+/**
+ * `- **Last audit finished:** 2026-08-19T12:28:28Z` from the roll-up's Loop status block.
+ * `—` is n8n's own placeholder for "never", and is not a timestamp.
+ */
+export function parseLastAuditFinished(markdown: string): string | undefined {
+  const m = markdown.match(/Last audit finished:\*\*\s*(\S+)/);
+  const raw = m?.[1];
+  if (!raw || raw === '—' || raw === '-') return undefined;
+  return Number.isNaN(Date.parse(raw)) ? undefined : raw;
+}
+
 // ── the run ────────────────────────────────────────────────────────────────────────────
 
 /** What one import did. The CLI prints it; the timer logs it and moves on. */
 export interface ImportSummary {
+  /**
+   * n8n's own `- **Last audit finished:**` line, verbatim.
+   *
+   * The scheduler's cooldown anchor during shadow mode, and the one input it cannot derive
+   * for itself: the roll-up's Last run column carries a date with no clock, so every
+   * imported assay reads as finished at midnight and a 55-minute cooldown computed from the
+   * archive has always already expired. Reading it here costs nothing — the page is already
+   * fetched — and it is what makes a cooldown tick comparable between the two systems.
+   */
+  lastAuditFinished?: string;
+  /**
+   * Each row's Result and Last run cells, for the scheduler to read n8n's try counts and
+   * parks out of — `scheduler/adopt.ts` explains why a shadow diff is meaningless without
+   * them. Transitional, and it goes with the roll-up at M5.
+   */
+  rollupSchedule: { subject: string; raw: string; lastRun: string | null }[];
   subjects: number;
   fetched: number;
   rollupOnly: string[];
@@ -358,6 +418,9 @@ export async function runImport(opts: ImportOptions = {}): Promise<ImportSummary
     refresh: opts.refresh ?? false,
     offline: opts.offline ?? false,
     dryRun: opts.dryRun ?? false,
+    // Default on. A cached roll-up is never what a caller wants unless they asked to be
+    // offline — see the field's comment for the thirteen days this cost.
+    refreshRollup: opts.refreshRollup ?? !(opts.offline ?? false),
   };
   const say = opts.onProgress ?? (() => {});
 
@@ -371,9 +434,13 @@ export async function runImport(opts: ImportOptions = {}): Promise<ImportSummary
   say(`standards: ${standards.map((s) => `${s.id} v${s.version}`).join(', ')}`);
 
   const rollup = stripDocmostBanner(
-    await getPage(cfg.docmost.rollupSlug, cfg.docmost.cacheDir, args),
+    await getPage(cfg.docmost.rollupSlug, cfg.docmost.cacheDir, {
+      ...args,
+      refresh: args.refresh || args.refreshRollup === true,
+    }),
   );
   const rows = parseRollup(rollup);
+  const lastAuditFinished = parseLastAuditFinished(rollup);
   say(`roll-up: ${rows.length} subjects`);
   // Zero rows means the page moved or the parser broke, never that the store emptied.
   // Writing that through would blank the archive, so it is an error, loudly.
@@ -386,7 +453,12 @@ export async function runImport(opts: ImportOptions = {}): Promise<ImportSummary
     let page: string | null = null;
     if (row.slug) {
       try {
-        const raw = stripDocmostBanner(await getPage(row.slug, cfg.docmost.cacheDir, args));
+        // Re-fetch this subject's report only when the roll-up says it has been audited
+        // since the copy we hold. Everything else comes off disk.
+        const stale = row.lastRun ? (await storedLastRun(cfg.reportsRoot, row.subject)) !== row.lastRun : false;
+        const raw = stripDocmostBanner(
+          await getPage(row.slug, cfg.docmost.cacheDir, { ...args, refresh: args.refresh || stale }),
+        );
         // Two rows link to the parent "App Audits" index rather than to a report. Detect
         // that by shape, not by slug, so a future mis-link is caught the same way.
         const shape = shapeReport(raw);
@@ -419,6 +491,8 @@ export async function runImport(opts: ImportOptions = {}): Promise<ImportSummary
   }
 
   return {
+    lastAuditFinished,
+    rollupSchedule: rows.map((r) => ({ subject: r.subject, raw: r.raw, lastRun: r.lastRun })),
     subjects: imports.length,
     fetched: imports.length - noReport.length,
     rollupOnly: noReport,

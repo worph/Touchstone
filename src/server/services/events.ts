@@ -73,6 +73,18 @@ export const EVENT_CODES = {
   PUSH_REGISTRATION_DEAD: { category: 'notify', label: 'registration retired' },
 
   // ── system ────────────────────────────────────────────────────────────────
+  // ── the scheduler (P3) ────────────────────────────────────────────────────
+  TICK_SELECTED: { category: 'scheduler', label: 'target picked' },
+  TICK_IDLE: { category: 'scheduler', label: 'tick idled' },
+  TICK_BENCH_GATED: { category: 'scheduler', label: 'tick refused for want of a bench' },
+  TICK_FAILED: { category: 'scheduler', label: 'tick could not run' },
+  CLAIM_OPENED: { category: 'scheduler', label: 'subject claimed' },
+  CLAIM_RECLAIMED: { category: 'scheduler', label: 'expired claim released' },
+  CLAIM_PARKED: { category: 'scheduler', label: 'subject parked' },
+  CLAIM_UNPARKED: { category: 'scheduler', label: 'subject released from parking' },
+  REGISTRY_REFRESHED: { category: 'scheduler', label: 'registry changed' },
+  REGISTRY_FAILED: { category: 'scheduler', label: 'registry unreadable' },
+
   SERVER_STARTED: { category: 'system', label: 'Touchstone started' },
   CONFIG_SEEDED: { category: 'system', label: 'configuration written' },
   LOG_TRIMMED: { category: 'system', label: 'log trimmed' },
@@ -99,6 +111,21 @@ interface EventDetails {
   PUSH_FAILED: { endpoint: string; status?: number; error: string };
   PUSH_REGISTRATION_DEAD: { endpoint: string; status?: number };
   LOG_TRIMMED: { kept: number };
+  /**
+   * `dry_run` is on the tick rather than in the message because it is the difference
+   * between a decision and an action, and someone reading the log after the scheduler is
+   * armed needs to be able to filter the shadow period out.
+   */
+  TICK_SELECTED: { subject: string; reason: string; backlog: number; try_n: number; dry_run: boolean };
+  TICK_IDLE: { reason: string; backlog: number };
+  TICK_BENCH_GATED: { reason: string; backlog: number };
+  TICK_FAILED: { error: string };
+  CLAIM_OPENED: { subject: string; try_n: number; since: string };
+  CLAIM_RECLAIMED: { subject: string; try_n: number; outcome: 'retry' | 'parked' };
+  CLAIM_PARKED: { subject: string; try_n: number; until_days: number };
+  CLAIM_UNPARKED: { subject: string };
+  REGISTRY_REFRESHED: { count: number };
+  REGISTRY_FAILED: { error: string; live: boolean };
 }
 
 type DetailPart<C extends EventCode> = C extends keyof EventDetails

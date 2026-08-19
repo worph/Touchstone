@@ -33,6 +33,12 @@ services:
       # 8080 is the production default but is taken by ttyd in this environment;
       # vite.config.ts proxies /api to 8081 to match.
       TOUCHSTONE_PORT: "8081"
+      # The Beacon aggregator runs in the claude-code container and publishes 3000 on the
+      # host; `localhost` inside this container is this container. Without this the
+      # in-process importer cannot reach Docmost at all — and it failed silently for as long
+      # as a cached roll-up was there to read instead, which is how a thirteen-day-old
+      # snapshot passed for a live feed.
+      TOUCHSTONE_BEACON_URL: "http://host.docker.internal:3000/mcp/"
       # Filesystem events do not propagate reliably across a Windows bind mount,
       # so the watchers poll instead of relying on inotify.
       CHOKIDAR_USEPOLLING: "true"

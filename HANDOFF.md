@@ -15,7 +15,7 @@ This is session state, not design — the design lives in [README.md](README.md)
 ```
 branch main, P1 committed as 66e13cf; P2 uncommitted in the working tree
 yarn typecheck   clean
-yarn test        111 passed (111)      — 51 at the end of P1
+yarn test        120 passed (120)      — 51 at the end of P1, 111 at the end of P2
 yarn build       green, dist/web 266 KB + sw.js
 ```
 
@@ -248,6 +248,69 @@ artefact.
 
 ---
 
+## 4c. What P3 delivered — the driver, dry-run
+
+`src/server/scheduler/` plus `store/registry.ts`. **23 parity rows closed**; the matrix now
+reads ✅ for all of A1–A3, B1–B9, C1–C2, D7 and E5–E7, with E1 partial until the runner exists.
+
+| File | What |
+| --- | --- |
+| `scheduler/policy.ts` | `decide()` — pure, no clock and no I/O, so a tick can be replayed and diffed |
+| `scheduler/record.ts` | `recordResult` / `openClaim` — rows E1, E5–E7, C1, C2 |
+| `scheduler/adopt.ts` | reads n8n's try counts and parks out of its roll-up — see below |
+| `scheduler/index.ts` | the timer, `schedule.json`, the event log wiring |
+| `store/registry.ts` | GitHub `Apps/`, `DEFAULT_APPS` cold start, archived subjects appended |
+| `routes/schedule.ts` | `GET /schedule`, `POST /schedule/tick` |
+
+**Where it stands against the live loop.** Both systems, same minute:
+
+```
+touchstone  ⏳ auditing Beacon — last run 2026-08-14, 5d ago     backlog 31
+n8n         ⏸️ idle — no usable demo bench — demostaging2 …      backlog 31
+```
+
+Identical backlog and an identical cooldown anchor. The state lines differ because n8n's
+14:00 tick was gated by its new preflight while ours had already ticked — a real difference
+in what each was asked at that moment, not a policy divergence.
+
+### Four things found by running it, none by reading it
+
+1. **The importer had never fetched anything.** `refresh` defaults to false, so the "stay
+   current with n8n" feed served a roll-up cached on 2026-08-06 for thirteen days. It now
+   always re-fetches the roll-up, and re-fetches a subject's report page only when the row
+   says it has been audited since. **`TOUCHSTONE_BEACON_URL` was also wrong in the dev
+   compose** — `localhost:3000` inside `touchstone-dev` is that container, not the Beacon
+   aggregator, so the first real fetch failed outright. It is `host.docker.internal:3000` now.
+2. **Shadow mode was missing half its input.** We never run an audit, so we never record a
+   result, so our try counts and parks stayed empty while n8n's are what constrain its
+   choice — 69 backlog against n8n's 31. `adopt.ts` reads them out of the roll-up's Result
+   column. Adopted rows carry `from_rollup: true` so a later import can correct an earlier
+   one, and anything Touchstone recorded itself is never overwritten.
+3. **Freshness has to come from the row, not the page.** The roll-up listed Spliit as audited
+   on the 19th while the page it links to still declared the 12th. While n8n owns the loop its
+   row is the scheduling truth, so `lastDoneAt` prefers `rollup_last_run`. That was the last
+   app between 32 and 31. It is not principle 3 in reverse — verdict, tier and risk still come
+   from the headline; only *when it last ran* comes from the row, and only until M5.
+4. **The boot order matters.** The first tick has to come after the first import or it decides
+   on an archive with no scheduling state at all.
+
+### Two deliberate divergences from the plan
+
+- **`try_n` is not in `AssayMeta`.** The matrix note on B6 assumed it would be. A try counter
+  is a property of the scheduler's opinion about a subject, not of any assay, so it lives in
+  `state/schedule.json` beside the claim and the park.
+- **No per-leg policy.** ARCHITECTURE §5.1 sketches static and functional on different
+  freshness windows. n8n picks a *subject* and runs `depth: full`; doing anything else would
+  make the shadow diff incomparable. It waits for M6.
+
+### Still ahead of arming
+
+The diff has been run for one tick, not the ~150 the plan calls for. `data/state/schedule.json`
+was deleted once during P3 (it held adopted rows only, and pre-dated the `from_rollup` marker);
+deleting it is always safe and it re-adopts on the next import.
+
+---
+
 ## 5. Open items
 
 - **P2 is not committed.** P1 is (`66e13cf`).
@@ -261,7 +324,7 @@ artefact.
   is exited entirely; see the decisions below.
 - **Who runs the `yunderalabs` rollout.** It is not one of the pre-authorised test PCS boxes
   (`holyhorse`, `watch`), so that is the user's to run.
-- **The n8n login preflight** still is not there, and is independent of all of the above. It is now
+- ~~**The n8n login preflight**~~ — **shipped 2026-08-19**, see §5c. It was
   *recommended* rather than merely noted — ARCHITECTURE §9 carries the third reason, which is that
   the false rows it prevents poison the very roll-up M4's shadow diff measures against. It waives
   the no-n8n-edits rule, so it stays the user's call.
@@ -282,6 +345,34 @@ Three scope decisions, now encoded in ARCHITECTURE §1.4 (four sanctioned except
    auth-gate check.
 3. **Docmost is exited entirely.** Reports are local markdown rendered in the app; nothing is
    published, and `services/importer.ts` is deleted at M5 rather than kept behind a flag.
+4. **Notification is internal only.** No Telegram/`notify-hub` fan-out: rows F1–F4 ask whether the
+   operator finds out, and the log plus push answer it — which is how Newsdesk works, where MCP
+   outlets carry published work and never operator notification. `services/notify.ts` stays with
+   `outlets: []`. **The Telegram App Audit room (`-5438454538`) goes quiet when n8n is switched
+   off**; restoring it is a config line.
+
+### What changed in the code the same day
+
+`services/bench.ts` was rewritten against the live system, and two things it assumed were wrong:
+
+- **The pool is discovered, not configured.** `/demo/api/demos` is the JSON behind the management
+  board and carries the roster, the cleanup state and the countdown. `benches:` in `config.yaml`
+  is now an override for pinning a fixed box, and defaults to empty.
+- **`POST /api/firstfactor` never authenticated.** It 302s to the OIDC gate, and the old probe
+  scored a 302 as healthy — a false green in the module that exists to prevent false greens. The
+  probe is the login flow now, cookie jar and all; without the jar it redirects forever (50 hops
+  under curl, 6 with).
+- **Row D8 is new**: not mid-cleanup, more than an hour of runway. It was inside n8n's prompt, so
+  it never reached the parity matrix. `BenchProber.leasable()` owns it, separately from `poolUp`.
+
+Run against the live pool the first time, this reproduced the defect of record immediately:
+
+```
+demostaging1   probe=healthy                                  board="✅ Ready · 2.6h remaining"
+demostaging2   probe=unreachable  HTTP 500 from the login gate  board="✅ Ready · 18.6h remaining"
+```
+
+`yarn typecheck` clean, `yarn test` 120 passed (was 111), nothing committed.
 
 **And one finding that changes M4**, read off `QjzNu9yWZ5005J7m` the same day: the audit's
 `Webhook (programmatic)` declares no `responseMode`, so n8n answers `onReceived` and hands an
@@ -289,6 +380,45 @@ external caller nothing; the synchronous path is the `executeWorkflowTrigger` on
 use; and `Return to caller` omits `report_markdown` anyway. M4 therefore recovers results through
 the Docmost importer (recommended), or n8n's executions API, or by merging M4 into M5 and skipping
 the seam. ARCHITECTURE §9 has all three.
+
+---
+
+## 5c. The n8n preflight, shipped 2026-08-19
+
+The one sanctioned waiver of the no-n8n-edits rule, approved by the user. **Three nodes changed
+across two live workflows**, each verified byte-identical against a locally syntax-checked and
+behaviour-tested copy after applying:
+
+| Node | Workflow | Change |
+| --- | --- | --- |
+| `Pick next target` | `uEmep2z22i5qv1OF` | reads `/demo/api/demos`, probes the real OIDC login flow on each candidate with `hoursUntilCleanup > 1` and `isProcessing !== true`, emits `demo_host`; none usable → `action='idle'` (no claim, no try) |
+| `Mark in-progress` | `uEmep2z22i5qv1OF` | forwards `demo_host` in its return object |
+| `Build prompt` | `QjzNu9yWZ5005J7m` | uses the supplied host verbatim; the fallback path now also tells the agent to confirm the login before using an instance |
+
+**Backups** of both workflows as they were before the edit:
+`/d/workspace/tmp-claude/n8n-backup-2026-08-19/`. The n8n MCP also exposes
+`n8n_workflow_versions` with `rollback`.
+
+**Tested before applying**, against the live pool, with a shim standing in for
+`this.helpers.httpRequest`:
+
+```
+normal      -> host = https://demostaging1.inojob.com
+               note = demostaging2 http-500 (17.8h), demostaging1 ok (1.8h)
+no runway   -> idle, 'no usable demo bench — none of 2 with >999h left...'
+all failing -> idle, 'no usable demo bench — demostaging2.inojob.com http-500 (17.8h)'
+API down    -> audit proceeds, 'demo pool API unreadable — not gated'   (fails open)
+```
+
+**A correction to the case made for it.** I claimed every full audit was being steered into the
+broken instance and failing. n8n's own 12:00 run that day says otherwise — its summary reads
+*"Host demostaging1 (demostaging2 auth gateway 500)"*, so the agent was hitting the 500 and
+falling back by itself, without being told to. The cost was a wasted first attempt per run, not a
+failed audit. The change is still right — it removes an improvisation, makes the fallback an
+instruction, and gates the all-dead case — but it was not stopping a fire.
+
+The `demostaging2` 500 is independently corroborated by that summary, which is worth noting: it is
+the agent, not Touchstone, reporting the same broken gate.
 
 ---
 
@@ -302,8 +432,10 @@ Cited so they can be re-checked when they drift. Read 2026-08-07.
 | Beacon / agent endpoint | `http://beacon-backend:9300/mcp` — shared with PR Review |
 | Scheduling constants | `FRESH_DAYS=7`, `STUCK_DAYS=7`, `LEASE_MIN=120`, `COOLDOWN_MIN=55`, `MAX_TRIES=3` |
 | Subject registry | `api.github.com/repos/Yundera/AppStore/contents/Apps`, dirs only; 55-entry `DEFAULT_APPS` as cold-start fallback |
-| Demo board | `https://app.nasselle.com/demo/admin/manage` — reports `✅ Ready` while credentials are rejected |
-| Bench probe | `POST /api/firstfactor`; 401 → `bench.auth`, timeout/5xx → `bench.unreachable` |
+| Demo board | `https://app.nasselle.com/demo/admin/manage` — reports `✅ Ready` while the login is broken |
+| Demo pool API | `https://app.nasselle.com/demo/api/demos` — JSON: `id`, `url`, `isProcessing`, `lastCleanupSuccess`, `hoursUntilCleanup`. Two instances: `demostaging1`, `demostaging2` |
+| Bench probe | **corrected 2026-08-19.** `POST /api/firstfactor` 302s to `/nhl-auth/oidc/login` and never authenticates — the old probe read that 302 as healthy. The probe is now the OIDC login flow from `/nhl-auth/oidc/login?redirect=/`, followed by hand with a cookie jar; only a final 200 is healthy |
+| Bench claim rule | not mid-cleanup and **> 1h** `hoursUntilCleanup` — from n8n's prompt, now row D8 |
 | Browser sidecar | `ghcr.io/worph/browser-mcp:1.1.5` floor — tab registry, `hover`, per-tab screencast |
 
 **The agent returns JSON, not markdown.** `Build prompt` demands a strictly-valid object and

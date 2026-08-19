@@ -88,11 +88,27 @@ export interface BenchHealth {
    * deliberately distinct from the board saying nothing — the UI shows the difference.
    */
   board_says?: string | null;
+  /**
+   * Minutes until the daily cleanup wipes this instance, from the pool API.
+   *
+   * Three states, all distinct: a number is a countdown, `null` is "the pool API listed it
+   * but gave no countdown", and `undefined` is "this bench was hand-configured and has no
+   * board to ask". Only the first can satisfy the `> 1h` rule the functional claim gates on.
+   */
+  remaining_min?: number | null;
+  /** Mid-cleanup. Serves a login page and then silently fails to install — never claimable. */
+  processing?: boolean;
 }
 
 export interface BenchesResponse {
   benches: BenchHealth[];
   pool_up: boolean;
+  /**
+   * How many benches a functional assay may actually claim — healthy, not mid-cleanup, and
+   * with more than an hour of runway. Distinct from `pool_up` on purpose: a pool that is
+   * answering but all expiring is up and unusable at the same time.
+   */
+  leasable: number;
   board_url: string | null;
 }
 

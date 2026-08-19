@@ -26,10 +26,13 @@ import type { AlertStore } from '../services/alerts.js';
 import type { BenchProber } from '../services/bench.js';
 import type { EventLog } from '../services/events.js';
 import type { PushService } from '../services/push.js';
+import type { Scheduler } from '../scheduler/index.js';
+import type { SubjectRegistry } from '../store/registry.js';
 import alertRoutes from './alerts.js';
 import benchRoutes from './benches.js';
 import eventRoutes from './events.js';
 import pushRoutes from './push.js';
+import scheduleRoutes from './schedule.js';
 
 export interface RoutesOptions {
   /** The index built at boot. Omitted in dev and in the route tests. */
@@ -38,6 +41,8 @@ export interface RoutesOptions {
   alerts?: AlertStore;
   prober?: BenchProber;
   push?: PushService;
+  scheduler?: Scheduler;
+  registry?: SubjectRegistry;
   boardUrl?: string;
 }
 
@@ -57,6 +62,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
   await app.register(alertRoutes, { alerts: options.alerts });
   await app.register(benchRoutes, { prober: options.prober, boardUrl: options.boardUrl });
   await app.register(pushRoutes, { push: options.push });
+  await app.register(scheduleRoutes, { scheduler: options.scheduler, registry: options.registry });
 
   /** Subjects are addressed by name; be forgiving about case, exact match wins. */
   function resolveSubject(name: string) {

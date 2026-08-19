@@ -56,9 +56,9 @@ marked ⬜ or ◑, grouped by the milestone that closes it:
 | **Scheduling** | B1–B9 | registry from GitHub, eligibility, cooldown, lease + reclaim, tries, parking, single-flight, no-queue |
 | **Claim** | C1–C2 | write `running`; never stamp last-run at claim |
 | **Runner** | D1–D5 | prompt, agent call, response extraction, busy detection, backoff + one retry |
-| **Bench & browser** | D6–D7 | preflight before claiming; own browser sidecar; `(bench, browser)` leasing |
+| **Bench & browser** | D6–D8 | preflight before claiming; **> 1h of runway**; own browser sidecar; `(bench, browser)` leasing |
 | **Recording** | E1, E4–E7 | result path, headline-authoritative verdict, busy restores the row, parking, completion stamp |
-| **Notification** | F1–F5 | tick/error/success/run-log outlets, plus the in-app log and push |
+| **Notification** | F1–F5 | the in-app log, alerts and push. **Not** the Telegram/`notify-hub` fan-out: F1–F4 ask whether the operator finds out, and the Activity page answers it — ARCHITECTURE §1.4 F |
 
 Plus the four sanctioned exceptions in
 [ARCHITECTURE.md §1.4](ARCHITECTURE.md#14-capability-inventory-and-parity-matrix). Three of them
@@ -203,7 +203,10 @@ subject for `STUCK_DAYS`.
 `risk_score` equal the report headline's, asserted against a fixture whose headline and prose
 disagree. A 409 backs off, retries once, then blocks without burning a try. Each functional assay
 gets its own browser container and the profile is empty at the start of every run — asserted, not
-assumed, because a stale session is a false pass on the auth-gate check.
+assumed, because a stale session is a false pass on the auth-gate check. **A bench is claimed only
+when the login flow completed *and* it has more than an hour of runway and is not mid-cleanup**
+(D7/D8): healthy is not the same question as claimable, and an instance the daily cleanup wipes
+halfway through Phase G costs a whole assay.
 
 **C — notification & UI.** Every scheduler and runner transition writes an event whose `message` is
 one sentence with no ids and no interpolated error text. A bench outage produces exactly one open
@@ -217,7 +220,7 @@ unconfigured — principle 7. Overview keeps `blocked` visually distinct from `n
 | **M1** | delete the out-of-scope code; simplify the importer to headline-authoritative | the corpus re-imports with verdicts matching the roll-up |
 | **M2** | events + alerts + Activity page + push | you can watch the *existing* n8n loop, via a temporary ingest endpoint |
 | **M3** | bench prober + preflight + alert | the outage shows as one alert with the functional queue paused |
-| **M4** | scheduler, calling n8n's `Webhook (programmatic)` to execute | **the QA Loop workflow can be disabled** |
+| **M4** | scheduler, calling n8n's `Webhook (programmatic)` to execute | **the QA Loop workflow can be disabled** — *built and running dry; needs the shadow diff, then arming* |
 | **M5** | runner: prompt, agent call, busy retry; **the importer is deleted** | assays execute in-process; Docmost is fully exited |
 | **M6** | browser sidecar + `(bench, browser)` leasing | functional assays run on a private, empty-profile browser |
 | **M7** | packaging behind AppShield, PWA manifest + icons through the sidecar bypass | reachable at `touchstone-yunderalabs.nsl.sh`; installable on a phone; **the App Audit workflow can be disabled** |
@@ -234,10 +237,8 @@ skip the seam.
 
 ### Before any of it
 
-The twenty-line login preflight in the existing `Pick next target`. It is not part of Touchstone,
-it stops the bleeding now, and every milestone above assumes the outage is understood rather than
-ongoing. As of 2026-08-07 it still has not been added.
-
-**Recommended, and it is the operator's call** since it waives the no-n8n-edits rule. Beyond the
-wasted assays, the false rows it prevents land in the roll-up that M4's shadow-mode diff uses as
-its baseline — see ARCHITECTURE §9.
+~~The twenty-line login preflight in the existing `Pick next target`.~~ **Done 2026-08-19**, and it
+was not twenty lines: the endpoint it was specified against never authenticated anything. The
+shipped change gates the tick on a real OIDC login probe and hands the audit a verified
+`demo_host`, across three nodes in two workflows. ARCHITECTURE §9 has the detail and the reason it
+is the one sanctioned waiver of the no-n8n-edits rule.
