@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { parseHeadline, parsePhases, parseRollup, shapeReport } from '../tools/extract.js';
+import { parseHeadline, parsePhases, parseRollup, shapeReport } from '../src/server/domain/extract.js';
 
 describe('the roll-up table', () => {
   const md = `

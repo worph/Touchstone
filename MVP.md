@@ -60,6 +60,16 @@ marked ⬜ or ◑, grouped by the milestone that closes it:
 | **Recording** | E1, E4–E7 | result path, headline-authoritative verdict, busy restores the row, parking, completion stamp |
 | **Notification** | F1–F5 | tick/error/success/run-log outlets, plus the in-app log and push |
 
+Plus the four sanctioned exceptions in
+[ARCHITECTURE.md §1.4](ARCHITECTURE.md#14-capability-inventory-and-parity-matrix). Three of them
+were confirmed on 2026-08-19 and carry work beyond the rows above:
+
+| Exception | What lands | Milestone |
+| --- | --- | --- |
+| Newsdesk-shaped notifications | PWA manifest + icons with the AppShield anonymous bypass; the `assistable` error assistant; deep-linked pushes | M7 (PWA), M5 onward (assistant) |
+| Own browser sidecar | `touchstone-browser-1…N`, ephemeral profile — ARCHITECTURE §5.4 | M6 |
+| Exit Docmost | nothing published, and `services/importer.ts` **deleted** once the runner is in-process | M5 |
+
 ### Already done — phase 0
 
 | Row | What |
@@ -208,16 +218,26 @@ unconfigured — principle 7. Overview keeps `blocked` visually distinct from `n
 | **M2** | events + alerts + Activity page + push | you can watch the *existing* n8n loop, via a temporary ingest endpoint |
 | **M3** | bench prober + preflight + alert | the outage shows as one alert with the functional queue paused |
 | **M4** | scheduler, calling n8n's `Webhook (programmatic)` to execute | **the QA Loop workflow can be disabled** |
-| **M5** | runner: prompt, agent call, busy retry | assays execute in-process; the audit workflow is only a fallback |
+| **M5** | runner: prompt, agent call, busy retry; **the importer is deleted** | assays execute in-process; Docmost is fully exited |
 | **M6** | browser sidecar + `(bench, browser)` leasing | functional assays run on a private, empty-profile browser |
-| **M7** | packaging behind AppShield | reachable at `touchstone-yunderalabs.nsl.sh`; **the App Audit workflow can be disabled** |
+| **M7** | packaging behind AppShield, PWA manifest + icons through the sidecar bypass | reachable at `touchstone-yunderalabs.nsl.sh`; installable on a phone; **the App Audit workflow can be disabled** |
 
 M4 is the first milestone that retires something, and M2/M3 exist before it because a scheduler
 that cannot tell you what it did, or cannot tell a dead bench from a bad app, reproduces the bug it
 was built to fix.
+
+**M4 cannot read its own results back.** The audit webhook is fire-and-forget and `Return to
+caller` drops `report_markdown` — ARCHITECTURE §9 has the detail and the three ways through. The
+recommendation is to keep the Docmost importer alive across M4 and delete it at M5, which is why
+"exit Docmost" completes at M5 rather than M4. If that window is unwelcome, merge M4 and M5 and
+skip the seam.
 
 ### Before any of it
 
 The twenty-line login preflight in the existing `Pick next target`. It is not part of Touchstone,
 it stops the bleeding now, and every milestone above assumes the outage is understood rather than
 ongoing. As of 2026-08-07 it still has not been added.
+
+**Recommended, and it is the operator's call** since it waives the no-n8n-edits rule. Beyond the
+wasted assays, the false rows it prevents land in the roll-up that M4's shadow-mode diff uses as
+its baseline — see ARCHITECTURE §9.

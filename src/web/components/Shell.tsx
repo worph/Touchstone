@@ -1,17 +1,18 @@
-import { NavLink } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
+
+import { getAlerts, getEvents } from '../data/client';
+import { seenSeq } from '../lib/badge';
+
+const BADGE_MS = 30_000;
 
 /**
- * Two nav items, per UX.md §2 — and only one is built. Activity is shown disabled
- * rather than hidden: the shape of the app is part of what the page communicates,
- * and an item that quietly appears later is a worse surprise than one that is
- * visibly not built yet.
+ * Two nav items, per UX.md §2. The badge on Activity counts open alerts and unread error
+ * rows — nothing else, deliberately.
  */
-const NAV = [
-  { to: '/', label: 'Overview', end: true, enabled: true },
-  { to: '/activity', label: 'Activity', end: false, enabled: false },
-];
-
 export default function Shell({ children }: { children: React.ReactNode }) {
+  const badge = useBadge();
+
   return (
     <div className="app">
       <header className="topbar">
@@ -21,27 +22,61 @@ export default function Shell({ children }: { children: React.ReactNode }) {
         </NavLink>
 
         <nav className="nav" aria-label="Primary">
-          {NAV.map((item) =>
-            item.enabled ? (
-              <NavLink key={item.to} to={item.to} end={item.end}>
-                {item.label}
-              </NavLink>
-            ) : (
-              <a
-                key={item.to}
-                aria-disabled="true"
-                title={`${item.label} is designed in UX.md and lands with the prober (P2).`}
-              >
-                {item.label}
-              </a>
-            ),
-          )}
+          <NavLink to="/" end>
+            Overview
+          </NavLink>
+          <NavLink to="/activity">
+            Activity
+            {badge > 0 ? (
+              <span className="nav-badge" aria-label={`${badge} needing attention`}>
+                {badge}
+              </span>
+            ) : null}
+          </NavLink>
         </nav>
       </header>
 
       <main className="main">{children}</main>
     </div>
   );
+}
+
+/**
+ * Poll for the badge count.
+ *
+ * Half a minute, and it survives an unreachable API by holding the last count rather than
+ * dropping to zero: a nav that goes quiet when the server dies says the opposite of what
+ * is true.
+ */
+function useBadge(): number {
+  const [count, setCount] = useState(0);
+  const location = useLocation();
+
+  useEffect(() => {
+    let live = true;
+    const read = async () => {
+      try {
+        const [alerts, errors] = await Promise.all([
+          getAlerts(),
+          getEvents({ level: 'error', limit: 200 }),
+        ]);
+        if (!live) return;
+        const seen = seenSeq();
+        setCount(alerts.open.length + errors.events.filter((e) => e.seq > seen).length);
+      } catch {
+        /* hold the previous count */
+      }
+    };
+    void read();
+    const timer = setInterval(() => void read(), BADGE_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+    // Re-read on navigation so leaving Activity clears the unread half immediately.
+  }, [location.pathname]);
+
+  return count;
 }
 
 /** A solid bar and a hatched bar: the app's whole thesis in 16 pixels. */

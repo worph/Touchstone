@@ -7,7 +7,10 @@ import { fileURLToPath, URL } from 'node:url';
 export default defineConfig({
   plugins: [react()],
   root: 'src/web',
-  publicDir: false,
+  // `src/web/public` holds exactly one file: the push service worker. It has to be served
+  // from the app's own origin at a stable path — a worker registered from a bundled,
+  // hashed asset controls the wrong scope — so it is copied verbatim rather than built.
+  publicDir: 'public',
   resolve: {
     alias: {
       '@shared': fileURLToPath(new URL('./src/shared', import.meta.url)),

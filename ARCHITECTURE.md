@@ -1,6 +1,6 @@
 # Touchstone — Design & Architecture
 
-Status: **phase 0 built, phases 1–2 designed.** Touchstone exists to replace two running n8n
+Status: **phase 0 built; P1 (truth) and P2 (eyes) built; the driver and runner designed.** Touchstone exists to replace two running n8n
 workflows. This document is the argument for its shape, and its first section is the inventory of
 what those workflows do — because that inventory *is* the specification. We cannot switch n8n off
 until every row in §1.4 is covered.
@@ -115,7 +115,7 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 | D4 | Agent-busy (409) detection | `Agent busy (retriable)?` | ⬜ |
 | D5 | Backoff and one retry | `Wait` → `Call Claude Code (retry)` → `Retry still failed?` | ⬜ |
 | D6 | A browser to drive the functional leg | shared box-wide `browsermcp` — **contended, see §2.4** | ⬜ — own sidecar, §5.4 |
-| D7 | Bench preflight before claiming | **absent — this is the defect of record, §2.3** | ⬜ |
+| D7 | Bench preflight before claiming | **absent — this is the defect of record, §2.3** | ◑ the prober, the health state and the alert are built; the *gate* that refuses to claim is in the scheduler (P3) |
 
 #### E. Recording — `Record result`
 
@@ -124,7 +124,7 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 | E1 | Accept a result | `Record result` code node | ⬜ **no ingest path** |
 | E2 | Store the verdict | one wiki row, overwritten | ✅ frontmatter on a file |
 | E3 | Store the report | `Publish to Docmost`, one page per app | ✅ markdown on disk |
-| E4 | Risk score and severity tier | parsed from the agent's headline | ◑ built, but derived from prose instead of the headline — §6.2 |
+| E4 | Risk score and severity tier | parsed from the agent's headline | ✅ from the assay's own headline, per principle 3 |
 | E5 | Agent-busy restores the row, burns no try, stamps no last-run | commented, deliberate | ⬜ |
 | E6 | Park after `MAX_TRIES` | `gaveUp` branch | ⬜ |
 | E7 | Last-run stamped on completion including errors | deliberate — fair round-robin | ⬜ |
@@ -134,11 +134,11 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 
 | # | Capability | n8n | Touchstone |
 | --- | --- | --- | --- |
-| F1 | Per-tick log | `Log tick` → `POST notify-hub` | ⬜ |
-| F2 | Error notification | `Notify Agent Logs and Error`, `Notify error to Hub` | ⬜ |
-| F3 | Success notification | `Notify App Audit room` → Beacon MCP | ⬜ |
-| F4 | Per-run audit log | `Build audit run-log` → `Post run-log to Hub` | ⬜ |
-| F5 | An in-app place to read all of the above | **none — you read n8n executions** | ⬜ — §5.5, the one addition |
+| F1 | Per-tick log | `Log tick` → `POST notify-hub` | ◑ the log and the routing table are built; nothing writes a tick row until the scheduler exists (P3) |
+| F2 | Error notification | `Notify Agent Logs and Error`, `Notify error to Hub` | ◑ same — alerts and bench failures route today; assay errors arrive with the runner (P4) |
+| F3 | Success notification | `Notify App Audit room` → Beacon MCP | ◑ same — the outlet works; there is no completion to announce yet |
+| F4 | Per-run audit log | `Build audit run-log` → `Post run-log to Hub` | ◑ same |
+| F5 | An in-app place to read all of the above | **none — you read n8n executions** | ✅ the Activity page — §5.5, the one addition |
 
 #### G. Deliberately dropped
 
@@ -158,7 +158,17 @@ They are removed from the plan.
 | ✂ Generic `subject.kind`, pluggable tenants | a generic conformance product |
 
 The rule is simple and it is why this section exists: **if n8n does not do it, it is not in the
-plan.** The one exception is F5, which the operator asked for explicitly and which §5.5 justifies.
+plan.** There are **four sanctioned exceptions**, each asked for by the operator directly:
+
+| # | Exception | Where |
+| --- | --- | --- |
+| 1 | The in-app notification panel — row F5 | §5.5 |
+| 2 | The notification system built to Newsdesk's shape, PWA identity and error assistant included | §5.5 |
+| 3 | Touchstone's own embedded browser sidecar, rather than the shared box-wide one | §5.4 |
+| 4 | Docmost is exited entirely — reports are local files, nothing published, nothing read back | §5.6 |
+
+Exceptions 2–4 were confirmed on 2026-08-19. Nothing else is added without the same explicit
+decision.
 
 ---
 
@@ -394,6 +404,9 @@ browser by construction.
 
 #### The browser sidecar, copied from Newsdesk with one divergence
 
+Confirmed in scope on 2026-08-19: Touchstone embeds its own `browser-mcp` in its stack, the way
+[Newsdesk](/d/workspace/sandbox/Newsdesk) does in `deploy/docker-compose.yundera.yml`.
+
 Newsdesk runs its own `browser-mcp` container rather than using the shared box-wide `browsermcp`,
 for exactly the reason §2.4 describes — *"that browser is busy with other work, and a publish that
 got its tab stolen mid-compose would be a post half-typed into someone else's page."* Touchstone
@@ -441,23 +454,54 @@ Three layers, in the Newsdesk shape:
 Layer 1 must work when layers 2 and 3 are down. That is principle 7, and it is why the log is a
 file rather than a notification that was already sent.
 
+#### What is still missing against Newsdesk
+
+The three layers above are built (P2). Measured against `/d/workspace/sandbox/Newsdesk`, which the
+operator named as the model on 2026-08-19, three things are not:
+
+- **PWA identity, and it is the load-bearing one.** Newsdesk ships a `manifest.webmanifest` and
+  icons *and* gives them an anonymous route through the AppShield sidecar — ordered Caddy `handle`
+  blocks send `/manifest.webmanifest` and `/icon*` straight to the backend, first match wins.
+  Without that bypass Chrome's WebAPK minting server, which fetches those URLs from the public
+  internet carrying no session of ours, gets a 302 to the OIDC login; minting fails and Android
+  installs a bookmark shortcut with a Chrome badge instead of an app. Push on a phone is only as
+  good as this. Lands with packaging, §8.
+- **The error assistant.** Newsdesk marks selected codes `assistable: true` and offers a remedy
+  button on those rows only, logging its own work as `REMEDY_APPLIED` / `ASSIST_FAILED` in the log
+  it is fixing. Its restraint matters as much as the feature: `PUSH_NO_DEVICES` is a warn with
+  nothing to remedy, and a button there teaches people to ignore the button where it counts.
+  Touchstone's candidates are `BENCH_AUTH_FAILED`, `NOTIFY_FAILED`, `PUSH_UNCONFIGURED` and, once
+  the runner exists, `AGENT_*`.
+- **Deep-linked pushes.** Newsdesk's notifications say how many of their kind are waiting and link
+  to the one that fired. Touchstone's push targets are already the right narrow set; they need to
+  land on the subject rather than the app root.
+
 ### 5.6 Reports and outlets
 
 An assay writes one markdown file under `<data>/reports/<subject>/<iso>-<leg>.md`, frontmatter
 carrying the structured verdict, body carrying the report verbatim. That file is the archive of
 record: sortable, greppable, backed up with the rest of the data dir, readable without the app.
 
-**Docmost becomes an optional publisher**, off by default — it can still receive a rendered roll-up
-for people who live in the wiki, through the same Beacon MCP path used today, but nothing in
-Touchstone ever reads it back.
+**Docmost is exited entirely** — decided 2026-08-19, superseding an earlier draft that kept it as
+an optional publisher. Touchstone never writes to Docmost and, after M5, never reads from it
+either. The report file *is* the report, and the app renders it.
+
+Two consequences worth stating plainly:
+
+- **The importer is transitional, not architectural.** It exists to read results back during M4,
+  while n8n still executes assays — see §9. At M5 the runner produces `report_markdown` in-process
+  and `services/importer.ts` is deleted rather than kept behind a flag.
+- **`Store QA — Results` is frozen with a pointer** at cutover, not kept in sync. That resolves the
+  open item HANDOFF §5 carried.
 
 ---
 
 ## 6. API
 
-Small on purpose. There is no ingest endpoint in the target state, because the runner is in-process
-— a temporary one exists only during the transitional milestones in
-[MVP.md §8](MVP.md#8-order-of-work).
+Small on purpose. There is no ingest endpoint in the target state, because the runner is
+in-process. A temporary one exists only during the transitional milestones in
+[MVP.md §8](MVP.md#8-order-of-work) — and note that nothing in n8n can call it without an edit to
+n8n, which §9 explains.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -542,8 +586,36 @@ One thing to reconcile first: the running `newsdesk-browser` container is **not 
 | **2** | runner, agent call, busy retry, browser sidecar, `(bench, browser)` leasing | **`AppStore App Audit`** |
 
 Phase 1 can ship while the audit workflow still executes assays — Touchstone calls its
-`Webhook (programmatic)` trigger and records the result. That is the seam that makes phase 2 a
-change of driver rather than a big bang.
+`Webhook (programmatic)` trigger. That is the seam that makes phase 2 a change of driver rather
+than a big bang.
+
+**The seam is weaker than this document assumed, read off the workflow on 2026-08-19.** It cannot
+hand the result back:
+
+- `Webhook (programmatic)` (`POST /webhook/app-audit`) declares **no `responseMode`**, so n8n
+  defaults to `onReceived` and answers "workflow got started" the moment it is hit. An external
+  caller gets nothing.
+- The synchronous path is `Called by sweep`, an `executeWorkflowTrigger` with
+  `inputSource: passthrough`. That is how the QA Loop gets its result today, and Touchstone,
+  being outside n8n, cannot use it.
+- `Return to caller` returns `{app_name, verdict, severity, risk_score, summary, title, url,
+  published}` — **no `report_markdown`**. The body lives only in the `Extract LLM response` node
+  output and in the page `Publish to Docmost` writes.
+
+So result recovery during phase 1 is one of three, in order of preference:
+
+1. **Keep the Docmost importer for that window and delete it at phase 2.** No n8n edits, code that
+   already runs, 15-minute lag. This is the recommendation, and it is why §5.6 calls the importer
+   transitional rather than gone.
+2. `GET /api/v1/executions/{id}?includeData=true` on n8n's REST API, which *does* carry
+   `report_markdown` from `Extract LLM response`. Exits Docmost a milestone earlier at the cost of
+   throwaway code. Worth it only if phase 1 runs for months.
+3. Changing the webhook's response mode, or having the audit POST to §6's temporary ingest
+   endpoint. Both are edits to n8n, and the first holds an HTTP connection open for the length of
+   an assay.
+
+If a Docmost-dependent window is unacceptable, the honest alternative is **merging phases 1 and 2**
+and skipping the webhook seam. The seam exists to de-risk, and it de-risks less than was thought.
 
 ### Worth doing this week, independent of all of it
 
@@ -551,6 +623,13 @@ Add a login preflight to `Pick next target`: probe `/api/firstfactor` before cla
 skip the tick on 401. Roughly twenty lines. **As of 2026-08-07 this has not been done** — there is
 no `firstfactor` reference anywhere in the workflow — and §2.3 shows the cost of every day it
 waits. Everything above is a rewrite; this is not.
+
+**Recommended, pending the operator's call**, because it is the one place the no-n8n-edits rule
+should be waived. The third reason is the one that is easy to miss: every wasted assay writes a
+false `errored` or `non-compliant` row into the roll-up, and that roll-up is the baseline phase 1's
+shadow-mode diff validates against. The bleeding corrupts the ruler as well as the patient. And
+because the preflight moves n8n *toward* the D7 gate Touchstone will implement anyway, it makes the
+diff more comparable, not less.
 
 ---
 
