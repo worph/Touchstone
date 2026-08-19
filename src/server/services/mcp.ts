@@ -3,8 +3,11 @@
  *
  * Beacon speaks streamable-HTTP and is stateless — no session header, one POST per call,
  * response framed as a single SSE `data:` line — so the whole client is one function and
- * pulling in an SDK would be more code than this, not less. When the real
- * `src/server/services/mcp.ts` lands (phase 2, for the runner) this can be deleted.
+ * pulling in an SDK would be more code than this, not less.
+ *
+ * It started life in `tools/` for the importer and moved here in P2, unchanged: the
+ * notifier, the importer and (in P4) the runner all reach Beacon the same way, and
+ * `tsconfig.server.json` compiles only `src/`, so a shared client cannot live in `tools/`.
  */
 
 export interface McpOptions {

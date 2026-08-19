@@ -1,15 +1,19 @@
 /**
- * The read API. Registered by `src/server/index.ts` under `/api/v1`.
+ * The API. Registered by `src/server/index.ts` under `/api/v1`.
  *
- * Three endpoints, no pagination — there are 69 subjects. Everything is derived on the fly
- * from the assay index; nothing here holds state.
+ * The archive half — subjects and reports — is derived on the fly from the assay index and
+ * holds no state. The activity half — events, alerts, benches, push — is registered from
+ * here too but implemented in sibling files, because each owns a service and the read API
+ * should not grow a dependency on the prober to serve a report.
  *
- * The store arrives by injection:
+ * Everything arrives by injection:
  *
- *   await app.register(registerRoutes, { prefix: '/api/v1', store: index });
+ *   await app.register(registerRoutes, { prefix: '/api/v1', store: index, events, alerts });
  *
- * With no `store` option the routes serve `src/server/domain/fixtures.ts`, so `yarn dev`
- * shows a working page before the importer has ever run.
+ * With no `store` the routes serve `src/server/domain/fixtures.ts`, so `yarn dev` shows a
+ * working page before the importer has ever run. With no services the activity endpoints
+ * answer empty rather than 404 — the Activity page must render on an instance where none
+ * of this is running, which is the same reason the log is a local file.
  */
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
@@ -18,10 +22,23 @@ import { fixtureStore } from '../domain/fixtures.js';
 import { hallmarks, sortNewestFirst, subjectHallmark } from '../domain/hallmark.js';
 import { renderMarkdown } from '../domain/markdown.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
+import type { AlertStore } from '../services/alerts.js';
+import type { BenchProber } from '../services/bench.js';
+import type { EventLog } from '../services/events.js';
+import type { PushService } from '../services/push.js';
+import alertRoutes from './alerts.js';
+import benchRoutes from './benches.js';
+import eventRoutes from './events.js';
+import pushRoutes from './push.js';
 
 export interface RoutesOptions {
   /** The index built at boot. Omitted in dev and in the route tests. */
   store?: AssayStore;
+  events?: EventLog;
+  alerts?: AlertStore;
+  prober?: BenchProber;
+  push?: PushService;
+  boardUrl?: string;
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
@@ -35,6 +52,11 @@ function isSafeSegment(value: string): boolean {
 
 const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
   const store = options.store ?? fixtureStore();
+
+  await app.register(eventRoutes, { events: options.events });
+  await app.register(alertRoutes, { alerts: options.alerts });
+  await app.register(benchRoutes, { prober: options.prober, boardUrl: options.boardUrl });
+  await app.register(pushRoutes, { push: options.push });
 
   /** Subjects are addressed by name; be forgiving about case, exact match wins. */
   function resolveSubject(name: string) {

@@ -1,10 +1,16 @@
 /**
  * Configuration: `data/config.yaml` plus `data/standards/*.yaml`.
  *
- * Both are optional. The MVP has to run on a laptop straight after `git clone`, so every
+ * Both are optional. Touchstone has to run on a laptop straight after `git clone`, so every
  * value has a default and an absent file is a normal state, not a degraded one. Only the
  * things that genuinely cannot be guessed — bench credentials, notification routing — have
- * no default, and none of those are used in MVP-0.
+ * no default.
+ *
+ * From P2 the file is also *seeded* on first boot (`ensureConfigFile`), because the moment
+ * something needs a credential, "there is no file and you have to know what to write in it"
+ * stops being a defensible default. The seeded file is inert: every value in it equals the
+ * built-in default, the scheduler is disarmed and the runner is disabled, so writing it
+ * changes nothing about what the app does.
  */
 
 import { promises as fs } from 'node:fs';
@@ -30,6 +36,22 @@ export interface Standard {
   [key: string]: unknown;
 }
 
+/** One demo instance a functional assay can install into. Credentials live only here. */
+export interface BenchEntry {
+  name: string;
+  url: string;
+  username?: string;
+  password?: string;
+  enabled?: boolean;
+}
+
+export interface OutletEntry {
+  kind: 'telegram' | 'discord';
+  target?: string;
+  label?: string;
+  enabled?: boolean;
+}
+
 export interface TouchstoneConfig {
   dataDir: string;
   reportsRoot: string;
@@ -45,6 +67,42 @@ export interface TouchstoneConfig {
   standards: {
     static: { name: string; version: number };
     functional: { name: string; version: number };
+  };
+  /**
+   * The five constants of `Pick next target`, at the values n8n runs today. P3 ports the
+   * scheduler against these; changing one here changes both systems' behaviour to differ,
+   * which is precisely what shadow mode is there to detect.
+   */
+  scheduler: {
+    /** Off. P3 ships dry-run; this flag is what arms it, and it stays false until reviewed. */
+    armed: boolean;
+    tick_min: number;
+    fresh_days: number;
+    stuck_days: number;
+    lease_min: number;
+    cooldown_min: number;
+    max_tries: number;
+  };
+  /** Off. P4 ships the runner disabled; validation is a single hand-run assay, never a loop. */
+  runner: {
+    enabled: boolean;
+    depth: 'static' | 'full';
+  };
+  benches: BenchEntry[];
+  bench: {
+    /** The demo management board — a second opinion, never a gate. Empty disables it. */
+    board_url: string;
+    probe_interval_min: number;
+    probe_timeout_ms: number;
+  };
+  importer: {
+    enabled: boolean;
+    interval_min: number;
+  };
+  notify: {
+    outlets: OutletEntry[];
+    /** Contact address on the VAPID JWT. Push services reject a missing or bogus one. */
+    push_subject: string;
   };
   [key: string]: unknown;
 }
@@ -64,6 +122,24 @@ function defaults(dataDir: string): TouchstoneConfig {
       static: { name: 'Static Review Protocol', version: 3 },
       functional: { name: 'Functional Review Protocol', version: 2 },
     },
+    scheduler: {
+      armed: false,
+      tick_min: 60,
+      fresh_days: 7,
+      stuck_days: 7,
+      lease_min: 120,
+      cooldown_min: 55,
+      max_tries: 3,
+    },
+    runner: { enabled: false, depth: 'full' },
+    benches: [],
+    bench: {
+      board_url: process.env.TOUCHSTONE_BOARD_URL ?? '',
+      probe_interval_min: 5,
+      probe_timeout_ms: 8000,
+    },
+    importer: { enabled: true, interval_min: 15 },
+    notify: { outlets: [], push_subject: 'mailto:touchstone@yundera.local' },
   };
 }
 
@@ -144,4 +220,103 @@ export async function loadStandards(standardsDir: string): Promise<Standard[]> {
     });
   }
   return out;
+}
+
+/**
+ * The seeded `data/config.yaml`.
+ *
+ * Written verbatim, comments and all, because the comments *are* the interface: this file
+ * is how an operator learns that the scheduler exists and is off, and that a bench needs
+ * credentials before a functional assay can run. Every value here equals the default in
+ * `defaults()`, so seeding is a no-op behaviourally — deleting the file leaves the app
+ * running identically.
+ */
+export const CONFIG_TEMPLATE = `# Touchstone configuration.
+#
+# Seeded on first boot. Every value below is the built-in default, so deleting this file
+# changes nothing — it exists so the settings that DO need you (bench credentials, notify
+# outlets) have an obvious place to go.
+
+# ── the scheduler ───────────────────────────────────────────────────────────────────────
+# The five constants of n8n's \`Pick next target\`, at the values it runs today. Do not
+# change them while shadow mode is being compared against the live loop.
+scheduler:
+  # Dry-run until this is true: the scheduler decides and logs, and dispatches nothing.
+  armed: false
+  tick_min: 60
+  fresh_days: 7      # a verdict older than this makes the subject eligible again
+  stuck_days: 7      # how long a subject that exhausted its tries stays parked
+  lease_min: 120     # an in-progress claim expires after this
+  cooldown_min: 55   # minimum gap between finishing one assay and starting the next
+  max_tries: 3       # consecutive errored attempts before parking
+
+# ── the runner ──────────────────────────────────────────────────────────────────────────
+# Disabled until reviewed. Two systems auditing the same app contend for one Claude Code
+# endpoint — n8n's PR Review workflow shares it and is not being replaced.
+runner:
+  enabled: false
+  depth: full        # static | full
+
+# ── benches ─────────────────────────────────────────────────────────────────────────────
+# The demo instances a functional assay installs into. WITHOUT CREDENTIALS THE PROBER
+# REPORTS \`unconfigured\` AND THE FUNCTIONAL QUEUE STAYS PAUSED — which is the correct
+# behaviour, not a bug: a functional assay run against a bench we cannot log into produces
+# a verdict about the bench and attributes it to the app.
+benches: []
+# benches:
+#   - name: demostaging1
+#     url: https://demostaging1.inojob.com
+#     username: ""
+#     password: ""
+#   - name: demostaging2
+#     url: https://demostaging2.inojob.com
+#     username: ""
+#     password: ""
+
+bench:
+  # The demo management board, read as a SECOND OPINION only. It reported "Ready" for the
+  # whole of the 2026-08-05 outage; Touchstone shows the disagreement rather than trusting
+  # either source. Empty disables the read.
+  board_url: ""
+  probe_interval_min: 5
+  probe_timeout_ms: 8000
+
+# ── the transitional data feed ──────────────────────────────────────────────────────────
+# n8n still owns the loop and rewrites its Docmost roll-up every tick, so re-reading it is
+# how Touchstone stays current with ZERO changes to n8n. Turn this off once P3 is armed.
+importer:
+  enabled: true
+  interval_min: 15
+
+# ── notification ────────────────────────────────────────────────────────────────────────
+# Outlets go through the local Beacon aggregator. \`target\` is a Telegram chat id or a
+# Discord channel id; omit it to use the bridge's own default destination.
+notify:
+  outlets: []
+  # outlets:
+  #   - kind: telegram
+  #     label: ops
+  #     target: ""
+  push_subject: mailto:touchstone@yundera.local
+`;
+
+/**
+ * Write `data/config.yaml` if it is not there. Returns the path when it seeded one.
+ *
+ * Uses `wx`, so two processes racing at boot cannot produce a half-written file or clobber
+ * an operator's edits — an existing file is never touched, whatever is in it.
+ */
+export async function ensureConfigFile(dataDir?: string): Promise<string | null> {
+  const dir = resolveDataDir(dataDir);
+  const file = path.join(dir, 'config.yaml');
+  try {
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(file, CONFIG_TEMPLATE, { encoding: 'utf8', flag: 'wx' });
+    return file;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return null;
+    // A read-only data dir is a real deployment (a mounted archive), and the app runs fine
+    // on defaults, so this is reported by the caller rather than thrown at boot.
+    throw err;
+  }
 }

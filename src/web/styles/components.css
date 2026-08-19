@@ -269,3 +269,205 @@
 .legend .status-label { font-size: 11.5px; }
 @media (max-width: 720px) {
 }
+
+/* ------------------------------------------------------------------ activity
+   The log, alerts and environment. Three stacked blocks; no cards inside cards,
+   because the page is read top-down when something is already wrong. */
+
+.act-section { margin-bottom: 26px; }
+
+.act-h {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+  font: 600 12px/1 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+}
+
+.act-count {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-1);
+  letter-spacing: 0;
+}
+
+.act-h-action { margin-left: auto; }
+.act-h-filters { margin-left: auto; display: flex; gap: 6px; }
+
+.act-quiet {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-1);
+  color: var(--fg-1);
+}
+.act-quiet code { font-family: var(--mono); font-size: 12px; color: var(--fg); }
+
+.act-foot { margin-top: 10px; color: var(--fg-2); font-size: 12px; }
+.act-foot .btn { margin: 0 2px; }
+
+.btn--sm { padding: 2px 8px; font-size: 11.5px; }
+
+/* -- alerts -------------------------------------------------------------- */
+
+.alert-stack { display: flex; flex-direction: column; gap: 10px; }
+
+.alert {
+  border: 1px solid var(--crit-dim);
+  border-left: 3px solid var(--crit);
+  border-radius: var(--r);
+  background: var(--bg-1);
+  padding: 12px 14px;
+}
+.alert[data-state="resolved"] { border-color: var(--border); border-left-color: var(--ok); }
+
+.alert-head { display: flex; align-items: baseline; gap: 8px; }
+.alert-glyph { color: var(--crit); }
+.alert[data-state="resolved"] .alert-glyph { color: var(--ok); }
+.alert-title { margin: 0; font: 600 14px/1.35 var(--sans); color: var(--fg); }
+.alert-age {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-2);
+}
+
+.alert-detail {
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-1);
+  word-break: break-word;
+}
+.alert-impact { margin-top: 6px; font-size: 12.5px; color: var(--major); }
+
+.alert-foot {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--fg-2);
+}
+.alert-foot .btn { margin-left: auto; }
+
+/* -- environment --------------------------------------------------------- */
+
+.env {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+
+.env-row {
+  display: grid;
+  grid-template-columns: 190px 150px 1fr;
+  gap: 4px 14px;
+  padding: 10px 14px;
+  align-items: baseline;
+}
+.env-row + .env-row { border-top: 1px solid var(--border); }
+
+.env-name { font-family: var(--mono); font-size: 12.5px; color: var(--fg); }
+.env-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.env-note { color: var(--fg-2); font-size: 12px; }
+
+.env-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--unknown); flex: none; }
+.env-row[data-status="healthy"] .env-dot { background: var(--ok); }
+.env-row[data-status="healthy"] .env-status { color: var(--ok); }
+.env-row[data-status="auth"] .env-dot,
+.env-row[data-status="unreachable"] .env-dot { background: var(--crit); }
+.env-row[data-status="auth"] .env-status,
+.env-row[data-status="unreachable"] .env-status { color: var(--crit); }
+.env-row[data-status="unconfigured"] .env-status { color: var(--fg-2); }
+
+/* The probe line and the board's claim sit together on purpose: the disagreement is
+   the finding, and separating them would let a reader see only the half they trust. */
+.env-probe {
+  grid-column: 1 / -1;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-2);
+  word-break: break-word;
+}
+.env-board { color: var(--minor); }
+
+/* -- the log ------------------------------------------------------------- */
+
+.log {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 46px 14px 1fr auto 20px;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+.log-row + .log-row { border-top: 1px solid #0f151b; }
+.log-row:hover { background: var(--bg-2); }
+
+.log-time { font-family: var(--mono); font-size: 11.5px; color: var(--fg-3); }
+.log-glyph { text-align: center; color: var(--fg-3); }
+.log-row[data-level="warn"] .log-glyph { color: var(--major); }
+.log-row[data-level="error"] .log-glyph { color: var(--crit); }
+.log-message { color: var(--fg-1); }
+.log-row[data-level="error"] .log-message { color: var(--fg); }
+
+.log-subject { font-family: var(--mono); font-size: 12px; color: var(--fg); margin-right: 7px; }
+.log-subject:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+.log-code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+  letter-spacing: 0.02em;
+}
+
+.log-toggle {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--fg-2);
+  cursor: pointer;
+  font-size: 11px;
+  min-width: 12px;
+}
+.log-toggle:hover { color: var(--fg); }
+
+.log-detail {
+  grid-column: 3 / -1;
+  margin: 4px 0 2px;
+  padding: 8px 10px;
+  border-radius: var(--r-s);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-1);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* -- the nav badge ------------------------------------------------------- */
+
+.nav-badge {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--crit);
+  color: #180505;
+  font: 600 10.5px/16px var(--mono);
+  display: inline-block;
+  vertical-align: 1px;
+}

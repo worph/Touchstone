@@ -1,32 +1,33 @@
 # Touchstone — session handoff
 
-**Session date: 2026-08-07.** Written so a future session can pick up without the conversation.
+**Sessions: 2026-08-07 (P1) and 2026-08-19 (P2).** Written so a future session can pick up
+without the conversation.
 This is session state, not design — the design lives in [README.md](README.md),
 [ARCHITECTURE.md](ARCHITECTURE.md), [MVP.md](MVP.md), [IMPLEMENTATION.md](IMPLEMENTATION.md) and
-[UX.md](UX.md), all of which were rewritten during this session and are current.
+[UX.md](UX.md), all of which were rewritten in the P1 session, updated in P2, and are current.
 
 ---
 
 ## 1. Where the work stopped
 
-**P1 is complete and verified. Nothing is committed.**
+**P1 and P2 are complete. P1 is committed; P2 is not.**
 
 ```
-branch main, working tree dirty — 51 files changed
+branch main, P1 committed as 66e13cf; P2 uncommitted in the working tree
 yarn typecheck   clean
-yarn test        51 passed (51)
-yarn build       green, dist/web 280 KB
+yarn test        111 passed (111)      — 51 at the end of P1
+yarn build       green, dist/web 266 KB + sw.js
 ```
 
-The dev stack (`docker-compose.dev.yml`) is running and serving the corrected corpus on
-`:8081` (API) and `:5173` (UI).
+The dev stack (`docker-compose.dev.yml`) is running: API on `:8081`, UI on `:5173`, Activity
+page rendering with an empty log, no benches configured and push configured.
 
-**P2 is next.** It is scoped in [MVP.md §8](MVP.md#8-order-of-work) and in the approved plan at
-`/root/.claude/plans/splendid-napping-dusk.md`.
+**P3 — the driver — is next.** It is scoped in [MVP.md §8](MVP.md#8-order-of-work) (M4) and in
+the approved plan at `/root/.claude/plans/splendid-napping-dusk.md`.
 
 ---
 
-## 2. What this session changed, and why
+## 2. What the P1 session changed, and why
 
 ### 2.1 The starting picture
 
@@ -171,21 +172,67 @@ Those match the roll-up. `/api/v1/findings` is gone and returns 404.
 
 ---
 
-## 4. Picking up P2
+## 4. What P2 delivered
 
-P2 is **eyes**: event log, alerts, bench prober, Activity page, web push, and a 15-minute
-polling importer. No deployment — it runs on the dev container, which already reaches
-`beacon-yunderalabs.*` through the local Beacon aggregator.
+**Eyes.** You can now see what the loop is doing, and a dead bench is legible as a dead bench,
+before anything of ours starts making decisions.
 
-**Two prerequisites discovered in P1, both easy to trip over:**
+| New | What it is |
+| --- | --- |
+| `store/state.ts` | atomic JSON writes, `O_APPEND` JSONL, and a reader that tolerates a torn tail |
+| `services/events.ts` | the append-only log. Codes carry a declared `detail` shape, so tsc enforces the message/detail split rather than a comment asking for it |
+| `services/alerts.ts` | open / refresh / resolve, deduplicated by a closed set of keys. No ack, no mute |
+| `services/bench.ts` | the prober: `POST /api/firstfactor` per bench, plus the management board as a *second opinion* |
+| `services/notify.ts` | the routing table → Beacon outlets, resolved from the live aggregator with `server_doc` |
+| `services/push.ts` + `web/public/sw.js` | web push, VAPID generated on first boot into `state/push.json` |
+| `routes/{events,alerts,benches,push}.ts` | the four endpoints, which answer empty rather than 404 when the services are absent |
+| `pages/Activity.tsx`, `AlertCard`, `EventRow` | the page: open alerts, environment, log with level/category/subject filters |
+| nav badge | open alerts + unread `error` rows, and nothing else |
 
-1. **The index is built at boot and never refreshed.** Running `yarn sync` rewrites
-   `data/reports/**` but the running API keeps serving the old records — which looks exactly
-   like the importer having failed. So P2's polling importer must run **in-process** and
-   `upsert` into the live `ReportIndex`, not shell out. (Meanwhile: `docker restart
-   touchstone-dev` after any manual import.)
-2. **`store/config.ts` only reads `data/config.yaml`.** First-boot seeding does not exist and is
-   required the moment the prober needs bench credentials.
+**Moved, because `tsconfig.server.json` compiles only `src/`:** `tools/mcp.ts` →
+`services/mcp.ts`, `tools/extract.ts` → `domain/extract.ts`, and `tools/import.ts` →
+`services/importer.ts` with a `runImport()` entry point. `tools/import.ts` is now a 40-line argv
+wrapper. The importer runs **in-process** on a 15-minute timer and upserts into the live index —
+the boot-only index is why shelling out would have shown stale data.
+
+**`data/config.yaml` is now seeded on first boot**, comments and all, with every value equal to
+its built-in default: the scheduler disarmed, the runner disabled, `benches: []`. Seeding is
+behaviourally inert; deleting the file leaves the app running identically.
+
+### Three things worth knowing
+
+1. **The 200-that-rejects.** The demo IdP answers `200` with `{"status":"KO"}` /
+   `auth/invalid-credential` in the body. A prober reading only the status line reports the
+   2026-08-05 outage as healthy — which is exactly the mistake the management board makes. The
+   body check is in `probeBench` and has a test.
+2. **Alerts were being routed twice**, found by running it rather than by reading it: an alert
+   transition also *writes an event*, so `handleAlert` and `handleEvent` both sent. `ALERT_*`
+   is now deliberately absent from the routing table, and `handleAlert` owns alerts end to end.
+3. **`ARCHITECTURE.md` §1.4 E4 was stale** — it still said the risk score was derived from prose,
+   which P1 fixed. Corrected to ✅ along with the D7 and F rows.
+
+### What P2 did NOT do
+
+- No browser pool and no agent probe. The environment block says so in a sentence rather than
+  showing a green row it has not earned — the browser lands with functional leasing (P5), the
+  agent check with the runner (P4).
+- No tick, claim or assay events. The log has no codes for them: a log where `TICK_COMPLETED`
+  sometimes means something else is a log whose filters lie. P3 and P4 add their own.
+
+---
+
+## 4b. Picking up P3
+
+P3 is **the driver**: port `Pick next target` (9,374 chars) and `Record result` (5,473 chars)
+into `src/server/scheduler/`, and validate by diff rather than by assertion.
+
+The five constants are already in `data/config.yaml` at n8n's current values, and
+`cfg.scheduler.armed` is the flag that arms it. Two things P2 leaves ready:
+
+- **`prober.poolUp`** is the bench preflight D7 needs. A functional claim gates on it, and a
+  bench-down result is `blocked` / `bench_unavailable`, which by principle 5 consumes no try.
+- **The importer already runs every 15 minutes**, so shadow mode has live last-run data with
+  zero changes to n8n.
 
 **The safety rule holds through every phase** (see
 [the plan](/root/.claude/plans/splendid-napping-dusk.md)): no writes to Docmost ever, no changes
@@ -203,12 +250,45 @@ artefact.
 
 ## 5. Open items
 
-- **Nothing is committed.** 51 files changed on `main`.
-- **The `Store QA — Results` page** — freeze it with a pointer to Touchstone, or keep publishing
-  it from a Docmost outlet? Undecided; deferred to the user's review.
+- **P2 is not committed.** P1 is (`66e13cf`).
+- **No bench is configured**, so the prober reports nothing and the functional queue stays
+  paused. Credentials go under `benches:` in `data/config.yaml`; the demo pool is the one
+  behind the management board in §6. Until then the Activity environment block says so rather
+  than showing green.
+- **No notify outlet is configured**, so alerts stay in the log. `notify.outlets` takes
+  `{kind: telegram|discord, target}`.
+- ~~**The `Store QA — Results` page**~~ — **resolved 2026-08-19: freeze it with a pointer.** Docmost
+  is exited entirely; see the decisions below.
 - **Who runs the `yunderalabs` rollout.** It is not one of the pre-authorised test PCS boxes
   (`holyhorse`, `watch`), so that is the user's to run.
-- **The n8n login preflight** still is not there, and is independent of all of the above.
+- **The n8n login preflight** still is not there, and is independent of all of the above. It is now
+  *recommended* rather than merely noted — ARCHITECTURE §9 carries the third reason, which is that
+  the false rows it prevents poison the very roll-up M4's shadow diff measures against. It waives
+  the no-n8n-edits rule, so it stays the user's call.
+
+---
+
+## 5b. Decisions taken 2026-08-19
+
+Three scope decisions, now encoded in ARCHITECTURE §1.4 (four sanctioned exceptions), §5.4, §5.5,
+§5.6, §9, MVP §3 and §8, and UX §3.
+
+1. **A Newsdesk-shaped notification system is in scope.** P2 already built the spine in that shape.
+   What is *not* built, measured against `/d/workspace/sandbox/Newsdesk`: the PWA manifest and
+   icons with the AppShield anonymous bypass (without it Android installs a bookmark, not an app,
+   and phone push is worth little), the `assistable` error assistant, and deep-linked pushes.
+2. **Touchstone embeds its own `browser-mcp` sidecar**, copied from Newsdesk's stack. The
+   divergence holds: **ephemeral profile, no volume** — a surviving session is a false pass on the
+   auth-gate check.
+3. **Docmost is exited entirely.** Reports are local markdown rendered in the app; nothing is
+   published, and `services/importer.ts` is deleted at M5 rather than kept behind a flag.
+
+**And one finding that changes M4**, read off `QjzNu9yWZ5005J7m` the same day: the audit's
+`Webhook (programmatic)` declares no `responseMode`, so n8n answers `onReceived` and hands an
+external caller nothing; the synchronous path is the `executeWorkflowTrigger` only n8n itself can
+use; and `Return to caller` omits `report_markdown` anyway. M4 therefore recovers results through
+the Docmost importer (recommended), or n8n's executions API, or by merging M4 into M5 and skipping
+the seam. ARCHITECTURE §9 has all three.
 
 ---
 
@@ -242,17 +322,19 @@ directly and parses no markdown at all.** Error classification to reproduce exac
 
 `depth` has only `static` and `full` — there is no functional-only mode. P5 calls `depth: full`
 and splits the one response into two assay files with `shapeReport` / `splitSections` in
-`tools/extract.ts`, which already do exactly that for imported Docmost pages.
+`src/server/domain/extract.ts`, which already do exactly that for imported Docmost pages.
 
 ---
 
 ## 7. Dev-loop gotchas
 
-- **After any import, restart the container.** See §4.1. `tsx watch` only restarts on `src/`
-  changes, so an import alone will not refresh the index.
-- **`tools/extract.ts` defeats grep.** It contains a byte that makes grep treat the file as
-  binary, so `grep -n "export" tools/extract.ts` prints *nothing at all* — not an error, not a
-  zero count, just silence, which reads as "the symbol isn't there". Use `grep -a`.
+- **After a hand-run `yarn sync`, restart the container.** The index is built at boot. The
+  in-process 15-minute importer added in P2 upserts into the live index and does not need this;
+  the CLI does, because it is a different process.
+- **`src/server/domain/extract.ts` defeats grep.** It contains a byte that makes grep treat the
+  file as binary, so `grep -n "export" src/server/domain/extract.ts` prints *nothing at all* —
+  not an error, not a zero count, just silence, which reads as "the symbol isn't there". Use
+  `grep -a`. (It moved out of `tools/` in P2: `tsconfig.server.json` compiles only `src/`.)
 - **Ports:** Vite 5173, API 8081. 8080 is the production default but is taken by ttyd in this
   container.
 - **`yarn sync`, not `yarn import`.** `import` is a yarn-1 builtin and will not run the script.

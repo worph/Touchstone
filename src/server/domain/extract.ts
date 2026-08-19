@@ -19,7 +19,7 @@
  * one `depth=full` agent response into two assay files (P5).
  */
 
-import type { Severity } from '../src/shared/types.js';
+import type { Severity } from '../../shared/types.js';
 
 // ── roll-up table ──────────────────────────────────────────────────────────────────────
 

@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildIndex } from '../src/server/store/index.js';
 import { loadConfig } from '../src/server/store/config.js';
-import { parseRollup, type RollupRow } from '../tools/extract.js';
+import { parseRollup, type RollupRow } from '../src/server/domain/extract.js';
 import { SEVERITY_RANK } from '../src/shared/types.js';
 import { DATA_REPORTS, existsSync } from './helpers.js';
 import { promises as fs } from 'node:fs';

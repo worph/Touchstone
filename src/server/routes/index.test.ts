@@ -98,3 +98,52 @@ describe('GET /reports/:subject/:file', () => {
     }
   });
 });
+
+/**
+ * The activity endpoints exist whether or not the services behind them are running.
+ *
+ * This is the shape UX.md §2.3 requires: the page has to render on an instance with no
+ * prober, no outlets and no push, and say so — an app that can only tell you what is wrong
+ * by having everything working is an app that goes quiet exactly when you need it.
+ */
+describe('the activity endpoints with no services injected', () => {
+  it('serves an empty log rather than a 404', async () => {
+    const { status, body } = await get<{ events: unknown[]; last_seq: number }>('/api/v1/events');
+    expect(status).toBe(200);
+    expect(body.events).toEqual([]);
+    expect(body.last_seq).toBe(0);
+  });
+
+  it('names the event codes so the filter menu can be built without a second copy', async () => {
+    const { body } = await get<{ codes: Record<string, string> }>('/api/v1/events');
+    expect(body.codes.BENCH_AUTH_FAILED).toBeTruthy();
+  });
+
+  it('serves no alerts, which is different from failing to answer', async () => {
+    const { status, body } = await get<{ open: unknown[]; resolved: unknown[] }>('/api/v1/alerts');
+    expect(status).toBe(200);
+    expect(body).toEqual({ open: [], resolved: [] });
+  });
+
+  it('reports an empty bench pool as down, not as fine', async () => {
+    const { status, body } = await get<{ benches: unknown[]; pool_up: boolean }>('/api/v1/benches');
+    expect(status).toBe(200);
+    expect(body.benches).toEqual([]);
+    expect(body.pool_up).toBe(false);
+  });
+
+  it('reports push as unconfigured in a field rather than by failing', async () => {
+    const { status, body } = await get<{ configured: boolean; public_key: string | null }>('/api/v1/push');
+    expect(status).toBe(200);
+    expect(body).toEqual({ configured: false, public_key: null, devices: 0 });
+  });
+
+  it('refuses a subscription when there is nothing to subscribe to', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/push/subscribe',
+      payload: { endpoint: 'https://push.example/x', keys: { p256dh: 'a', auth: 'b' } },
+    });
+    expect(res.statusCode).toBe(503);
+  });
+});

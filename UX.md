@@ -1,6 +1,6 @@
 # Touchstone — Web UI
 
-Status: **Overview and Subject detail built; Activity designed.** Companion to
+Status: **Overview, Subject detail and Activity built.** Companion to
 [ARCHITECTURE.md](ARCHITECTURE.md). This document covers the pages and the two model decisions the
 UI depends on — reports as files, and one alert instead of forty-nine.
 
@@ -240,8 +240,10 @@ The reports are table-heavy and structured, so the viewer needs, in priority ord
 Plus `raw` / `download` toggles. Render server-side from the file on request; no build step and no
 cache to invalidate, so a file edited on disk shows up on reload.
 
-**Docmost becomes an optional outlet**, off by default: publish a rendered roll-up for people who
-live in the wiki, but nothing in Touchstone reads it back.
+**Docmost is not an outlet at all** — decided 2026-08-19, superseding an earlier draft that kept a
+roll-up publisher behind a flag. Nothing is published to the wiki and, once the runner is
+in-process, nothing is read from it. The rendered file above is where a report is read, and
+`Store QA — Results` is frozen with a pointer at cutover. See ARCHITECTURE §5.6.
 
 ---
 
