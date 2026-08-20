@@ -1,5 +1,5 @@
 /**
- * Configuration: `data/config.yaml` plus `data/standards/*.yaml`.
+ * Configuration: `data/config.yaml`.
  *
  * Both are optional. Touchstone has to run on a laptop straight after `git clone`, so every
  * value has a default and an absent file is a normal state, not a degraded one. Only the
@@ -22,22 +22,6 @@ import type { Severity } from '../../shared/types.js';
 
 /** Repo root, resolved from this file so cwd never matters. */
 export const REPO_ROOT = fileURLToPath(new NodeURL('../../../', import.meta.url));
-
-export interface Standard {
-  id: string;
-  name: string;
-  version: number;
-  /**
-   * Which section this standard names and versions. Matches a leaf protocol's `id`.
-   *
-   * A section with no standard file is not an error: the runner falls back to the protocol's
-   * own name and version, which is the rubric that actually judged the assay. The file is an
-   * override — it exists so a standard can be versioned independently of the prose.
-   */
-  section: string;
-  /** Anything else the file declares — bench selection policy, and whatever comes next. */
-  [key: string]: unknown;
-}
 
 /**
  * One demo instance a functional assay can install into.
@@ -64,14 +48,8 @@ export interface TouchstoneConfig {
   dataDir: string;
   reportsRoot: string;
   stateDir: string;
-  standardsDir: string;
-  /** The rubric, as local markdown Touchstone owns and edits. */
+  /** The rubric, as local markdown Touchstone owns and edits — and what versions itself. */
   protocolsDir: string;
-  /** Where the importer reads from. */
-  standards: {
-    static: { name: string; version: number };
-    functional: { name: string; version: number };
-  };
   /**
    * The five constants of `Pick next target`, at the values n8n runs today. P3 ports the
    * scheduler against these; changing one here changes both systems' behaviour to differ,
@@ -148,12 +126,7 @@ function defaults(dataDir: string): TouchstoneConfig {
     dataDir,
     reportsRoot: path.join(dataDir, 'reports'),
     stateDir: path.join(dataDir, 'state'),
-    standardsDir: path.join(dataDir, 'standards'),
     protocolsDir: path.join(dataDir, 'protocols'),
-    standards: {
-      static: { name: 'Static Review Protocol', version: 3 },
-      functional: { name: 'Functional Review Protocol', version: 2 },
-    },
     scheduler: {
       armed: false,
       tick_min: 60,
@@ -227,45 +200,7 @@ export async function loadConfig(dataDir?: string): Promise<TouchstoneConfig> {
   // Paths in config.yaml may be relative to the data dir.
   cfg.reportsRoot = path.resolve(dir, cfg.reportsRoot);
   cfg.stateDir = path.resolve(dir, cfg.stateDir);
-  cfg.standardsDir = path.resolve(dir, cfg.standardsDir);
   return cfg;
-}
-
-/**
- * Load every `*.yaml` under the standards dir.
- *
- * A standard is a pointer and a version, not a copy of the rubric: the assay agent fetches
- * the protocol from a wiki at run time, and holding a second copy here would only be a
- * second thing to drift. What Touchstone needs is the version, because every assay records
- * which version judged it (ARCHITECTURE.md principle 6).
- *
- * An absent directory yields an empty list rather than an error — the read API works fine
- * without it; only the runner needs a standard.
- */
-export async function loadStandards(standardsDir: string): Promise<Standard[]> {
-  let names: string[];
-  try {
-    names = (await fs.readdir(standardsDir)).filter((n) => /\.ya?ml$/i.test(n)).sort();
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    return [];
-  }
-  const out: Standard[] = [];
-  for (const name of names) {
-    const parsed = YAML.parse(await fs.readFile(path.join(standardsDir, name), 'utf8')) as unknown;
-    if (!isPlainObject(parsed)) continue;
-    const id = String(parsed.id ?? name.replace(/\.ya?ml$/i, ''));
-    out.push({
-      ...parsed,
-      id,
-      name: String(parsed.name ?? parsed.id ?? name),
-      version: Number(parsed.version ?? 1),
-      // `leg` is the pre-rename spelling; a file that carries neither names its section after
-      // itself, minus the version suffix, which is how `static-v4.yaml` finds `static`.
-      section: String(parsed.section ?? parsed.leg ?? id.replace(/-v\d+$/, '')),
-    });
-  }
-  return out;
 }
 
 /**

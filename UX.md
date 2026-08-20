@@ -41,7 +41,7 @@ the UI is down.
 ## 2. Pages
 
 The chrome follows Newsdesk: a light page, and the whole nav down the left on a desk. Below 860px
-that column becomes a sticky header plus a bottom tab bar — four destinations fit as tabs, so
+that column becomes a sticky header plus a bottom tab bar — five destinations fit as tabs, so
 nothing hides behind a "more" sheet.
 
 ```
@@ -53,6 +53,7 @@ nothing hides behind a "more" sheet.
 │  Protocol    │                                               │
 │              │                                               │
 │ OPERATIONS   │                                               │
+│  Automation  │                                               │
 │  Activity  ● │                                               │
 │  Administrat…│                                               │
 │              │                                               │
@@ -64,8 +65,14 @@ nothing hides behind a "more" sheet.
 └──────────────┴───────────────────────────────────────────────┘
 ```
 
-Four destinations, plus subject detail reached by clicking. Everything else is a filtered view of
-one of these — resist adding a fifth.
+Five destinations, plus subject detail reached by clicking. Everything else is a filtered view of
+one of these — resist adding a sixth.
+
+The fifth was **Automation**, added 2026-08-20, and it is the one page that is not a view of the
+archive: it is a view of the *driver*. That is why it did not fit inside Activity, which was the
+obvious place for it. Activity answers "what happened"; the loop's page answers "what is about to
+happen, and may it". Folding a switch that dispatches work into a log people scroll would put the
+one irreversible control in the app somewhere it is read past.
 
 **The strip above the footer is the run in flight**, and it is the only piece of chrome that is
 not navigation. It appears when an audit starts, on every page, and disappears when the audit
@@ -323,6 +330,66 @@ be *"the demo pool is down"* rather than *"your app is broken"*.
 
 ---
 
+### 2.4 Automation — the loop, and the switch
+
+The scheduler has driven the backlog since P3, decided every hour, and been steerable only by
+editing `config.yaml` and restarting. This page is the control surface for it. Three blocks, in
+the order the questions arrive.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ AUTOMATED MODE                                               │
+│ ● Stopped                                        [  Start  ] │
+│   Nothing is dispatched automatically. Audits still run      │
+│   when you start one by hand.                                │
+├──────────────────────────────────────────────────────────────┤
+│ LAST DECISION                                 [ decide now ] │
+│ ⏳ auditing AIOStreams — never run                            │
+│ 2026-08-20 17:19 · just now · next check in 59m              │
+│ ┌────────┬─────────┬──────────┬────────┬────────┬──────────┐ │
+│ │BACKLOG │ NEXT UP │ COOLDOWN │ CHECKS │ RE-AUD │ GIVES UP │ │
+│ │66 of 69│AIOStream│ clear    │  60m   │   7d   │ 3 tries  │ │
+│ └────────┴─────────┴──────────┴────────┴────────┴──────────┘ │
+├──────────────────────────────────────────────────────────────┤
+│ QUEUE  69                                                    │
+│  1  AIOStreams      never audited      no result on file     │
+│  2  AnnasTorrents   never audited      no result on file     │
+│  ·  Caddy           recently audited   last 2026-08-19 11:04 │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**The switch reads as a state first and a button second.** "Running" or "Stopped" is what the eye
+lands on; the button says what pressing it would change to. Stopped carries `--unknown`, never
+`--crit`: it is the shipped default and a perfectly good state, and painting it as a fault teaches
+people to arm the loop to make the page stop shouting.
+
+**Stop means "claim nothing further" — never "abandon the run".** When an audit is in flight the
+page says so before the button is pressed, because the other reading is that Stop kills it. Tearing
+a run down mid-flight burns a try (principle 3 gives it back only for infra conditions), orphans
+the ledger token the agent is still writing against, and holds the claim until `lease_min` expires.
+
+**`runner.enabled` is a second switch and stays one.** An armed scheduler with a disabled runner
+claims a subject and is told the runner is off — a real state, and the page names it rather than
+letting someone press Start and watch nothing happen. Start does not turn the runner on, because
+that switch also gates hand-run audits and a start button that quietly enabled the manual path
+would be doing something nobody asked for.
+
+**The queue lists every app, not just the backlog.** "Why is my app not being tested" is the
+question this page exists to answer, and an app missing from the list answers nothing: a subject
+with no position carries the reason it has none — recently audited, parked, or being audited now.
+The order is the pick's own, derived from the same `plan()` the scheduler decides with, so position
+1 is the app the next unblocked tick claims rather than a second guess at it.
+
+**Pressing Start decides immediately** rather than waiting for the top of the hour, so the button
+either produces a claim or says in one clause why it did not. An hour of silence is not an answer.
+
+**Cadence is shown, not editable.** The six facts come from `config.yaml`, and the note under them
+says the one thing the numbers do not: a full pass is *n* apps at `cooldown_min` apart, and the
+loop idles once everything is fresher than `fresh_days`. Wanting a perpetual carousel means
+lowering `fresh_days`, not adding a mode — the pick stays the pure n8n port it is diffed against.
+
+---
+
 ## 3. Reports as files
 
 Docmost stops being storage. Layout inside the data dir:
@@ -378,6 +445,8 @@ These matter more than usual, because the system's normal condition includes "la
 | Agent busy | Log row and a `agent.unavailable` alert if it persists. The row is restored, not failed. |
 | Report file missing | The section card still renders from the index; the report pane says the file is gone and offers a re-assay. |
 | Beacon or push down | Everything still renders. Undelivered notifications are marked in the log. |
+| No scheduler wired up | Automation says so and offers no button. `armed: null` is not `armed: false` — one has a Start button and the other has nothing to start. |
+| Automation not refreshing | A notice, and the page keeps its last state: this is the view, not the driver, and the loop carries on. |
 
 ---
 

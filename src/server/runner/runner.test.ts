@@ -8,11 +8,6 @@ import type { BenchProber } from '../services/bench.js';
 import { classify, extractText } from './agent.js';
 import { Runner, type RunnerOptions } from './index.js';
 
-const STANDARDS = [
-  { id: 'static-v3', section: 'static', name: 'Static Review Protocol', version: 3 },
-  { id: 'functional-v2', section: 'functional', name: 'Functional Review Protocol', version: 2 },
-];
-
 /**
  * The protocol, as two sections — which is now the *only* thing that says what a run is made
  * of. `requires` is what used to be `depth: full`: the runner probes those capabilities and
@@ -105,7 +100,6 @@ function make(over: Partial<RunnerOptions> = {}, answers: string[] = [sse(agentJ
   return new Runner({
     enabled: true,
     reportsRoot: path.join(dir, 'reports'),
-    standards: STANDARDS,
     protocols: protocolsOf(),
     // Both capabilities available by default. An *absent* prober is not "we could not check"
     // — it is a capability nothing can satisfy, and the sections needing it are blocked.
@@ -273,9 +267,9 @@ describe('a run that produces a verdict', () => {
     expect(files.filter((f) => f.endsWith('-licensing.md'))).toHaveLength(1);
   });
 
-  /** Principle 6, without a standards file: the rubric that judged it is the protocol. */
-  it('stamps a section with no standard file from its protocol', async () => {
-    await make({ standards: [] }).run({ subject: 'Tuwunel', try_n: 1 });
+  /** Principle 6: the rubric that judged an assay is the protocol, and it versions itself. */
+  it('stamps a section from its own protocol', async () => {
+    await make().run({ subject: 'Tuwunel', try_n: 1 });
     const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
     const body = await fs.readFile(
       path.join(dir, 'reports', 'Tuwunel', files.find((f) => f.endsWith('-static.md'))!),

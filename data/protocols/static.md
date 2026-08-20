@@ -54,8 +54,6 @@ requirements:
     text: architectures
   - id: declared-folders
     text: directories needing PUID:PGID ownership are declared under x-compose-app.folders
-imported_from: docmost:LPwfKYUVig
-imported_at: 2026-08-19
 ---
 
 > **Reusable leaf — output-neutral.** Source of truth for the *static / compose-level* checks of an AppStore app. Consumed by the **AppStore PR Review** and **AppStore App Audit** orchestrators, which own ALL formatting, labels, and publishing. **Do not put GitHub-label names, PR-comment templates, or Docmost wiring in this page** — that is the orchestrator's job. Repo-agnostic (works for any `<repo>` that follows the AppStore `CONTRIBUTING.md` conventions). Last updated 2026-06-25.
@@ -187,3 +185,30 @@ whichever form the app ships.
 `AppData/.backups/<app>/<stamp>` on uninstall, and can restore it. That is a *platform*
 guarantee and does **not** relax §B: the archive carries the app folder, so state the app keeps
 **outside** its mapped volumes is still lost on a reinstall, and is still a data-loss finding.
+
+---
+
+## Local amendment — Touchstone (2026-08-20) — BINDING, supersedes §Output and §Guardrails where they conflict
+
+**There is no orchestrator in Touchstone.** (*AppStore PR Review* still is one, in n8n, against
+the Docmost copies of these leaves — it is not affected by anything here.) This protocol used to
+be one leaf of *AppStore App Audit*, which
+folded the two leaves' neutral results into a verdict and published them to a wiki. That
+document is gone: Touchstone records each requirement as the agent settles it and composes the
+assay itself. Four consequences, and they override anything above that conflicts:
+
+1. **Record as you go; do not return a result block.** The `{ items, static_verdict, scope,
+   opinions }` shape in §Output is superseded. Call `touchstone__list_requirements` first, then
+   `touchstone__record_requirement` the moment each item is settled — `pass`, `fail`, `n-a` or
+   `unverified`, carrying a `severity` from §C on every `fail`. Nothing is held back to the end:
+   a run that dies at item twelve keeps twelve results.
+2. **There is no `flagged`, and `blocked` is not yours to use.** An item you could not fully
+   analyse is `unverified` — never `pass`, and never the §Guardrails downgrade to `flagged`.
+   In Touchstone `blocked` is a statement about the *environment*: it means the assay could not
+   be attempted at all. It is never a way to say an item failed.
+3. **`scope` is always `n-a`.** There is no diff and no base ref — the subject is the app as it
+   stands on `main`.
+4. **Write this section's prose under a `## Tech & Documentation` heading**, and put what is not
+   an item — opinions, confidence, anything worth a human's eye — in that prose. The headline
+   `verdict`, `severity` and `risk_score` belong to the JSON object the prompt asks for, and to
+   the gate the caller applies to what you recorded; they are not this protocol's to state.

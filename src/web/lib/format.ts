@@ -20,6 +20,23 @@ export function since(isoStr: string | null | undefined, now = Date.now()): stri
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/**
+ * The same scale, forwards — `in 57m`. `since` clamps the future to "just now", which is
+ * right for a timestamp that cannot be in the future and wrong for the one that always is:
+ * when the scheduler next wakes up.
+ */
+export function until(isoStr: string | null | undefined, now = Date.now()): string {
+  if (!isoStr) return '—';
+  const t = new Date(isoStr).getTime();
+  if (!Number.isFinite(t)) return '—';
+  const s = Math.floor((t - now) / 1000);
+  if (s <= 30) return 'due now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `in ${h}h ${m % 60}m` : `in ${Math.floor(h / 24)}d`;
+}
+
 /** `2d 4h` — a duration, as used by the environment banner. */
 export function duration(fromIso: string | null | undefined, now = Date.now()): string {
   if (!fromIso) return '—';

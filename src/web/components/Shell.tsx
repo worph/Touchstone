@@ -8,11 +8,11 @@ import RunningStrip, { RunTitle } from './RunningStrip';
 const BADGE_MS = 30_000;
 
 /**
- * Four destinations: the three of UX.md §2 plus the administrator chat. The badge on Activity counts open alerts and unread
+ * Five destinations: the three of UX.md §2, the administrator chat, and the loop's own page. The badge on Activity counts open alerts and unread
  * error rows — nothing else, deliberately.
  *
  * Grouped in the sidebar the way the app divides: the standard and what it is measured against on top, what the machine is
- * doing underneath. With only four there is nothing to hide behind a "more" sheet, so the phone gets all four as tabs.
+ * doing underneath. With only five there is nothing to hide behind a "more" sheet, so the phone gets all five as tabs.
  */
 const NAV: { group: string; items: NavItem[] }[] = [
   {
@@ -27,6 +27,8 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Operations',
     items: [
+      // The loop that drives everything under it, above the log of what it did.
+      { to: '/automation', label: 'Automation' },
       { to: '/activity', label: 'Activity', badge: true },
       { to: '/chat', label: 'Administrator' },
     ],
@@ -213,6 +215,15 @@ const GLYPH: Record<string, ReactNode> = {
       <path d="M14 3v5h5" />
       <path d="M9 13h6" />
       <path d="M9 17h4" />
+    </>
+  ),
+  // a loop: the queue coming round again
+  '/automation': (
+    <>
+      <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 7.5 4" />
+      <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-7.5-4" />
+      <path d="M20 3v4h-4" />
+      <path d="M4 21v-4h4" />
     </>
   ),
   // a speech bubble: the chat

@@ -1,6 +1,6 @@
 /**
- * `GET /schedule` and `POST /schedule/tick` — what the driver thinks, and a way to ask it
- * to think again.
+ * `GET /schedule`, `POST /schedule/arm` and `POST /schedule/tick` — what the driver thinks,
+ * a switch for whether it may act on it, and a way to ask it to think again.
  *
  * This exists for shadow mode before it exists for the UI. The whole validation technique
  * for phase 1 is comparing our pick against n8n's `- **State:**` line, and that comparison
@@ -14,23 +14,45 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 
+import type { ScheduleResponse } from '../../shared/schedule.js';
 import type { Scheduler } from '../scheduler/index.js';
+import type { Runner } from '../runner/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
 
 export interface ScheduleRoutesOptions {
   scheduler?: Scheduler;
   registry?: SubjectRegistry;
+  /**
+   * Read for one field. The page has to be able to say "armed, but the runner is off"
+   * *before* someone presses start, and the alternative — a second fetch the page joins by
+   * hand — puts the precondition and the switch on different clocks.
+   */
+  runner?: Runner;
 }
 
 const routes: FastifyPluginAsync<ScheduleRoutesOptions> = async (app, options) => {
-  const answer = () => {
+  const answer = async (): Promise<ScheduleResponse> => {
     const snap = options.scheduler?.snapshot();
     return {
       // Absent rather than false when there is no scheduler at all, so "disarmed" and
       // "not wired up" cannot be confused on the page that reports it.
       armed: snap?.armed ?? null,
+      armed_default: snap?.armed_default ?? null,
+      armed_source: snap?.armed_source ?? 'config',
+      runner_enabled: options.runner ? options.runner.enabled : null,
       last_tick: snap?.last_tick ?? null,
+      next_tick_at: snap?.next_tick_at ?? null,
       last_finished_at: snap?.last_finished_at ?? null,
+      cooldown_left_min: snap?.cooldown_left_min ?? 0,
+      constants: snap?.constants ?? {
+        tick_min: 0,
+        fresh_days: 0,
+        stuck_days: 0,
+        lease_min: 0,
+        cooldown_min: 0,
+        max_tries: 0,
+      },
+      queue: (await options.scheduler?.previewQueue()) ?? [],
       subjects: snap?.subjects ?? {},
       registry: {
         count: options.registry?.list().length ?? 0,
@@ -42,11 +64,31 @@ const routes: FastifyPluginAsync<ScheduleRoutesOptions> = async (app, options) =
 
   app.get('/schedule', async () => answer());
 
+  /**
+   * Start or stop automated mode.
+   *
+   * Stopping does not touch the audit in flight — see `Scheduler.setArmed`. It also does not
+   * touch `runner.enabled`: that switch gates hand-run assays too, and a start button that
+   * quietly turned the manual path on as well would be doing something nobody asked for.
+   */
+  app.post<{ Body?: { armed?: unknown } }>('/schedule/arm', async (req, reply) => {
+    if (!options.scheduler) return reply.code(503).send({ error: 'No scheduler is wired up.' });
+    const armed = req.body?.armed;
+    if (typeof armed !== 'boolean') {
+      return reply.code(400).send({ error: 'Send { "armed": true } or { "armed": false }.' });
+    }
+    await options.scheduler.setArmed(armed);
+    // Decide immediately on start, so pressing the button either produces a claim or says
+    // in one sentence why it did not. An hour of silence is not an answer.
+    if (armed) await options.scheduler.tick();
+    return answer();
+  });
+
   app.post<{ Body?: { forced?: string[] } }>('/schedule/tick', async (req) => {
-    if (!options.scheduler) return { ...answer(), ran: false };
+    if (!options.scheduler) return { ...(await answer()), ran: false };
     const forced = Array.isArray(req.body?.forced) ? req.body.forced.filter((s) => typeof s === 'string') : undefined;
     const decision = await options.scheduler.tick({ forced });
-    return { ...answer(), ran: true, decision };
+    return { ...(await answer()), ran: true, decision };
   });
 };
 

@@ -18,6 +18,7 @@ import type {
   PushStatus,
   RunStatus,
 } from '@shared/activity';
+import type { ScheduleResponse } from '@shared/schedule';
 import type { SubjectDetail } from '../types';
 
 const BASE = '/api/v1';
@@ -165,6 +166,27 @@ export function getBenches(): Promise<BenchesResponse> {
 /** The `probe` / `probe all` buttons. Safe to press repeatedly — the server coalesces. */
 export function probeBenches(): Promise<BenchesResponse> {
   return post<BenchesResponse>('/benches/probe');
+}
+
+/** Automated mode: the switch, the queue, and what the last tick decided. */
+export function getSchedule(): Promise<ScheduleResponse> {
+  return get<ScheduleResponse>('/schedule');
+}
+
+/**
+ * Start or stop automated mode.
+ *
+ * The response is the fresh state, so the page never has to guess what the switch did — on
+ * start the server has already run a tick by the time this resolves, and `last_tick` says
+ * whether it claimed anything or why it did not.
+ */
+export function setArmed(armed: boolean): Promise<ScheduleResponse> {
+  return post<ScheduleResponse>('/schedule/arm', { armed });
+}
+
+/** Decide now rather than at the top of the hour. Claims only if armed. */
+export function tickNow(): Promise<ScheduleResponse> {
+  return post<ScheduleResponse>('/schedule/tick');
 }
 
 async function put<T>(path: string, body: unknown): Promise<T> {

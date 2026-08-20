@@ -9,6 +9,7 @@ import './styles/markdown.css';
 import Shell from './components/Shell';
 import { EmptyState } from './components/Ui';
 import Activity from './pages/Activity';
+import Automation from './pages/Automation';
 import Protocols from './pages/Protocols';
 import AdminChat from './pages/AdminChat';
 import Overview from './pages/Overview';
@@ -25,6 +26,7 @@ createRoot(root).render(
           <Route path="/" element={<Overview />} />
           <Route path="/s/:name" element={<SubjectDetail />} />
           <Route path="/activity" element={<Activity />} />
+          <Route path="/automation" element={<Automation />} />
           <Route path="/protocol" element={<Protocols />} />
           <Route path="/chat" element={<AdminChat />} />
           <Route path="/subjects" element={<Navigate to="/" replace />} />
@@ -36,7 +38,7 @@ createRoot(root).render(
                 <EmptyState
                   glyph="⌕"
                   title="No such page"
-                  sub="Touchstone has three: the overview, a subject, and activity."
+                  sub="Touchstone has the overview, a subject, automation, activity and the administrator."
                 />
               </div>
             }

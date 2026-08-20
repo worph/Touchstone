@@ -20,7 +20,6 @@ import { ProtocolStore } from './store/protocols.js';
 import { RunLedger } from './services/ledger.js';
 import { ChatThreads } from './chat/thread.js';
 import { CHAT_TOOLS } from './chat/registry.js';
-import { loadStandards } from './store/config.js';
 
 const PORT = Number(process.env.TOUCHSTONE_PORT ?? 8080);
 const HOST = process.env.TOUCHSTONE_HOST ?? '0.0.0.0';
@@ -141,18 +140,9 @@ const protocols = new ProtocolStore(cfg.protocolsDir);
  */
 const ledger = new RunLedger({ events });
 
-/**
- * The standards, by section — an override over what each protocol file says about itself.
- *
- * Absent is not fatal any more: the section's own protocol supplies the name and the version
- * that judged it, which is principle 6 satisfied by the rubric rather than by a second file
- * that has to be kept in step with it.
- */
-const standards = await loadStandards(cfg.standardsDir);
 const runner = new Runner({
   enabled: cfg.runner.enabled,
   reportsRoot: cfg.reportsRoot,
-  standards,
   events,
   index: store,
   prober,

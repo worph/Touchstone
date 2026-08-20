@@ -30,7 +30,6 @@ import path from 'node:path';
 import type { AssayRecord, Section } from '../../shared/types.js';
 import type { LastRun, RunLive, RunOutcome } from '../../shared/activity.js';
 import { assaysFromAgentReport, type AssaySection } from '../domain/assay.js';
-import type { Standard } from '../store/config.js';
 import type { ReportIndex } from '../store/index.js';
 import { writeReport } from '../store/reports.js';
 import type { BenchProber } from '../services/bench.js';
@@ -68,14 +67,6 @@ export interface RunnerOptions {
   /** False means refuse every job and say so. The default, until reviewed. */
   enabled: boolean;
   reportsRoot: string;
-  /**
-   * Standards by section — an override, not a requirement.
-   *
-   * A section with no entry here is named and versioned by its own protocol file, which is
-   * the rubric that actually judged it. The files exist so a standard can carry a version
-   * that moves independently of the prose.
-   */
-  standards?: Standard[];
   events: EventLog;
   index?: ReportIndex;
   prober?: BenchProber;
@@ -436,20 +427,16 @@ export class Runner {
   }
 
   /**
-   * A section, plus the standard that names and versions it.
-   *
-   * The protocol is the fallback and the standard file is the override — a section with no
-   * file is still stamped with a rubric and a version, which is principle 6, rather than
-   * refusing to run for want of a two-line YAML file.
+   * A section, plus the standard that names and versions it — which is the protocol file
+   * itself. There is no second file to override it: one that carried its own version could
+   * only ever disagree with the rubric it claimed to version, and did (`static-v4.yaml` was
+   * still stamping assays v4 after the protocol had been edited to v5).
    */
   private assaySection(section: ProtocolSection): AssaySection {
-    const standard = (this.opts.standards ?? []).find((s) => s.section === section.id);
     return {
       id: section.id,
       name: section.name,
-      standard: standard
-        ? { name: standard.name, version: standard.version }
-        : { name: section.name, version: section.version },
+      standard: { name: section.name, version: section.version },
       phases: section.phases.map((p) => p.id),
       headings: section.headings,
     };

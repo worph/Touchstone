@@ -82,7 +82,11 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     boardUrl: options.boardUrl,
   });
   await app.register(pushRoutes, { push: options.push });
-  await app.register(scheduleRoutes, { scheduler: options.scheduler, registry: options.registry });
+  await app.register(scheduleRoutes, {
+    scheduler: options.scheduler,
+    registry: options.registry,
+    runner: options.runner,
+  });
   await app.register(mcpRoutes, { ledger: options.ledger });
   await app.register(protocolRoutes, { protocols: options.protocols, events: options.events });
   await app.register(chatRoutes, {

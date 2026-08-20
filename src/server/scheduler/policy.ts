@@ -19,6 +19,13 @@
  */
 
 import type { Leg } from '../../shared/types.js';
+import type {
+  QueueRow,
+  QueueState,
+  Reclaim,
+  SubjectSchedule,
+  TickDecision,
+} from '../../shared/schedule.js';
 
 export interface SchedulerConstants {
   fresh_days: number;
@@ -26,35 +33,6 @@ export interface SchedulerConstants {
   lease_min: number;
   cooldown_min: number;
   max_tries: number;
-}
-
-/**
- * Per-subject scheduling state — the part of n8n's wiki row that is *policy* rather than
- * verdict.
- *
- * The verdict, tier and risk live in the assay's own frontmatter (principle 3) and are read
- * from the archive. What is left is the bookkeeping n8n encodes in the row's prose: how many
- * consecutive attempts errored, whether the subject is parked, and who holds the claim.
- * Keeping it here rather than in `AssayMeta` is the deliberate divergence from the matrix
- * note on row B6: a try counter is not a property of an assay, it is a property of the
- * scheduler's opinion about a subject.
- */
-export interface SubjectSchedule {
-  /** Consecutive errored attempts. Reset to 0 by any completion that is not an error. */
-  try_n: number;
-  /** Set when `try_n` reached `max_tries`. Released after `stuck_days`. */
-  parked_at?: string;
-  /** The open claim, if this subject holds one. */
-  claim?: { since: string; try_n: number };
-  /**
-   * This row was read off n8n's roll-up rather than recorded by us — see `adopt.ts`.
-   *
-   * It is what lets a later import correct an earlier one. Without the marker, the first
-   * adoption counts as "state we hold" and blocks every subsequent adoption, so a subject
-   * adopted as `try 2` from a stale page could never be updated to `stuck`. Found by
-   * running it: one park adopted where the roll-up listed a dozen.
-   */
-  from_rollup?: true;
 }
 
 export interface PolicyInput {
@@ -73,28 +51,6 @@ export interface PolicyInput {
   benchAvailable: boolean;
   /** Why not, for the reason string. Never an error object; one clause a human reads. */
   benchNote?: string;
-}
-
-export interface Reclaim {
-  subject: string;
-  /** `parked` when the reclaim exhausted the last try, `retry` when tries remain. */
-  outcome: 'retry' | 'parked';
-  try_n: number;
-}
-
-export interface TickDecision {
-  action: 'audit' | 'idle';
-  subject?: string;
-  /** One clause, in n8n's wording, so the two systems' State lines compare by eye. */
-  reason: string;
-  /** How many subjects are stale or never run — the roll-up's Backlog figure. */
-  backlog: number;
-  /** Leases that had expired and were released this tick. */
-  reclaimed: Reclaim[];
-  /** Subjects whose park expired this tick and are eligible again. */
-  unparked: string[];
-  /** The try this attempt would be, when `action` is `audit`. */
-  try_n?: number;
 }
 
 const DAY_MS = 86_400_000;
@@ -162,12 +118,21 @@ function reclaimExpired(
 }
 
 /**
- * Decide what this tick does.
+ * Everything that happens before the pick: release expired claims, release served parks, and
+ * work out who is eligible and in what order.
  *
- * Pure: same input, same output, no clock and no I/O of its own. `now` is a parameter for
- * exactly that reason.
+ * Split out of `decide` so the automated-mode page can show the *queue* — the order the
+ * backlog would actually be worked in — without a second, drifting copy of the eligibility
+ * rules. `decide` still calls it first and behaves exactly as it did; `queue` calls it and
+ * stops there. One set of rules, two readers.
  */
-export function decide(input: PolicyInput): TickDecision {
+function plan(input: PolicyInput): {
+  schedule: Record<string, SubjectSchedule>;
+  reclaimed: Reclaim[];
+  busy?: { subject: string; since: string };
+  unparked: string[];
+  eligible: string[];
+} {
   const { constants, now } = input;
   const { schedule, reclaimed, busy } = reclaimExpired(input.schedule, input);
 
@@ -210,6 +175,19 @@ export function decide(input: PolicyInput): TickDecision {
     if (!Number.isNaN(d) && d !== 0) return d;
     return input.subjects.indexOf(a) - input.subjects.indexOf(b);
   });
+
+  return { schedule, reclaimed, busy, unparked, eligible };
+}
+
+/**
+ * Decide what this tick does.
+ *
+ * Pure: same input, same output, no clock and no I/O of its own. `now` is a parameter for
+ * exactly that reason.
+ */
+export function decide(input: PolicyInput): TickDecision {
+  const { constants, now } = input;
+  const { schedule, reclaimed, busy, unparked, eligible } = plan(input);
 
   const base = {
     backlog: eligible.length,
@@ -268,6 +246,67 @@ export function decide(input: PolicyInput): TickDecision {
   };
 }
 
+/**
+ * The whole registry, backlog first, in the order the loop would work it.
+ *
+ * Pure, and derived from the same `plan()` the pick uses — so the row at position 1 is the
+ * app the next unblocked tick audits, not a second guess at it. Subjects that are *not*
+ * eligible are still listed, because "why is my app not being tested" is the question this
+ * page exists to answer, and an app missing from the list answers nothing.
+ *
+ * It reports no cooldown, no bench gate and no armed state. Those decide *when* the queue
+ * moves, not what is in it, and folding them in here would make an idling loop look like an
+ * empty backlog.
+ */
+export function queue(input: PolicyInput): QueueRow[] {
+  const { constants, now } = input;
+  const { schedule, eligible } = plan(input);
+  const position = new Map(eligible.map((subject, i) => [subject, i + 1]));
+
+  const rows = input.subjects.map((subject): QueueRow => {
+    const row = schedule[subject];
+    const last = input.lastDoneAt[subject];
+    const days = last ? daysSince(last, now) : undefined;
+
+    let state: QueueState;
+    if (row?.claim) state = 'running';
+    else if (row?.parked_at) state = 'parked';
+    else if ((row?.try_n ?? 0) > 0) state = 'retry';
+    else if (!last) state = 'never';
+    else state = daysSince(last, now) >= constants.fresh_days ? 'due' : 'fresh';
+
+    return {
+      subject,
+      state,
+      ...(position.has(subject) ? { position: position.get(subject)! } : {}),
+      ...(last ? { last_done_at: last } : {}),
+      ...(days !== undefined && Number.isFinite(days) ? { days: Math.round(days * 10) / 10 } : {}),
+      try_n: row?.try_n ?? 0,
+      ...(row?.parked_at ? { parked_at: row.parked_at } : {}),
+      ...(row?.claim ? { claim_since: row.claim.since } : {}),
+    };
+  });
+
+  // Eligible rows in queue order, then everyone else in registry order. Sorting the whole
+  // list by staleness would bury the running subject somewhere in the middle.
+  return rows.sort((a, b) => {
+    if (a.position && b.position) return a.position - b.position;
+    if (a.position) return -1;
+    if (b.position) return 1;
+    return 0;
+  });
+}
+
+/** Minutes of cooldown left before another audit may start. 0 once it is clear. */
+export function cooldownLeftMin(input: {
+  now: Date;
+  cooldown_min: number;
+  lastFinishedAt?: string;
+}): number {
+  if (!input.lastFinishedAt) return 0;
+  return Math.max(0, Math.ceil(input.cooldown_min - minutesSince(input.lastFinishedAt, input.now)));
+}
+
 /** The State line, worded as n8n words it, so the two can be compared by eye. */
 export function stateLine(decision: TickDecision): string {
   return decision.action === 'audit'
@@ -276,3 +315,7 @@ export function stateLine(decision: TickDecision): string {
 }
 
 export type { Leg };
+// Re-exported so every existing importer keeps its one import of the scheduler's own
+// vocabulary. The definitions live in `shared/` because the automated-mode page renders
+// them, and a second copy of `TickDecision` would drift from this one within a release.
+export type { Reclaim, SubjectSchedule, TickDecision } from '../../shared/schedule.js';

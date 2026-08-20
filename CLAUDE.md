@@ -85,8 +85,7 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | Path | What |
 | --- | --- |
 | `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile` |
-| `standards/*.yaml` | name and version per section — an *override*; a section with no file is named and versioned by its protocol |
-| `protocols/*.md` | **the rubric itself**, and the definition of the sections: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads |
+| `protocols/*.md` | **the rubric itself**, the definition of the sections, and the version every assay records: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads. There is no separate `standards/` — a second file could only disagree with the rubric it versioned |
 | `reports/<Subject>/<ISO>-<section>.md` | **the assay record IS the frontmatter of the report file** |
 | `state/*.json`, `events.jsonl` | small mutable runtime state and the append-only log |
 | `state/index.json` | cache only — deleting it must always be safe |
@@ -133,8 +132,8 @@ because its data access was smeared through two 200-line n8n Code nodes.
   API (`registry.ts`), and the agent call (`driver.ts`) reusing `postToAgent` from the runner.
   `prompt.md` is an asset — `build:api` copies it into `dist/`, so a new non-TS file there
   needs the same treatment.
-- **`src/web/`** — React + Vite SPA, four pages (Overview, Subject detail, Activity,
-  Administrator chat) plus Protocols. `src/web/data/client.ts` is the only thing that talks to the API,
+- **`src/web/`** — React + Vite SPA, five pages (Overview, Subject detail, Automation,
+  Activity, Administrator chat) plus Protocols. `src/web/data/client.ts` is the only thing that talks to the API,
   and `data/runStatus.ts` is the **single poller** for the run in flight — the shell strip, the
   Overview's `◴ running` cells, Activity's card and the re-assay button all subscribe to it rather
   than polling `/assays/current` themselves. `@shared/*` aliases
@@ -179,6 +178,9 @@ because its data access was smeared through two 200-line n8n Code nodes.
 
 - `scheduler.armed: false` — the tick still runs, decides and logs every hour, but claims and
   dispatches nothing. That dry run is the point: its pick is diffed against the live n8n loop's.
+  Since 2026-08-20 it is also settable at runtime from the Automation page, which persists an
+  **override** into `state/schedule.json`; absent, the config value stands. Stopping means "claim
+  nothing further" and deliberately leaves the audit in flight alone.
 - `runner.enabled: false` — refuses every job and says so. Validation is a **single hand-run assay**
   through `POST /api/v1/assays`, never a loop: `AppStore PR Review` is still in n8n on the same
   agent endpoint and two systems auditing at once contend for it.
