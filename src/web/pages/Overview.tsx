@@ -167,6 +167,7 @@ export default function Overview() {
             }
           />
         ) : (
+          <div className="tbl-wrap">
           <table className="tbl">
             <thead>
               <tr>
@@ -183,6 +184,7 @@ export default function Overview() {
               {rows.map((s) => <Row key={s.name} s={s} />)}
             </tbody>
           </table>
+          </div>
         )}
         <StatusLegend />
       </div>
