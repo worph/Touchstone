@@ -18,7 +18,7 @@ import type { DisplayState } from '../types';
 import { displayState } from '../lib/status';
 
 interface Props {
-  /** The latest assay for this leg, or null when the leg has never been assayed. */
+  /** The latest assay for this section, or null when it has never been assayed. */
   record?: AssayRecord | null;
   /** Pre-derived state, for callers that are not rendering an assay (findings). */
   state?: DisplayState;

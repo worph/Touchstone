@@ -261,7 +261,13 @@ assay can act on another assay's page and record the result as its own.
    deleting the cache is always safe. There is no database. Docmost stops being storage.
 3. **The agent's headline is authoritative.** The verdict, tier and risk score come from what the
    assay declared, parsed once. Nothing re-derives them from prose.
-4. **Legs are independent.** One unavailable resource degrades one leg.
+4. **Sections are independent, and the set of them is data.** One unavailable resource costs
+   exactly the sections that declared they need it; the rest of the run proceeds and each blocked
+   section is recorded on its own. A section is a leaf protocol file — `data/protocols/<id>.md` —
+   so adding one is an edit to `data/`, not to the code. (Until 2026-08-20 this read "legs are
+   independent" and there were exactly two, `static` and `functional`, hard-coded in the type
+   system and branched on through a `depth: static | full` parameter. Both are gone: `section` is
+   an open string, and a run always attempts everything the protocol declares.)
 5. **No infra condition consumes a subject's retry budget or produces a verdict about the
    subject.** Generalised from the existing `agent-busy` handling to benches, browsers and the
    agent alike.
@@ -295,13 +301,22 @@ subject
   -- derived from the GitHub contents API; only overrides are authored
 
 -- WHAT IT IS JUDGED AGAINST ---------------------------------------------
+protocol   -- data/protocols/<id>.md; a `leaf` IS a section definition
+  id, name, version, kind, order, requires, phases, report_headings, requirements
+  -- kind      ∈ orchestrator | leaf
+  -- order     decides report order and which section carries the run's headline verdict
+  -- requires  the capabilities it cannot run without — bench, browser. This replaced `depth`.
+  -- phases    its fixed steps, if it has any; the UI track and the prompt both read this list
+
 standard
-  name, version, leg
-  -- leg ∈ static | functional; two documents, two versions
+  name, version, section
+  -- section = the id of a leaf protocol; an OVERRIDE over what that protocol says about
+  --   itself, so a section with no standard file is still named and versioned
 
 -- WHAT HAPPENED ---------------------------------------------------------
 assay                        -- the frontmatter of a report file IS this record
-  subject, leg, standard, standard_version,
+  subject, section, standard, standard_version,
+  -- `leg` on any file written before 2026-08-20; filled into `section` on read
   status, verdict, top_severity, risk_score,
   try_n, trigger, bench, browser, lease_until,
   subject_ref, commit, images, report body,
@@ -325,7 +340,7 @@ alert      -- a deduplicated environment condition; one outage is ONE row
   -- state ∈ open | resolved
 
 -- DERIVED ---------------------------------------------------------------
-hallmark   -- view: the latest done assay per (subject, leg)
+hallmark   -- view: the latest done assay per (subject, section)
 ```
 
 There is no `finding` entity and no `rule` entity. A finding is prose inside the report body, as
@@ -335,7 +350,8 @@ it is today. §1.4 G explains why.
 
 | Entity | Storage |
 | --- | --- |
-| `standard` | `standards/*.yaml` — name, version, leg, and the prompt fragment |
+| `standard` | `standards/*.yaml` — name and version per section, overriding the protocol's own |
+| `protocol` | `protocols/*.md` — the rubric, and the definition of the sections |
 | `subject` | GitHub contents API + overrides in `config.yaml` |
 | `assay` | **frontmatter of the report file** — the record and the artefact are one thing |
 | `bench`, `browser` | `state/benches.json`, `state/browsers.json` — re-probed at boot anyway |
@@ -349,7 +365,7 @@ log. That is the argument for having no database.
 ### Reports accumulate; nothing reads history
 
 Writing a timestamped file per assay means old reports stay on disk. That is a property of files,
-not a feature: **nothing in the product reads more than the latest assay per `(subject, leg)`.**
+not a feature: **nothing in the product reads more than the latest assay per `(subject, section)`.**
 There is no history view and no regression detection — §1.4 G. The old files cost nothing, are
 greppable, and are there if a question is ever asked of them.
 
@@ -383,8 +399,10 @@ Owns everything `Pick next target` and `Record result` own today: registry refre
 freshness, cooldown, lease claim and reclaim, try accounting, parking, and the completion stamp.
 Runs on a timer in-process. Rows A1–A4, B1–B9, C1–C2, E1–E7.
 
-Per-leg policy: static eligibility uses the long freshness window and needs no bench; functional
-uses a shorter one and is gated on bench health.
+There is no per-section policy and no per-section backlog: the scheduler picks a *subject*, and
+the runner decides which sections that subject's audit can actually run. A subject is as fresh as
+its most recently completed section (`ReportIndex.sections()`), which is why a protocol gaining a
+section does not silently make every subject look stale.
 
 ### 5.2 Runner
 
@@ -600,7 +618,7 @@ The exported copies carry `imported_from: docmost:<slug>` as provenance. Nothing
 
 ### 5.6 Reports and outlets
 
-An assay writes one markdown file under `<data>/reports/<subject>/<iso>-<leg>.md`, frontmatter
+An assay writes one markdown file per section under `<data>/reports/<subject>/<iso>-<section>.md`, frontmatter
 carrying the structured verdict, body carrying the report verbatim. That file is the archive of
 record: sortable, greppable, backed up with the rest of the data dir, readable without the app.
 
@@ -636,7 +654,7 @@ n8n, which §9 explains.
 | `GET` | `/api/v1/subjects` | registry + current hallmark, both legs |
 | `GET` | `/api/v1/subjects/:name` | one subject, both legs, latest assay each |
 | `GET` | `/api/v1/reports/:subject/:file` | the markdown file, rendered and raw |
-| `POST` | `/api/v1/assays` | request an assay now (subject, leg) — the re-assay button |
+| `POST` | `/api/v1/assays` | request an assay now (subject) — the re-assay button. No depth: a run covers every section |
 | `GET` | `/api/v1/benches` | pool health, last probe |
 | `GET` | `/api/v1/events` | the log feed, filterable by level and category |
 | `GET` | `/api/v1/alerts` | open alerts for the Activity page |

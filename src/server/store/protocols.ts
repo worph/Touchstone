@@ -24,13 +24,44 @@ import path from 'node:path';
 import YAML from 'yaml';
 
 export interface ProtocolMeta {
+  /**
+   * The protocol id, and — for a leaf — **the section id**: the value that lands in an
+   * assay's frontmatter, names its file and labels its column. There is no separate
+   * registry of sections; adding `data/protocols/security.md` adds a section.
+   */
   id: string;
   name: string;
   version: number;
-  /** `orchestrator` composes; a `leaf` is one half of the work. */
+  /** `orchestrator` composes; a `leaf` is one section of the work. */
   kind: 'orchestrator' | 'leaf';
-  leg?: 'static' | 'functional';
-  /** Whether this protocol's checks need a live instance — what gates on the bench pool. */
+  /**
+   * Where this section sits in the run: report order, file order, and which section carries
+   * the run's headline verdict (the lowest `order` does). Defaults to 100, ties broken by id.
+   */
+  order?: number;
+  /**
+   * What this section cannot run without — `bench`, `browser`, and whatever comes next.
+   *
+   * This is what replaced `depth: static | full`. The runner does not know that "functional"
+   * means "needs a demo instance"; it reads this, probes those capabilities, and records the
+   * sections it cannot satisfy as `blocked`. A section that requires nothing always runs.
+   */
+  requires?: string[];
+  /**
+   * The fixed steps this section reports as it goes, if it has any — the functional leaf's
+   * A/C/D/E8…G. Declared here rather than in code so the track the UI draws, the list the
+   * prompt asks for and the ids the ledger accepts are one list in one place.
+   */
+  phases?: { id: string; label?: string }[];
+  /**
+   * Headings in the agent's narrative report that belong to this section, as case-insensitive
+   * regular expression sources. Used only to split the prose into per-section bodies; the
+   * record itself comes from the ledger, not from these.
+   */
+  report_headings?: string[];
+  /** @deprecated The section id is `id`. Read for files written before the rename. */
+  leg?: string;
+  /** @deprecated Superseded by `requires: [bench, browser]`. */
   requires_bench?: boolean;
   /**
    * The canonical requirement ids this protocol names, handed to the agent by
@@ -60,6 +91,12 @@ export interface Protocol {
 
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
+function normaliseRequires(parsed: Record<string, unknown>): string[] {
+  const declared = Array.isArray(parsed.requires) ? parsed.requires.map((r) => String(r)) : null;
+  if (declared) return declared.filter(Boolean);
+  return parsed.requires_bench === true ? ['bench', 'browser'] : [];
+}
+
 export function parseProtocol(raw: string, file: string): { meta: ProtocolMeta; body: string } {
   const m = FRONTMATTER.exec(raw);
   if (!m) {
@@ -76,7 +113,10 @@ export function parseProtocol(raw: string, file: string): { meta: ProtocolMeta; 
       name: String(parsed.name ?? id),
       version: Number(parsed.version ?? 0) || 0,
       kind: parsed.kind === 'orchestrator' ? 'orchestrator' : 'leaf',
-      ...(parsed.leg === 'static' || parsed.leg === 'functional' ? { leg: parsed.leg } : {}),
+      // `requires_bench: true` predates capabilities and meant exactly "a demo instance and
+      // a browser to drive it", so it widens to both rather than to `bench` alone.
+      requires: normaliseRequires(parsed),
+      ...(typeof parsed.leg === 'string' ? { leg: parsed.leg } : {}),
     },
     body: raw.slice(m[0].length).trim(),
   };
@@ -85,11 +125,57 @@ export function parseProtocol(raw: string, file: string): { meta: ProtocolMeta; 
 export function serialiseProtocol(meta: ProtocolMeta, body: string): string {
   // Key order is stable so an edit that changes only the body produces a one-hunk diff.
   const ordered: Record<string, unknown> = {};
-  for (const key of ['id', 'name', 'version', 'kind', 'leg', 'requires_bench', 'requirements', 'imported_from', 'imported_at']) {
+  for (const key of ['id', 'name', 'version', 'kind', 'order', 'requires', 'phases', 'report_headings', 'requirements', 'imported_from', 'imported_at']) {
     if (meta[key] !== undefined) ordered[key] = meta[key];
   }
   for (const [k, v] of Object.entries(meta)) if (!(k in ordered)) ordered[k] = v;
   return `---\n${YAML.stringify(ordered).trim()}\n---\n\n${body.trim()}\n`;
+}
+
+/**
+ * One section of the protocol, resolved from a leaf file — the shape the runner, the ledger
+ * and the prompt all take. Nothing downstream reads `ProtocolMeta` directly, so a field
+ * added to the frontmatter has exactly one place to be interpreted.
+ */
+export interface ProtocolSection {
+  id: string;
+  name: string;
+  order: number;
+  /** Capabilities this section needs before it can be attempted. */
+  requires: string[];
+  /** Its fixed steps, in protocol order. Empty for a section that has none. */
+  phases: { id: string; label: string }[];
+  /** Regex sources matching this section's headings in the agent's narrative. */
+  headings: string[];
+  requirements: { id: string; text: string; requires?: string }[];
+  version: number;
+  body: string;
+}
+
+/**
+ * The sections a set of protocol files declares, in run order.
+ *
+ * Order is explicit (`order:`, defaulting to 100, id as the tie-break) rather than the
+ * directory's alphabetical accident: the first section carries the run's headline verdict,
+ * and `functional.md` sorting before `static.md` would silently move it.
+ */
+export function sectionsOf(protocols: readonly Protocol[]): ProtocolSection[] {
+  return protocols
+    .filter((p) => p.meta.kind === 'leaf')
+    .map((p) => ({
+      id: p.meta.id,
+      name: p.meta.name,
+      order: Number.isFinite(Number(p.meta.order)) ? Number(p.meta.order) : 100,
+      requires: p.meta.requires ?? [],
+      phases: (p.meta.phases ?? [])
+        .filter((ph) => ph?.id)
+        .map((ph) => ({ id: String(ph.id), label: String(ph.label ?? ph.id) })),
+      headings: (p.meta.report_headings ?? []).map((h) => String(h)),
+      requirements: p.meta.requirements ?? [],
+      version: p.meta.version,
+      body: p.body,
+    }))
+    .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
 }
 
 export class ProtocolStore {

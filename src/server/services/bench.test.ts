@@ -212,11 +212,12 @@ describe('the pool', () => {
     expect(alerts.get('bench.auth')?.title).toContain('any demo bench');
   });
 
-  it('says the functional queue is paused while no bench is usable', async () => {
+  it('says what an unusable pool actually stops, and that it costs no try', async () => {
     vi.stubGlobal('fetch', async () => answer(401));
     const p = prober([BENCH]);
     await p.probeAll();
-    expect(alerts.get('bench.auth')?.impact).toContain('functional queue paused');
+    expect(alerts.get('bench.auth')?.impact).toContain('recorded blocked');
+    expect(alerts.get('bench.auth')?.impact).toContain('no try consumed');
     expect(p.poolUp).toBe(false);
   });
 

@@ -36,7 +36,7 @@ function draft(d: Draft): AssayRecord {
 
   const meta: AssayMeta = {
     subject: d.subject,
-    leg: d.leg,
+    section: d.leg,
     standard: d.leg === 'static' ? 'Static Review Protocol' : 'Functional Review Protocol',
     standard_version: 3,
     status,

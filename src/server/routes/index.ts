@@ -153,8 +153,11 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     const state = subjectHallmark(resolved.name, resolved.records).state;
     const markdown = buildFixReport({
       subject: resolved.name,
-      ...(state.static ? { static: { meta: state.static.meta, path: state.static.path } } : {}),
-      ...(state.functional ? { functional: { meta: state.functional.meta, path: state.functional.path } } : {}),
+      // Every section the subject has, in the order the archive reports them — the brief is
+      // as wide as the protocol is, not as wide as a two-column table.
+      sections: Object.values(state.sections)
+        .filter(Boolean)
+        .map((rec) => ({ meta: rec!.meta, path: rec!.path })),
     });
     // No assay at all. There is nothing honest to brief anyone on, and an empty document
     // would read as a clean bill of health.

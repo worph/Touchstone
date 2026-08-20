@@ -136,7 +136,7 @@ export default function Protocols() {
               {p.name}
               <span className="dim"> v{p.version}</span>
               {p.kind === 'orchestrator' ? <span className="tag">composes</span> : null}
-              {p.requires_bench ? <span className="tag">needs a bench</span> : null}
+              {p.requires?.includes('bench') ? <span className="tag">needs a bench</span> : null}
             </button>
           ))}
         </div>
@@ -172,7 +172,9 @@ function ProtocolMeta({ meta, file, bytes }: { meta: ProtocolSummary; file: stri
       <div className="ref-line">{file}</div>
       <div className="ref-line">
         <span className="tag">v{meta.version}</span>
-        {meta.leg ? <span className="tag">{meta.leg} leg</span> : null}
+        {meta.kind === 'leaf' ? <span className="tag">section {meta.id}</span> : null}
+        {meta.requires?.length ? <span className="tag">needs {meta.requires.join(' + ')}</span> : null}
+        {meta.phases?.length ? <span className="tag">{meta.phases.length} phases</span> : null}
         <span className="tag">{(bytes / 1024).toFixed(1)} KB</span>
         {/* Provenance. Nothing reads it — it records that this text was a wiki page once. */}
         {meta.imported_from ? <span className="tag">from {meta.imported_from}</span> : null}

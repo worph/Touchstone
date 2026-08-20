@@ -39,8 +39,8 @@ describe('leg selection', () => {
     expect(state.functional?.meta.verdict).toBeNull();
     expect(state.functional?.meta.blocked_reason).toBe('bench_unavailable');
     // … and July's `compliant` is still reachable as the last verdict, just not as current
-    expect(legs.functional.hallmark?.meta.verdict).toBe('compliant');
-    expect(legs.functional.stale).toBe(true);
+    expect(legs.functional?.hallmark?.meta.verdict).toBe('compliant');
+    expect(legs.functional?.stale).toBe(true);
   });
 
   it('a running assay does not become the displayed verdict either', () => {
@@ -72,7 +72,7 @@ describe('leg selection', () => {
     ];
     const { state, legs } = subjectHallmark('App', records, { now: NOW });
     expect(state.static?.meta.status).toBe('done');
-    expect(legs.static.stale).toBe(false);
+    expect(legs.static?.stale).toBe(false);
   });
 });
 

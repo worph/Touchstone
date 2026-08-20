@@ -17,11 +17,11 @@
  * use, or feeds it to one in CI, and it has to be complete on its own.
  */
 
-import type { AssayMeta, Leg, RecordedPhase, RecordedRequirement, Severity } from '../../shared/types.js';
+import type { AssayMeta, RecordedPhase, RecordedRequirement, Section, Severity } from '../../shared/types.js';
 import { SEVERITY_RANK } from '../../shared/types.js';
 import { PHASE_LABEL } from '../../shared/activity.js';
 
-export interface FixReportLeg {
+export interface FixReportSection {
   meta: AssayMeta;
   /** Path relative to the reports root, cited so the reader can go to the source. */
   path: string;
@@ -29,12 +29,12 @@ export interface FixReportLeg {
 
 export interface FixReportInput {
   subject: string;
-  static?: FixReportLeg | null;
-  functional?: FixReportLeg | null;
+  /** One entry per section of the audit, in protocol order. */
+  sections: FixReportSection[];
 }
 
 interface Finding {
-  leg: Leg;
+  section: Section;
   requirement: RecordedRequirement;
   severity: Severity;
 }
@@ -61,12 +61,14 @@ export function splitRemedy(note: string | undefined): { evidence: string; remed
 
 function findingsOf(input: FixReportInput): Finding[] {
   const out: Finding[] = [];
-  for (const leg of ['static', 'functional'] as const) {
-    const source = input[leg];
-    if (!source) continue;
+  for (const source of input.sections) {
     for (const requirement of source.meta.requirements ?? []) {
       if (requirement.verdict !== 'fail') continue;
-      out.push({ leg, requirement, severity: requirement.severity ?? 'minor' });
+      out.push({
+        section: requirement.section ?? source.meta.section,
+        requirement,
+        severity: requirement.severity ?? 'minor',
+      });
     }
   }
   // Worst first: the order a dev should work in, and the order the gate cares about.
@@ -81,8 +83,7 @@ function failedPhases(meta: AssayMeta | undefined): RecordedPhase[] {
 export function hasFixWork(input: FixReportInput): boolean {
   return (
     findingsOf(input).length > 0 ||
-    failedPhases(input.static?.meta).length > 0 ||
-    failedPhases(input.functional?.meta).length > 0
+    input.sections.some((s) => failedPhases(s.meta).length > 0)
   );
 }
 
@@ -105,7 +106,7 @@ const SEVERITY_WORD: Record<Severity, string> = {
  * clean bill of health.
  */
 export function buildFixReport(input: FixReportInput): string | null {
-  const legs = [input.static, input.functional].filter(Boolean) as FixReportLeg[];
+  const legs = input.sections;
   if (legs.length === 0) return null;
 
   const findings = findingsOf(input);
@@ -132,7 +133,7 @@ export function buildFixReport(input: FixReportInput): string | null {
   for (const leg of legs) {
     const m = leg.meta;
     L.push(
-      `- **${cap(m.leg)} leg** — ${m.status === 'blocked' ? 'blocked' : (m.verdict ?? 'no verdict')}` +
+      `- **${cap(m.section)}** — ${m.status === 'blocked' ? 'blocked' : (m.verdict ?? 'no verdict')}` +
         `${m.status === 'blocked' ? '' : ` · top severity ${m.top_severity} · risk ${m.risk_score}`}` +
         ` · judged by ${m.standard} v${m.standard_version} · finished ${m.finished_at}`,
     );
@@ -143,13 +144,12 @@ export function buildFixReport(input: FixReportInput): string | null {
   if (commit) L.push(`- **Commit audited** \`${commit}\``);
   L.push('');
 
-  // A blocked leg is a statement about the environment, and saying so here stops a reader
-  // from concluding that half of the app was checked and found fine. Invariant 4.
-  const blocked = legs.filter((l) => l.meta.status === 'blocked');
-  for (const leg of blocked) {
+  // A blocked section is a statement about the environment, and saying so here stops a reader
+  // from concluding that the part of the app it covers was checked and found fine. Invariant 4.
+  for (const leg of legs.filter((l) => l.meta.status === 'blocked')) {
     L.push(
-      `> The ${leg.meta.leg} leg could not run (\`${leg.meta.blocked_reason ?? 'unknown'}\`). That is a fact about ` +
-        `Touchstone's environment, not about this app: nothing below covers what that leg would have checked.`,
+      `> The ${leg.meta.section} section could not run (\`${leg.meta.blocked_reason ?? 'unknown'}\`). That is a fact about ` +
+        `Touchstone's environment, not about this app: nothing below covers what that section would have checked.`,
     );
     L.push('');
   }
@@ -187,7 +187,7 @@ export function buildFixReport(input: FixReportInput): string | null {
       L.push(`### ${i + 1}. \`${f.requirement.id}\` — ${SEVERITY_WORD[f.severity]}`);
       L.push('');
       if (f.requirement.requirement) L.push(`**Requirement** ${f.requirement.requirement}`);
-      L.push(`**Leg** ${f.leg}`);
+      L.push(`**Section** ${f.section}`);
       if (f.requirement.unlisted) {
         L.push('**Note** The protocol does not list this id — the audit recorded it anyway. Treat it as a real finding and expect the requirement list to gain it.');
       }
@@ -207,16 +207,17 @@ export function buildFixReport(input: FixReportInput): string | null {
     });
   }
 
-  // ── functional behaviour ──────────────────────────────────────────────────────────────
-  const phases = input.functional?.meta.phases ?? [];
-  if (phases.length > 0) {
-    const bad = failedPhases(input.functional?.meta);
-    L.push('## Functional behaviour');
+  // ── what the audit exercised, for the sections that have a phase plan ─────────────────
+  for (const leg of legs) {
+    const phases = leg.meta.phases ?? [];
+    if (phases.length === 0) continue;
+    const bad = failedPhases(leg.meta);
+    L.push(`## Behaviour — ${leg.meta.section}`);
     L.push('');
     if (bad.length === 0) {
       L.push(
-        `All ${phases.length} functional phases passed — ${phases.map((p) => `\`${p.phase}\``).join(', ')} — ` +
-          'including F (zero-config usability) and G (data survives an uninstall/reinstall). Whatever you change must keep them passing.',
+        `All ${phases.length} phases passed — ${phases.map((p) => `\`${p.phase}\``).join(', ')}. ` +
+          'Whatever you change must keep them passing.',
       );
     } else {
       L.push('These phases did not pass. A failed phase is behaviour a user would hit, not paperwork:');

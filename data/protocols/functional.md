@@ -3,8 +3,34 @@ id: functional
 name: Functional Review Protocol
 version: 3
 kind: leaf
-leg: functional
-requires_bench: true
+
+# Where this section sits in a run, and what it cannot run without. `order` decides report
+# order and which section carries the headline verdict (the lowest one does); `requires`
+# replaced `depth: full` — the runner probes these capabilities and records this section as
+# blocked, on its own, when they are missing.
+order: 2
+requires:
+  - bench
+  - browser
+
+# The fixed phase plan, declared here rather than in code: the track the UI draws, the list
+# the prompt asks the agent to report, and the ids the ledger accepts are this one list.
+phases:
+  - { id: A, label: session }
+  - { id: C, label: fresh install }
+  - { id: D, label: discover URL }
+  - { id: E8, label: works immediately }
+  - { id: E9, label: auth gate }
+  - { id: E10, label: clean boot }
+  - { id: F, label: zero-config usability }
+  - { id: G, label: data persistence }
+
+# Which headings in the agent's narrative report belong to this section, when the prose is
+# split into one body per section. Case-insensitive regex sources.
+report_headings:
+  - ^functionality
+  - ^functional\s+(leaf|review)
+
 requirements:
   # The fixed phase plan. Unlike the static checklist these ARE owned by this protocol —
   # §3 names them and the 2026-07-07 amendment makes every one mandatory — so the list is

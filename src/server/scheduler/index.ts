@@ -55,7 +55,7 @@ export interface SchedulerOptions {
    * Called when an armed scheduler has claimed a subject. Absent until the runner lands
    * (P4), which is why an armed scheduler with no dispatcher still only claims.
    */
-  dispatch?: (job: { subject: string; depth: 'static' | 'full'; try_n: number }) => void | Promise<void>;
+  dispatch?: (job: { subject: string; try_n: number }) => void | Promise<void>;
 }
 
 export class Scheduler {
@@ -119,8 +119,10 @@ export class Scheduler {
     const out: Record<string, string | undefined> = {};
     for (const subject of subjects) {
       let newest: string | undefined;
-      for (const leg of ['static', 'functional'] as const) {
-        const rec = this.opts.index.latest(subject, leg);
+      // Every section, not a fixed two: a subject is as fresh as its most recently completed
+      // section, whatever the protocol happens to be made of this month.
+      for (const section of this.opts.index.sections()) {
+        const rec = this.opts.index.latest(subject, section);
         const at = rec?.meta.finished_at ? String(rec.meta.finished_at) : undefined;
         if (at && (!newest || at > newest)) newest = at;
       }
@@ -134,7 +136,7 @@ export class Scheduler {
    * ticks racing could both claim under single-flight.
    */
   async tick(opts: { forced?: string[]; now?: Date } = {}): Promise<TickDecision> {
-    if (this.running) return this.lastTick?.decision ?? { action: 'idle', depth: 'full', reason: 'a tick is already running', backlog: 0, reclaimed: [], unparked: [] };
+    if (this.running) return this.lastTick?.decision ?? { action: 'idle', reason: 'a tick is already running', backlog: 0, reclaimed: [], unparked: [] };
     this.running = true;
     try {
       return await this.runTick(opts);
@@ -239,7 +241,7 @@ export class Scheduler {
         // would hold the timer, and the claim it just wrote is what stops the next tick from
         // starting a second one. The dispatcher reports back through `record()`.
         void Promise.resolve(
-          this.opts.dispatch?.({ subject: decision.subject, depth: decision.depth, try_n: claim.try_n }),
+          this.opts.dispatch?.({ subject: decision.subject, try_n: claim.try_n }),
         ).catch((err) => console.error('dispatch failed', err));
       }
     } else if (decision.reason.startsWith('no usable demo bench')) {

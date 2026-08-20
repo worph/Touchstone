@@ -750,6 +750,71 @@ quoted from the agent and two honestly marked as absent.
 
 ---
 
+## 5f. Sections replace legs, and `depth` is gone — 2026-08-20
+
+The operator's ask: *"I would like the notion of static and functional to be less present all
+across Touchstone… so we don't get blocked when we expand/change the review protocol in the
+future"*, and then: *"static vs full run has no value to me — a full run is just the expected
+run"*.
+
+`leg` was doing three jobs at once, which is why it was in ~300 places: it partitioned the record
+(one file, one column), it stood in for a resource requirement (`functional` ⇒ needs a bench and a
+browser), and it was the run scope (`depth: static | full`). Only the first is really a name.
+
+**What a section is now.** A leaf protocol file *is* a section definition. `data/protocols/<id>.md`
+declares `order`, `requires`, `phases`, `report_headings` and `requirements`; `sectionsOf()` in
+`store/protocols.ts` is the single place that frontmatter is interpreted. Adding
+`data/protocols/security.md` adds a section — a column of the archive, a file per run, its own
+verdict — with no code change and no new type.
+
+| Was | Is |
+| --- | --- |
+| `type Leg = 'static' \| 'functional'` | `type Section = string`; `Leg` survives only for the two-column Overview |
+| `leg:` in report frontmatter | `section:`; `parseReportMeta` fills it from `leg:` on old files, so the archive was **not** rewritten |
+| `depth: 'static' \| 'full'` on the job, the policy, the ledger, the events, the chat tool and the API | gone. A run attempts every section; ones it cannot satisfy are recorded blocked |
+| `if (job.depth === 'full' && prober)` | probe the capabilities some section declares, then partition the sections into "runs" and "blocked" |
+| `blockedFunctionalAssay` | `blockedSectionAssay`, which takes the section and the unmet capability |
+| `standards/*.yaml` required to start | an override; a section with no file is named and versioned by its protocol (principle 6 still holds) |
+| `FUNCTIONAL_PHASES` / `PHASE_LABEL` const in `shared/activity.ts` | the phase plan lives in `protocols/functional.md`; the prompt asks for it and `RunProgress.phase_plan` draws it |
+| fix report took `{static, functional}` | takes `{sections: [...]}` |
+
+**The load-bearing bit.** The runner builds the canonical requirement list by walking the protocol
+files, so it already knew which section owned every id — and threw that away by flattening. It now
+carries `section` on `CanonicalRequirement` → the ledger → `RecordedRequirement`, so:
+
+- coverage, requirements and phases are **partitioned per section** rather than heaped onto the
+  static leg, which is what they had been since the ledger shipped;
+- `shapeReport`'s heading regexes are now only about *which prose to quote*, not about which
+  results belong where — the record comes from the ledger;
+- the agent is asked for a section only for an id the protocol does not list.
+
+**Invariant 6, extended.** A section the agent invents is *not* created: it is recorded against the
+run's primary section and marked `unlisted`. A section the gate does not know to read would be a
+place a Critical could hide.
+
+**What deliberately did not change.** The scheduler is still per-subject with no per-section
+backlog — a per-section pick cannot be diffed against n8n's `Pick next target`, and invariant 8
+(no queue) is worth more. The declared verdict, tier and risk still land on **one** section (the
+lowest `order`, `static` today) with `combined_score_on` on the rest; per-section risk from the
+ledger's severities is now possible but would change stored numbers and the Overview's sort, so it
+is a separate decision. And the Overview still draws exactly two columns — the server hands it
+`SubjectState.sections`, so that is a UI change whenever someone wants it.
+
+**Prompt changes** (`runner/prompt.ts`, which CLAUDE.md says is protocol text, not code): the
+`depth=` parameter became `sections=`, the `if (full)` branches became "is a section requiring a
+bench running", the appendix prints only the sections being run, and a new line names the sections
+that are **not** part of this run and why — an agent told only what to do will otherwise report a
+section it was never asked for as failed.
+
+**Migration.** None needed for reports. `CACHE_VERSION` went 1 → 2 so `state/index.json` entries
+written with `leg` and no `section` are discarded and re-read. Verified against the live archive:
+3 subjects, 6 assays, 0 broken, `fix.md` renders.
+
+349 tests pass (24 new: sections in `store/protocols.test.ts`, section attribution in
+`ledger.test.ts`, and a new `domain/assay.test.ts` for the per-section composition).
+
+---
+
 ## 6. Reference — facts read off the running system
 
 Cited so they can be re-checked when they drift. Read 2026-08-07.

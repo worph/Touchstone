@@ -15,7 +15,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 
-import type { AssayMeta, AssayRecord, Leg } from '../../shared/types.js';
+import type { AssayMeta, AssayRecord, Section } from '../../shared/types.js';
 
 export interface ReportFile extends AssayRecord {
   /** Everything after the closing `---` line, byte-identical to what was written. */
@@ -41,10 +41,19 @@ function split(raw: string): { block: string; body: string } {
 }
 
 function coerceMeta(data: Record<string, unknown>, where: string): AssayMeta {
-  for (const key of ['subject', 'leg', 'status'] as const) {
+  for (const key of ['subject', 'status'] as const) {
     if (typeof data[key] !== 'string') {
       throw new ReportFormatError(`${where}: frontmatter is missing required key \`${key}\``);
     }
+  }
+  // `section` is the key; `leg` is what every file written before 2026-08-20 calls it. Filling
+  // it here is what lets the whole archive be read as sections without rewriting a single
+  // report — nothing downstream ever has to ask which spelling a file used.
+  if (typeof data.section !== 'string' || data.section === '') {
+    if (typeof data.leg !== 'string' || data.leg === '') {
+      throw new ReportFormatError(`${where}: frontmatter is missing required key \`section\``);
+    }
+    data.section = data.leg;
   }
   // Everything else is passed through as-is. Unknown keys ride along untouched; this is a
   // widening cast, not a validation pass — the archive may legitimately be ahead of us.
@@ -95,13 +104,13 @@ export function timestampSlug(iso: string): string {
   return iso.replace(/:/g, '-');
 }
 
-/** `<Subject>/<ISO with ':' replaced by '-'>-<leg>.md` */
-export function reportRelPath(subject: string, startedAt: string, leg: Leg): string {
-  return `${subject}/${timestampSlug(startedAt)}-${leg}.md`;
+/** `<Subject>/<ISO with ':' replaced by '-'>-<section>.md` */
+export function reportRelPath(subject: string, startedAt: string, section: Section): string {
+  return `${subject}/${timestampSlug(startedAt)}-${section}.md`;
 }
 
 export function reportRelPathFor(meta: AssayMeta): string {
-  return reportRelPath(meta.subject, meta.started_at, meta.leg);
+  return reportRelPath(meta.subject, meta.started_at, meta.section);
 }
 
 /**
@@ -141,7 +150,7 @@ export async function writeReport(
 
 const META_ORDER = [
   'subject',
-  'leg',
+  'section',
   'standard',
   'standard_version',
   'status',

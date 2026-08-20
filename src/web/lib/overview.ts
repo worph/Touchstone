@@ -1,5 +1,5 @@
 /** Tallies, filtering and sorting for the Overview table. Pure functions. */
-import type { AssayRecord, Leg, SubjectState } from '@shared/types';
+import type { AssayRecord, Leg, Section, SubjectState } from '@shared/types';
 import { SEVERITY_RANK } from '@shared/types';
 import type { Coverage } from '@shared/types';
 import type { DisplayState, ShowFilter, SortKey, StateKind } from '../types';
@@ -18,8 +18,8 @@ export const FRESH_DAYS = 7;
  */
 export interface LiveRun {
   subject: string;
-  /** Which legs this run will actually produce. A degraded full run is static only. */
-  legs: Leg[];
+  /** Which sections this run is actually producing. A skipped section is not among them. */
+  legs: Section[];
   started_at: string;
   /** What to put in the cell's note instead of the elapsed time — `7/24`. */
   note?: string;
@@ -31,11 +31,11 @@ export interface LiveRun {
  * Everything on this page — the cells, the tallies, the filters — goes through here, so the
  * overlay cannot apply to one of them and not the others.
  */
-export function legState(s: SubjectState, leg: Leg, live?: LiveRun | null): DisplayState {
+export function legState(s: SubjectState, leg: Section, live?: LiveRun | null): DisplayState {
   if (live && live.subject === s.name && live.legs.includes(leg)) {
     return runningState(live.started_at, live.note);
   }
-  return displayState(leg === 'static' ? s.static : s.functional);
+  return displayState(s.sections?.[leg] ?? null);
 }
 
 export interface LegTally {
@@ -139,7 +139,7 @@ export function search(s: SubjectState, q: string): boolean {
   if (!q) return true;
   const needle = q.toLowerCase();
   if (s.name.toLowerCase().includes(needle)) return true;
-  for (const rec of [s.static, s.functional]) {
+  for (const rec of Object.values(s.sections ?? {})) {
     if (rec?.meta.subject_ref?.toLowerCase().includes(needle)) return true;
     if (rec?.meta.images?.some((i) => i.toLowerCase().includes(needle))) return true;
     if (rec?.meta.commit?.toLowerCase().includes(needle)) return true;
@@ -148,16 +148,27 @@ export function search(s: SubjectState, q: string): boolean {
 }
 
 /**
- * A subject's coverage, taking the better-covered leg.
+ * A subject's coverage, summed across its sections.
  *
- * Two legs, and only one of them may have been checked — a static-only run leaves the
- * functional leg with none at all. Summing them would make a subject look half-checked when
- * it was fully checked at the depth it was run.
+ * Summing is right because the partition is real: each requirement is recorded against the
+ * section whose protocol listed it, so no item is counted twice. A section that was never
+ * attempted simply contributes nothing, which is what makes a subject with a blocked section
+ * read as partly checked rather than as fully checked or not checked at all.
  */
 export function coverageOf(s: SubjectState): Coverage | undefined {
-  const legs = [s.static?.meta.coverage, s.functional?.meta.coverage].filter(Boolean) as Coverage[];
-  if (legs.length === 0) return undefined;
-  return legs.reduce((best, c) => (c.applicable > best.applicable ? c : best));
+  const parts = Object.values(s.sections ?? {})
+    .map((rec) => rec?.meta.coverage)
+    .filter(Boolean) as Coverage[];
+  if (parts.length === 0) return undefined;
+  return parts.reduce((sum, c) => ({
+    verified: sum.verified + c.verified,
+    applicable: sum.applicable + c.applicable,
+    passed: sum.passed + c.passed,
+    failed: sum.failed + c.failed,
+    unverified: sum.unverified + c.unverified,
+    not_applicable: sum.not_applicable + c.not_applicable,
+    risk: sum.risk + c.risk,
+  }));
 }
 
 /** `-1` for "no coverage at all", so unmeasured subjects sort apart from fully-verified ones. */
@@ -203,33 +214,52 @@ export function sortSubjects(
 }
 
 /**
- * The environment banner is derived, not fetched: the alerts endpoint arrives with the
- * prober in P2, but a wall of `blocked` assays sharing one `blocked_reason` *is* the
- * condition, and hiding it until then would leave the page's most important fact
- * unexplained.
+ * Assays carrying no verdict because something in the environment stopped them.
+ *
+ * **This is the archive's view, and the archive is history.** A blocked record says "the last
+ * time anybody looked, there was no bench" — it does not say the pool is down *now*, and it
+ * stays true until something re-assays that section. The live condition is `GET /alerts`,
+ * which is fetched, deduplicated and closes itself when the prober succeeds again.
+ *
+ * Conflating the two is what made the Overview announce "Bench pool unavailable — paused
+ * 4h 31m" over a healthy pool, contradicting the Activity page one click away. So this
+ * returns a *backlog*: who is affected and since when, in the past tense, and the page shows
+ * the alert instead whenever there is a live one.
+ *
+ * `live` is subtracted for the same reason one layer down: a section being re-assayed *right
+ * now* is not outstanding work, and telling the reader "a re-assay clears it" beside a cell
+ * that already reads `◴ running` is the same tense error in miniature.
  */
-export interface DerivedIncident {
+export interface BlockedBacklog {
   reason: string;
   count: number;
-  /** Oldest still-blocked assay — how long the queue has been paused. */
+  /** Oldest blocked assay — how long this has been outstanding. */
   since: string | null;
+  /** Who is affected, so nobody has to scan the table to find out. */
+  items: { subject: string; section: Section }[];
 }
 
-export function deriveIncident(subjects: SubjectState[]): DerivedIncident | null {
-  const byReason = new Map<string, { count: number; since: string | null }>();
+export function deriveBacklog(
+  subjects: SubjectState[],
+  live?: LiveRun | null,
+): BlockedBacklog | null {
+  const byReason = new Map<string, { count: number; since: string | null; items: { subject: string; section: Section }[] }>();
   for (const s of subjects) {
-    for (const rec of [s.static, s.functional]) {
+    for (const [section, rec] of Object.entries(s.sections ?? {})) {
       if (rec?.meta.status !== 'blocked') continue;
+      // Already being answered. The cell says `running`; the note would say "re-assay it".
+      if (live && live.subject === s.name && live.legs.includes(section)) continue;
       const reason = rec.meta.blocked_reason ?? 'unknown';
-      const entry = byReason.get(reason) ?? { count: 0, since: null };
+      const entry = byReason.get(reason) ?? { count: 0, since: null, items: [] };
       entry.count++;
+      entry.items.push({ subject: s.name, section });
       if (!entry.since || rec.meta.started_at < entry.since) entry.since = rec.meta.started_at;
       byReason.set(reason, entry);
     }
   }
-  let top: DerivedIncident | null = null;
+  let top: BlockedBacklog | null = null;
   for (const [reason, e] of byReason) {
-    if (!top || e.count > top.count) top = { reason, count: e.count, since: e.since };
+    if (!top || e.count > top.count) top = { reason, count: e.count, since: e.since, items: e.items };
   }
   return top;
 }

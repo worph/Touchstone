@@ -3,8 +3,17 @@ id: static
 name: Static Review Protocol
 version: 5
 kind: leaf
-leg: static
-requires_bench: false
+
+# First section, and the one that carries the run's headline verdict. It requires nothing,
+# so it runs whatever the state of the demo pool — which is principle 2, sections are
+# independent, expressed as data rather than as a branch in the runner.
+order: 1
+requires: []
+
+report_headings:
+  - ^tech\s*&\s*documentation
+  - ^static\b
+
 requirements:
   # The canonical checklist ids. Derived from what this protocol actually produces — the
   # item tables in its own reports — so the agent maps to a stable id instead of inventing

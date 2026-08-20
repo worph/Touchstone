@@ -62,12 +62,12 @@ export function runningState(startedAt: string, note?: string, now = Date.now())
     label: 'running',
     mark: '◴',
     note: note ?? elapsed(startedAt, now),
-    hint: `Started ${startedAt}. This leg is in flight; the previous hallmark still stands.`,
+    hint: `Started ${startedAt}. This section is in flight; the previous hallmark still stands.`,
   };
 }
 
 /**
- * @param rec  the latest assay for one leg, or null if the leg was never assayed
+ * @param rec  the latest assay for one section, or null if it was never assayed
  * @param now  injected so the `running · 4m` label is testable
  */
 export function displayState(rec: AssayRecord | null | undefined, now = Date.now()): DisplayState {

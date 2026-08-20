@@ -6,8 +6,9 @@
  * - **An audit takes five to ten minutes.** The request is not held open; the button starts
  *   a run and then watches. A spinner with no elapsed time reads as "hung" after ninety
  *   seconds, so it counts up.
- * - **The functional leg needs a bench.** Offering it when the pool is down queues something
- *   that cannot run and files the failure against the app. It is disabled with the reason.
+ * - **Some sections need a bench.** The audit still starts without one — those sections are
+ *   recorded blocked, which costs the app nothing — so the button says so rather than
+ *   offering a choice nobody has to make. There is no depth to pick: a run is a run.
  * - **One agent.** If a run is already going — a scheduled one, or someone else's — the
  *   button says which app has it rather than failing on submit.
  *
@@ -30,7 +31,6 @@ interface Props {
 }
 
 export default function ReassayButton({ subject, onFinished, label = 're-assay' }: Props) {
-  const [open, setOpen] = useState(false);
   const status = useRunStatus();
   const [poolUp, setPoolUp] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,11 +56,10 @@ export default function ReassayButton({ subject, onFinished, label = 're-assay' 
   }, [running, ours, onFinished]);
 
   const start = useCallback(
-    async (depth: 'static' | 'full') => {
-      setOpen(false);
+    async () => {
       setError(null);
       try {
-        await startAssay(subject, depth);
+        await startAssay(subject);
         // Poll at once rather than waiting out the interval: a four-second gap between the
         // click and the button changing reads as the click not having worked.
         await refreshRunStatus();
@@ -103,31 +102,26 @@ export default function ReassayButton({ subject, onFinished, label = 're-assay' 
 
   return (
     <span className="reassay">
-      <button className="btn" type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        {label} ▾
+      <button
+        className="btn"
+        type="button"
+        onClick={() => void start()}
+        title={
+          poolUp === false
+            ? 'No demo bench is usable — the sections that need one will be recorded blocked, which does not count against the app'
+            : undefined
+        }
+      >
+        {label}
       </button>
 
-      {open ? (
-        <span className="reassay-menu" role="menu">
-          <button type="button" role="menuitem" onClick={() => void start('static')}>
-            static only
-            <span className="dim"> · no bench needed</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={poolUp === false}
-            title={poolUp === false ? 'No demo bench is usable, so the functional leg cannot run' : undefined}
-            onClick={() => void start('full')}
-          >
-            static + functional
-            {poolUp === false ? <span className="dim"> · no bench</span> : null}
-          </button>
-        </span>
-      ) : null}
-
       {error ? <span className="reassay-note reassay-note--bad">{error}</span> : null}
-      {!error && last ? <span className="reassay-note">{describeLast(last)}</span> : null}
+      {!error && poolUp === false ? (
+        <span className="reassay-note">no bench — live sections will be recorded blocked</span>
+      ) : null}
+      {!error && poolUp !== false && last ? (
+        <span className="reassay-note">{describeLast(last)}</span>
+      ) : null}
     </span>
   );
 }

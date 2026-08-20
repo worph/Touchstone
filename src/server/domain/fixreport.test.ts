@@ -6,7 +6,7 @@ import { buildFixReport, fixReportFilename, hasFixWork, splitRemedy } from './fi
 function meta(over: Partial<AssayMeta> = {}): AssayMeta {
   return {
     subject: 'SegmentPlayer',
-    leg: 'static',
+    section: 'static',
     standard: 'Static Review Protocol',
     standard_version: 3,
     status: 'done',
@@ -55,21 +55,23 @@ describe('hasFixWork', () => {
   it('is false for an app with nothing failing', () => {
     expect(hasFixWork({
       subject: 'Radarr',
-      static: { path: 'p', meta: meta({ verdict: 'compliant', requirements: [req({ id: 'cpu-shares', verdict: 'pass' })] }) },
+      sections: [{ path: 'p', meta: meta({ verdict: 'compliant', requirements: [req({ id: 'cpu-shares', verdict: 'pass' })] }) }],
     })).toBe(false);
   });
 
   it('is true for a failing requirement, and for a failed phase', () => {
     expect(hasFixWork({
       subject: 'X',
-      static: { path: 'p', meta: meta({ requirements: [req({ id: 'permissions', severity: 'major' })] }) },
+      sections: [{ path: 'p', meta: meta({ requirements: [req({ id: 'permissions', severity: 'major' })] }) }],
     })).toBe(true);
     expect(hasFixWork({
       subject: 'X',
-      functional: {
-        path: 'p',
-        meta: meta({ leg: 'functional', phases: [{ phase: 'G', result: 'fail', at: '2026-08-20T11:00:00.000Z' }] }),
-      },
+      sections: [
+        {
+          path: 'p',
+          meta: meta({ section: 'functional', phases: [{ phase: 'G', result: 'fail', at: '2026-08-20T11:00:00.000Z' }] }),
+        },
+      ],
     })).toBe(true);
   });
 });
@@ -78,7 +80,7 @@ describe('buildFixReport', () => {
   const full = () =>
     buildFixReport({
       subject: 'SegmentPlayer',
-      static: {
+      sections: [{
         path: 'SegmentPlayer/2026-08-20T10-42-05.509Z-static.md',
         meta: meta({
           requirements: [
@@ -93,11 +95,10 @@ describe('buildFixReport', () => {
             req({ id: 'install-cmd-security', verdict: 'n-a' }),
           ],
         }),
-      },
-      functional: {
+      }, {
         path: 'SegmentPlayer/2026-08-20T10-42-05.509Z-functional.md',
         meta: meta({
-          leg: 'functional',
+          section: 'functional',
           standard: 'Functional Review Protocol',
           standard_version: 2,
           verdict: 'compliant',
@@ -108,7 +109,7 @@ describe('buildFixReport', () => {
             { phase: 'G', result: 'pass', at: '2026-08-20T11:05:00.000Z' },
           ],
         }),
-      },
+      }],
     })!;
 
   it('names the repository, the path and the standard that judged it', () => {
@@ -149,27 +150,29 @@ describe('buildFixReport', () => {
     expect(full()).not.toContain('Critical.**');
     const withCritical = buildFixReport({
       subject: 'OpenClaw',
-      static: {
+      sections: [{
         path: 'p',
         meta: meta({
           top_severity: 'critical',
           requirements: [req({ id: 'data-loss', severity: 'critical', note: 'State is not mapped under /DATA/AppData.' })],
         }),
-      },
+      }],
     })!;
     expect(withCritical).toContain('1 of these is Critical');
     expect(withCritical).toContain('unconditional');
   });
 
   /** Invariant 4: blocked is never a statement about the subject. */
-  it('says plainly that a blocked leg checked nothing', () => {
+  it('says plainly that a blocked section checked nothing', () => {
     const md = buildFixReport({
       subject: 'Prowlarr',
-      static: { path: 'p', meta: meta({ requirements: [req({ id: 'permissions', severity: 'major' })] }) },
-      functional: {
-        path: 'q',
-        meta: meta({ leg: 'functional', status: 'blocked', verdict: null, blocked_reason: 'bench_unavailable', top_severity: 'none', risk_score: 0 }),
-      },
+      sections: [
+        { path: 'p', meta: meta({ requirements: [req({ id: 'permissions', severity: 'major' })] }) },
+        {
+          path: 'q',
+          meta: meta({ section: 'functional', status: 'blocked', verdict: null, blocked_reason: 'bench_unavailable', top_severity: 'none', risk_score: 0 }),
+        },
+      ],
     })!;
     expect(md).toContain('could not run (`bench_unavailable`)');
     expect(md).toContain('not about this app');
@@ -178,22 +181,22 @@ describe('buildFixReport', () => {
   it('names the failed phases as behaviour, not paperwork', () => {
     const md = buildFixReport({
       subject: 'X',
-      functional: {
+      sections: [{
         path: 'p',
         meta: meta({
-          leg: 'functional',
+          section: 'functional',
           phases: [
             { phase: 'A', result: 'pass', at: '2026-08-20T10:45:00.000Z' },
             { phase: 'G', result: 'fail', note: 'The library was empty after a reinstall.', at: '2026-08-20T11:05:00.000Z' },
           ],
         }),
-      },
+      }],
     })!;
     expect(md).toContain('**Phase G — data persistence** — fail: The library was empty after a reinstall.');
   });
 
   it('is null when nothing has ever been assayed', () => {
-    expect(buildFixReport({ subject: 'Immich' })).toBeNull();
+    expect(buildFixReport({ subject: 'Immich', sections: [] })).toBeNull();
   });
 
   it('names the report files it was composed from', () => {

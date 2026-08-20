@@ -7,7 +7,7 @@ version: 3
 # always archives and never deletes, so "uninstall keep-data then reinstall" no longer exists
 # and persistence is tested by restoring the archive. See `protocols/functional.md` §2a and
 # the 2026-08-20 amendment.
-leg: functional
+section: functional
 
 # As with the static leaf, the rubric lives in Docmost and the agent reads it at run time.
 # Touchstone holds the pointer and the version only.
@@ -21,10 +21,6 @@ leg: functional
 source:
   orchestrator: In2NAGjv0h
   protocol: 7HxjTwe63H
-
-# The protocol has no functional-only mode: `full` runs both leaves in one pass and the
-# response is split into two assays (ARCHITECTURE.md §1.3, and P5 of the plan).
-depth: full
 
 # Bench selection is Touchstone's, not the agent's. The demo management board reports a host
 # as Ready while its credentials are being rejected — that is the 2026-08-05 failure mode —

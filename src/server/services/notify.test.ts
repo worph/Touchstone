@@ -67,7 +67,7 @@ describe('what the push says', () => {
         },
       }),
     );
-    expect(body).toBe('FileBrowser — non-compliant · risk 12 · functional leg blocked (no usable demo bench)');
+    expect(body).toBe('FileBrowser — non-compliant · risk 12 · a section was blocked (no usable demo bench)');
   });
 
   it('turns a blocked start into a reason a person can read', () => {

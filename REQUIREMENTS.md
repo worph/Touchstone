@@ -185,7 +185,7 @@ shadow diff has been read, or the diff loses its baseline.
 > folder composed of md reports"*
 
 **The expectation is already the implementation.** Reports are
-`data/reports/<Subject>/<ISO-8601 with ':' → '-'>-<leg>.md`, one file per assay, the YAML frontmatter
+`data/reports/<Subject>/<ISO-8601 with ':' → '-'>-<section>.md`, one file per assay, the YAML frontmatter
 *is* the assay record, and the body is the report verbatim. There are 281 of them. Nothing else is
 the archive — the in-memory index is a cache over these files and deleting `state/index.json` is
 always safe.
@@ -374,7 +374,7 @@ is instant, deterministic, works with the agent down, and re-derives nothing (in
 the audit proposed no remedy, the document **says so** rather than inventing one: a guessed fix in
 a document whose purpose is to be executed is worse than none.
 
-**Shape.** `# Fix <App>` → the subject (repo, ref, path, images, standard versions, per-leg
+**Shape.** `# Fix <App>` → the subject (repo, ref, path, images, standard versions, per-section
 verdict) → rules of engagement → findings worst-first with evidence quoted and remedy split out →
 functional phases → what already passes and must not regress → **acceptance: the requirement ids
 that must flip to `pass`**. Those ids are what make it a brief rather than a complaint.
@@ -437,10 +437,11 @@ is letting us log in again`, which the old wiring could never have noticed.
 
 ## Appendix B — Recorded while building the chat
 
-**Scheduling is per-subject, and one leg can now outlive the other.** A `full` audit with no
-bench completes its static leg and records the functional one `blocked` (§10 of the plan, and
+**Scheduling is per-subject, and one section can now outlive another.** An audit with no
+bench completes the sections that need none and records the rest `blocked` (§10 of the plan, and
 `domain/assay.ts`). But the finish is stamped against the *subject*, so the outstanding
-functional leg is not reconsidered until the subject is stale again — up to `fresh_days`, even
-if the pool recovers a minute later. Per-leg eligibility is described in ARCHITECTURE §5.1 and
-does not exist. Worth building before the scheduler is armed; harmless while audits are
+section is not reconsidered until the subject is stale again — up to `fresh_days`, even if the
+pool recovers a minute later. Per-section eligibility does not exist, and the 2026-08-20 section
+rework deliberately did not add it: a per-section backlog turns `policy.ts` from a diffable port
+of n8n's `Pick next target` into a pick that cannot be shadow-compared (ARCHITECTURE §5.1). Worth building before the scheduler is armed; harmless while audits are
 hand-run.

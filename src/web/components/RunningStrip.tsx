@@ -30,10 +30,10 @@ export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 
   const ratio = progressRatio(progress);
   const doing = nowDoing(progress);
   const clock = mmss(seconds);
-  const depth = live.ran_depth ?? live.depth;
+  const sections = live.sections ?? [];
 
   const label =
-    `Auditing ${live.subject}, ${depth} depth, running ${clock}` +
+    `Auditing ${live.subject}${sections.length > 0 ? `, ${sections.join(' and ')}` : ''}, running ${clock}` +
     (counted ? `, ${counted} requirements settled` : '');
 
   if (variant === 'compact') {
@@ -55,7 +55,7 @@ export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 
       </span>
 
       <span className="run-strip__meta">
-        {depth === 'full' ? 'static + functional' : 'static only'}
+        {sections.length > 0 ? sections.join(' + ') : '…'}
         {counted ? <> · <span className="num">{counted}</span> settled</> : null}
       </span>
 

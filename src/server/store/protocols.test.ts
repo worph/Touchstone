@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { ProtocolStore, isSafeId, parseProtocol, serialiseProtocol } from './protocols.js';
+import { ProtocolStore, isSafeId, parseProtocol, sectionsOf, serialiseProtocol } from './protocols.js';
 
 let dir: string;
 let store: ProtocolStore;
@@ -36,7 +36,7 @@ afterEach(async () => {
 describe('reading one', () => {
   it('splits the frontmatter from the prose', async () => {
     const p = await store.get('static');
-    expect(p?.meta).toMatchObject({ id: 'static', version: 3, leg: 'static', requires_bench: false });
+    expect(p?.meta).toMatchObject({ id: 'static', version: 3, requires: [] });
     expect(p?.body.startsWith('# Static Review Protocol')).toBe(true);
     expect(p?.body).not.toContain('imported_from');
   });
@@ -116,5 +116,57 @@ describe('ids', () => {
 
   it('does not read one through the store either', async () => {
     expect(await store.get('../../etc/passwd')).toBeNull();
+  });
+});
+
+/**
+ * A leaf protocol **is** a section: its id is the section id, its `requires` is what used to
+ * be `depth: static | full`, and its `order` decides which section carries the run's headline.
+ * Nothing else in the system holds a list of sections, so adding a file adds a section.
+ */
+describe('sections', () => {
+  const leaf = (id: string, extra: string) =>
+    `---\nid: ${id}\nname: ${id} rubric\nversion: 2\nkind: leaf\n${extra}---\n\nthe ${id} rubric\n`;
+
+  it('are the leaf protocols, in declared order rather than alphabetical order', async () => {
+    await fs.writeFile(path.join(dir, 'functional.md'), leaf('functional', 'order: 2\nrequires: [bench, browser]\n'), 'utf8');
+    await fs.writeFile(path.join(dir, 'static.md'), leaf('static', 'order: 1\n'), 'utf8');
+    await fs.writeFile(
+      path.join(dir, 'orchestrator.md'),
+      `---\nid: orchestrator\nname: o\nversion: 1\nkind: orchestrator\n---\n\ncomposes\n`,
+      'utf8',
+    );
+
+    const sections = sectionsOf(await store.list());
+    // Alphabetically `functional` comes first, which would silently move the headline verdict
+    // onto it. The order is the protocol's to declare.
+    expect(sections.map((s) => s.id)).toEqual(['static', 'functional']);
+    expect(sections[1]?.requires).toEqual(['bench', 'browser']);
+    expect(sections[0]?.requires).toEqual([]);
+  });
+
+  it('default to order 100, so an un-ordered file lands after the ordered ones', async () => {
+    await fs.writeFile(path.join(dir, 'static.md'), leaf('static', 'order: 1\n'), 'utf8');
+    await fs.writeFile(path.join(dir, 'appendix.md'), leaf('appendix', ''), 'utf8');
+    expect(sectionsOf(await store.list()).map((s) => s.id)).toEqual(['static', 'appendix']);
+  });
+
+  /** `requires_bench` predates capabilities and meant a demo instance *and* a browser. */
+  it('read the old requires_bench as both capabilities', async () => {
+    await fs.writeFile(path.join(dir, 'static.md'), leaf('static', 'requires_bench: true\n'), 'utf8');
+    expect(sectionsOf(await store.list())[0]?.requires).toEqual(['bench', 'browser']);
+  });
+
+  it('carry the phase plan, which is where the UI track and the prompt both come from', async () => {
+    await fs.writeFile(
+      path.join(dir, 'static.md'),
+      leaf('static', 'phases:\n  - { id: A, label: session }\n  - { id: C }\n'),
+      'utf8',
+    );
+    expect(sectionsOf(await store.list())[0]?.phases).toEqual([
+      { id: 'A', label: 'session' },
+      // No label declared: the id is the label rather than an empty pill.
+      { id: 'C', label: 'C' },
+    ]);
   });
 });

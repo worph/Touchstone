@@ -15,12 +15,24 @@ import {
 
 const live = (over: Partial<RunLive> = {}): RunLive => ({
   subject: 'SegmentPlayer',
-  depth: 'full',
+  sections: ['static', 'functional'],
   started_at: '2026-08-20T10:00:00.000Z',
   ...over,
 });
 
+const PLAN = [
+  { id: 'A', label: 'session' },
+  { id: 'C', label: 'fresh install' },
+  { id: 'D', label: 'discover URL' },
+  { id: 'E8', label: 'works immediately' },
+  { id: 'E9', label: 'auth gate' },
+  { id: 'E10', label: 'clean boot' },
+  { id: 'F', label: 'zero-config usability' },
+  { id: 'G', label: 'data persistence' },
+];
+
 const progress = (over: Partial<RunProgress> = {}): RunProgress => ({
+  phase_plan: [],
   verified: 0,
   applicable: 0,
   passed: 0,
@@ -60,21 +72,31 @@ describe('elapsedSeconds', () => {
 });
 
 describe('liveLegs', () => {
-  it('a full run is in flight on both legs', () => {
+  it('is the sections the run is actually attempting', () => {
     expect(liveLegs(live())).toEqual(['static', 'functional']);
   });
 
-  it('a static run touches the static leg only', () => {
-    expect(liveLegs(live({ depth: 'static' }))).toEqual(['static']);
+  /**
+   * Invariant 2: an unavailable resource costs one section, and the UI must say so at once —
+   * a cell marked running for a section nobody is running is a lie it maintains for four more
+   * minutes and then contradicts.
+   */
+  it('leaves out a section that was skipped for want of a bench', () => {
+    expect(
+      liveLegs(
+        live({
+          sections: ['static'],
+          blocked: [{ section: 'functional', reason: 'bench_unavailable' }],
+        }),
+      ),
+    ).toEqual(['static']);
   });
 
-  /** Invariant 2: a dead bench degrades the functional leg, and the UI must say so at once. */
-  it('a degraded full run is static — the functional cell must not claim to be running', () => {
-    expect(liveLegs(live({ depth: 'full', ran_depth: 'static', degraded_reason: 'bench_unavailable' })))
-      .toEqual(['static']);
+  it('is empty for a run that has not chosen its sections yet', () => {
+    expect(liveLegs(live({ sections: undefined as never }))).toEqual([]);
   });
 
-  it('nothing running is no legs', () => {
+  it('nothing running is no sections', () => {
     expect(liveLegs(null)).toEqual([]);
   });
 });
@@ -97,8 +119,9 @@ describe('progress', () => {
 });
 
 describe('phaseTrack', () => {
-  it('is the eight phases in protocol order, reached or not', () => {
+  it('is the plan the protocol declared, in order, reached or not', () => {
     const track = phaseTrack(live(), progress({
+      phase_plan: PLAN,
       phases: [
         { phase: 'A', result: 'pass', at: '2026-08-20T10:01:00.000Z' },
         { phase: 'C', result: 'pass', at: '2026-08-20T10:03:00.000Z' },
@@ -110,9 +133,8 @@ describe('phaseTrack', () => {
     expect(track[4]?.label).toBe('auth gate');
   });
 
-  it('is empty for a static run, which has no phases to draw', () => {
-    expect(phaseTrack(live({ depth: 'static' }), progress())).toEqual([]);
-    expect(phaseTrack(live({ depth: 'full', ran_depth: 'static' }), progress())).toEqual([]);
+  it('is empty for a run whose sections declare no phases', () => {
+    expect(phaseTrack(live({ sections: ['static'] }), progress())).toEqual([]);
   });
 });
 
@@ -142,7 +164,7 @@ describe('nowDoing', () => {
 describe('describeLast', () => {
   const base = {
     subject: 'Ntfy',
-    depth: 'static' as const,
+    sections: ['static'],
     started_at: '2026-08-20T09:43:36.691Z',
     finished_at: '2026-08-20T09:51:47.492Z',
   };

@@ -7,14 +7,8 @@
  * the second tells a slow run from a stuck one.
  */
 
-import {
-  FUNCTIONAL_PHASES,
-  PHASE_LABEL,
-  type LastRun,
-  type RunLive,
-  type RunProgress,
-} from '@shared/activity';
-import type { Leg } from '@shared/types';
+import { PHASE_LABEL, type LastRun, type RunLive, type RunProgress } from '@shared/activity';
+import type { Section } from '@shared/types';
 
 export function mmss(seconds: number): string {
   const safe = Math.max(0, Math.floor(seconds));
@@ -30,16 +24,16 @@ export function elapsedSeconds(startedAt: string | undefined, now = Date.now()):
 }
 
 /**
- * Which legs this run will actually produce an assay for.
+ * Which sections this run is actually producing an assay for.
  *
- * `ran_depth`, not `depth`: a full run whose bench vanished is dispatched as a static one,
- * and marking the functional cell "running" when nothing is running it would be a lie the
- * UI tells for four more minutes and then contradicts.
+ * The sections it is *running*, not the ones the protocol defines: a run whose bench vanished
+ * skips the sections that needed one, and marking their cells "running" when nothing is
+ * running them would be a lie the UI tells for four more minutes and then contradicts.
+ *
+ * Empty until the run has probed its prerequisites, which is a beat after it starts.
  */
-export function liveLegs(live: RunLive | null | undefined): Leg[] {
-  if (!live) return [];
-  const depth = live.ran_depth ?? live.depth;
-  return depth === 'full' ? ['static', 'functional'] : ['static'];
+export function liveLegs(live: RunLive | null | undefined): Section[] {
+  return live?.sections ?? [];
 }
 
 /** `7/24`, or empty when the protocol's list has not been counted yet. */
@@ -62,24 +56,26 @@ export interface PhaseStep {
 }
 
 /**
- * The eight functional phases as a track, in protocol order, whether or not they have been
+ * The run's phase plan as a track, in protocol order, whether or not each step has been
  * reached yet. The empty ones are the point — a track that only shows what happened cannot
  * show what is left.
  *
- * Empty for a static run, which has no phases at all; a bar of eight grey pills beside a
- * run that will never fill them would invent a failure.
+ * The plan comes from the server, which reads it off the protocol files, so a run whose
+ * sections have no phases draws no track: a row of grey pills beside a run that will never
+ * fill them would invent a failure.
  */
 export function phaseTrack(
   live: RunLive | null | undefined,
   progress: RunProgress | null | undefined,
 ): PhaseStep[] {
-  if ((live?.ran_depth ?? live?.depth) !== 'full') return [];
+  const plan = progress?.phase_plan ?? [];
+  if (plan.length === 0) return [];
   const recorded = new Map((progress?.phases ?? []).map((p) => [p.phase, p]));
-  return FUNCTIONAL_PHASES.map((id) => {
-    const hit = recorded.get(id);
+  return plan.map((step) => {
+    const hit = recorded.get(step.id);
     return {
-      id,
-      label: PHASE_LABEL[id] ?? id,
+      id: step.id,
+      label: step.label,
       ...(hit ? { result: hit.result, at: hit.at } : {}),
     };
   });

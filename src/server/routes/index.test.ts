@@ -93,6 +93,8 @@ describe('GET /subjects/:name', () => {
       const body = res.json() as { subject: SubjectState; history: unknown[] };
       expect(body.subject).toEqual({
         name: 'SegmentPlayer',
+        // Every section the archive knows about, all empty — plus the two the table names.
+        sections: { static: null, functional: null },
         static: null,
         functional: null,
         risk: 0,

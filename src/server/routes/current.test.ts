@@ -17,10 +17,15 @@ import { EventLog } from '../services/events.js';
 import { RunLedger, type CanonicalRequirement } from '../services/ledger.js';
 import routes from './index.js';
 
+const SECTIONS = [
+  { id: 'static', name: 'Static Review Protocol', phases: [] as string[] },
+  { id: 'functional', name: 'Functional Review Protocol', phases: ['A', 'C', 'D'] },
+];
+
 const CANONICAL: CanonicalRequirement[] = [
-  { id: 'cpu-shares', text: 'cpu_shares set on all services' },
-  { id: 'pinned-image-tag', text: 'Specific version tag (no :latest)' },
-  { id: 'phase-g-persistence', text: 'G — data survives a reinstall', requires: 'bench' },
+  { id: 'cpu-shares', text: 'cpu_shares set on all services', section: 'static' },
+  { id: 'pinned-image-tag', text: 'Specific version tag (no :latest)', section: 'static' },
+  { id: 'phase-g-persistence', text: 'G — data survives a reinstall', section: 'functional', requires: 'bench' },
 ];
 
 let dir: string;
@@ -72,16 +77,15 @@ describe('GET /assays/current', () => {
   });
 
   it('carries what the run is doing, not only how far along it is', async () => {
-    const ticket = ledger.open({ subject: 'SegmentPlayer', depth: 'full', canonical: CANONICAL });
+    const ticket = ledger.open({ subject: 'SegmentPlayer', sections: SECTIONS, canonical: CANONICAL });
     ledger.recordRequirement(ticket.token, { id: 'cpu-shares', verdict: 'pass' });
     ledger.recordRequirement(ticket.token, { id: 'pinned-image-tag', verdict: 'fail', severity: 'major' });
     ledger.recordPhase(ticket.token, { phase: 'A', result: 'pass' });
 
     app = await build({
       subject: 'SegmentPlayer',
-      depth: 'full',
       started_at: '2026-08-20T10:24:28.022Z',
-      ran_depth: 'full',
+      sections: ['static', 'functional'],
       bench: 'https://demostaging1.inojob.com',
       browser: 'http://touchstone-browser:9746/mcp',
     });
@@ -93,26 +97,29 @@ describe('GET /assays/current', () => {
     expect(body.progress?.of_canonical).toBe(CANONICAL.length);
     expect(body.progress?.risk).toBe(10);
     expect(body.progress?.phases).toEqual([
-      expect.objectContaining({ phase: 'A', result: 'pass' }),
+      expect.objectContaining({ phase: 'A', result: 'pass', section: 'functional' }),
     ]);
+    // The plan comes from the protocol, so the page can draw the track before the first
+    // phase is reported — and draws none at all for a run whose sections have no phases.
+    expect(body.progress?.phase_plan.map((p) => p.id)).toEqual(['A', 'C', 'D']);
     // Newest first, so the UI's "what it is doing now" is the head of the list.
     expect(body.progress?.recent[0]?.id).toBe('pinned-image-tag');
   });
 
-  /** A degraded full run must not have the UI drawing a phase track nobody is running. */
-  it('reports the depth actually dispatched alongside the one asked for', async () => {
+  /** A run with a skipped section must not have the UI drawing a track nobody is running. */
+  it('reports the sections actually running, and the ones it skipped', async () => {
     app = await build({
       subject: 'SegmentPlayer',
-      depth: 'full',
       started_at: '2026-08-20T10:24:28.022Z',
-      ran_depth: 'static',
+      sections: ['static'],
+      blocked: [{ section: 'functional', reason: 'bench_unavailable' }],
       degraded_reason: 'bench_unavailable',
       bench: null,
       browser: null,
     });
     const body = await read();
-    expect(body.running?.depth).toBe('full');
-    expect(body.running?.ran_depth).toBe('static');
+    expect(body.running?.sections).toEqual(['static']);
+    expect(body.running?.blocked).toEqual([{ section: 'functional', reason: 'bench_unavailable' }]);
     expect(body.running?.degraded_reason).toBe('bench_unavailable');
   });
 
@@ -120,11 +127,12 @@ describe('GET /assays/current', () => {
     const many: CanonicalRequirement[] = Array.from({ length: 12 }, (_, i) => ({
       id: `rule-${i}`,
       text: `rule ${i}`,
+      section: 'static',
     }));
-    const ticket = ledger.open({ subject: 'Ntfy', depth: 'static', canonical: many });
+    const ticket = ledger.open({ subject: 'Ntfy', sections: [SECTIONS[0]!], canonical: many });
     for (const r of many) ledger.recordRequirement(ticket.token, { id: r.id, verdict: 'pass' });
 
-    app = await build({ subject: 'Ntfy', depth: 'static', started_at: '2026-08-20T10:24:28.022Z' });
+    app = await build({ subject: 'Ntfy', started_at: '2026-08-20T10:24:28.022Z', sections: ['static'] });
     const body = await read();
     expect(body.progress?.verified).toBe(12);
     expect(body.progress?.recent.length).toBeLessThanOrEqual(5);

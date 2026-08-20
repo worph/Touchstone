@@ -13,10 +13,17 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import type { AssayMeta, AssayRecord, Leg } from '../../shared/types.js';
+import type { AssayMeta, AssayRecord, Section } from '../../shared/types.js';
 import { readReport, readReportMeta, ReportFormatError } from './reports.js';
 
-export const CACHE_VERSION = 1;
+/**
+ * Bumped to 2 on 2026-08-20, when `leg` became `section`.
+ *
+ * The cache stores whole parsed records, so entries written by the previous build carry `leg`
+ * and no `section` — and every lookup is by section now. A version bump discards them, which
+ * is exactly what a cache is for: the files on disk are unchanged and are simply re-read.
+ */
+export const CACHE_VERSION = 2;
 
 export interface BuildIndexOptions {
   /** Defaults to `<reportsRoot>/../state/index.json`. `null` disables the cache entirely. */
@@ -67,39 +74,54 @@ export class ReportIndex {
     );
   }
 
-  /** All assays for one subject, newest first, both legs interleaved. */
+  /** All assays for one subject, newest first, every section interleaved. */
   forSubject(subject: string): AssayRecord[] {
     return [...this.byPath.values()].filter((r) => r.subject === subject).sort(byNewestFirst);
   }
 
   /**
-   * The latest `done` assay for a (subject, leg) pair — the hallmark input.
+   * Every section id present in the archive, in a stable order.
+   *
+   * Derived, never declared: the index cannot know which protocol files exist, and a section
+   * that has been retired still has reports that must keep rendering. Callers that also want
+   * sections with no assay yet union this with `sectionsOf(protocols)`.
+   */
+  sections(): Section[] {
+    return [...new Set([...this.byPath.values()].map((r) => r.meta.section))].sort((a, b) =>
+      a.localeCompare(b),
+    );
+  }
+
+  /**
+   * The latest `done` assay for a (subject, section) pair — the hallmark input.
    *
    * `blocked` and `running` assays are deliberately excluded: a blocked run is a statement
    * about the bench, never about the subject, so it must not displace the last real result.
    * Use `latestAny` when you want the current *state* including a block.
    */
-  latest(subject: string, leg: Leg): AssayRecord | null {
+  latest(subject: string, section: Section): AssayRecord | null {
     return (
-      this.forSubject(subject).find((r) => r.meta.leg === leg && r.meta.status === 'done') ?? null
+      this.forSubject(subject).find((r) => r.meta.section === section && r.meta.status === 'done') ??
+      null
     );
   }
 
-  /** The most recent assay for a (subject, leg) pair whatever its status. */
-  latestAny(subject: string, leg: Leg): AssayRecord | null {
-    return this.forSubject(subject).find((r) => r.meta.leg === leg) ?? null;
+  /** The most recent assay for a (subject, section) pair whatever its status. */
+  latestAny(subject: string, section: Section): AssayRecord | null {
+    return this.forSubject(subject).find((r) => r.meta.section === section) ?? null;
   }
 
   /**
-   * One record per (subject, leg) — the 138-file working set every cross-subject query
-   * runs over. `status` defaults to `done`, which is what the Overview table wants.
+   * One record per (subject, section) — the working set every cross-subject query runs over.
+   * `status` defaults to `done`, which is what the Overview table wants.
    */
-  latestPerSubjectLeg(opts: { status?: 'done' | 'any' } = {}): AssayRecord[] {
+  latestPerSubjectSection(opts: { status?: 'done' | 'any' } = {}): AssayRecord[] {
     const pick = opts.status === 'any' ? this.latestAny.bind(this) : this.latest.bind(this);
+    const sections = this.sections();
     const out: AssayRecord[] = [];
     for (const subject of this.subjects()) {
-      for (const leg of ['static', 'functional'] as Leg[]) {
-        const rec = pick(subject, leg);
+      for (const section of sections) {
+        const rec = pick(subject, section);
         if (rec) out.push(rec);
       }
     }

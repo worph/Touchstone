@@ -71,7 +71,7 @@ one of these — resist adding a fifth.
 not navigation. It appears when an audit starts, on every page, and disappears when the audit
 ends — a permanent bar that usually reads "idle" is furniture people stop seeing, and then the one
 time it matters they do not see it either. On a phone it is a pill in the sticky header, so it
-costs no height. It carries the subject, the depth actually being run, `verified/canonical`, the
+costs no height. It carries the subject, the sections actually being run, `verified/canonical`, the
 clock, and the last requirement or phase the agent settled; clicking it opens the subject.
 
 The browser tab's **title** carries the same thing (`◴ SegmentPlayer · 7/24 · 4:12 — Touchstone`),
@@ -131,7 +131,7 @@ Answers, in order: *is the loop running*, *what's broken*, *what do I fix first*
 - **`⚠ parked ·3`** is its own state, not an error: three tries used, waiting out `STUCK_DAYS`.
   Today this is legible only by reading `stuck after 3 tries` out of a wiki cell.
 - **Age, not timestamp.** `7d` is actionable; `2026-07-30` requires arithmetic.
-- Filters: severity, leg, blocked-only, parked-only, stale-only.
+- Filters: severity, section, blocked-only, parked-only, stale-only.
 
 ---
 
@@ -168,16 +168,22 @@ from the report prose is precisely the mistake the archive was cleaned of in P1.
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Two leg cards, then the report.** The report is the evidence and it is the whole page below the
+- **One card per section, then the report.** (Two today, because the protocol has two leaves; the
+  page names them from the archive rather than from a fixed pair.) The report is the evidence and
+  it is the whole page below the
   fold; there is no findings sidebar, because findings are prose inside the report
   ([ARCHITECTURE.md §1.4 G](ARCHITECTURE.md#g-deliberately-dropped)).
 - **The blocked card names the reason and says `no try used`.** That sentence is the product.
 - **`try N · trigger`** on each card, because "why did this run" and "how many attempts has it had"
   are questions the wiki table could only answer in emoji.
-- `re-assay ▾` offers **static only** or **static + functional**, and calls `POST /api/v1/assays`.
-  The functional choice is disabled with the reason when no bench is leasable, rather than
-  silently queueing something that cannot run. (Two choices rather than three: n8n's `depth` has
-  only `static` and `full`, and a functional-only run is not a thing either system can do.)
+- `re-assay` is **one button and no menu**, and calls `POST /api/v1/assays` with a subject and
+  nothing else. There is no depth to choose: a run audits every section of the protocol, and a
+  section whose prerequisites are missing is recorded blocked — which costs the app nothing and is
+  the honest record of what happened. When no bench is leasable the button says so beneath itself
+  rather than disabling anything: the audit is still worth running, it will simply be narrower.
+  (Until 2026-08-20 this was a `▾` menu offering `static only` / `static + functional`, mirroring
+  n8n's `depth`. The choice was never real — the only reason to pick `static` was a dead pool, and
+  the runner already handles that by itself.)
 - **The button does not hold the request open.** An audit runs for five to ten minutes; a browser
   request held that long is at the mercy of every proxy in front of it, and a socket closed at
   minute four is indistinguishable from a failed audit. `POST /assays` answers `202`, the button
@@ -236,6 +242,7 @@ rendering an empty box.
 │  RUNNING NOW  ◴                                                              │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
 │  │ SegmentPlayer   static + functional                              4:12   │  │
+│  │   ↑ the sections this run is actually attempting, named by the protocol │  │
 │  │ ▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░  7/24 requirements settled · 1 failing         │  │
 │  │ (A session)(C fresh install)(D discover URL)(E8 …)(E9 …)(F …)(G …)     │  │
 │  │ started 10:24:28 · bench demostaging1 · browser touchstone-browser:9746│  │
@@ -369,7 +376,7 @@ These matter more than usual, because the system's normal condition includes "la
 | Assay running | The row shows `◴ running · 7/24`, the shell shows the strip, the tab title shows the clock and Activity shows the card. All four come from `GET /assays/current` and none from a file: the runner writes a report when it has a verdict, so a run in progress has no record and must not be given a placeholder one. |
 | Subject parked | `⚠ parked ·3` with the date it is released. Not styled as an error. |
 | Agent busy | Log row and a `agent.unavailable` alert if it persists. The row is restored, not failed. |
-| Report file missing | The leg card still renders from the index; the report pane says the file is gone and offers a re-assay. |
+| Report file missing | The section card still renders from the index; the report pane says the file is gone and offers a re-assay. |
 | Beacon or push down | Everything still renders. Undelivered notifications are marked in the log. |
 
 ---
