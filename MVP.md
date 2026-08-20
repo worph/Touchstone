@@ -139,11 +139,12 @@ Two smaller data defects went with it: `subject_ref` was matching `ref` inside "
 
 ### Report file
 
-`data/reports/<Subject>/<ISO with ':' → '-'>-<section>.md`
+`data/reports/<origin>/<Subject>/<ISO with ':' → '-'>-<section>.md`
 
 ```yaml
 ---
-subject: OpenClaw
+subject: OpenClaw            # the BARE app name. Identity is `<origin>~<subject>`
+origin: yundera              # which store it came from — `config.yaml`'s `origins[].id`
 section: static              # the leaf protocol that judged it — `data/protocols/static.md`
 standard: Static Review Protocol
 standard_version: 3
@@ -171,6 +172,13 @@ Unknown keys are preserved on read and rewritten on write. The body is never par
 and — since findings are no longer extracted — never parsed by anything except the renderer.
 
 There is no `findings:` list. That is the single biggest change from the previous contract.
+
+**`origin` arrived on 2026-08-20**, when the app store became a configured value rather than five
+hardcoded strings. A file written before then has none, and `coerceMeta` fills it with the default
+origin on read — the same move as `leg` → `section` below, and for the same reason: the archive was
+not rewritten. That default is also what lets the one-time move of `reports/<Subject>/` into
+`reports/<origin>/<Subject>/` be tidying rather than something correctness depends on. Note that
+`subject` stays the **bare** name; the composite key lives on the index record, not in the file.
 
 **`section` replaced `leg` on 2026-08-20** and the set is open: it is the `id` of a leaf in
 `data/protocols/`, not a two-value enum. Files written before then carry `leg:` instead, and

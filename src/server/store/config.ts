@@ -18,6 +18,7 @@ import path from 'node:path';
 import { fileURLToPath, URL as NodeURL } from 'node:url';
 import YAML from 'yaml';
 
+import { DEFAULT_ORIGIN } from '../../shared/subject.js';
 import type { Severity } from '../../shared/types.js';
 
 /** Repo root, resolved from this file so cwd never matters. */
@@ -37,6 +38,37 @@ export interface BenchEntry {
   enabled?: boolean;
 }
 
+/**
+ * One app store Touchstone audits — a repo, a ref, and the directory the apps live in.
+ *
+ * This is the thing that was five hardcoded strings until 2026-08-20. Several may be listed;
+ * subjects are then identified as `<id>~<name>` and their reports live under `reports/<id>/`.
+ *
+ * `id` is not free-form for the default entry: `DEFAULT_ORIGIN` is a **code** constant because
+ * a report written before origins existed has its `origin` filled in on read, so renaming the
+ * default would re-interpret the whole legacy archive. An origin with that id must exist, and
+ * `resolveOrigins` below enforces it.
+ */
+export interface OriginEntry {
+  id: string;
+  /** `owner/name` on GitHub. */
+  repo: string;
+  /** The branch or tag audited, and the one recorded in every assay's `subject_ref`. */
+  ref: string;
+  /** Where the apps live in that repo. `Apps` in the Yundera store. */
+  apps_path: string;
+  /**
+   * A cold-start list for this store, used only until the contents API answers once.
+   *
+   * The Yundera store's list is `DEFAULT_APPS` in `store/registry.ts` and deliberately stays
+   * in code: that file's own comment explains that it is a copy of what n8n falls back to and
+   * that a difference in it is a difference in what the two systems audit. This field is for
+   * *other* origins, and for overriding.
+   */
+  seed?: string[];
+  enabled?: boolean;
+}
+
 export interface OutletEntry {
   kind: 'telegram' | 'discord';
   target?: string;
@@ -46,6 +78,8 @@ export interface OutletEntry {
 
 export interface TouchstoneConfig {
   dataDir: string;
+  /** The app stores audited. Never empty — see `resolveOrigins`. */
+  origins: OriginEntry[];
   reportsRoot: string;
   stateDir: string;
   /** The rubric, as local markdown Touchstone owns and edits — and what versions itself. */
@@ -124,6 +158,7 @@ export interface TouchstoneConfig {
 function defaults(dataDir: string): TouchstoneConfig {
   return {
     dataDir,
+    origins: [{ id: DEFAULT_ORIGIN, repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' }],
     reportsRoot: path.join(dataDir, 'reports'),
     stateDir: path.join(dataDir, 'state'),
     protocolsDir: path.join(dataDir, 'protocols'),
@@ -200,7 +235,45 @@ export async function loadConfig(dataDir?: string): Promise<TouchstoneConfig> {
   // Paths in config.yaml may be relative to the data dir.
   cfg.reportsRoot = path.resolve(dir, cfg.reportsRoot);
   cfg.stateDir = path.resolve(dir, cfg.stateDir);
+  cfg.origins = resolveOrigins(cfg.origins);
   return cfg;
+}
+
+/**
+ * Normalise `origins:`, and guarantee the default one survives.
+ *
+ * `merge()` above replaces arrays **wholesale** rather than merging them element-wise — which
+ * is right for `benches` and `outlets`, and a trap here. An operator adding a second store by
+ * writing `origins: [{id: acme, ...}]` would otherwise silently *delete* the Yundera origin,
+ * and because `DEFAULT_ORIGIN` is what every pre-existing report resolves to, the entire
+ * archive would become subjects of a store that is no longer configured: unschedulable, and
+ * quietly so. Re-adding it is a better answer than failing to boot, because the archive keeps
+ * working either way; what matters is that the situation is impossible rather than silent.
+ *
+ * Also drops entries that are disabled or too incomplete to fetch from, so a half-written
+ * entry cannot produce a registry that reads as "backlog empty".
+ */
+export function resolveOrigins(raw: unknown): OriginEntry[] {
+  const list = Array.isArray(raw) ? (raw as Partial<OriginEntry>[]) : [];
+  const out: OriginEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of list) {
+    const id = String(entry?.id ?? '').trim();
+    const repo = String(entry?.repo ?? '').trim();
+    if (!id || !repo || entry?.enabled === false || seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      repo,
+      ref: String(entry?.ref ?? 'main').trim() || 'main',
+      apps_path: String(entry?.apps_path ?? 'Apps').trim() || 'Apps',
+      ...(Array.isArray(entry?.seed) ? { seed: entry.seed.map(String) } : {}),
+    });
+  }
+  if (!seen.has(DEFAULT_ORIGIN)) {
+    out.unshift({ id: DEFAULT_ORIGIN, repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' });
+  }
+  return out;
 }
 
 /**
@@ -217,6 +290,27 @@ export const CONFIG_TEMPLATE = `# Touchstone configuration.
 # Seeded on first boot. Every value below is the built-in default, so deleting this file
 # changes nothing — it exists so the settings that DO need you (bench credentials, notify
 # outlets) have an obvious place to go.
+
+# ── the stores ──────────────────────────────────────────────────────────────────────────
+# What gets audited. Each origin is one repo at one ref; subjects from it are identified as
+# <id>~<app> and their reports live under data/reports/<id>/.
+#
+# The \`yundera\` entry is special: every report written before this setting existed resolves
+# to it, so it is re-added automatically if you leave it out. Add stores, do not replace it.
+origins:
+  - id: yundera
+    repo: Yundera/AppStore
+    ref: main
+    apps_path: Apps
+# Adding a second store needs no code change. Two stores may ship the same app name; they are
+# two subjects, two rows and two report folders.
+#   - id: acme
+#     repo: Acme/AppStore
+#     ref: main
+#     apps_path: Apps
+#     # A cold-start list, used until the GitHub contents API answers once. The Yundera store's
+#     # equivalent lives in code, because it must not drift from the copy n8n falls back to.
+#     seed: []
 
 # ── the scheduler ───────────────────────────────────────────────────────────────────────
 # The five constants of n8n's \`Pick next target\`, at the values it runs today. Do not

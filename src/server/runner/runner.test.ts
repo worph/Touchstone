@@ -6,7 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { EventLog } from '../services/events.js';
 import type { BenchProber } from '../services/bench.js';
 import { classify, extractText } from './agent.js';
+import { DEFAULT_ORIGIN, subjectKey } from '../../shared/subject.js';
 import { Runner, type RunnerOptions } from './index.js';
+
+/** The app under test, as the runner now addresses it: `<origin>~<name>`. */
+const SUBJECT = subjectKey(DEFAULT_ORIGIN, 'Tuwunel');
 
 /**
  * The protocol, as two sections — which is now the *only* thing that says what a run is made
@@ -94,6 +98,31 @@ function sse(text: string): string {
 
 let dir: string;
 let events: EventLog;
+
+/** Where this subject's reports land — `reports/<origin>/<Subject>/`. */
+function subjectDir(): string {
+  return path.join(dir, 'reports', DEFAULT_ORIGIN, 'Tuwunel');
+}
+
+/** Every report anywhere under the reports root, so "nothing was written" can be proved. */
+async function reportFiles(root = path.join(dir, 'reports')): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (d: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await fs.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const abs = path.join(d, e.name);
+      if (e.isDirectory()) await walk(abs);
+      else if (e.name.endsWith('.md')) out.push(abs);
+    }
+  };
+  await walk(root);
+  return out;
+}
 
 function make(over: Partial<RunnerOptions> = {}, answers: string[] = [sse(agentJson())]): Runner {
   let call = 0;
@@ -217,14 +246,14 @@ describe('classifying a failure', () => {
 
 describe('a run that produces a verdict', () => {
   it('writes one file per section and takes the verdict from the declaration', async () => {
-    const out = await make().run({ subject: 'Tuwunel', try_n: 1 });
+    const out = await make().run({ subject: SUBJECT, try_n: 1 });
     expect(out.kind).toBe('verdict');
     expect(out.kind === 'verdict' && out.files).toHaveLength(2);
 
-    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    const files = await fs.readdir(subjectDir());
     expect(files).toHaveLength(2);
     const staticFile = files.find((f) => f.endsWith('-static.md'))!;
-    const body = await fs.readFile(path.join(dir, 'reports', 'Tuwunel', staticFile), 'utf8');
+    const body = await fs.readFile(path.join(subjectDir(), staticFile), 'utf8');
     expect(body).toContain('verdict: non-compliant');
     expect(body).toContain('top_severity: critical');
     expect(body).toContain('risk_score: 113');
@@ -235,17 +264,17 @@ describe('a run that produces a verdict', () => {
     const contradicting = agentJson({
       report_markdown: report().replace('risk score 113', 'risk score 1'),
     });
-    const out = await make({}, [sse(contradicting)]).run({ subject: 'Tuwunel', try_n: 1 });
+    const out = await make({}, [sse(contradicting)]).run({ subject: SUBJECT, try_n: 1 });
     expect(out.kind === 'verdict' && out.risk).toBe(113);
   });
 
   it('records the bench it ran against', async () => {
     await make({ prober: proberOf(['https://demostaging1.example']) }).run({
-      subject: 'Tuwunel',
+      subject: SUBJECT,
       try_n: 1,
     });
-    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
-    const body = await fs.readFile(path.join(dir, 'reports', 'Tuwunel', files[0]!), 'utf8');
+    const files = await fs.readdir(subjectDir());
+    const body = await fs.readFile(path.join(subjectDir(), files[0]!), 'utf8');
     expect(body).toContain('bench_host:');
   });
 
@@ -261,18 +290,18 @@ describe('a run that produces a verdict', () => {
         { id: 'functional', order: 3, requires: ['bench', 'browser'], phases: ['A'] },
       ]),
     });
-    const out = await three.run({ subject: 'Tuwunel', try_n: 1 });
+    const out = await three.run({ subject: SUBJECT, try_n: 1 });
     expect(out.kind === 'verdict' && out.files).toHaveLength(3);
-    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    const files = await fs.readdir(subjectDir());
     expect(files.filter((f) => f.endsWith('-licensing.md'))).toHaveLength(1);
   });
 
   /** Principle 6: the rubric that judged an assay is the protocol, and it versions itself. */
   it('stamps a section from its own protocol', async () => {
-    await make().run({ subject: 'Tuwunel', try_n: 1 });
-    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    await make().run({ subject: SUBJECT, try_n: 1 });
+    const files = await fs.readdir(subjectDir());
     const body = await fs.readFile(
-      path.join(dir, 'reports', 'Tuwunel', files.find((f) => f.endsWith('-static.md'))!),
+      path.join(subjectDir(), files.find((f) => f.endsWith('-static.md'))!),
       'utf8',
     );
     expect(body).toContain('standard: Static Review Protocol');
@@ -281,7 +310,7 @@ describe('a run that produces a verdict', () => {
 
   /** There is no rubric on disk, so there is nothing to judge against and nothing to write. */
   it('refuses to run with no protocol at all', async () => {
-    const out = await make({ protocols: protocolsOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
+    const out = await make({ protocols: protocolsOf([]) }).run({ subject: SUBJECT, try_n: 1 });
     expect(out).toEqual({ kind: 'blocked', reason: 'no_protocol' });
   });
 });
@@ -297,17 +326,17 @@ describe('a functional half that could not run', () => {
   });
 
   it('writes the functional leg blocked, not errored', async () => {
-    await make({}, [sse(noPhases)]).run({ subject: 'Tuwunel', try_n: 1 });
-    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    await make({}, [sse(noPhases)]).run({ subject: SUBJECT, try_n: 1 });
+    const files = await fs.readdir(subjectDir());
     const fn = files.find((f) => f.endsWith('-functional.md'))!;
-    const body = await fs.readFile(path.join(dir, 'reports', 'Tuwunel', fn), 'utf8');
+    const body = await fs.readFile(path.join(subjectDir(), fn), 'utf8');
     expect(body).toContain('status: blocked');
     expect(body).toContain('blocked_reason: bench_unavailable');
     expect(body).toContain('verdict: null');
   });
 
   it('still reports the run as a verdict, because the static half did produce one', async () => {
-    const out = await make({}, [sse(noPhases)]).run({ subject: 'Tuwunel', try_n: 1 });
+    const out = await make({}, [sse(noPhases)]).run({ subject: SUBJECT, try_n: 1 });
     expect(out.kind).toBe('verdict');
   });
 });
@@ -318,20 +347,24 @@ describe('the agent being busy', () => {
 
   it('waits and tries once more', async () => {
     const out = await make({}, [busy, sse(agentJson())]).run({
-      subject: 'Tuwunel',
+      subject: SUBJECT,
       try_n: 1,
     });
     expect(out.kind).toBe('verdict');
   });
 
   it('gives the subject back untouched when the retry is busy too', async () => {
-    const out = await make({}, [busy, busy]).run({ subject: 'Tuwunel', try_n: 1 });
+    const out = await make({}, [busy, busy]).run({ subject: SUBJECT, try_n: 1 });
     expect(out).toEqual({ kind: 'agent_busy' });
   });
 
   it('writes no report when it gives up', async () => {
-    await make({}, [busy, busy]).run({ subject: 'Tuwunel', try_n: 1 });
-    await expect(fs.readdir(path.join(dir, 'reports', 'Tuwunel'))).rejects.toThrow();
+    await make({}, [busy, busy]).run({ subject: SUBJECT, try_n: 1 });
+    // Deliberately not `expect(readdir(<subject dir>)).rejects.toThrow()`. That directory does
+    // not exist when nothing was written *and* did not exist when the layout gained a store
+    // level, so the assertion passed either way — including if the runner had written files
+    // somewhere else entirely. Listing the whole reports root proves the real claim.
+    expect(await reportFiles()).toEqual([]);
   });
 
   it('retries only once, never in a loop', async () => {
@@ -344,14 +377,14 @@ describe('the agent being busy', () => {
         }) as unknown as typeof fetch,
       },
     });
-    await runner.run({ subject: 'Tuwunel', try_n: 1 });
+    await runner.run({ subject: SUBJECT, try_n: 1 });
     expect(calls).toBe(2);
   });
 });
 
 describe('refusing to run', () => {
   it('does nothing at all while disabled', async () => {
-    const out = await make({ enabled: false }).run({ subject: 'Tuwunel', try_n: 1 });
+    const out = await make({ enabled: false }).run({ subject: SUBJECT, try_n: 1 });
     expect(out).toEqual({ kind: 'blocked', reason: 'runner_disabled' });
   });
 
@@ -363,18 +396,18 @@ describe('refusing to run', () => {
    * again one layer down. The job degrades instead: static runs, functional is recorded.
    */
   it('runs the rest of the audit when no bench is leasable', async () => {
-    const out = await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
+    const out = await make({ prober: proberOf([]) }).run({ subject: SUBJECT, try_n: 1 });
     expect(out.kind).toBe('verdict');
   });
 
   it('still writes both sections, the one that needed a bench blocked', async () => {
-    await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
-    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    await make({ prober: proberOf([]) }).run({ subject: SUBJECT, try_n: 1 });
+    const files = await fs.readdir(subjectDir());
     expect(files.filter((f) => f.endsWith('-static.md'))).toHaveLength(1);
     expect(files.filter((f) => f.endsWith('-functional.md'))).toHaveLength(1);
 
     const functional = await fs.readFile(
-      path.join(dir, 'reports', 'Tuwunel', files.find((f) => f.endsWith('-functional.md'))!),
+      path.join(subjectDir(), files.find((f) => f.endsWith('-functional.md'))!),
       'utf8',
     );
     // No verdict, and a reason about the bench rather than about the app.
@@ -384,7 +417,7 @@ describe('refusing to run', () => {
   });
 
   it('says out loud which section it could not attempt', async () => {
-    await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
+    await make({ prober: proberOf([]) }).run({ subject: SUBJECT, try_n: 1 });
     await events.flush();
     expect(events.query({ code: 'ASSAY_DEGRADED' })).toHaveLength(1);
   });
@@ -401,7 +434,7 @@ describe('refusing to run', () => {
         }) as unknown as typeof fetch,
       },
     });
-    await runner.run({ subject: 'Tuwunel', try_n: 1 });
+    await runner.run({ subject: SUBJECT, try_n: 1 });
     expect(prompt).toContain('sections=static');
     // And it is told what is NOT being audited, so it does not judge it or invent it.
     expect(prompt).toContain('NOT part of this run');
@@ -410,10 +443,10 @@ describe('refusing to run', () => {
 
   /** A section that requires nothing runs whatever the state of the pool. */
   it('still produces a verdict for the sections that need no bench', async () => {
-    await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
-    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    await make({ prober: proberOf([]) }).run({ subject: SUBJECT, try_n: 1 });
+    const files = await fs.readdir(subjectDir());
     const body = await fs.readFile(
-      path.join(dir, 'reports', 'Tuwunel', files.find((f) => f.endsWith('-static.md'))!),
+      path.join(subjectDir(), files.find((f) => f.endsWith('-static.md'))!),
       'utf8',
     );
     expect(body).toContain('status: done');
@@ -424,7 +457,7 @@ describe('refusing to run', () => {
 describe('a failure that is not busy', () => {
   it('reports the class so the scheduler can charge the try', async () => {
     const out = await make({}, [sse('Error calling remote tool: httpstatuserror 500')]).run({
-      subject: 'Tuwunel',
+      subject: SUBJECT,
       try_n: 1,
     });
     expect(out).toEqual({ kind: 'error', reason: 'agent-error' });
@@ -432,7 +465,7 @@ describe('a failure that is not busy', () => {
 
   it('calls out a logged-out agent separately, because no app is at fault', async () => {
     await make({}, [sse('failed to authenticate, please run /login')]).run({
-      subject: 'Tuwunel',
+      subject: SUBJECT,
       try_n: 1,
     });
     await events.flush();
@@ -451,19 +484,19 @@ describe('the browser sidecar', () => {
     const out = await make({
       prober: proberOf(['https://demostaging1.example']),
       ports: portsOf([]),
-    }).run({ subject: 'Tuwunel', try_n: 1 });
+    }).run({ subject: SUBJECT, try_n: 1 });
     expect(out.kind).toBe('verdict');
   });
 
   /** A missing sidecar is infrastructure, so it is recorded against the browser, not the app. */
   it('names the browser as the reason the functional leg is blocked', async () => {
     await make({ prober: proberOf(['https://x.example']), ports: portsOf([]) }).run({
-      subject: 'Tuwunel',
+      subject: SUBJECT,
       try_n: 1,
     });
-    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    const files = await fs.readdir(subjectDir());
     const functional = await fs.readFile(
-      path.join(dir, 'reports', 'Tuwunel', files.find((f) => f.endsWith('-functional.md'))!),
+      path.join(subjectDir(), files.find((f) => f.endsWith('-functional.md'))!),
       'utf8',
     );
     expect(functional).toMatch(/blocked_reason: browser_unavailable/);
@@ -473,16 +506,16 @@ describe('the browser sidecar', () => {
     await make({
       prober: proberOf(['https://demostaging1.example']),
       ports: portsOf(['http://touchstone-browser:9746/mcp']),
-    }).run({ subject: 'Tuwunel', try_n: 1 });
+    }).run({ subject: SUBJECT, try_n: 1 });
 
-    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
-    const body = await fs.readFile(path.join(dir, 'reports', 'Tuwunel', files[0]!), 'utf8');
+    const files = await fs.readdir(subjectDir());
+    const body = await fs.readFile(path.join(subjectDir(), files[0]!), 'utf8');
     expect(body).toContain('browser: ');
   });
 
   /** A section that does not declare `browser` drives none, so a dead sidecar cannot stop it. */
   it('is not needed by a section that does not ask for it', async () => {
-    const out = await make({ ports: portsOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
+    const out = await make({ ports: portsOf([]) }).run({ subject: SUBJECT, try_n: 1 });
     expect(out.kind).toBe('verdict');
   });
 });

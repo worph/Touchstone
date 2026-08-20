@@ -10,6 +10,8 @@
  * principle 3). Nothing here derives a verdict from anything.
  */
 
+import { DEFAULT_ORIGIN } from '../../shared/subject.js';
+import { recordFor } from '../store/reports.js';
 import type { AssayMeta, AssayRecord, Leg, Severity, Verdict } from '../../shared/types.js';
 import type { AssayStore, StoredReport } from './store.js';
 
@@ -44,13 +46,16 @@ function draft(d: Draft): AssayRecord {
     top_severity: severity,
     risk_score: risk,
     blocked_reason: d.blocked_reason ?? null,
+    origin: DEFAULT_ORIGIN,
     subject_ref: `Yundera/AppStore@main:Apps/${d.subject}`,
     started_at: d.at,
     finished_at: done ? d.at : '',
   };
 
   const file = `${d.at.replace(/:/g, '-')}-${d.leg}.md`;
-  const path = `${d.subject}/${file}`;
+  // Three levels, like the real archive — these records back the route tests and the
+  // no-data-dir dev fallback, and a two-level path here would make every report link 404.
+  const path = `${DEFAULT_ORIGIN}/${d.subject}/${file}`;
   bodies.set(
     path,
     d.body ??
@@ -73,7 +78,7 @@ function draft(d: Draft): AssayRecord {
       ].join('\n'),
   );
 
-  return { meta, path, subject: d.subject, file };
+  return recordFor(meta, path);
 }
 
 /** Build one record. Anything unstated defaults the way a clean assay would. */

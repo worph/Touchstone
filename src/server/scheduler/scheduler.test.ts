@@ -360,3 +360,51 @@ describe('the queue the page renders', () => {
     expect(row?.position).toBeUndefined();
   });
 });
+
+/**
+ * `state/schedule.json` written before a subject was `<origin>~<name>`.
+ *
+ * This is the one part of the rename that loses real state if it is skipped, and it loses it
+ * *silently*: orphaned rows do not error, they read as "never audited". Every try counter
+ * resets, every park lifts, and the next tick reports the whole store as backlog — the same
+ * shape as the "69 against n8n's 32" divergence in HANDOFF, and just as invisible.
+ */
+describe('a schedule file written before subjects were keyed', () => {
+  it('re-keys bare names into the default origin, keeping their state', async () => {
+    await fs.writeFile(
+      path.join(dir, 'schedule.json'),
+      JSON.stringify({
+        subjects: {
+          Alpha: { try_n: 2 },
+          Beta: { try_n: 3, parked_at: '2026-08-19T00:00:00.000Z' },
+        },
+        last_finished_at: '2026-08-19T12:00:00.000Z',
+      }),
+      'utf8',
+    );
+
+    const s = make();
+    await s.load();
+    const rows = s.snapshot().subjects;
+
+    expect(rows['yundera~Alpha']?.try_n).toBe(2);
+    expect(rows['yundera~Beta']?.try_n).toBe(3);
+    expect(rows['yundera~Beta']?.parked_at).toBe('2026-08-19T00:00:00.000Z');
+    // And the bare keys are gone, so nothing can read them back by accident.
+    expect(rows.Alpha).toBeUndefined();
+  });
+
+  it('leaves an already-keyed file alone', async () => {
+    await fs.writeFile(
+      path.join(dir, 'schedule.json'),
+      JSON.stringify({ subjects: { 'acme~Alpha': { try_n: 1 } } }),
+      'utf8',
+    );
+
+    const s = make();
+    await s.load();
+
+    expect(s.snapshot().subjects['acme~Alpha']?.try_n).toBe(1);
+    expect(s.snapshot().subjects['yundera~acme~Alpha']).toBeUndefined();
+  });
+});

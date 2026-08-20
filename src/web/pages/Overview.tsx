@@ -9,6 +9,7 @@
 import { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
+import { subjectName } from '@shared/subject';
 import type { Leg, SubjectState } from '@shared/types';
 import CoverageCell from '../components/CoverageCell';
 import ReassayButton from '../components/ReassayButton';
@@ -243,8 +244,10 @@ function Row({ s, live }: { s: SubjectState; live: LiveRun | null }) {
   return (
     <tr data-running={running || undefined}>
       <td>
+        {/* Linked by key, rendered by label: `s.name` is `<origin>~<app>`, which is an
+            address, not something to show a person. */}
         <Link className="row-link" to={`/s/${encodeURIComponent(s.name)}`}>
-          {s.name}
+          {s.label}
         </Link>
       </td>
       {/* The state comes from `legState`, not from the record, so a leg being audited right
@@ -261,7 +264,7 @@ function Row({ s, live }: { s: SubjectState; live: LiveRun | null }) {
       </td>
       <td className="col-num dim">{ageLabel(s.age_days)}</td>
       <td className="col-chev">
-        <Link to={`/s/${encodeURIComponent(s.name)}`} aria-label={`Open ${s.name}`}>›</Link>
+        <Link to={`/s/${encodeURIComponent(s.name)}`} aria-label={`Open ${s.label}`}>›</Link>
       </td>
     </tr>
   );
@@ -396,7 +399,7 @@ function BacklogNote({
         {named.map((it, i) => (
           <span key={`${it.subject}-${it.section}`}>
             {i > 0 ? ', ' : ''}
-            <Link to={`/s/${encodeURIComponent(it.subject)}`}>{it.subject}</Link>
+            <Link to={`/s/${encodeURIComponent(it.subject)}`}>{subjectName(it.subject)}</Link>
             <span className="dim"> · {it.section}</span>
           </span>
         ))}

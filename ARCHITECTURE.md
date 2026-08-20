@@ -297,8 +297,14 @@ The *shape* of the data, not a database schema. Nothing is relational and there 
 ```
 -- WHAT IS JUDGED ---------------------------------------------------------
 subject
-  name, source_ref, enabled
-  -- derived from the GitHub contents API; only overrides are authored
+  origin, name, source_ref, enabled
+  -- identity is `<origin>~<name>`; two stores may both ship a `FileBrowser`
+  -- derived from each origin's GitHub contents API; only overrides are authored
+
+origin     -- config.yaml `origins[]`; the store a subject comes from
+  id, repo, ref, apps_path, seed
+  -- one repo at one ref. NOT a tenant: every origin is judged by the same protocol files at
+  --   the same version (§1.4 G still drops `subject.kind` and pluggable tenants)
 
 -- WHAT IT IS JUDGED AGAINST ---------------------------------------------
 protocol   -- data/protocols/<id>.md; a `leaf` IS a section definition
@@ -316,7 +322,8 @@ standard   -- not a separate entity: a section's standard IS its protocol file
 
 -- WHAT HAPPENED ---------------------------------------------------------
 assay                        -- the frontmatter of a report file IS this record
-  subject, section, standard, standard_version,
+  subject, origin, section, standard, standard_version,
+  -- `subject` is the bare name; `origin` is filled in on read when the file predates it
   -- `leg` on any file written before 2026-08-20; filled into `section` on read
   status, verdict, top_severity, risk_score,
   try_n, trigger, bench, browser, lease_until,
@@ -353,7 +360,8 @@ it is today. §1.4 G explains why.
 | --- | --- |
 | `standard` | the protocol file itself — a section's name and version are its own rubric's |
 | `protocol` | `protocols/*.md` — the rubric, the definition of the sections, and the version every assay records |
-| `subject` | GitHub contents API + overrides in `config.yaml` |
+| `subject` | each origin's GitHub contents API + overrides in `config.yaml` |
+| `origin` | `config.yaml` `origins[]` — never discovered, and the default one is re-added if dropped |
 | `assay` | **frontmatter of the report file** — the record and the artefact are one thing |
 | `bench`, `browser` | `state/benches.json`, `state/browsers.json` — re-probed at boot anyway |
 | `event` | `state/events.jsonl` — append-only |
@@ -621,7 +629,7 @@ for any future import — no protocol on disk sets it.
 
 ### 5.6 Reports and outlets
 
-An assay writes one markdown file per section under `<data>/reports/<subject>/<iso>-<section>.md`, frontmatter
+An assay writes one markdown file per section under `<data>/reports/<origin>/<subject>/<iso>-<section>.md`, frontmatter
 carrying the structured verdict, body carrying the report verbatim. That file is the archive of
 record: sortable, greppable, backed up with the rest of the data dir, readable without the app.
 
@@ -656,7 +664,7 @@ n8n, which §9 explains.
 | --- | --- | --- |
 | `GET` | `/api/v1/subjects` | registry + current hallmark, both legs |
 | `GET` | `/api/v1/subjects/:name` | one subject, both legs, latest assay each |
-| `GET` | `/api/v1/reports/:subject/:file` | the markdown file, rendered and raw |
+| `GET` | `/api/v1/reports/:subject/:file` | the markdown file, rendered and raw. `:subject` is the key `<origin>~<name>`; a bare name still resolves |
 | `POST` | `/api/v1/assays` | request an assay now (subject) — the re-assay button. No depth: a run covers every section |
 | `GET` | `/api/v1/benches` | pool health, last probe |
 | `GET` | `/api/v1/events` | the log feed, filterable by level and category |

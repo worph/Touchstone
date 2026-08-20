@@ -32,6 +32,8 @@ surprise.
 | **R7** | A notification page in the shape of Newsdesk's | ◑ Activity, deep links and assistable failures done; two parts missing |
 | **R8** | A central LLM chat that administrates the app | ✅ built 2026-08-20, proved end to end |
 | **R9** | The audit hands the dev team something they can act on | ✅ built 2026-08-20 — the fix report |
+| **R10** | The app store is a configured value, and there may be several | ⬜ raised 2026-08-20 — §11 |
+| **R11** | A ref can be audited without moving the subject's hallmark — a *trial* | ⬜ raised 2026-08-20 — §12 |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -114,6 +116,19 @@ an operator fills in. That is the "generic conformance product" direction and it
 deferred on 2026-08-20. It is written here so that when R5/R6 build a settings screen, the screen is
 designed to be able to carry those fields later without being rebuilt.
 
+**Partly scheduled the same day, as R10.** The operator asked for several stores, and for a PR's
+own store to be testable before the PR is validated. That reopens the first half of this item:
+`Yundera/AppStore@main:Apps/` becomes a configured `origins:` entry rather than five hardcoded
+sites. It does **not** claim tenant-neutrality — a Yundera origin still ships as the default, and
+`DEFAULT_APPS` deliberately stays in code (`store/registry.ts:26-28` explains why: it is a copy of
+what n8n falls back to, and a difference in it is a difference in what the two systems audit).
+
+**The boundary, so this does not become the dropped feature.** §1.4 G drops `generic subject.kind,
+pluggable tenants`, and R10 must not smuggle it back. An **origin is another repo in the same
+AppStore format, judged by the same protocol files at the same version.** No `subject.kind`, no
+per-origin rubric, no per-origin gate, no per-origin scheduler constants. The moment an origin
+wants its own `protocols/` directory, that is pluggable tenants and it stays dropped.
+
 ### 3.5 The open one — where does Touchstone get deployed?
 
 [MVP.md](MVP.md) M7 names `touchstone-yunderalabs.nsl.sh` as the deploy target. If no endpoint may
@@ -185,7 +200,7 @@ shadow diff has been read, or the diff loses its baseline.
 > folder composed of md reports"*
 
 **The expectation is already the implementation.** Reports are
-`data/reports/<Subject>/<ISO-8601 with ':' → '-'>-<section>.md`, one file per assay, the YAML frontmatter
+`data/reports/<origin>/<Subject>/<ISO-8601 with ':' → '-'>-<section>.md`, one file per assay, the YAML frontmatter
 *is* the assay record, and the body is the report verbatim. There are 281 of them. Nothing else is
 the archive — the in-memory index is a cache over these files and deleting `state/index.json` is
 always safe.
@@ -412,6 +427,73 @@ order, cheapest and most-enabling first:
 6. ~~**R8** — the admin chat.~~ **Done 2026-08-20.** R7.2's assistable errors are now a second
    entry point onto a loop that already exists.
 7. **R7.3** — action rows, once there is enough of a decision surface for the list to be non-trivial.
+
+R10 and R11 sit outside that order: R10 is a prerequisite for R11 and neither blocks nor is
+blocked by the switch-off.
+
+---
+
+## 11. R10 — The app store is a configured value, and there may be several ⬜
+
+> *"i would like some configuration to either be able to change store or support multiple github
+> store (or pass store as URL to protocol eg in case of PR we use custom store of the PR to test
+> before validating)"* — operator, 2026-08-20
+
+### 11.1 What is true today
+
+`Yundera/AppStore@main:Apps/` is hardcoded in five places: `store/registry.ts:23`
+(`GITHUB_APPS_URL`), `runner/prompt.ts:82` (`repo`, with `ref main` a bare string literal a few
+lines below), `domain/assay.ts:165,286` (`subject_ref`, defaulted rather than written) and the
+report H1 at `assay.ts:74,171`. Two of those — `PromptInput.repo` and `AssayInput.subjectRef` —
+are already parameters that no caller has ever set, and `data/protocols/static.md:59` already
+declares itself "repo-agnostic (works for any `<repo>`)". The rubric was written for this; only
+the wiring collapsed it to a constant.
+
+### 11.2 The requirement
+
+An **origin** is `{id, repo, ref, apps_path}` in `config.yaml`. Subjects are identified by
+`<origin>~<name>`; reports live at `data/reports/<origin>/<Subject>/<ISO>-<section>.md`; every
+assay's `subject_ref` is written from the origin rather than defaulted. Several origins feed one
+backlog under one set of scheduler constants.
+
+Two rules the design turns on:
+
+- **`DEFAULT_ORIGIN` is a code constant**, because a report file written before this existed gets
+  its `origin` defaulted on read (in `coerceMeta`, exactly as `leg` → `section` is), and renaming
+  the default would re-interpret the whole legacy archive. Config must contain an origin with that
+  id, checked at boot — `config.ts`'s `merge()` replaces arrays wholesale, so an operator adding
+  an origin would otherwise silently delete the default one.
+- **The archive layout is a namespace, not a uniqueness rule.** Two origins may both ship a
+  `FileBrowser`; they are two subjects, two rows and two schedule entries.
+
+### 11.3 Acceptance
+
+A second origin can be added to `config.yaml` and its apps appear as their own rows, with their
+own schedule entries and their own reports, without a code change. One origin's GitHub outage does
+not empty another's list and costs no subject a retry. With one origin configured, nothing about
+the app's behaviour or appearance differs from before.
+
+---
+
+## 12. R11 — A ref can be audited without moving the hallmark — a *trial* ⬜
+
+The PR half of the same request. A **trial** runs the same protocol through the same runner
+against an arbitrary `repo@ref`, and writes under `data/trials/<slug>/` — a tree the report index
+is never handed, so a trial cannot move a subject's hallmark, cannot enter the backlog and cannot
+consume a retry. `AppStore PR Review` stays in n8n and keeps the labels, the comment and the
+publishing; this is the executor it could call, and nothing calls it until someone wires it.
+
+**Trials are static-only, and the blocked report says why.** `data/protocols/functional.md:189`
+installs from the bench's own catalogue at `https://<DEMO>/store`, which serves whatever store
+that Maison box points at — not the ref under trial. A functional result would be about `main`
+while carrying the PR's name. The functional section is therefore recorded `blocked` with reason
+`store_not_installable`, which is invariant 4's exact shape. Repointing a bench's catalogue at a
+custom store URL is the follow-on that would lift this.
+
+**Nothing a model can call may choose the ref.** The chat's `run_assay` keeps its single property,
+constrained to a member of the registry. Invariant 6 says nothing an agent can call may write a
+verdict or mint a section; the same reasoning covers repo+ref, which is the one input that turns
+"audit an app" into "run `gh` against a URL of the model's choosing".
 
 ---
 

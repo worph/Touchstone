@@ -15,7 +15,9 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { PHASE_LABEL, type RunStatus } from '../../shared/activity.js';
+import { asSubjectKey, type SubjectKey } from '../../shared/subject.js';
 import type { ReportResponse } from '../../shared/types.js';
+import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import { renderMarkdown } from '../domain/markdown.js';
 import { coverageOf } from '../services/ledger.js';
 import type { RunLedger } from '../services/ledger.js';
@@ -99,8 +101,20 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
   });
 
   app.post<{ Body?: Body }>('/assays', async (req, reply) => {
-    const subject = String(req.body?.subject ?? '').trim();
-    if (!subject) return reply.code(400).send({ error: 'subject is required' });
+    const asked = String(req.body?.subject ?? '').trim();
+    if (!asked) return reply.code(400).send({ error: 'subject is required' });
+
+    // The button sends a key; a shell or an old bookmark may send a bare app name. Both
+    // resolve, and a bare name that exists in two stores is a 400 naming them rather than a
+    // silent pick — auditing the wrong store's app would attribute its verdict to the other.
+    const known = options.scheduler?.knownSubjects() ?? [];
+    const resolved = resolveSubjectKey(asked, known);
+    if (resolved.kind === 'ambiguous') {
+      return reply.code(400).send({ error: ambiguousMessage(asked, resolved.candidates) });
+    }
+    // An unknown name still runs: the registry may be mid-refresh, and refusing here would
+    // make a first-ever audit impossible. `asSubjectKey` puts a bare name in the default store.
+    const subject = resolved.kind === 'ok' ? resolved.key : asSubjectKey(asked);
 
     const runner = options.runner;
     if (!runner) return reply.code(503).send({ error: 'no runner configured' });
@@ -163,7 +177,7 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
 async function runAndRecord(
   runner: Runner,
   scheduler: Scheduler | undefined,
-  job: { subject: string; try_n: number },
+  job: { subject: SubjectKey; try_n: number },
 ): Promise<RunOutcome> {
   const outcome = await runner.run(job);
   await scheduler?.record(job.subject, toSchedulerOutcome(outcome));

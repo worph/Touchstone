@@ -14,6 +14,7 @@
  *   `hallmark` — newest `done` assay; the last real verdict, and what risk and age use.
  */
 
+import { asSubjectKey, splitSubjectKey, type SubjectKey } from '../../shared/subject.js';
 import type { AssayMeta, AssayRecord, Section, SubjectState } from '../../shared/types.js';
 
 /**
@@ -96,11 +97,14 @@ export interface HallmarkOptions {
  * A subject that has never completed an assay has `age_days: null` (the UI's `—`).
  */
 export function subjectHallmark(
-  name: string,
+  key: string,
   records: readonly AssayRecord[],
   options: HallmarkOptions = {},
 ): SubjectHallmark {
   const now = options.now === undefined ? Date.now() : Number(options.now);
+  // `key` is `<origin>~<name>`, so this filter separates two stores' same-named apps without
+  // knowing anything about origins. That is the whole reason identity is one opaque string.
+  const name = asSubjectKey(key);
   const mine = records.filter((r) => r.subject === name);
 
   // Whatever sections this subject actually has, plus the two the table names — so a subject
@@ -127,6 +131,10 @@ export function subjectHallmark(
     legs,
     state: {
       name,
+      // Split from the key rather than read off `mine[0]`, so a subject with no assay yet —
+      // the never-run rows the Overview still has to draw — gets an origin and a label too.
+      origin: splitSubjectKey(name).origin,
+      label: splitSubjectKey(name).name,
       sections: current,
       static: legs.static?.current ?? null,
       functional: legs.functional?.current ?? null,
@@ -136,19 +144,19 @@ export function subjectHallmark(
   };
 }
 
-/** Every distinct subject in the archive, alphabetical. */
-export function subjectNames(records: readonly AssayRecord[]): string[] {
+/** Every distinct subject in the archive, as `<origin>~<name>` keys, alphabetical. */
+export function subjectNames(records: readonly AssayRecord[]): SubjectKey[] {
   return [...new Set(records.map((r) => r.subject))].sort((a, b) => a.localeCompare(b));
 }
 
-/** The Overview table: one row per subject, risk descending, name as the tiebreak. */
+/** The Overview table: one row per subject, risk descending, label as the tiebreak. */
 export function hallmarks(
   records: readonly AssayRecord[],
   options: HallmarkOptions = {},
 ): SubjectState[] {
   return subjectNames(records)
     .map((name) => subjectHallmark(name, records, options).state)
-    .sort((a, b) => b.risk - a.risk || a.name.localeCompare(b.name));
+    .sort((a, b) => b.risk - a.risk || a.label.localeCompare(b.label) || a.name.localeCompare(b.name));
 }
 
 /** The latest `done` assay for one section — the hallmark proper. */

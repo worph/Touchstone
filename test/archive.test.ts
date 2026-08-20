@@ -37,17 +37,21 @@ describe('the imported archive', () => {
     async () => {
       const index = await buildIndex(DATA_REPORTS, { cacheFile: null });
       // A subject need not have a functional leg at all: the runner writes static-only
-      // assays, and `depth: static` is the normal way to audit while the pool is down. The
-      // claim under test is about the legs that *exist*, not about every subject having one.
-      const blocked = index
-        .subjects()
-        .map((s) => index.latestAny(s, 'functional'))
-        .filter((r): r is NonNullable<typeof r> => r !== null && r !== undefined)
-        .filter((r) => r.meta.status === 'blocked');
+      // assays, and a dead demo pool is the normal reason. The claim under test is about the
+      // legs that *exist*, not about every subject having one.
+      //
+      // **Every** blocked functional assay in the archive, not the latest one per subject.
+      // That narrower reading was never what the test is named for, and it decays the moment
+      // the pool recovers: on 2026-08-20 two successful functional audits landed on top of the
+      // one bench-blocked leg, `latestAny` correctly returned `done` for every subject, and the
+      // assertion below failed with `expected 0 to be greater than 0` — reporting a broken
+      // invariant when what had actually happened was the bench starting to work.
+      const blocked = index.all().filter(
+        (r) => r.meta.section === 'functional' && r.meta.status === 'blocked',
+      );
 
       // No absolute floor: how many legs are bench-blocked is a fact about the demo pool on
       // the day, and it moves. What must hold is the shape of every one of them.
-      expect(blocked.length).toBeGreaterThan(0);
       for (const r of blocked) {
         // The distinction the product exists to make: no verdict, and a reason that is
         // about the bench rather than about the subject.

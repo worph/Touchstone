@@ -21,6 +21,7 @@
 
 import path from 'node:path';
 
+import { asSubjectKey, isSubjectKey, type SubjectKey } from '../../shared/subject.js';
 import { readJson, writeJsonAtomic } from '../store/state.js';
 import type { ReportIndex } from '../store/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
@@ -37,6 +38,28 @@ import {
 } from './policy.js';
 import type { QueueRow, ScheduleConstants } from '../../shared/schedule.js';
 import { openClaim, recordResult, type Outcome } from './record.js';
+
+/**
+ * Re-key a `state/schedule.json` written before a subject was `<origin>~<name>`.
+ *
+ * Load-bearing, and it must never be dropped: without it every row is orphaned on the first
+ * boot after the rename. Try counters reset, parks lift, the cooldown anchor is lost and every
+ * subject reads as never audited — so the first tick reports the entire store as backlog. That
+ * is the same class of error as the "69 against n8n's 32" divergence in HANDOFF, and it is
+ * invisible until you compare the two systems.
+ *
+ * Idempotent: a key that already carries the separator is left alone.
+ */
+function migrateKeys(
+  stored: Record<string, SubjectSchedule | undefined>,
+): Record<string, SubjectSchedule> {
+  const out: Record<string, SubjectSchedule> = {};
+  for (const [key, row] of Object.entries(stored)) {
+    if (!row) continue;
+    out[isSubjectKey(key) ? key : asSubjectKey(key)] = row;
+  }
+  return out;
+}
 
 export { decide, stateLine, queue, cooldownLeftMin } from './policy.js';
 export type { PolicyInput, SchedulerConstants, SubjectSchedule, TickDecision } from './policy.js';
@@ -74,7 +97,7 @@ export interface SchedulerOptions {
    * Called when an armed scheduler has claimed a subject. Absent until the runner lands
    * (P4), which is why an armed scheduler with no dispatcher still only claims.
    */
-  dispatch?: (job: { subject: string; try_n: number }) => void | Promise<void>;
+  dispatch?: (job: { subject: SubjectKey; try_n: number }) => void | Promise<void>;
 }
 
 export class Scheduler {
@@ -95,7 +118,8 @@ export class Scheduler {
 
   async load(): Promise<void> {
     const stored = await readJson<ScheduleFile>(this.file, { subjects: {} });
-    this.subjects = stored?.subjects && typeof stored.subjects === 'object' ? stored.subjects : {};
+    this.subjects =
+      stored?.subjects && typeof stored.subjects === 'object' ? migrateKeys(stored.subjects) : {};
     this.lastFinished = stored?.last_finished_at;
     this.lastTick = stored?.last_tick;
     this.armedOverride = typeof stored?.armed === 'boolean' ? stored.armed : undefined;
@@ -180,6 +204,17 @@ export class Scheduler {
    * The backlog in the order it would be worked. Reads the world exactly as a tick does and
    * decides nothing — safe to call from a route on every poll.
    */
+  /**
+   * Every subject key the loop knows about — the registry's list.
+   *
+   * Exposed so the routes can resolve what somebody typed against the same set the scheduler
+   * would pick from, rather than against the archive alone: an app that has never been audited
+   * is in the registry and in no report, and it is exactly the one a person asks for by hand.
+   */
+  knownSubjects(): string[] {
+    return this.opts.registry.list();
+  }
+
   async previewQueue(now = new Date()): Promise<QueueRow[]> {
     return queue(this.buildInput({ now }));
   }
@@ -334,8 +369,11 @@ export class Scheduler {
         // Deliberately not awaited. An audit takes half an hour; a tick that waited for it
         // would hold the timer, and the claim it just wrote is what stops the next tick from
         // starting a second one. The dispatcher reports back through `record()`.
+        // Cast, not convert. The registry's contract is that it hands out keys and `load()`
+        // migrates any bare key off disk, so anything reaching here is already one — and
+        // re-normalising would quietly hide a violation of that contract rather than surface it.
         void Promise.resolve(
-          this.opts.dispatch?.({ subject: decision.subject, try_n: claim.try_n }),
+          this.opts.dispatch?.({ subject: decision.subject as SubjectKey, try_n: claim.try_n }),
         ).catch((err) => console.error('dispatch failed', err));
       }
     } else if (decision.reason.startsWith('no usable demo bench')) {

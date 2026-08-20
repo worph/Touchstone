@@ -138,6 +138,9 @@ export function applyShow(
 export function search(s: SubjectState, q: string): boolean {
   if (!q) return true;
   const needle = q.toLowerCase();
+  // The label first, because that is what somebody types. The key too, so `yundera~` narrows
+  // to one store once there is more than one.
+  if (s.label.toLowerCase().includes(needle)) return true;
   if (s.name.toLowerCase().includes(needle)) return true;
   for (const rec of Object.values(s.sections ?? {})) {
     if (rec?.meta.subject_ref?.toLowerCase().includes(needle)) return true;

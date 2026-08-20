@@ -9,6 +9,8 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_ORIGIN, subjectKey } from '@shared/subject';
+
 import type { AssayRecord, SubjectState } from '@shared/types';
 import { deriveBacklog } from './overview';
 
@@ -27,15 +29,19 @@ function rec(subject: string, section: string, over: Record<string, unknown> = {
       finished_at: '2026-08-20T09:10:00.000Z',
       ...over,
     },
-    path: `${subject}/x-${section}.md`,
-    subject,
+    path: `${DEFAULT_ORIGIN}/${subject}/x-${section}.md`,
+    subject: subjectKey(DEFAULT_ORIGIN, subject),
+    origin: DEFAULT_ORIGIN,
+    name: subject,
     file: `x-${section}.md`,
   } as AssayRecord;
 }
 
 function subject(name: string, sections: Record<string, AssayRecord | null>): SubjectState {
   return {
-    name,
+    name: subjectKey(DEFAULT_ORIGIN, name),
+    origin: DEFAULT_ORIGIN,
+    label: name,
     sections,
     static: sections.static ?? null,
     functional: sections.functional ?? null,
@@ -61,7 +67,9 @@ describe('deriveBacklog', () => {
       }),
     ]);
     expect(out).toMatchObject({ reason: 'bench_unavailable', count: 1 });
-    expect(out?.items).toEqual([{ subject: 'FileBrowser', section: 'functional' }]);
+    expect(out?.items).toEqual([
+      { subject: subjectKey(DEFAULT_ORIGIN, 'FileBrowser'), section: 'functional' },
+    ]);
     expect(out?.since).toBe('2026-08-20T09:34:35.111Z');
   });
 
@@ -97,7 +105,7 @@ describe('deriveBacklog', () => {
       }),
     ];
     const live = {
-      subject: 'FileBrowser',
+      subject: subjectKey(DEFAULT_ORIGIN, 'FileBrowser'),
       legs: ['static', 'functional'],
       started_at: '2026-08-20T14:21:59.503Z',
     };
@@ -111,7 +119,7 @@ describe('deriveBacklog', () => {
       }),
     ];
     // The run skipped functional — no bench — so it is still outstanding while the run goes on.
-    const live = { subject: 'FileBrowser', legs: ['static'], started_at: '2026-08-20T14:21:59.503Z' };
+    const live = { subject: subjectKey(DEFAULT_ORIGIN, 'FileBrowser'), legs: ['static'], started_at: '2026-08-20T14:21:59.503Z' };
     expect(deriveBacklog(subjects, live)?.count).toBe(1);
   });
 
@@ -120,10 +128,10 @@ describe('deriveBacklog', () => {
       subject('A', { functional: blocked('A', 'functional', '2026-08-20T09:00:00.000Z') }),
       subject('B', { functional: blocked('B', 'functional', '2026-08-20T09:00:00.000Z') }),
     ];
-    const live = { subject: 'A', legs: ['functional'], started_at: '2026-08-20T14:21:59.503Z' };
+    const live = { subject: subjectKey(DEFAULT_ORIGIN, 'A'), legs: ['functional'], started_at: '2026-08-20T14:21:59.503Z' };
     const out = deriveBacklog(subjects, live);
     expect(out?.count).toBe(1);
-    expect(out?.items[0]?.subject).toBe('B');
+    expect(out?.items[0]?.subject).toBe(subjectKey(DEFAULT_ORIGIN, 'B'));
   });
 
   /** Sections are open-ended now, so this must not know the two names it grew up with. */

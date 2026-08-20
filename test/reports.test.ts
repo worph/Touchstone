@@ -7,6 +7,7 @@
  * (`imported_from`, `rollup_result`, `compose_sha`), and a future producer will add more.
  */
 
+import { DEFAULT_ORIGIN } from '../src/shared/subject.js';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -85,13 +86,25 @@ describe('report files', () => {
     expect(back.body).toBe(body);
   });
 
-  it('names files <Subject>/<ISO with : replaced by ->-<section>.md', async () => {
+  it('names files <origin>/<Subject>/<ISO with : replaced by ->-<section>.md', async () => {
     const rel = reportRelPathFor({
       subject: 'OpenClaw',
+      origin: 'acme',
       section: 'static',
       started_at: '2026-08-05T09:14:22Z',
     } as never);
-    expect(rel).toBe('OpenClaw/2026-08-05T09-14-22Z-static.md');
+    expect(rel).toBe('acme/OpenClaw/2026-08-05T09-14-22Z-static.md');
+
+    // Frontmatter written before stores existed carries no `origin`, and lands in the default
+    // one. This is the pair that lets the archive migration be tidying rather than a rename
+    // the index depends on.
+    expect(
+      reportRelPathFor({
+        subject: 'OpenClaw',
+        section: 'static',
+        started_at: '2026-08-05T09:14:22Z',
+      } as never),
+    ).toBe(`${DEFAULT_ORIGIN}/OpenClaw/2026-08-05T09-14-22Z-static.md`);
 
     // Every fixture on disk obeys the same convention.
     for (const file of await fixtureFiles()) {

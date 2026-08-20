@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
+
+import { DEFAULT_ORIGIN, subjectKey } from '../../shared/subject.js';
 import { FIXTURE_RECORDS, makeRecord } from './fixtures.js';
 import { hallmarks, latestDone, legState, sortNewestFirst, subjectHallmark } from './hallmark.js';
 
 const NOW = Date.parse('2026-08-06T12:00:00Z');
+const APP = subjectKey(DEFAULT_ORIGIN, 'App');
 
 describe('leg selection', () => {
   it('takes the newest done assay as the hallmark', () => {
@@ -17,7 +20,7 @@ describe('leg selection', () => {
       }),
     ];
     expect(legState(records, 'static').hallmark?.meta.started_at).toBe('2026-08-01T00:00:00Z');
-    expect(latestDone(records, 'App', 'static')?.meta.verdict).toBe('non-compliant');
+    expect(latestDone(records, APP, 'static')?.meta.verdict).toBe('non-compliant');
   });
 
   it('a blocked leg reads as blocked and never falls back to the older verdict', () => {
@@ -32,7 +35,7 @@ describe('leg selection', () => {
       }),
     ];
 
-    const { state, legs } = subjectHallmark('App', records, { now: NOW });
+    const { state, legs } = subjectHallmark(APP, records, { now: NOW });
 
     // the displayed record is the blocked one …
     expect(state.functional?.meta.status).toBe('blocked');
@@ -54,7 +57,7 @@ describe('leg selection', () => {
       }),
       makeRecord({ subject: 'App', leg: 'static', at: '2026-08-06T00:00:00Z', status: 'running' }),
     ];
-    const { state } = subjectHallmark('App', records, { now: NOW });
+    const { state } = subjectHallmark(APP, records, { now: NOW });
     expect(state.static?.meta.status).toBe('running');
     expect(state.static?.meta.verdict).toBeNull();
   });
@@ -70,7 +73,7 @@ describe('leg selection', () => {
         risk_score: 10,
       }),
     ];
-    const { state, legs } = subjectHallmark('App', records, { now: NOW });
+    const { state, legs } = subjectHallmark(APP, records, { now: NOW });
     expect(state.static?.meta.status).toBe('done');
     expect(legs.static?.stale).toBe(false);
   });
@@ -78,13 +81,13 @@ describe('leg selection', () => {
 
 describe('subject row', () => {
   it('sums risk over the legs and ages off the newest done assay', () => {
-    const { state } = subjectHallmark('OpenClaw', FIXTURE_RECORDS, { now: NOW });
+    const { state } = subjectHallmark(subjectKey(DEFAULT_ORIGIN, 'OpenClaw'), FIXTURE_RECORDS, { now: NOW });
     expect(state.risk).toBe(232); // static declared 232; the functional leg is blocked and scores 0
     expect(state.age_days).toBe(1); // static ran 2026-08-05, "now" is 2026-08-06
   });
 
   it('a subject with no completed assay has no age', () => {
-    const { state } = subjectHallmark('Beacon', FIXTURE_RECORDS, { now: NOW });
+    const { state } = subjectHallmark(subjectKey(DEFAULT_ORIGIN, 'Beacon'), FIXTURE_RECORDS, { now: NOW });
     expect(state.static).toBeNull();
     expect(state.functional?.meta.status).toBe('blocked');
     expect(state.age_days).toBeNull();
@@ -93,8 +96,10 @@ describe('subject row', () => {
 
   it('lists every subject, risk descending', () => {
     const rows = hallmarks(FIXTURE_RECORDS, { now: NOW });
-    expect(rows.map((r) => r.name)).toContain('Beacon');
-    expect(rows[0]?.name).toBe('OpenClaw');
+    // `name` is the key; `label` is the app. The Overview renders the second and links by
+    // the first, so the row test asserts on the one a person would read.
+    expect(rows.map((r) => r.label)).toContain('Beacon');
+    expect(rows[0]?.label).toBe('OpenClaw');
     const risks = rows.map((r) => r.risk);
     expect(risks).toEqual([...risks].sort((a, b) => b - a));
     // every functional leg that exists is blocked except Radarr's — the Overview's story

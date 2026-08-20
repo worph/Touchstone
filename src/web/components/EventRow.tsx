@@ -1,3 +1,4 @@
+import { subjectName } from '@shared/subject';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -34,7 +35,7 @@ export default function EventRow({ event }: { event: EventRecord }) {
       <span className="log-message">
         {event.subject ? (
           <Link className="log-subject" to={`/s/${encodeURIComponent(event.subject)}`}>
-            {event.subject}
+            {subjectName(event.subject)}
             {event.section ? ` ${event.section}` : ''}
           </Link>
         ) : null}

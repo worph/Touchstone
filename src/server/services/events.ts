@@ -87,6 +87,10 @@ export const EVENT_CODES = {
   REGISTRY_REFRESHED: { category: 'scheduler', label: 'registry changed' },
   REGISTRY_FAILED: { category: 'scheduler', label: 'registry unreadable' },
 
+  // ── the archive ───────────────────────────────────────────────────────────
+  ARCHIVE_MIGRATED: { category: 'system', label: 'report archive moved' },
+  ARCHIVE_MIGRATION_FAILED: { category: 'system', label: 'report archive not moved' },
+
   // ── the runner (P4) ───────────────────────────────────────────────────────
   ASSAY_STARTED: { category: 'assay', label: 'audit started' },
   ASSAY_COMPLETED: { category: 'assay', label: 'audit finished' },
@@ -155,6 +159,14 @@ interface EventDetails {
   CLAIM_UNPARKED: { subject: string };
   REGISTRY_REFRESHED: { count: number };
   REGISTRY_FAILED: { error: string; live: boolean };
+  ARCHIVE_MIGRATED: {
+    origin: string;
+    subjects: number;
+    moved: number;
+    deduped: number;
+    conflicts: string[];
+  };
+  ARCHIVE_MIGRATION_FAILED: { error: string };
   ASSAY_STARTED: {
     subject: string;
     /** The sections this run is attempting — those whose prerequisites were met. */

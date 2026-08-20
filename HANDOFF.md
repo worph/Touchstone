@@ -1015,6 +1015,88 @@ property of the app, and an id would let an untidy run fail an innocent app.
 
 ---
 
+## 5j. The app store became a value — R10 step 1, 2026-08-20
+
+`Yundera/AppStore@main:Apps/` was hardcoded in five places. It is now `config.yaml`'s
+`origins[]`, and a subject is identified by `<origin>~<name>`. **One origin is configured and
+nothing about the app's behaviour changed** — that inertness is the deliverable of this step.
+
+This reopens the first half of REQUIREMENTS §3.4, which the operator deferred by name earlier the
+same day. §11 (R10) records the reversal and, more importantly, the boundary: an origin is another
+repo *in the same format, judged by the same protocol files at the same version*. No per-origin
+rubric, no `subject.kind` — those stay dropped by §1.4 G.
+
+### The four decisions worth not re-litigating
+
+1. **Identity is one opaque string, `<origin>~<name>`, not a `(origin, name)` pair.** The pair
+   would have turned `state/schedule.json` into `Record<origin, Record<name, row>>` and with it
+   rewritten `scheduler/policy.ts` and `record.ts` — the two files whose diffability against the
+   live n8n loop is a stated property of the design, during shadow mode, for a reason that has
+   nothing to do with scheduling. Both are **byte-unchanged**. If either ever shows up in a diff
+   for this reason, the premise has been violated.
+2. **The separator is `~`**, because it is unreserved in `encodeURIComponent` and survives a URL
+   untouched. That is why `/s/:name`, `/subjects/:name`, `/reports/:subject/:file` and
+   `isSafeSegment` all kept the shape they had, and why push deep links still work. `/` would have
+   broken all four; `:` survives routing but shows up as `%3A` in every URL and log line.
+3. **`SubjectKey` is a branded type.** Every site in this change is otherwise a bare `string`, so
+   a bare name used as a key type-checks and then fails as a silent 404 you find by clicking. The
+   brand turned it into a list `tsc` printed. It does **not** protect JSX props — a `SubjectKey`
+   satisfies a `string` prop — so the display sites were found by grep instead.
+4. **A missing `origin` is filled in by `coerceMeta`, not derived from the directory.** Same move
+   as `leg` → `section`, same file, same reasoning. The payoff: the boot migration is **cosmetic**.
+   An archive that never moves — read-only data dir, a crash halfway, a restored backup — still
+   indexes, resolves and renders identically.
+
+### Three real bugs found on the way, none of them in scope
+
+- **`defaultCacheFile()` collides for two roots.** It is `dirname(root)/state/index.json`, which
+  is the *same path* for `data/reports` and `data/trials`. Two indexes would clobber each other and
+  cross-serve records. Not hit yet — trials do not exist — but it is a landmine armed for step 4,
+  which must pass `cacheFile` explicitly.
+- **The GitHub contents URL had no `?ref=`.** It answers for the repo's *default branch* whatever
+  the ref says, so an origin pinned to a branch would have listed `main`'s app directory and never
+  said so. Fixed in `appsUrlFor`, with a test.
+- **`config.ts`'s `merge()` replaces arrays wholesale.** Right for `benches` and `outlets`, a trap
+  for `origins`: writing `origins: [{id: acme, …}]` would silently *delete* the yundera entry, and
+  since every pre-existing report resolves to `DEFAULT_ORIGIN`, the whole archive would become
+  subjects of an unconfigured store — unschedulable, and quietly so. `resolveOrigins` re-adds it.
+
+### Two tests that were lying, or about to
+
+- **`test/helpers.ts`'s `fixtureFiles()` walked exactly two levels.** After the fixture corpus
+  moved under `yundera/` it would have returned **zero files**, and every caller is a
+  `for (… of await fixtureFiles())` loop — they would all have passed while asserting nothing. It
+  is now recursive **and throws on an empty result**.
+- **`runner.test.ts`'s "writes no report when it gives up"** asserted that `readdir` of the subject
+  directory *rejects*. Under the new layout that directory does not exist for a different reason,
+  so it passed vacuously and would have kept passing if the runner had started writing files
+  somewhere else. It now lists the whole reports root and asserts it empty.
+
+### Not a regression: `test/archive.test.ts`
+
+`records every bench-denied functional leg as blocked` was failing before any of this, and for a
+happy reason: two successful functional audits landed on 2026-08-20 on top of the one bench-blocked
+leg, so `latestAny` correctly returned `done` for every subject and `expect(blocked.length)
+.toBeGreaterThan(0)` reported a broken invariant when what had happened was the bench starting to
+work. It now scans **every** blocked functional assay in the archive, which is what its name always
+claimed and is robust to the pool recovering.
+
+### State
+
+`yarn typecheck` clean, `yarn test` 397 passing across 28 files. Verified against the running dev
+stack: the archive migrated once (one `ARCHIVE_MIGRATED` event), `state/index.json` rebuilt at
+version 3, `/subjects` returns `{name: 'yundera~FileBrowser', origin, label}`, subject/report/fix
+routes answer for **both** the key and a bare legacy name, the traversal guard still refuses, and
+the queue is 69 keyed rows with `armed: false` untouched.
+
+**Not done, and next:** step 2 passes the resolved repo/ref/apps_path into the prompt and writes
+`subject_ref` from the origin (today it is still the hardcoded default string, which is *correct*
+for the one origin configured and wrong the moment there are two). Step 3 is per-origin registry
+state and the UI badge. Step 4 is trials. The plan for all four is in
+`/root/.claude/plans/wiggly-rolling-fox.md`.
+
+---
+
 ## 6. Reference — facts read off the running system
 
 Cited so they can be re-checked when they drift. Read 2026-08-07.

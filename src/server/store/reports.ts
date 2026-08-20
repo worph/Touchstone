@@ -15,6 +15,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import matter from 'gray-matter';
 
+import { DEFAULT_ORIGIN, subjectKey } from '../../shared/subject.js';
 import type { AssayMeta, AssayRecord, Section } from '../../shared/types.js';
 
 export interface ReportFile extends AssayRecord {
@@ -55,6 +56,12 @@ function coerceMeta(data: Record<string, unknown>, where: string): AssayMeta {
     }
     data.section = data.leg;
   }
+  // `origin` is the same move, one rename later: every assay written before stores were a
+  // configured value belongs to the one store there was. Defaulting it *here* rather than
+  // deriving it from the directory is what makes the archive layout a namespace rather than an
+  // identity — a file that has not been moved into `reports/<origin>/` yet still reads
+  // correctly, which is what lets the boot migration be cosmetic instead of load-bearing.
+  if (typeof data.origin !== 'string' || data.origin === '') data.origin = DEFAULT_ORIGIN;
   // Everything else is passed through as-is. Unknown keys ride along untouched; this is a
   // widening cast, not a validation pass — the archive may legitimately be ahead of us.
   return data as unknown as AssayMeta;
@@ -72,19 +79,44 @@ export function parseReportMeta(raw: string, where = '<string>'): AssayMeta {
   return coerceMeta(parsed.data as Record<string, unknown>, where);
 }
 
-/** Read a report file whole: frontmatter, verbatim body, and the raw bytes. */
-export async function readReport(file: string, reportsRoot?: string): Promise<ReportFile> {
+/**
+ * Read a report file whole: frontmatter, verbatim body, and the raw bytes.
+ *
+ * `reportsRoot` is **required**. It used to be optional, with a fallback that rebuilt the
+ * relative path out of `basename(dirname(file))` — one directory level, which was true when a
+ * report lived at `<Subject>/<file>` and became a quiet lie the moment it lived at
+ * `<origin>/<Subject>/<file>`: the origin would be dropped and `path` would name a file that is
+ * not there. Every caller already passed a root, so requiring it trades a latent runtime bug for
+ * a compile error.
+ */
+export async function readReport(file: string, reportsRoot: string): Promise<ReportFile> {
   const raw = await fs.readFile(file, 'utf8');
   const { body } = split(raw);
   const meta = parseReportMeta(raw, file);
-  const rel = reportsRoot ? path.relative(reportsRoot, file) : path.join(path.basename(path.dirname(file)), path.basename(file));
+  const rel = path.relative(reportsRoot, file);
   return {
-    meta,
-    path: rel.split(path.sep).join('/'),
-    subject: meta.subject,
-    file: path.basename(file),
+    ...recordFor(meta, rel.split(path.sep).join('/')),
     body,
     raw,
+  };
+}
+
+/**
+ * Build the index record for one report — the single definition of that shape.
+ *
+ * Two places used to construct it independently: `buildIndex`'s scan and the runner's `upsert`
+ * after a write. Two copies of "how a record is derived from a file" is one copy too many when
+ * the derivation grows a key, so both call this.
+ */
+export function recordFor(meta: AssayMeta, rel: string): AssayRecord {
+  const origin = typeof meta.origin === 'string' && meta.origin ? meta.origin : DEFAULT_ORIGIN;
+  return {
+    meta,
+    path: rel,
+    subject: subjectKey(origin, meta.subject),
+    origin,
+    name: meta.subject,
+    file: rel.split('/').pop() ?? rel,
   };
 }
 
@@ -104,13 +136,25 @@ export function timestampSlug(iso: string): string {
   return iso.replace(/:/g, '-');
 }
 
-/** `<Subject>/<ISO with ':' replaced by '-'>-<section>.md` */
-export function reportRelPath(subject: string, startedAt: string, section: Section): string {
-  return `${subject}/${timestampSlug(startedAt)}-${section}.md`;
+/**
+ * `<origin>/<Subject>/<ISO with ':' replaced by '-'>-<section>.md`
+ *
+ * The single place the archive layout is decided. The origin level is a **namespace, not a
+ * uniqueness rule**: two stores may both ship a `FileBrowser`, and they are two subjects with
+ * two directories rather than one row that silently merges both stores' verdicts.
+ */
+export function reportRelPath(
+  origin: string,
+  subject: string,
+  startedAt: string,
+  section: Section,
+): string {
+  return `${origin}/${subject}/${timestampSlug(startedAt)}-${section}.md`;
 }
 
 export function reportRelPathFor(meta: AssayMeta): string {
-  return reportRelPath(meta.subject, meta.started_at, meta.section);
+  const origin = typeof meta.origin === 'string' && meta.origin ? meta.origin : DEFAULT_ORIGIN;
+  return reportRelPath(origin, meta.subject, meta.started_at, meta.section);
 }
 
 /**
@@ -150,6 +194,7 @@ export async function writeReport(
 
 const META_ORDER = [
   'subject',
+  'origin',
   'section',
   'standard',
   'standard_version',

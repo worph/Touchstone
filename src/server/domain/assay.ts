@@ -133,6 +133,8 @@ export interface AssaySection {
  */
 export function blockedSectionAssay(input: {
   subject: string;
+  /** Which store the subject came from — decides the folder the report lands in. */
+  origin?: string;
   section: AssaySection;
   reason: string;
   startedAt: string;
@@ -152,6 +154,7 @@ export function blockedSectionAssay(input: {
   return {
     meta: {
       subject,
+      ...(input.origin ? { origin: input.origin } : {}),
       section: section.id,
       standard: section.standard.name,
       standard_version: section.standard.version,
@@ -215,6 +218,8 @@ export interface AgentAssayInput {
   requirements?: RecordedRequirement[];
   phases?: RecordedPhase[];
   subjectRef?: string;
+  /** Which store the subject came from — decides the folder every report lands in. */
+  origin?: string;
 }
 
 const TIERS: Record<string, Severity> = {
@@ -283,6 +288,7 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
     `.\n> The report covers the whole audit; the {leg} section is reproduced below verbatim.\n`;
 
   const common = {
+    ...(input.origin ? { origin: input.origin } : {}),
     subject_ref: input.subjectRef ?? `Yundera/AppStore@main:Apps/${subject}`,
     started_at: input.startedAt,
     finished_at: input.finishedAt,
@@ -370,6 +376,7 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
     out.push(
       blockedSectionAssay({
         subject,
+        ...(input.origin ? { origin: input.origin } : {}),
         section: skipped.section,
         reason: skipped.reason,
         startedAt: input.startedAt,

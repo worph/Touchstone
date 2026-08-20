@@ -16,6 +16,8 @@
  * record.
  */
 
+import { asSubjectKey, subjectName, type SubjectKey } from '../../shared/subject.js';
+import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import type { Runner } from '../runner/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import type { RunLedger } from '../services/ledger.js';
@@ -32,7 +34,7 @@ export interface ChatToolContext {
   ports?: PortProber;
   prober?: BenchProber;
   /** How a started run is actually dispatched — the same path `POST /assays` takes. */
-  startAssay?: (job: { subject: string }) => void;
+  startAssay?: (job: { subject: SubjectKey }) => void;
 }
 
 export interface ChatToolResult {
@@ -163,18 +165,29 @@ export const CHAT_TOOLS: ChatTool[] = [
       }
 
       // Resolve against the registry so a near-miss becomes a correction rather than an
-      // audit of a name that does not exist.
+      // audit of a name that does not exist. The same matcher the HTTP routes use — one
+      // definition, so the chat and the button cannot disagree about what a name means.
+      //
+      // Note what is deliberately absent: there is no repo or ref parameter here, and there
+      // must not be. The model may say *which* subject, never *where it comes from*. That is
+      // invariant 6's reasoning one step on — the registry is the one surface a model reaches,
+      // and repo+ref is the single input that would turn "audit an app" into "run `gh` against
+      // a URL of the model's choosing", with the result treated as data inside an audit prompt.
       const known = ctx.registry?.list() ?? [];
-      const exact = known.find((s) => s === subject);
-      const loose = known.find((s) => s.toLowerCase() === subject.toLowerCase());
-      const name = exact ?? loose;
-      if (known.length > 0 && !name) {
+      const resolved = resolveSubjectKey(subject, known);
+      if (resolved.kind === 'ambiguous') {
+        return failed(
+          `${ambiguousMessage(subject, resolved.candidates)}. Call list_subjects to see the ids.`,
+        );
+      }
+      if (known.length > 0 && resolved.kind !== 'ok') {
         return failed(`There is no subject called "${subject}". Call list_subjects to see the names.`);
       }
 
-      ctx.startAssay?.({ subject: name ?? subject });
+      const key = resolved.kind === 'ok' ? resolved.key : asSubjectKey(subject);
+      ctx.startAssay?.({ subject: key });
       return ok(
-        `Started an audit of ${name ?? subject}. It runs in the background; the operator gets a notification when it finishes.`,
+        `Started an audit of ${subjectName(key)}. It runs in the background; the operator gets a notification when it finishes.`,
       );
     },
   },
