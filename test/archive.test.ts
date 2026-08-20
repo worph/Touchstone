@@ -18,11 +18,17 @@ import { buildIndex } from '../src/server/store/index.js';
 import { loadConfig } from '../src/server/store/config.js';
 import { SEVERITY_RANK } from '../src/shared/types.js';
 import { DATA_REPORTS, existsSync } from './helpers.js';
-import { promises as fs } from 'node:fs';
+import { promises as fs, readdirSync } from 'node:fs';
 import path from 'node:path';
 
-/** The full archive only exists after `yarn sync`; these checks skip without it. */
-const HAS_ARCHIVE = existsSync(DATA_REPORTS);
+/**
+ * These check the *imported* archive, which no longer has an importer: the directory exists
+ * in a fresh clone but is empty until something writes into it. So the guard asks whether
+ * there is an archive to check, not whether the folder is there — an empty one made these
+ * fail with `expected 0 to be greater than 0`, which reads as a broken invariant rather than
+ * as "nothing to test".
+ */
+const HAS_ARCHIVE = existsSync(DATA_REPORTS) && readdirSync(DATA_REPORTS).length > 0;
 
 describe('the imported archive', () => {
 
@@ -30,9 +36,13 @@ describe('the imported archive', () => {
     'records every bench-denied functional leg as blocked, never as a verdict',
     async () => {
       const index = await buildIndex(DATA_REPORTS, { cacheFile: null });
+      // A subject need not have a functional leg at all: the runner writes static-only
+      // assays, and `depth: static` is the normal way to audit while the pool is down. The
+      // claim under test is about the legs that *exist*, not about every subject having one.
       const blocked = index
         .subjects()
-        .map((s) => index.latestAny(s, 'functional')!)
+        .map((s) => index.latestAny(s, 'functional'))
+        .filter((r): r is NonNullable<typeof r> => r !== null && r !== undefined)
         .filter((r) => r.meta.status === 'blocked');
 
       // No absolute floor: how many legs are bench-blocked is a fact about the demo pool on

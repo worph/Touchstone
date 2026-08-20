@@ -630,3 +630,114 @@
 .req-toggle:hover { color: var(--fg); }
 
 .req-mismatch { color: var(--major); }
+
+/* ── the administrator chat ────────────────────────────────────────────────────────────
+   A conversation, not a feed: the operator's words sit right and stay compact, the
+   assistant's fill the column, and a tool call folds away because the *answer* is what
+   matters — the mechanics are there for when it went wrong. */
+
+.chat-page { display: flex; flex-direction: column; min-height: 0; }
+.chat-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+
+.chat-log { display: flex; flex-direction: column; gap: 14px; padding: 8px 0 20px; }
+
+.chat-turn--user { display: flex; justify-content: flex-end; }
+.chat-bubble {
+  max-width: 46ch;
+  padding: 8px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: 10px 10px 2px 10px;
+  background: var(--bg-2);
+  white-space: pre-wrap;
+}
+.chat-said { margin: 0; max-width: 68ch; white-space: pre-wrap; }
+
+.chat-tool {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-1);
+  font-size: 12.5px;
+}
+.chat-tool > summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  list-style: none;
+}
+.chat-tool > summary::-webkit-details-marker { display: none; }
+.chat-tool__mark.is-ok { color: var(--ok); }
+.chat-tool__mark.is-refused { color: var(--major); }
+.chat-tool__args {
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-tool__body {
+  margin: 0;
+  padding: 0 10px 10px;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: var(--fg-1);
+}
+
+/* Three dots, because a turn takes tens of seconds and a still screen reads as a dead one. */
+.chat-thinking { display: flex; gap: 5px; padding: 4px 2px; margin: 0; }
+.chat-thinking span {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--fg-3);
+  animation: chat-bounce 1.2s infinite ease-in-out;
+}
+.chat-thinking span:nth-child(2) { animation-delay: 0.15s; }
+.chat-thinking span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes chat-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-thinking span { animation: none; }
+}
+
+.chat-empty { padding: 32px 0 20px; }
+.chat-empty__lede { font-size: 18px; color: var(--fg-1); margin: 0 0 14px; }
+.chat-openers { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.chip {
+  padding: 5px 11px;
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.chip:hover:not(:disabled) { border-color: var(--border-3); color: var(--fg); }
+.chip:disabled { opacity: 0.5; cursor: default; }
+
+.chat-composer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 10px 0 14px;
+  background: linear-gradient(to bottom, transparent, var(--bg) 22%);
+}
+.chat-input {
+  flex: 1;
+  min-height: 38px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: var(--bg-1);
+  color: var(--fg);
+  font: inherit;
+  resize: none;
+}
+.chat-input:focus-visible { outline: 2px solid var(--running); outline-offset: 1px; }
+
+/* A failed push registration says why, rather than leaving a button that does nothing. */
+.act-foot-error { margin-top: 6px; color: var(--major); font-size: 12.5px; max-width: 70ch; }

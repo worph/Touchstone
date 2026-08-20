@@ -23,6 +23,8 @@ export type EventCategory =
   | 'assay'
   | 'bench'
   | 'agent'
+  /** The administrator chat: what it was asked, and what it could not do. */
+  | 'chat'
   | 'importer'
   | 'notify'
   | 'system'
@@ -139,4 +141,28 @@ export interface PushStatus {
   configured: boolean;
   public_key: string | null;
   devices: number;
+}
+
+/** One row of the administrator chat. Written by the server, rendered by the page. */
+export type ChatRole = 'user' | 'assistant' | 'tool';
+
+export interface ChatMessage {
+  id: string;
+  thread_id: string;
+  role: ChatRole;
+  content: string;
+  /** Set on `tool` rows: which tool, and what it was called with. */
+  tool_name?: string;
+  tool_input?: unknown;
+  /** Whether the call did what was asked. Absent on user and assistant rows. */
+  ok?: boolean;
+  at: string;
+}
+
+export interface ChatState {
+  thread_id: string | null;
+  messages: ChatMessage[];
+  running: boolean;
+  /** False when no agent is answering — the composer says so instead of failing on send. */
+  available: boolean;
 }

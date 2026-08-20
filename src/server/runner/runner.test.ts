@@ -285,9 +285,54 @@ describe('refusing to run', () => {
     expect(out).toEqual({ kind: 'blocked', reason: 'runner_disabled' });
   });
 
-  it('refuses a functional job when no bench is leasable', async () => {
+  /**
+   * Principle 4, and the thing this used to get wrong.
+   *
+   * A dead demo pool once aborted the whole job before the agent was called, so it cost the
+   * *static* verdict too — an infra outage attributed to the subject, which is §2.2 all over
+   * again one layer down. The job degrades instead: static runs, functional is recorded.
+   */
+  it('degrades a functional job to static when no bench is leasable', async () => {
     const out = await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
-    expect(out).toEqual({ kind: 'blocked', reason: 'bench_unavailable' });
+    expect(out.kind).toBe('verdict');
+  });
+
+  it('still writes both legs, the functional one blocked', async () => {
+    await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    expect(files.filter((f) => f.endsWith('-static.md'))).toHaveLength(1);
+    expect(files.filter((f) => f.endsWith('-functional.md'))).toHaveLength(1);
+
+    const functional = await fs.readFile(
+      path.join(dir, 'reports', 'Tuwunel', files.find((f) => f.endsWith('-functional.md'))!),
+      'utf8',
+    );
+    // No verdict, and a reason about the bench rather than about the app.
+    expect(functional).toMatch(/status: blocked/);
+    expect(functional).toMatch(/blocked_reason: bench_unavailable/);
+    expect(functional).toMatch(/verdict: null/);
+  });
+
+  it('says out loud that it only did half the job', async () => {
+    await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    await events.flush();
+    expect(events.query({ code: 'ASSAY_DEGRADED' })).toHaveLength(1);
+  });
+
+  /** The agent must not be sent to install onto a pool we already know is unusable. */
+  it('asks the agent for the static leaf only', async () => {
+    let prompt = '';
+    const runner = make({
+      prober: proberOf([]),
+      agent: {
+        fetchImpl: (async (_url: string, init: { body: string }) => {
+          prompt = String(JSON.parse(init.body).params.arguments.prompt ?? '');
+          return new Response(sse(agentJson()), { status: 200 });
+        }) as unknown as typeof fetch,
+      },
+    });
+    await runner.run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    expect(prompt).toContain('depth=static');
   });
 
   /** A static assay needs no bench, so a dead pool must not stop it. */
@@ -332,22 +377,27 @@ describe('the browser sidecar', () => {
     } as never;
   }
 
-  it('refuses a functional job when no sidecar is answering', async () => {
+  it('degrades to static when no sidecar is answering', async () => {
     const out = await make({
       prober: proberOf(['https://demostaging1.example']),
       ports: portsOf([]),
     }).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
-    expect(out).toEqual({ kind: 'blocked', reason: 'browser_unavailable' });
+    expect(out.kind).toBe('verdict');
   });
 
-  /** No try burned: a missing sidecar is infrastructure, and principle 5 applies to it too. */
-  it('writes no report when it refuses', async () => {
+  /** A missing sidecar is infrastructure, so it is recorded against the browser, not the app. */
+  it('names the browser as the reason the functional leg is blocked', async () => {
     await make({ prober: proberOf(['https://x.example']), ports: portsOf([]) }).run({
       subject: 'Tuwunel',
       depth: 'full',
       try_n: 1,
     });
-    await expect(fs.readdir(path.join(dir, 'reports', 'Tuwunel'))).rejects.toThrow();
+    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    const functional = await fs.readFile(
+      path.join(dir, 'reports', 'Tuwunel', files.find((f) => f.endsWith('-functional.md'))!),
+      'utf8',
+    );
+    expect(functional).toMatch(/blocked_reason: browser_unavailable/);
   });
 
   it('records which browser the run drove', async () => {

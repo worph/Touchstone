@@ -7,7 +7,7 @@ import { seenSeq } from '../lib/badge';
 const BADGE_MS = 30_000;
 
 /**
- * Three nav items, per UX.md §2. The badge on Activity counts open alerts and unread error
+ * Four nav items: the three of UX.md §2 plus the administrator chat. The badge on Activity counts open alerts and unread error
  * rows — nothing else, deliberately.
  */
 export default function Shell({ children }: { children: React.ReactNode }) {
@@ -36,6 +36,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           {/* The rubric every verdict is measured against. It used to live in a wiki this
               app only held a slug for; it is a local file now, and editable. */}
           <NavLink to="/protocol">Protocol</NavLink>
+          <NavLink to="/chat">Administrator</NavLink>
         </nav>
       </header>
 

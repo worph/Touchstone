@@ -8,14 +8,22 @@
  *
  * The table is UX.md § Routing, verbatim:
  *
- *   tick summary              log ✓   beacon ✓   push —
- *   assay finished            log ✓   beacon ✓   push —
- *   assay failed after retry  log ✓   beacon ✓   push ✓
+ *   tick summary              log ✓   beacon —   push —
+ *   assay finished            log ✓   beacon ✓   push ✓
+ *   assay failed / blocked    log ✓   beacon ✓   push ✓
  *   alert opened / resolved   log ✓   beacon ✓   push ✓
  *   everything else           log ✓   beacon —   push —
  *
  * The last row is the one that keeps the others readable. A notifier that forwards
  * everything is a notifier people mute, and then the alert is muted too.
+ *
+ * **`assay finished` pushes, where UX.md §Routing originally said it should not.** That row
+ * was written for a loop grinding through 69 subjects on its own; the case that matters now
+ * is an operator who *asked* for a review and walked away, and for them a finished audit is
+ * the whole point of the notification. The scheduler audits at most one subject an hour, so
+ * the ceiling is ~24 a day even once it is armed. If that turns out to be too many, the fix
+ * is to push only operator-initiated runs — which needs a `trigger` on the job, and is a
+ * smaller change than muting the thing people asked to be told about.
  */
 
 import { callTool, McpError } from './mcp.js';
@@ -53,10 +61,21 @@ export interface OutletConfig {
  */
 const ROUTES: Record<string, { beacon: boolean; push: boolean }> = {
   BENCH_POOL_DOWN: { beacon: true, push: false },
-  IMPORT_FAILED: { beacon: true, push: false },
-  // P3 and P4 add TICK_COMPLETED, ASSAY_FINISHED and ASSAY_GAVE_UP here. They are not
-  // listed yet because nothing writes them yet, and a route to a code nobody emits reads
-  // as coverage that does not exist.
+  /**
+   * Every way an audit can end, and all four push.
+   *
+   * The set is exhaustive on purpose. A table that carried only the happy path would make
+   * silence ambiguous — an operator who asked for a review and heard nothing could not tell
+   * a slow run from a dead one — and the whole reason the runner distinguishes `blocked`
+   * from `failed` is so the answer can be "the bench is down", not "your app is broken".
+   *
+   * These are the codes the runner actually emits (`runner/index.ts`). An earlier version of
+   * this table named `ASSAY_FINISHED` and `ASSAY_GAVE_UP`, which nothing has ever written.
+   */
+  ASSAY_COMPLETED: { beacon: true, push: true },
+  ASSAY_FAILED: { beacon: true, push: true },
+  ASSAY_BLOCKED: { beacon: false, push: true },
+  AGENT_UNAUTHENTICATED: { beacon: true, push: true },
 };
 
 export function routeFor(code: string): { beacon: boolean; push: boolean } {
@@ -113,7 +132,7 @@ export class Notifier {
     if (route.push && this.opts.push) {
       void this.opts.push.notifyAll({
         title: titleFor(event),
-        body: event.message,
+        body: pushBodyFor(event),
         url: event.subject ? `/s/${encodeURIComponent(event.subject)}` : '/activity',
         tag: event.code,
       });
@@ -200,6 +219,59 @@ function levelGlyph(level: EventRecord['level']): string {
   if (level === 'error') return '⛔';
   if (level === 'warn') return '⚠️';
   return 'ℹ️';
+}
+
+/**
+ * What the phone actually says.
+ *
+ * `event.message` is one id-free sentence by design (MVP §7) — "An audit finished" — which
+ * is right for a log where the subject is already a column, and useless on a lock screen.
+ * So the body is composed here from `subject` and `detail` rather than by loosening the rule
+ * that keeps log lines uniform. Anything without a formatter falls back to the sentence,
+ * which is always safe.
+ */
+export function pushBodyFor(event: EventRecord): string {
+  const d = (event.detail ?? {}) as Record<string, unknown>;
+  const subject = event.subject ?? (typeof d.subject === 'string' ? d.subject : null);
+  const name = subject ?? 'A subject';
+
+  switch (event.code) {
+    case 'ASSAY_COMPLETED': {
+      const parts = [`${name} — ${String(d.verdict ?? 'no verdict')}`];
+      if (typeof d.risk === 'number' && d.risk > 0) parts.push(`risk ${d.risk}`);
+      // The functional half being blocked is the difference between "this app is fine" and
+      // "half of this was never checked", so it belongs in the two lines someone reads.
+      if (d.blocked) parts.push(`functional leg blocked (${describeReason(String(d.blocked))})`);
+      return parts.join(' · ');
+    }
+    case 'ASSAY_BLOCKED':
+      return `${name} — could not start: ${describeReason(String(d.reason ?? 'unknown'))}`;
+    case 'ASSAY_FAILED':
+      return `${name} — the audit failed: ${trim(String(d.error ?? 'no reason given'), 120)}`;
+    default:
+      return event.message;
+  }
+}
+
+/** Reasons are snake_case codes in the log; nobody reads those on a phone. */
+function describeReason(reason: string): string {
+  switch (reason) {
+    case 'bench_unavailable':
+      return 'no usable demo bench';
+    case 'browser_unavailable':
+      return 'no browser was answering';
+    case 'runner_disabled':
+      return 'the runner is switched off';
+    case 'runner_busy':
+      return 'another audit is already running';
+    default:
+      return reason.replace(/_/g, ' ');
+  }
+}
+
+function trim(text: string, max: number): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
 }
 
 function titleFor(event: EventRecord): string {

@@ -98,6 +98,71 @@ export interface DeclaredResult {
   report_markdown: string;
 }
 
+/**
+ * The functional leg of a run that never got a bench — recorded rather than dropped.
+ *
+ * ARCHITECTURE principle 4: **legs are independent, and one unavailable resource degrades
+ * one leg.** Until now a `depth=full` job with nothing leasable returned `blocked` before
+ * the agent was even called, so a dead demo pool cost the *static* verdict too — the exact
+ * conflation §2.2 exists to complain about, reintroduced one layer down.
+ *
+ * So the runner degrades to a static run and calls this for the half it could not do. The
+ * result is the same pair of files any full run produces: a static assay standing on its own
+ * merits, and a functional assay that says plainly why there is no verdict in it. `verdict`
+ * is null and the severity is `none` because **nothing was learned about the subject** — a
+ * blocked leg is a statement about the bench.
+ */
+export function blockedFunctionalAssay(input: {
+  subject: string;
+  standard: Standard;
+  reason: string;
+  startedAt: string;
+  finishedAt: string;
+  subjectRef?: string;
+}): { meta: AssayMeta; body: string } {
+  const { subject, standard, reason } = input;
+  const why =
+    reason === 'browser_unavailable'
+      ? 'no browser sidecar was answering, so there was nothing to drive the install with'
+      : 'no demo instance was usable — the pool was unreachable, mid-cleanup, or too close to its daily wipe';
+
+  return {
+    meta: {
+      subject,
+      leg: 'functional',
+      standard: standard.name,
+      standard_version: standard.version,
+      status: 'blocked',
+      verdict: null,
+      top_severity: 'none',
+      risk_score: 0,
+      blocked_reason: reason,
+      blocked_detail: why,
+      combined_score_on: 'static',
+      subject_ref: input.subjectRef ?? `Yundera/AppStore@main:Apps/${subject}`,
+      started_at: input.startedAt,
+      finished_at: input.finishedAt,
+      produced_by: 'touchstone-runner',
+    } as AssayMeta,
+    body: [
+      `# Yundera/AppStore — ${subject} · functional leg`,
+      '',
+      `> Produced by Touchstone at ${input.finishedAt}.`,
+      '',
+      '## Not run',
+      '',
+      `The functional leaf could not be attempted: ${why}.`,
+      '',
+      'This is a statement about the environment, not about the app. No functional check was',
+      'made, so nothing here counts for or against the subject, and the run cost it no retry.',
+      'The static leg of this same run was completed and carries its own verdict.',
+      '',
+      'The leg is re-assayed when a bench is available again.',
+      '',
+    ].join('\n'),
+  };
+}
+
 export interface AgentAssayInput {
   subject: string;
   declared: DeclaredResult;

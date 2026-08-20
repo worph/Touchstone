@@ -31,12 +31,14 @@ import type { EventLog } from '../services/events.js';
 import type { PushService } from '../services/push.js';
 import type { Runner } from '../runner/index.js';
 import type { Scheduler } from '../scheduler/index.js';
+import type { ChatRoutesOptions } from './chat.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import alertRoutes from './alerts.js';
 import benchRoutes from './benches.js';
 import eventRoutes from './events.js';
 import pushRoutes from './push.js';
 import assayRoutes from './assays.js';
+import chatRoutes from './chat.js';
 import mcpRoutes from './mcp.js';
 import protocolRoutes from './protocols.js';
 import scheduleRoutes from './schedule.js';
@@ -55,6 +57,8 @@ export interface RoutesOptions {
   runner?: Runner;
   registry?: SubjectRegistry;
   boardUrl?: string;
+  /** The administrator chat. Absent means the page renders and says it is not wired. */
+  chat?: ChatRoutesOptions;
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
@@ -80,6 +84,11 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
   await app.register(scheduleRoutes, { scheduler: options.scheduler, registry: options.registry });
   await app.register(mcpRoutes, { ledger: options.ledger });
   await app.register(protocolRoutes, { protocols: options.protocols, events: options.events });
+  await app.register(chatRoutes, {
+    ...(options.chat ?? {}),
+    ...(options.events ? { events: options.events } : {}),
+    ...(options.ports ? { ports: options.ports } : {}),
+  });
   await app.register(assayRoutes, {
     runner: options.runner,
     scheduler: options.scheduler,

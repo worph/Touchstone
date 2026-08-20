@@ -12,7 +12,7 @@
     "dev:web": "vite",
     "build": "yarn build:web && yarn build:api",
     "build:web": "vite build",
-    "build:api": "tsc -p tsconfig.server.json",
+    "build:api": "tsc -p tsconfig.server.json && mkdir -p dist/server/chat && cp src/server/chat/prompt.md dist/server/chat/prompt.md",
     "start": "node dist/server/index.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
