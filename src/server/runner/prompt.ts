@@ -13,10 +13,17 @@
  *   host's login, the agent uses it instead of choosing off a board that reports a dead
  *   instance as Ready. Touchstone always supplies one, so the fallback branch is dead code
  *   here — it is kept so the two systems' prompts stay diffable while both exist.
+ * - **Phase G's wording, 2026-08-20.** The benches run Maison now, whose uninstall *always*
+ *   archives and never deletes: there is no "keep data" option to tick, and a plain reinstall
+ *   lands on a clean slate. Left verbatim, this line sent the agent looking for a checkbox
+ *   that does not exist and then scored the app on a reinstall that could only come back
+ *   empty. The step now names the archive path, matching `protocols/functional.md` §3 Phase G.
  *
  * When the App Audit workflow is switched off (M7), this file becomes the only copy and the
  * fallback branch can go.
  */
+
+import { FUNCTIONAL_PHASES } from '../../shared/activity.js';
 
 export interface PromptInput {
   app_name: string;
@@ -90,7 +97,7 @@ export function buildPrompt(input: PromptInput): { app_name: string; depth: 'sta
     L.push('REPORTING AS YOU GO (important): an MCP server at ' + cb.url + ' accepts your findings one at a time, and your run_token is ' + cb.run_token + '. Reach it with mcp__beacon__call using the bare tool names touchstone__list_requirements, touchstone__record_requirement and touchstone__record_phase; if the aggregator does not list it, POST JSON-RPC to that URL directly with Bash and curl.');
     L.push('- FIRST call touchstone__list_requirements to get the canonical requirement ids, and record against those ids. Inventing your own wording makes the same check unrecognisable between runs.');
     L.push('- Call touchstone__record_requirement the moment you settle each item - pass, fail, n-a or unverified - rather than saving them all for the end. A fail MUST carry severity Critical, Major or Minor. If you are interrupted, everything you recorded is kept; anything you did not reach is recorded as unverified rather than lost.');
-    L.push('- At depth=full also call touchstone__record_phase for each functional phase (A, C, D, E8, E9, E10, F, G) as it completes.');
+    L.push('- At depth=full also call touchstone__record_phase for each functional phase (' + FUNCTIONAL_PHASES.join(', ') + ') as it completes.');
     L.push('- There is deliberately NO tool for the overall verdict. Record the individual requirements; the caller applies the gate.');
     L.push('- Still return the final JSON object described at the end. The two are not alternatives: the tool calls are the record, the JSON carries the narrative report.');
     L.push('');
@@ -106,8 +113,8 @@ export function buildPrompt(input: PromptInput): { app_name: string; depth: 'sta
     : '2. Fetch the orchestrator via mcp__beacon__call (tool_name docmost-mcp__get_page, slug_id In2NAGjv0h) and READ IT IN FULL including its dated Amendment section, applying the amendment as BINDING (it supersedes the older body on conflict). Also apply the Static leaf deviation decision table (rules D1-D5) mechanically and its static persistence check (every actual app state location - config dir, database, user/ACL store - must be mapped under /DATA/AppData/' + app + '/, else fail with data-loss/Critical severity). It composes leaves you must also fetch and apply: Static Review Protocol slug_id LPwfKYUVig' + (full ? ' and Functional Review Protocol slug_id functional.' : ' (the functional leaf is NOT run at depth=static).'));
   L.push('3. Run the STATIC leaf against Apps/' + app + '/docker-compose.yml at ref main (fetch with gh; also rationale.md if present). There is no compose_base, so scope = n-a.');
   if (full) {
-    L.push('4. ' + HOST_RULE + ' ' + BROWSER_RULE + ': APP=' + app + ', a fresh isolatedContext named functional-' + app + '-audit. Run ALL mandatory phases with NO economising: A session, C fresh install (record duration), D discover URL, E8 works-immediately, E9 auth gate, E10 clean boot, F zero-config usability, and G data persistence via a REAL uninstall-keep-data then reinstall then assert user state survived. Phase G-prime migration is n-a (no PRIOR_VERSION). Record each phase as pass, fail or errored.');
-    L.push('5. CLEANUP (MANDATORY on every exit path including failure): uninstall ' + app + ' from the demo host you selected so it is left exactly as found.');
+    L.push('4. ' + HOST_RULE + ' ' + BROWSER_RULE + ': APP=' + app + ', a fresh isolatedContext named functional-' + app + '-audit. Run ALL mandatory phases with NO economising: A session, C fresh install (record duration), D discover URL, E8 works-immediately, E9 auth gate, E10 clean boot, F zero-config usability, and G data persistence via a REAL uninstall - which on Maison ARCHIVES the app folder rather than deleting it - then a reinstall that picks the archive under Restore from backup (NOT Fresh install, which lands on a clean slate) then assert user state survived. Phase G-prime migration is n-a (no PRIOR_VERSION). Record each phase as pass, fail or errored.');
+    L.push('5. CLEANUP (MANDATORY on every exit path including failure): uninstall ' + app + ' from the demo host you selected, and then DELETE the archives your run left behind (the app Backups tab, or Settings > Backups where an uninstalled app archive is listed) so the host is left exactly as found. An uninstall alone no longer suffices: it creates an archive, and one left behind changes the next run\'s install into a restore prompt.');
     L.push('6. RESILIENCE: if the browser session becomes unrecoverable, do NOT abort the whole run; return the static results plus whatever functional evidence you gathered, and set the verdict to errored (the audit could not complete). Never use human-review.');
   }
   L.push('');

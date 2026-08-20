@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 
 import { getAlerts, getEvents } from '../data/client';
 import { seenSeq } from '../lib/badge';
+import RunningStrip, { RunTitle } from './RunningStrip';
 
 const BADGE_MS = 30_000;
 
@@ -41,11 +42,16 @@ export default function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="app">
+      <RunTitle />
+
       <header className="mobile-head">
         <NavLink to="/" className="brand">
           <Mark />
           Touchstone
         </NavLink>
+        {/* The phone has no sidebar to put the strip in, and the header is the one piece of
+            chrome that is on screen everywhere. Compact, so it costs no height. */}
+        <RunningStrip variant="compact" />
       </header>
 
       <nav className="sidebar" aria-label="Primary">
@@ -67,6 +73,8 @@ export default function Shell({ children }: { children: ReactNode }) {
             </div>
           ))}
         </div>
+
+        <RunningStrip />
 
         <div className="sidebar-foot">conformance agent</div>
       </nav>

@@ -67,6 +67,64 @@ describe('GET /subjects/:name', () => {
     expect(status).toBe(404);
     expect(body.error).toMatch(/unknown subject/);
   });
+
+  /**
+   * The archive is built from report files, so an app being audited for the FIRST time has
+   * no entry for the whole run — and every link to it (the running strip, the Activity card,
+   * the log rows naming it) pointed at this route. It used to 404 for exactly as long as the
+   * audit took, and then start working.
+   */
+  describe('a subject the registry knows but the archive does not', () => {
+    const withRegistry = async () => {
+      const instance = Fastify();
+      await instance.register(routes, {
+        prefix: '/api/v1',
+        store: fixtureStore(),
+        registry: { list: () => ['SegmentPlayer', 'OpenClaw'] } as never,
+      });
+      await instance.ready();
+      return instance;
+    };
+
+    it('serves an empty row rather than 404, so the page can say "never assayed"', async () => {
+      const withReg = await withRegistry();
+      const res = await withReg.inject({ method: 'GET', url: '/api/v1/subjects/SegmentPlayer' });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { subject: SubjectState; history: unknown[] };
+      expect(body.subject).toEqual({
+        name: 'SegmentPlayer',
+        static: null,
+        functional: null,
+        risk: 0,
+        age_days: null,
+      });
+      expect(body.history).toEqual([]);
+      await withReg.close();
+    });
+
+    it('still 404s a name nobody knows', async () => {
+      const withReg = await withRegistry();
+      const res = await withReg.inject({ method: 'GET', url: '/api/v1/subjects/NotAnApp' });
+      expect(res.statusCode).toBe(404);
+      await withReg.close();
+    });
+  });
+});
+
+describe('GET /subjects/:name/fix.md', () => {
+  it('serves markdown, named after the subject, for an app with findings', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/subjects/OpenClaw/fix.md' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/markdown/);
+    expect(res.headers['content-disposition']).toContain('OpenClaw-fix.md');
+    expect(res.body).toContain('# Fix OpenClaw');
+    expect(res.body).toContain('## Acceptance');
+  });
+
+  it('404s a subject nobody has assayed — there is nothing to brief anyone on', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/subjects/Nope/fix.md' });
+    expect(res.statusCode).toBe(404);
+  });
 });
 
 describe('GET /reports/:subject/:file', () => {

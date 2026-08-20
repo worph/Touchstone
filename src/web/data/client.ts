@@ -16,6 +16,7 @@ import type {
   ChatState,
   EventsResponse,
   PushStatus,
+  RunStatus,
 } from '@shared/activity';
 import type { SubjectDetail } from '../types';
 
@@ -60,6 +61,34 @@ async function get<T>(path: string): Promise<T> {
   }
 
   return body as T;
+}
+
+/**
+ * The same rules, for an endpoint that answers in markdown.
+ *
+ * `fix.md` is a document, not a payload — asking for JSON and unwrapping a string field
+ * would put an encoding between the audit's words and the person reading them.
+ */
+async function getText(path: string): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, { headers: { accept: 'text/markdown, text/plain' } });
+  } catch {
+    throw new ApiError(0, 'The API is not reachable.');
+  }
+  const body = await res.text();
+  if (!res.ok) {
+    // The error path still answers in JSON, so read it if it looks like one.
+    let msg = `Request failed with ${res.status}.`;
+    try {
+      const parsed = JSON.parse(body) as { error?: unknown };
+      if (parsed.error) msg = String(parsed.error);
+    } catch {
+      /* not JSON; keep the status line */
+    }
+    throw new ApiError(res.status, msg);
+  }
+  return body;
 }
 
 // ------------------------------------------------------------------- api
@@ -199,32 +228,6 @@ export function saveProtocol(id: string, body: string): Promise<ProtocolDoc> {
 
 // ── auditing one app by hand ───────────────────────────────────────────────────────────
 
-export interface AssayStatus {
-  enabled: boolean;
-  /** What the running audit has settled so far. `null` when nothing is running. */
-  progress: {
-    verified: number;
-    applicable: number;
-    passed: number;
-    failed: number;
-    unverified: number;
-    of_canonical: number;
-    phases: number;
-  } | null;
-  running: { subject: string; depth: 'static' | 'full'; started_at: string } | null;
-  last: {
-    subject: string;
-    depth: 'static' | 'full';
-    started_at: string;
-    finished_at: string;
-    outcome:
-      | { kind: 'verdict'; verdict: string; risk: number; files: string[] }
-      | { kind: 'error'; reason: string }
-      | { kind: 'agent_busy' }
-      | { kind: 'blocked'; reason: string };
-  } | null;
-}
-
 /**
  * Start an audit and return immediately.
  *
@@ -236,8 +239,18 @@ export function startAssay(subject: string, depth: 'static' | 'full'): Promise<{
   return post<{ started: boolean }>('/assays', { subject, depth });
 }
 
-export function getAssayStatus(): Promise<AssayStatus> {
-  return get<AssayStatus>('/assays/current');
+/** The run in flight, its progress and the last one to finish. See `data/runStatus.ts`:
+ *  nothing should call this directly on a timer — there is one poller and everything shares it. */
+export function getAssayStatus(): Promise<RunStatus> {
+  return get<RunStatus>('/assays/current');
+}
+
+/**
+ * The audit, addressed to whoever has to fix the app. Markdown, meant to be pasted into an
+ * assistant or handed to a dev — see `server/domain/fixreport.ts`.
+ */
+export function getFixReport(name: string): Promise<string> {
+  return getText(`/subjects/${encodeURIComponent(name)}/fix.md`);
 }
 
 export function getPushStatus(): Promise<PushStatus> {

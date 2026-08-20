@@ -1,6 +1,12 @@
-id: static-v3
+id: static-v4
 name: Static Review Protocol
-version: 3
+version: 4
+
+# v4 (2026-08-20) — the CasaOS -> Maison switch. The rubric itself did not move: Maison
+# consumes the unmodified store format, so an app carrying only `x-casaos` is still correct.
+# What v4 adds is the compose extension Maison reads alongside it (`x-compose-app`) — the
+# `declared-folders` item, the `webui-host`/Caddy-label agreement, and the quoted-`mode` trap
+# that makes an install fail outright. See `protocols/static.md` §D.
 leg: static
 
 # The rubric itself lives in Docmost and is fetched by the assay agent at run time — the

@@ -2,11 +2,41 @@
 import type { AssayRecord, Leg, SubjectState } from '@shared/types';
 import { SEVERITY_RANK } from '@shared/types';
 import type { Coverage } from '@shared/types';
-import type { ShowFilter, SortKey, StateKind } from '../types';
-import { displayState } from './status';
+import type { DisplayState, ShowFilter, SortKey, StateKind } from '../types';
+import { displayState, runningState } from './status';
 
 /** A verdict older than FRESH_DAYS makes a subject eligible again (ARCHITECTURE §2). */
 export const FRESH_DAYS = 7;
+
+/**
+ * The audit in flight, as this table needs it.
+ *
+ * Overlaid rather than stored: the runner writes a report file when it has a verdict, so
+ * there is no record of a run still in progress and there should not be one. Every derivation
+ * below therefore takes it as an argument — the alternative is a table that shows a subject
+ * exactly as it was before you asked for the audit you are waiting on.
+ */
+export interface LiveRun {
+  subject: string;
+  /** Which legs this run will actually produce. A degraded full run is static only. */
+  legs: Leg[];
+  started_at: string;
+  /** What to put in the cell's note instead of the elapsed time — `7/24`. */
+  note?: string;
+}
+
+/**
+ * What a leg looks like, the run in flight included.
+ *
+ * Everything on this page — the cells, the tallies, the filters — goes through here, so the
+ * overlay cannot apply to one of them and not the others.
+ */
+export function legState(s: SubjectState, leg: Leg, live?: LiveRun | null): DisplayState {
+  if (live && live.subject === s.name && live.legs.includes(leg)) {
+    return runningState(live.started_at, live.note);
+  }
+  return displayState(leg === 'static' ? s.static : s.functional);
+}
 
 export interface LegTally {
   compliant: number;
@@ -29,8 +59,7 @@ const emptyLeg = (): LegTally => ({
   compliant: 0, failing: 0, blocked: 0, running: 0, notRun: 0, errored: 0,
 });
 
-function tallyLeg(into: LegTally, rec: AssayRecord | null): void {
-  const s = displayState(rec);
+function tallyLeg(into: LegTally, s: DisplayState): void {
   switch (s.kind) {
     case 'ok': into.compliant++; break;
     case 'fail': into.failing++; break;
@@ -41,7 +70,7 @@ function tallyLeg(into: LegTally, rec: AssayRecord | null): void {
   }
 }
 
-export function tally(subjects: SubjectState[]): Tallies {
+export function tally(subjects: SubjectState[], live?: LiveRun | null): Tallies {
   const t: Tallies = {
     subjects: subjects.length,
     static: emptyLeg(),
@@ -49,8 +78,8 @@ export function tally(subjects: SubjectState[]): Tallies {
     risk: 0,
   };
   for (const s of subjects) {
-    tallyLeg(t.static, s.static);
-    tallyLeg(t.functional, s.functional);
+    tallyLeg(t.static, legState(s, 'static', live));
+    tallyLeg(t.functional, legState(s, 'functional', live));
     t.risk += s.risk;
   }
   return t;
@@ -74,24 +103,34 @@ export function isStale(s: SubjectState): boolean {
   return s.age_days == null || s.age_days >= FRESH_DAYS;
 }
 
-function legsOf(s: SubjectState, leg: 'any' | Leg): (AssayRecord | null)[] {
-  if (leg === 'static') return [s.static];
-  if (leg === 'functional') return [s.functional];
-  return [s.static, s.functional];
+function legsOf(leg: 'any' | Leg): Leg[] {
+  if (leg === 'static') return ['static'];
+  if (leg === 'functional') return ['functional'];
+  return ['static', 'functional'];
 }
 
-function matchesKind(s: SubjectState, leg: 'any' | Leg, kinds: StateKind[]): boolean {
-  return legsOf(s, leg).some((r) => kinds.includes(displayState(r).kind));
+function matchesKind(
+  s: SubjectState,
+  leg: 'any' | Leg,
+  kinds: StateKind[],
+  live?: LiveRun | null,
+): boolean {
+  return legsOf(leg).some((l) => kinds.includes(legState(s, l, live).kind));
 }
 
-export function applyShow(s: SubjectState, show: ShowFilter, leg: 'any' | Leg): boolean {
+export function applyShow(
+  s: SubjectState,
+  show: ShowFilter,
+  leg: 'any' | Leg,
+  live?: LiveRun | null,
+): boolean {
   switch (show) {
     case 'all': return true;
-    case 'failing': return matchesKind(s, leg, ['fail']);
-    case 'compliant': return matchesKind(s, leg, ['ok']);
-    case 'blocked': return matchesKind(s, leg, ['blocked']);
-    case 'running': return matchesKind(s, leg, ['running']);
-    case 'not-run': return matchesKind(s, leg, ['none']);
+    case 'failing': return matchesKind(s, leg, ['fail'], live);
+    case 'compliant': return matchesKind(s, leg, ['ok'], live);
+    case 'blocked': return matchesKind(s, leg, ['blocked'], live);
+    case 'running': return matchesKind(s, leg, ['running'], live);
+    case 'not-run': return matchesKind(s, leg, ['none'], live);
     case 'stale': return isStale(s);
   }
 }

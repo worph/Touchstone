@@ -19,6 +19,7 @@
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import type { ReportResponse, SubjectState } from '../../shared/types.js';
 import { fixtureStore } from '../domain/fixtures.js';
+import { buildFixReport, fixReportFilename } from '../domain/fixreport.js';
 import { hallmarks, sortNewestFirst, subjectHallmark } from '../domain/hallmark.js';
 import { renderMarkdown } from '../domain/markdown.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
@@ -112,11 +113,57 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
   // GET /subjects/:name — the subject detail page: the composed row plus full history.
   app.get<{ Params: { name: string } }>('/subjects/:name', async (request, reply) => {
     const resolved = resolveSubject(request.params.name);
+    if (resolved) {
+      return {
+        subject: subjectHallmark(resolved.name, resolved.records).state,
+        history: sortNewestFirst(resolved.records), // newest first, both legs interleaved
+      };
+    }
+
+    /**
+     * Not in the archive — which is not the same as not a subject.
+     *
+     * The index is built from report files, so an app that has never been assayed has no
+     * entry, and the very first audit of one is *guaranteed* to be in this state while it
+     * runs. 404 meant every link to it — the running strip, the Activity card, the log rows
+     * naming it — landed on "unknown subject" for the whole run and then worked afterwards.
+     *
+     * The registry is the authority on what is a subject, so ask it. The page already has
+     * the state for this ("It is in the registry and nothing more"); it was never given the
+     * chance to render.
+     */
+    const known = options.registry?.list() ?? [];
+    const name = request.params.name;
+    const match = known.find((s) => s === name) ?? known.find((s) => s.toLowerCase() === name.toLowerCase());
+    if (!match) return fail(reply, 404, `unknown subject: ${name}`);
+    return { subject: subjectHallmark(match, []).state, history: [] };
+  });
+
+  /**
+   * GET /subjects/:name/fix.md — the audit, addressed to whoever has to fix the app.
+   *
+   * Markdown, not JSON, and deliberately: it is handed to a person or pasted into a model,
+   * and a document that needs unwrapping first is a document that gets unwrapped wrongly.
+   * The UI fetches this same endpoint rather than composing its own copy.
+   */
+  app.get<{ Params: { name: string } }>('/subjects/:name/fix.md', async (request, reply) => {
+    const resolved = resolveSubject(request.params.name);
     if (!resolved) return fail(reply, 404, `unknown subject: ${request.params.name}`);
-    return {
-      subject: subjectHallmark(resolved.name, resolved.records).state,
-      history: sortNewestFirst(resolved.records), // newest first, both legs interleaved
-    };
+
+    const state = subjectHallmark(resolved.name, resolved.records).state;
+    const markdown = buildFixReport({
+      subject: resolved.name,
+      ...(state.static ? { static: { meta: state.static.meta, path: state.static.path } } : {}),
+      ...(state.functional ? { functional: { meta: state.functional.meta, path: state.functional.path } } : {}),
+    });
+    // No assay at all. There is nothing honest to brief anyone on, and an empty document
+    // would read as a clean bill of health.
+    if (!markdown) return fail(reply, 404, `no assay to report on for ${resolved.name}`);
+
+    return reply
+      .type('text/markdown; charset=utf-8')
+      .header('content-disposition', `inline; filename="${fixReportFilename(resolved.name)}"`)
+      .send(markdown);
   });
 
   // GET /reports/:subject/:file — the rendered report and its source.

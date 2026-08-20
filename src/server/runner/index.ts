@@ -25,6 +25,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import type { AssayRecord, Leg } from '../../shared/types.js';
+import type { LastRun, RunLive, RunOutcome } from '../../shared/activity.js';
 import { assaysFromAgentReport, blockedFunctionalAssay, type Standard } from '../domain/assay.js';
 import type { ReportIndex } from '../store/index.js';
 import { writeReport } from '../store/reports.js';
@@ -46,11 +47,11 @@ export interface RunnerJob {
 }
 
 /** What the scheduler needs back. Mirrors `scheduler/record.ts`'s `Outcome`. */
-export type RunOutcome =
-  | { kind: 'verdict'; verdict: string; risk: number; files: string[] }
-  | { kind: 'error'; reason: string }
-  | { kind: 'agent_busy' }
-  | { kind: 'blocked'; reason: string };
+/**
+ * Re-exported rather than declared: the shape crosses the wire on `/assays/current`, so it
+ * is defined once in `shared/` and both sides compile against that one definition.
+ */
+export type { RunOutcome };
 
 export interface RunnerOptions {
   /**
@@ -88,14 +89,8 @@ const DEFAULT_BACKOFF_MS = 10 * 60_000;
 
 /** What the UI needs to show a run in progress, and what became of the last one. */
 export interface RunnerStatus {
-  running: { subject: string; depth: 'static' | 'full'; started_at: string } | null;
-  last: {
-    subject: string;
-    depth: 'static' | 'full';
-    started_at: string;
-    finished_at: string;
-    outcome: RunOutcome;
-  } | null;
+  running: RunLive | null;
+  last: LastRun | null;
 }
 
 export class Runner {
@@ -115,6 +110,17 @@ export class Runner {
   /** Whether a job is in flight. The scheduler's single-flight is the real guard; this is a belt. */
   get busy(): boolean {
     return this.running;
+  }
+
+  /**
+   * Add to what `status()` says about the run already in flight.
+   *
+   * The bench and the browser are chosen inside `execute`, after the run is announced, and a
+   * full run can be narrowed to a static one there too. Without this the UI would spend the
+   * whole audit describing the job as it was requested rather than as it is being run.
+   */
+  private note(patch: Partial<RunLive>): void {
+    if (this.current) this.current = { ...this.current, ...patch };
   }
 
   /**
@@ -207,6 +213,12 @@ export class Runner {
      * arrive at the answer we have.
      */
     const runDepth: 'static' | 'full' = degradedFrom ? 'static' : job.depth;
+    this.note({
+      ran_depth: runDepth,
+      degraded_reason: blockedReason,
+      bench: benchHost ?? null,
+      browser: browserEndpoint ?? null,
+    });
     if (degradedFrom && blockedReason) {
       events.log({
         level: 'warn',

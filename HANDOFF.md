@@ -664,6 +664,92 @@ the agent, not Touchstone, reporting the same broken gate.
 
 ---
 
+## 5d. Making the run in flight visible — 2026-08-20
+
+**The complaint that started it:** a review was started from the administrator chat, and then
+nothing anywhere said it was running. That was accurate — `GET /assays/current` already carried
+the subject, the depth, the elapsed time and the ledger's coverage, and exactly one component
+read it: `ReassayButton`, which renders only on that subject's own page.
+
+Worse, `◴ running` was already in the vocabulary and could never appear. `AssayStatus` includes
+`running`, `StatusCell` draws it, `lib/overview.ts` tallies and filters it — and nothing has ever
+produced one, because `domain/assay.ts` only ever writes `done` or `blocked`. The state existed
+in the UI and had no source.
+
+**What shipped**
+
+| Piece | Where |
+| --- | --- |
+| One shared poller — 4 s while a run is live, 20 s idle, holds its last value on a failed poll | `src/web/data/runStatus.ts` |
+| The strip in the shell, on every page, absent when idle; a pill in the phone header | `components/RunningStrip.tsx` |
+| The tab title — `◴ SegmentPlayer · 7/24 · 4:12 — Touchstone` | `RunTitle`, same file |
+| Activity's "Running now" card: bench, browser, phase track, last requirements settled | `components/RunCard.tsx` |
+| `◴ running` on the Overview, overlaid at render time onto cells, tallies and the filter | `lib/overview.ts` `legState`, `lib/status.ts` `runningState` |
+| Pure helpers, 21 tests | `lib/run.ts`, `lib/run.test.ts` |
+
+**The endpoint grew, the wire shape moved to `shared/`.** `/assays/current` used to collapse the
+ledger to counts and `phases: <number>`. It now sends the phase rows and the last five settled
+requirements, plus `ran_depth`, `degraded_reason`, `bench` and `browser` on the running job
+(`Runner.note()` fills those in from inside `execute`, where they are decided). `RunStatus` and
+friends live in `shared/activity.ts`; `runner/index.ts` re-exports `RunOutcome` from there, and
+`web/data/client.ts` no longer keeps its own copy of the shape. Four tests in
+`routes/current.test.ts` hold it.
+
+**Two rules this deliberately obeys.** No placeholder report file is written for a run in
+progress — the archive holds records of assays, and `state/index.json` being a cache is not a
+licence to invent one. And a degraded full run marks the *static* leg only: its functional half is
+not running, which is invariant 2 as seen from the UI.
+
+`FUNCTIONAL_PHASES` moved to `shared/activity.ts` and `runner/prompt.ts` interpolates it into the
+`record_phase` sentence. The prompt's output is byte-identical — checked — so it stays diffable
+against the n8n node.
+
+**The card's link 404'd, and the fix was in a route.** Clicking the strip or the card went to
+`/s/<subject>`, and `GET /subjects/:name` 404s any name with no report files — so the subject page
+was unreachable for exactly as long as a *first* audit ran, then started working. That was never
+new: the log rows naming an unaudited subject had always linked there. `routes/index.ts` now falls
+back to the **registry** when the archive has nothing, returning `subjectHallmark(name, []).state`;
+only a name nobody knows still 404s. `SubjectDetail` already had the "never assayed" state written
+for this and was never given the chance to render it. Its leg cards now take the same live overlay
+the Overview table uses. Two tests in `routes/index.test.ts`.
+
+**One thing to know about the dev stack:** `yarn dev` runs the API under `tsx watch`, so editing
+anything under `src/server/` restarts it and **kills the audit in flight**. A SegmentPlayer full
+run started at 10:24 was lost that way at 10:31 — no report, no completion event, no
+notification, and the agent left recording against a ledger token that no longer existed. Finish
+server edits before dispatching a run, or dispatch against a build.
+
+---
+
+## 5e. The fix report — 2026-08-20
+
+Asked for straight after the first clean end-to-end audit: a button on the app panel producing a
+markdown report stating the issue and proposing the fix, meant to be pasted into an assistant by
+the dev team who own the app. Recorded as **R9** in [REQUIREMENTS.md](REQUIREMENTS.md).
+
+The operator chose **composed from the recorded assay** over agent-written. That is the right side
+of invariant 1 anyway: the findings, severities, evidence and remedies are already in the
+frontmatter, so the composer quotes and orders them and adds nothing. Instant, deterministic, and
+it still works with the agent down.
+
+| Piece | Where |
+| --- | --- |
+| `buildFixReport`, `splitRemedy`, `hasFixWork` — pure | `src/server/domain/fixreport.ts`, 17 tests |
+| `GET /subjects/:name/fix.md` — `text/markdown`, 404 when nothing has been assayed | `routes/index.ts`, 2 tests |
+| Button + panel (copy, download, close) | `src/web/components/FixReport.tsx` |
+| `getText()` — the client's first non-JSON fetch | `web/data/client.ts` |
+
+Two decisions worth keeping: the remedy is **split out of the note only when the agent marked it**
+(`Remedy:` / `Fix:` / `Recommendation:`), and where there is no marker the report says the audit
+proposed none rather than paraphrasing the evidence into an instruction. And the document ends on
+the failing requirement ids as acceptance criteria — the same ids the next audit records against,
+which is what makes it a brief rather than a complaint.
+
+Verified against the live SegmentPlayer audit: 5.4 KB, three findings worst-first, one remedy
+quoted from the agent and two honestly marked as absent.
+
+---
+
 ## 6. Reference — facts read off the running system
 
 Cited so they can be re-checked when they drift. Read 2026-08-07.

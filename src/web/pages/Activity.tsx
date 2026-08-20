@@ -2,8 +2,10 @@
  * Activity — the log, the alerts and the environment. The page you open when something has
  * gone wrong, and the reason you never need the n8n executions list again.
  *
- * Three blocks in the order UX.md §2.3 fixes them: what is wrong now, what it is running
- * on, and what happened. It must render with Beacon unreachable and push unconfigured, so
+ * Four blocks: what is running right now, then the three UX.md §2.3 fixes the order of —
+ * what is wrong now, what it is running on, and what happened. The live one comes first
+ * because the log cannot answer it: a run writes one row when it starts and the next when it
+ * finishes, so for the ten minutes in between the page read as an idle system. It must render with Beacon unreachable and push unconfigured, so
  * every block degrades to a sentence rather than to an error — the one thing this page may
  * never do is fail to tell you why it is failing.
  */
@@ -12,6 +14,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AlertsResponse, BenchesResponse, BenchHealth, EventsResponse, PushStatus } from '@shared/activity';
 import AlertCard from '../components/AlertCard';
 import EventRow from '../components/EventRow';
+import RunCard from '../components/RunCard';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import {
   getAlerts,
@@ -145,6 +148,10 @@ export default function Activity() {
           {error.message} The log itself is a file on disk and is not lost.
         </Notice>
       ) : null}
+
+      {/* Before the alerts: "what is happening now" is the question this page is opened
+          with, and the log between ASSAY_STARTED and ASSAY_COMPLETED cannot answer it. */}
+      <RunCard />
 
       <section className="act-section">
         <h2 className="act-h">

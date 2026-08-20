@@ -17,9 +17,11 @@ import { getSubjects } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
 import { ageLabel, duration, num, plural } from '../lib/format';
 import {
-  applyShow, coverageOf, deriveIncident, FRESH_DAYS, search, sortSubjects, tally,
-  type LegTally, type Tallies,
+  applyShow, coverageOf, deriveIncident, FRESH_DAYS, legState, search, sortSubjects, tally,
+  type LegTally, type LiveRun, type Tallies,
 } from '../lib/overview';
+import { useRunStatus } from '../data/runStatus';
+import { liveLegs, progressLabel } from '../lib/run';
 import { humaniseReason } from '../lib/status';
 import type { ShowFilter, SortKey } from '../types';
 
@@ -36,6 +38,7 @@ const SHOW_OPTIONS: { value: ShowFilter; label: string }[] = [
 export default function Overview() {
   const { data, error, loading } = useAsync(getSubjects, []);
   const [params, setParams] = useSearchParams();
+  const status = useRunStatus();
 
   const q = params.get('q') ?? '';
   const show = (params.get('show') as ShowFilter) ?? 'all';
@@ -53,13 +56,34 @@ export default function Overview() {
   };
 
   const subjects = useMemo(() => data ?? [], [data]);
-  const t = useMemo(() => tally(subjects), [subjects]);
+
+  /**
+   * The audit in flight, overlaid on the table.
+   *
+   * `◴ running` was in the vocabulary from the start — the cell, the tally and the filter all
+   * knew how to draw it — and nothing ever produced one, because the runner writes a report
+   * only when it has a verdict. This is where it comes from: not a placeholder file in the
+   * archive, but the live run applied at render time.
+   */
+  const live: LiveRun | null = useMemo(() => {
+    const running = status?.running;
+    if (!running) return null;
+    const counted = progressLabel(status?.progress);
+    return {
+      subject: running.subject,
+      legs: liveLegs(running),
+      started_at: running.started_at,
+      ...(counted ? { note: counted } : {}),
+    };
+  }, [status?.running, status?.progress]);
+
+  const t = useMemo(() => tally(subjects, live), [subjects, live]);
   const incident = useMemo(() => deriveIncident(subjects), [subjects]);
 
   const rows = useMemo(() => {
-    const filtered = subjects.filter((s) => search(s, q) && applyShow(s, show, leg));
+    const filtered = subjects.filter((s) => search(s, q) && applyShow(s, show, leg, live));
     return sortSubjects(filtered, sort, dir);
-  }, [subjects, q, show, leg, sort, dir]);
+  }, [subjects, q, show, leg, sort, dir, live]);
 
   if (loading) return <div className="page"><Loading what="subjects" /></div>;
   if (error) {
@@ -181,7 +205,7 @@ export default function Overview() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((s) => <Row key={s.name} s={s} />)}
+              {rows.map((s) => <Row key={s.name} s={s} live={live} />)}
             </tbody>
           </table>
           </div>
@@ -192,17 +216,20 @@ export default function Overview() {
   );
 }
 
-function Row({ s }: { s: SubjectState }) {
+function Row({ s, live }: { s: SubjectState; live: LiveRun | null }) {
   const never = !s.static && !s.functional;
+  const running = live?.subject === s.name;
   return (
-    <tr>
+    <tr data-running={running || undefined}>
       <td>
         <Link className="row-link" to={`/s/${encodeURIComponent(s.name)}`}>
           {s.name}
         </Link>
       </td>
-      <td><StatusCell record={s.static} showNote={false} /></td>
-      <td><StatusCell record={s.functional} /></td>
+      {/* The state comes from `legState`, not from the record, so a leg being audited right
+          now says so in the same cell that will hold its verdict in four minutes. */}
+      <td><StatusCell state={legState(s, 'static', live)} showNote={running} /></td>
+      <td><StatusCell state={legState(s, 'functional', live)} /></td>
       <td className="col-num">
         <CoverageCell coverage={coverageOf(s)} />
       </td>

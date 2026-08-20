@@ -14,6 +14,7 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 
+import type { RunStatus } from '../../shared/activity.js';
 import type { ReportResponse } from '../../shared/types.js';
 import { renderMarkdown } from '../domain/markdown.js';
 import { coverageOf } from '../services/ledger.js';
@@ -30,6 +31,9 @@ export interface AssayRoutesOptions {
   store?: ReportIndex;
 }
 
+/** How many settled requirements ride along. Enough to see movement, not a second report. */
+const RECENT_REQUIREMENTS = 5;
+
 interface Body {
   subject?: string;
   depth?: 'static' | 'full';
@@ -38,19 +42,36 @@ interface Body {
 }
 
 const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
-  /** What is running, and what the last run produced. Polled by the button. */
-  app.get('/assays/current', async () => {
+  /**
+   * What is running, and what the last run produced. Polled by every part of the UI that
+   * says something about the run in flight — the strip in the shell, the Overview's running
+   * cells, the Activity card and the re-assay button all read this one endpoint.
+   */
+  app.get('/assays/current', async (): Promise<RunStatus> => {
     const live = options.ledger?.live() ?? null;
+    const status = options.runner?.status() ?? { running: null, last: null };
     return {
       enabled: options.runner?.enabled ?? false,
-      ...(options.runner?.status() ?? { running: null, last: null }),
+      running: status.running,
+      last: status.last,
       /**
        * What the running audit has settled so far. This is the reason the agent reports
        * incrementally at all — without it a six-minute run is a spinner, and a run that dies
        * partway looks identical to one that never started.
+       *
+       * The rows go out, not just their counts. `7 of 24` says how far along it is; `E9 auth
+       * gate — pass` says what it is doing, and only the second one tells you a stuck run
+       * from a slow one.
        */
       progress: live
-        ? { ...coverageOf(live.requirements), of_canonical: live.canonical.length, phases: live.phases.length }
+        ? {
+            ...coverageOf(live.requirements),
+            of_canonical: live.canonical.length,
+            phases: live.phases,
+            // Settled order, newest first. The ledger appends and revises in place, so the
+            // tail is the most recent work without sorting timestamps that may tie.
+            recent: [...live.requirements].slice(-RECENT_REQUIREMENTS).reverse(),
+          }
         : null,
     };
   });

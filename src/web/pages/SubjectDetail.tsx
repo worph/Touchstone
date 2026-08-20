@@ -16,13 +16,17 @@ import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getReport, getSubject } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
 import ReassayButton from '../components/ReassayButton';
+import FixReportPanel, { FixReportButton } from '../components/FixReport';
 import CoverageCell from '../components/CoverageCell';
 import RequirementList from '../components/RequirementList';
 import { dateOnly, num, since, stamp } from '../lib/format';
-import { displayState } from '../lib/status';
+import { displayState, runningState } from '../lib/status';
+import { useRunStatus } from '../data/runStatus';
+import { liveLegs, progressLabel } from '../lib/run';
 
 export default function SubjectDetail() {
   const { name = '' } = useParams();
+  const status = useRunStatus();
   // `nonce` is what a finished audit changes: it re-runs the subject fetch, which pulls in
   // the assay the run just wrote without a page reload.
   const [nonce, setNonce] = useState(0);
@@ -31,6 +35,7 @@ export default function SubjectDetail() {
 
   const [selectedLeg, setSelectedLeg] = useState<Leg | null>(null);
   const [view, setView] = useState<'rendered' | 'raw'>('rendered');
+  const [fixOpen, setFixOpen] = useState(false);
 
   const paneRef = useRef<HTMLDivElement>(null);
 
@@ -38,6 +43,7 @@ export default function SubjectDetail() {
   useEffect(() => {
     setSelectedLeg(null);
     setView('rendered');
+    setFixOpen(false);
   }, [name]);
 
   const subject = data?.subject;
@@ -71,6 +77,29 @@ export default function SubjectDetail() {
   const refs = subject.static?.meta ?? subject.functional?.meta;
   const never = !subject.static && !subject.functional;
 
+  /**
+   * Is there anything to fix? Failing requirements, or a functional phase that did not pass.
+   *
+   * Not "is it non-compliant": an assay imported before the ledger existed has a verdict and
+   * no recorded requirements, and a fix report built from that would be a page of headings
+   * with nothing under them.
+   */
+  const fixable =
+    [subject.static, subject.functional].some((rec) =>
+      (rec?.meta.requirements ?? []).some((r) => r.verdict === 'fail'),
+    ) ||
+    (subject.functional?.meta.phases ?? []).some((p) => p.result === 'fail' || p.result === 'errored');
+
+  /** The run in flight, when it is this subject's. See `lib/overview.ts` for why it is an overlay. */
+  const running = status?.running?.subject === subject.name ? status.running : null;
+  const live = running
+    ? {
+        legs: liveLegs(running),
+        started_at: running.started_at,
+        ...(progressLabel(status?.progress) ? { note: progressLabel(status?.progress) } : {}),
+      }
+    : null;
+
   return (
     <div className="page page--wide">
       <div className="panel">
@@ -87,6 +116,9 @@ export default function SubjectDetail() {
               </div>
               <div className="section-title">risk</div>
             </div>
+            {/* Only when there is something to brief anyone on. A "fix report" button on a
+                compliant app is a button that produces a document saying nothing. */}
+            {fixable ? <FixReportButton open={fixOpen} onToggle={() => setFixOpen((v) => !v)} /> : null}
             <ReassayButton subject={subject.name} onFinished={reload} />
           </div>
 
@@ -106,11 +138,17 @@ export default function SubjectDetail() {
           ) : null}
         </div>
 
+        {/* The same overlay the Overview table uses: a leg being audited right now says so
+            in the card that will hold its verdict when the run lands. */}
         <div className="legs">
-          <LegCard leg="static" rec={subject.static} />
-          <LegCard leg="functional" rec={subject.functional} />
+          <LegCard leg="static" rec={subject.static} live={live} />
+          <LegCard leg="functional" rec={subject.functional} live={live} />
         </div>
       </div>
+
+      {fixOpen && fixable ? (
+        <FixReportPanel subject={subject.name} onClose={() => setFixOpen(false)} />
+      ) : null}
 
       {/* What was actually checked. Above the report, because the report is the evidence for
           these and a reader looking for "what failed" should not have to scroll a rubric. */}
@@ -139,9 +177,13 @@ export default function SubjectDetail() {
       {never ? (
         <div className="panel" style={{ marginTop: 14 }}>
           <EmptyState
-            glyph="⬜"
-            title="No assay has ever run for this subject"
-            sub="It is in the registry and nothing more. There is no verdict to disagree with, and no report to read."
+            glyph={live ? '◴' : '⬜'}
+            title={live ? 'The first assay of this subject is running' : 'No assay has ever run for this subject'}
+            sub={
+              live
+                ? 'There is nothing to read yet. The report is written when the run finishes, and this page picks it up without a reload.'
+                : 'It is in the registry and nothing more. There is no verdict to disagree with, and no report to read.'
+            }
             action={<ReassayButton subject={subject.name} onFinished={reload} label="Run first assay" />}
           />
         </div>
@@ -214,13 +256,24 @@ export default function SubjectDetail() {
   );
 }
 
-function LegCard({ leg, rec }: { leg: Leg; rec: AssayRecord | null }) {
-  const s = displayState(rec);
+interface LiveLeg {
+  legs: Leg[];
+  started_at: string;
+  note?: string;
+}
+
+function LegCard({ leg, rec, live }: { leg: Leg; rec: AssayRecord | null; live: LiveLeg | null }) {
+  const running = live?.legs.includes(leg) ? runningState(live.started_at, live.note) : null;
+  const s = running ?? displayState(rec);
   return (
     <div className="leg-card">
       <span className="leg-name">{leg}</span>
-      <StatusCell record={rec} size="lg" />
-      {rec ? (
+      <StatusCell state={s} size="lg" />
+      {running ? (
+        <div className="leg-meta">
+          <span>being assayed now</span>
+        </div>
+      ) : rec ? (
         <div className="leg-meta">
           <span>
             {rec.meta.standard} v{rec.meta.standard_version}

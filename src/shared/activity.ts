@@ -9,7 +9,7 @@
  * `types.ts` is the frozen MVP-0 archive contract and is not touched by any of this.
  */
 
-import type { Leg } from './types.js';
+import type { Leg, RecordedPhase, RecordedRequirement } from './types.js';
 
 // ── events ─────────────────────────────────────────────────────────────────────────────
 
@@ -165,4 +165,95 @@ export interface ChatState {
   running: boolean;
   /** False when no agent is answering — the composer says so instead of failing on send. */
   available: boolean;
+}
+
+// ── the run in flight ──────────────────────────────────────────────────────────────────
+
+/**
+ * The eight functional phases, in the order the protocol runs them.
+ *
+ * `runner/prompt.ts` interpolates this list into the sentence that asks the agent to report
+ * each phase, so the ids the UI draws a track for and the ids the agent is told to record
+ * are one list. Changing it changes both, which is the point — the phase track is only
+ * honest if it names the phases actually asked for.
+ */
+export const FUNCTIONAL_PHASES = ['A', 'C', 'D', 'E8', 'E9', 'E10', 'F', 'G'] as const;
+
+/** What each phase is, for a reader who has not memorised the protocol's letters. */
+export const PHASE_LABEL: Record<string, string> = {
+  A: 'session',
+  C: 'fresh install',
+  D: 'discover URL',
+  E8: 'works immediately',
+  E9: 'auth gate',
+  E10: 'clean boot',
+  F: 'zero-config usability',
+  G: 'data persistence',
+};
+
+/** How a run ended. Mirrors `RunOutcome` in `runner/index.ts`, which imports it from here. */
+export type RunOutcome =
+  | { kind: 'verdict'; verdict: string; risk: number; files: string[] }
+  | { kind: 'error'; reason: string }
+  | { kind: 'agent_busy' }
+  | { kind: 'blocked'; reason: string };
+
+/**
+ * The audit currently in flight.
+ *
+ * `depth` is what was *asked for* and `ran_depth` is what the agent was actually given: a
+ * full run whose bench went missing is dispatched as a static one and its functional half
+ * recorded blocked. Reporting only `depth` would have the UI draw a phase track for phases
+ * nobody is running.
+ */
+export interface RunLive {
+  subject: string;
+  depth: 'static' | 'full';
+  started_at: string;
+  ran_depth?: 'static' | 'full';
+  /** Why `ran_depth` is narrower than `depth` — `bench_unavailable`, `browser_unavailable`. */
+  degraded_reason?: string | null;
+  /** The demo instance this run leased, and the browser sidecar leased with it. */
+  bench?: string | null;
+  browser?: string | null;
+}
+
+export interface LastRun {
+  subject: string;
+  depth: 'static' | 'full';
+  started_at: string;
+  finished_at: string;
+  outcome: RunOutcome;
+}
+
+/**
+ * What the running audit has established so far, from the ledger.
+ *
+ * Counts *and* the rows behind them. A bar that only moves is a bar that cannot distinguish
+ * a run doing careful work from one repeating itself; `phases` and `recent` are what let a
+ * six-minute wait say what it is doing rather than only how far along it is.
+ */
+export interface RunProgress {
+  verified: number;
+  applicable: number;
+  passed: number;
+  failed: number;
+  unverified: number;
+  not_applicable: number;
+  risk: number;
+  /** How many requirements the protocol listed for this depth. The denominator. */
+  of_canonical: number;
+  /** Functional phases recorded so far. Empty on a static run — it has none. */
+  phases: RecordedPhase[];
+  /** The last few requirements settled, newest first. */
+  recent: RecordedRequirement[];
+}
+
+/** `GET /api/v1/assays/current`. */
+export interface RunStatus {
+  enabled: boolean;
+  running: RunLive | null;
+  last: LastRun | null;
+  /** Null when nothing is running, or when the run predates the ledger. */
+  progress: RunProgress | null;
 }

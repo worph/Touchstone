@@ -1,6 +1,12 @@
-id: functional-v2
+id: functional-v3
 name: Functional Review Protocol
-version: 2
+version: 3
+
+# v3 (2026-08-20) — the demo benches run Maison, not CasaOS. The phase letters are unchanged
+# and so is what each one proves, but Phase G is a different sequence: Maison's uninstall
+# always archives and never deletes, so "uninstall keep-data then reinstall" no longer exists
+# and persistence is tested by restoring the archive. See `protocols/functional.md` §2a and
+# the 2026-08-20 amendment.
 leg: functional
 
 # As with the static leaf, the rubric lives in Docmost and the agent reads it at run time.

@@ -45,6 +45,28 @@ const NOT_RUN: DisplayState = {
 };
 
 /**
+ * A leg being audited **right now**.
+ *
+ * There is no record to derive this from and there should not be: the runner writes a report
+ * when it has one, and a placeholder file in the archive would be a record of an assay that
+ * has not happened. So the in-flight run is overlaid at render time from `/assays/current`,
+ * and this is the one state in the vocabulary that is not read off a file.
+ *
+ * @param startedAt  when the run began, for the `· 4m` note
+ * @param note       overrides the elapsed time — `7/24` says more when there is a count
+ */
+export function runningState(startedAt: string, note?: string, now = Date.now()): DisplayState {
+  return {
+    kind: 'running',
+    severity: 'none',
+    label: 'running',
+    mark: '◴',
+    note: note ?? elapsed(startedAt, now),
+    hint: `Started ${startedAt}. This leg is in flight; the previous hallmark still stands.`,
+  };
+}
+
+/**
  * @param rec  the latest assay for one leg, or null if the leg was never assayed
  * @param now  injected so the `running · 4m` label is testable
  */
@@ -52,16 +74,7 @@ export function displayState(rec: AssayRecord | null | undefined, now = Date.now
   if (!rec) return NOT_RUN;
   const m = rec.meta;
 
-  if (m.status === 'running') {
-    return {
-      kind: 'running',
-      severity: 'none',
-      label: 'running',
-      mark: '◴',
-      note: elapsed(m.started_at, now),
-      hint: `Started ${m.started_at}. This leg is in flight; the previous hallmark still stands.`,
-    };
-  }
+  if (m.status === 'running') return runningState(m.started_at, undefined, now);
 
   if (m.status === 'blocked') {
     const reason = humaniseReason(m.blocked_reason);

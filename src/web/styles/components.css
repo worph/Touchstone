@@ -577,7 +577,7 @@
   font-size: 12.5px;
   color: var(--fg-1);
   cursor: pointer;
-  background: var(--bg-2);
+  background: var(--bg-1);
   border: 1px solid var(--border);
   border-radius: 6px;
 }
@@ -586,6 +586,7 @@
 
 .proto-tab[aria-pressed='true'] {
   color: var(--fg);
+  font-weight: 550;
   background: var(--bg-3);
   border-color: var(--border-3);
 }
@@ -774,3 +775,202 @@
 
 /* A failed push registration says why, rather than leaving a button that does nothing. */
 .act-foot-error { margin-top: 6px; color: var(--major); font-size: 12.5px; max-width: 70ch; }
+
+/* -- the run in flight ---------------------------------------------------- */
+/* One vocabulary in three sizes: the strip in the sidebar, the pill in the phone header,
+   and the card on Activity. All of them use --running, and none of them uses colour alone —
+   the ◴ glyph and the words carry the same fact. */
+
+.run-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 12px 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--running);
+  border-radius: var(--r);
+  background: var(--running-dim);
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 12px;
+}
+.run-strip:hover { border-color: var(--running); filter: brightness(0.985); }
+
+/* The sidebar pins its footer to the bottom; with a strip above it, the two share the gap. */
+.run-strip + .sidebar-foot { margin-top: 0; }
+
+.run-strip__head { display: flex; align-items: baseline; gap: 6px; }
+.run-strip__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 13px;
+}
+.run-strip__clock { color: var(--running); font-variant-numeric: tabular-nums; }
+.run-strip__meta { color: var(--fg-1); }
+.run-strip__doing {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.run-strip__degraded { color: var(--major); font-size: 11.5px; }
+
+/* The clock hand turns rather than pulses: a pulse in the corner of the eye reads as an
+   alarm, and a run in progress is not one. */
+.run-strip__mark {
+  color: var(--running);
+  animation: run-tick 3s steps(8, end) infinite;
+}
+@keyframes run-tick {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-strip__mark { animation: none; }
+}
+
+/* The phone has no sidebar; the header carries the same fact in one line. */
+.run-strip--compact {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 0 auto;
+  padding: 4px 9px;
+  max-width: 48%;
+  font-size: 12px;
+}
+.run-strip--compact .run-strip__name { font-size: 12px; }
+
+.run-bar {
+  display: block;
+  block-size: 4px;
+  inline-size: 100%;
+  border-radius: 2px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.run-bar__fill {
+  display: block;
+  block-size: 100%;
+  background: var(--running);
+  transition: inline-size 400ms ease-out;
+}
+
+/* -- the Activity card ---------------------------------------------------- */
+
+.run-card {
+  padding: 14px;
+  border: 1px solid var(--running);
+  border-radius: var(--r);
+  background: var(--bg-1);
+}
+.run-card__head { display: flex; align-items: baseline; gap: 10px; }
+.run-card__subject { font-size: 15px; font-weight: 600; color: var(--fg); text-decoration: none; }
+.run-card__subject:hover { text-decoration: underline; }
+.run-card__depth { color: var(--fg-2); font-size: 12.5px; }
+.run-card__clock { color: var(--running); font-size: 15px; font-variant-numeric: tabular-nums; }
+
+.run-card__degraded {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-s);
+  background: var(--major-dim);
+  color: var(--major);
+  font-size: 12.5px;
+}
+
+.run-card__bar { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.run-card__counted { color: var(--fg-1); font-size: 12.5px; }
+.run-card__failing { color: var(--crit); }
+
+/* The eight phases, in protocol order. The ones not reached yet are the point: a track that
+   showed only what happened could not show what is left. */
+.phase-track {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.phase {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 11.5px;
+}
+.phase__id { font-weight: 650; font-family: var(--mono); }
+.phase[data-result="pass"] { border-color: var(--ok); background: var(--ok-dim); color: var(--ok); }
+.phase[data-result="fail"] { border-color: var(--crit); background: var(--crit-dim); color: var(--crit); }
+.phase[data-result="errored"] { border-color: var(--major); background: var(--major-dim); color: var(--major); }
+.phase[data-result="n-a"] { border-style: dashed; }
+.phase[data-result="pending"] { border-style: dotted; opacity: 0.75; }
+
+.run-card__where {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 12px 0 0;
+  font-size: 11.5px;
+}
+.run-card__where dt { color: var(--fg-2); }
+.run-card__where dd { margin: 0; color: var(--fg-1); overflow-wrap: anywhere; }
+
+.run-card__recent {
+  margin: 12px 0 0;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border);
+  list-style: none;
+  font-size: 12px;
+}
+.run-card__recent li { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; }
+.run-card__req { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-1); }
+.run-card__verdict { color: var(--fg-2); }
+.run-card__recent li[data-verdict="pass"] .run-card__verdict { color: var(--ok); }
+.run-card__recent li[data-verdict="fail"] .run-card__verdict { color: var(--crit); }
+.run-card__recent li[data-verdict="unverified"] .run-card__verdict { color: var(--unverified); }
+.run-card__sev { color: var(--crit); }
+.run-card__at { font-size: 11.5px; }
+
+/* The row whose audit is in flight, on the Overview. A tint, because the cell already says
+   `◴ running` in words — this only helps the eye find the row it is waiting on. */
+.tbl tbody tr[data-running] { background: var(--running-dim); }
+
+/* -- the fix report ------------------------------------------------------- */
+/* Raw markdown, monospaced and scrollable. It is shown to be taken away, not to be read
+   here — which is why it is not rendered: rendered markdown is markdown you cannot copy. */
+
+.fixrep-note {
+  margin: 0 0 12px;
+  color: var(--fg-2);
+  font-size: 12px;
+  max-width: 80ch;
+}
+.fixrep-note code { font-family: var(--mono); font-size: 11.5px; color: var(--fg-1); }
+
+.fixrep-body {
+  margin: 0;
+  padding: 14px;
+  max-block-size: 60vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+  background: var(--bg-2);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
