@@ -1,7 +1,7 @@
 ---
 id: functional
 name: Functional Review Protocol
-version: 3
+version: 5
 kind: leaf
 
 # Where this section sits in a run, and what it cannot run without. `order` decides report
@@ -33,8 +33,9 @@ report_headings:
 
 requirements:
   # The fixed phase plan. Unlike the static checklist these ARE owned by this protocol —
-  # §3 names them and the 2026-07-07 amendment makes every one mandatory — so the list is
-  # authoritative rather than a mapping aid.
+  # §4 names them and every one is mandatory — so the list is authoritative rather than a
+  # mapping aid. Cleanup (§6) is deliberately NOT here: it is an obligation on the run, not
+  # a property of the app, and a requirement id would let an untidy run fail an innocent app.
   - id: phase-a-session
     text: A — session established on the demo host
     requires: bench
@@ -60,246 +61,278 @@ requirements:
     text: G — data survives an uninstall (which archives) then a restore-from-archive reinstall
     requires: bench
 ---
-> **Reusable leaf — output-neutral.** Source of truth for the *functional / runtime* checks of an AppStore app: install it on a demo PCS, drive a real browser, decide whether it actually works. Consumed by the **AppStore PR Review** and **AppStore App Audit** orchestrators, which own ALL formatting, labels, and publishing. **Do not put GitHub labels, comment templates, or Docmost wiring here.** The *static / compose* checks live in the **Static Review Protocol** (`static`). Per-app hints: **Functional QA — App KB** (`NeFOTSJPGH`).
-> **Status: VALIDATED end-to-end** (Immich incl. Phases F/G; Jellyfin depth=full e2e) on the CDP-based `browser-mcp` — the old instability cap is resolved. Renamed from “Functional Bot — Operating Protocol” on 2026-06-25 as part of the protocol-decomposition refactor.
-
----
 
 # Functional Review Protocol
 
-> **One input: an app name. One fixed phase sequence, identical for every app**, deriving everything app-specific at runtime (never hardcoded). This protocol **returns a neutral verdict + evidence to its caller** — it does not post comments, set labels, or write pages. The orchestrator does that.
+The rubric for the **runtime** conformance of one AppStore app: install it on a demo PCS, drive
+a real browser, and decide whether it actually works. One input — an app name — and one fixed
+phase sequence, identical for every app, deriving everything app-specific at runtime and
+hardcoding nothing. The *static / compose* items belong to the Static Review Protocol
+(`static`).
 
-## 1. Purpose & hard rule
+The repo's own `CONTRIBUTING.md` Functionality checklist is the source of truth for what
+"functional" means. **Hard rule: report a verdict, never merge or approve.** A human keeps the
+merge button.
 
-Decide whether an app is **“functional”** per the repo's `CONTRIBUTING.md` Functionality checklist, by installing and exercising it live. **Hard rule:** report a verdict; never merge/approve — a human keeps the merge button.
+> Touchstone's copy. Docmost pages of the same name still drive *AppStore PR Review* in n8n;
+> that is a separate fork and nothing here binds it. Per-app hints: **Functional QA — App KB**
+> (`NeFOTSJPGH`).
 
-## 2. Inputs & conventions
+## How results are recorded
+
+There is no orchestrator and no result block — Touchstone composes the assay itself from what
+you record, as you record it.
+
+1. **`touchstone__record_phase` as each phase completes** — `pass`, `fail`, `errored` or `n-a`.
+2. **`touchstone__list_requirements` first, then `touchstone__record_requirement`** for the
+   checklist ids, the moment each settles, with a severity on every `fail`.
+3. **Write this section's prose under a `## Functionality` heading.** Evidence, screenshots
+   taken, the install duration and the host you ran on go in the records' notes and in that
+   prose.
+
+One result per phase, and there are only four:
+
+| Result | Means |
+| --- | --- |
+| `pass` | ran, and the app satisfied it |
+| `fail` | ran, and the app did not — a statement about the app |
+| `errored` | could not run: infra failed, or the platform got in the way. **Never** the app's fault; the caller retries |
+| `n-a` | a deterministic, input-forced impossibility. The only current case is G′ — migration, which this protocol does not run at all (§3) |
+
+**There is no way to say you chose not to run a phase.** No `skipped`, no `not-attempted`, no
+"optional deep", no economising on browser calls. `n-a` is for an impossibility, never a choice;
+"skipped to save time" is a protocol violation. `needs-changes` and `needs-human` do not exist
+either — never defer to a human: a runtime caveat is a `fail` with a severity and a note, or a
+`pass` with the caveat stated in the prose. The headline verdict is the caller's gate to apply,
+not yours to declare.
+
+*Why the licence was removed:* audits were declaring apps `functional` while Phases F and G were
+skipped as "optional deep", so the two highest-consequence checks — zero-config and data
+persistence — were never exercised at all.
+
+## 1. Inputs
 
 | Param | Meaning | Example |
 | --- | --- | --- |
 | `APP` | App display name **exactly as in the store** | `Filebrowser` |
-| `DEMO` | Demo PCS host. The dashboard answers on the **bare host** and on `maison-<DEMO>` | `demostaging1.inojob.com` (or `demostaging2…`) |
-| `LOGIN` | **Platform SSO** credentials — Maison has no login of its own (§2a) | `demo` / `demodemo` |
-| `PRIOR_VERSION` *(opt)* | A previous, installable version for the **migration** phase (G′). Provided only by the PR orchestrator on a version bump; absent for audits. |  |
+| `DEMO` | Demo PCS host, **supplied by the caller** | `demostaging1.inojob.com` |
+| `LOGIN` | Platform SSO credentials — Maison has no login of its own | `demo` / `demodemo` |
+| `BROWSER` | A `browser-mcp` sidecar, **supplied by the caller**, leased to this run alone | |
 
-**Derived at runtime (never hardcode):** `APP_URL` — discovered in Phase D. Fallback only: `https://<slug>-<DEMO>/`, `slug` = lowercased `APP`, spaces removed.
+Derived at runtime, never hardcoded: `APP_URL`, discovered in Phase D. Fallback only:
+`https://<slug>-<DEMO>/`, where `slug` is `APP` lowercased with spaces removed.
 
-**Engine:** all browser steps via Beacon → `browser-mcp` (Chrome CDP). Each run uses its **own** `isolatedContext: "functional-<APP>-<runid>"`. Prefer `take_snapshot` (uid-based) clicks; use a **real **`click`** on a uid** for store/app tiles — synthetic JS clicks do NOT fire the framework's handlers. Screenshot every PASS/FAIL as evidence.
+**The caller chooses the host and the browser; you choose neither.**
 
-## 2a. The dashboard is Maison, not CasaOS
+- **Do not open the Demo Management board and do not substitute another instance.** Touchstone
+  probes each instance's login flow end to end before dispatching, which the board does not: on
+  2026-08-19 the board reported an instance `✅ Ready` while its login gate answered HTTP 500,
+  and the board's own "most time remaining" rule preferred exactly that one. If the supplied
+  host does not work, mark the phases `errored` — that is infra, and the caller retries.
+- **Never click `🧹 Trigger Cleanup`.** It resets a shared instance another run may be using.
+- **Use only the supplied browser.** A shared browser's tabs belong to other work, and a tab
+  stolen mid-install is recorded against the app. Use a fresh `isolatedContext` named
+  `functional-<APP>-<runid>`.
+- The runway rule lives in the caller: an instance with less than an hour before its daily
+  cleanup is never dispatched, so a run cannot be wiped mid-Phase-G.
 
-The demo PCS runs **Maison**, the dashboard that replaced CasaOS. It looks and works like
-CasaOS — same app grid, same tiles, same App Store — and the on-disk app layout is unchanged,
-so nothing in the *rubric* moves. Four things this protocol drives do move, and each is
-written into the phase that touches it:
+Name the host you ran on in the prose, so a failed run can be traced back to it.
+
+## 2. The platform is Maison
+
+The demo PCS runs **Maison**, the dashboard that replaced CasaOS. Same app grid, same tiles,
+same store format, same on-disk layout — so **nothing about which apps pass moves because the
+dashboard changed**. Four things this protocol drives do move:
 
 | | Was (CasaOS) | Is (Maison) |
 | --- | --- | --- |
 | **Where the dashboard lives** | `casaos-<DEMO>` | `maison-<DEMO>`, **and the bare `<DEMO>`** |
-| **Who asks for the password** | CasaOS's own accounts | the **platform SSO**, one sign-in for the dashboard, the admin page and every protected app, valid **30 days** |
-| **Reaching the store** | a tile that opens an in-page modal | a **route** — `/store`, `/store/<app-id>` |
-| **What uninstall does** | removed the app; "keep data" left the folder | **always archives** the whole folder, never deletes — so a plain reinstall lands on a clean slate (Phase G) |
+| **Who asks for the password** | CasaOS's own accounts | the **platform SSO** — one sign-in for the dashboard, the admin page and every protected app, valid **30 days** |
+| **Reaching the store** | a tile opening an in-page modal | a **route** — `/store`, `/store/<app-id>` |
+| **What uninstall does** | removed the app; "keep data" left the folder | **always archives** the whole folder, never deletes |
 
-Gone with CasaOS, and never a reason to fail an app: the **Files** app, the built-in
-**terminal**, disk/RAID and Samba management, the global search bar, and the manual
-"install a customised app" form (stacks are discovered automatically now). If a phase
-seems to need one of those, the phase is being read wrong.
+Useful routes: `https://<DEMO>/store` (catalog), `https://<DEMO>/store/<app-id>` (one app,
+`<app-id>` being the compose project `name`, i.e. the lowercase slug), and
+`https://<DEMO>/settings/backups` (the box-wide archive list, for cleanup). Navigating beats
+clicking and survives a slow paint. The whole UI is in the accessibility tree, so prefer
+`take_snapshot` and click uids — and use a **real** `click` on a uid for store and app tiles.
 
-## 3. The fixed phase plan (identical for every app)
+**Gone with CasaOS, and never a reason to fail an app:** the Files app, the built-in terminal,
+disk/RAID and Samba management, the global search bar, and the manual "install a customised app"
+form. If a phase seems to need one of those, the phase is being read wrong. (The
+synthetic-pointer-event trick for prising open the old store modal is obsolete with it — the
+store is a real route now, and a hand-dispatched event sequence must not be used.)
 
-**Phase A — Session**
+**Never fail an app for a Maison behaviour.** A backup picker where an install used to be, an
+archive left over from an earlier run, a tile marked `unmanaged`, a System-grid app that refuses
+Stop and Uninstall — these are the platform, not the subject. A phase that cannot proceed
+because of one is `errored`, never `fail`.
 
-1. `new_page` → `https://<DEMO>/` in a fresh isolated context. The bare host opens the Maison dashboard directly; `https://maison-<DEMO>/` is the same page.
-2. The gate in front of it is the **platform SSO**, not a dashboard account. Take whichever route the login page offers — **Log in with Yundera** (the `LOGIN` credentials) or **Local Account** — then `wait_for` `["App Store","System status"]`, the dashboard's own markers. A **Getting Started** wizard at `admin-<DEMO>` means the box has never been set up: that is infra → `errored`, not an app fault.
-**Phase C — Fresh install**
-3. Open the store by **navigating to **`https://<DEMO>/store`. It is a real route — no tile to hunt for, no modal to prise open. `https://<DEMO>/store/<app-id>` opens one app's detail page directly.
-4. `take_snapshot` → find the card whose heading `== APP` → click its **“Install”** pill. The search box matches **name, tagline and category**, so confirm the heading matches `APP` exactly rather than taking the first hit.
-5. ⚠️ **The backup picker.** If the box already holds an archive of `APP`, the Install click opens a **menu** instead of installing: **“Fresh install”** at the top, then **“Restore from backup”** with one row per archive. Phase C is the *fresh* install — click **“Fresh install”**. Phase G is the only place an archive row is ever chosen. With no archives present the click installs straight away and no menu appears.
-6. Optional **Tips** dialog — capture any URLs/paths it shows. Maison also keeps it on the tile's menu under **Tips**.
-7. Watch the **single progress bar** on the tile (and on the store's install pill): **Download** (blue, real per-layer pull progress), then **Start** (green). Progress rides the live app list, so it keeps advancing after the store panel is closed — closing the panel is not "continue in background", it is just closing a panel. ✅ **Install PASS** when the tile settles with an **Open** action and no error. Record duration.
-8. A **failed install stays visible** as a red `!` on the tile, the error in its tooltip; it does not vanish. Read that tooltip before concluding anything — it is the install's own diagnosis, and it is evidence.
+## 3. Phase plan (identical for every app)
 
-**Phase D — Discover app URL**
-9. `APP_URL` by priority: (a) the tile's **Open** action — the URL Maison built from `x-compose-app.webui-host`/`webui-path`, or the `x-casaos` fallback — read back via `list_pages`; else (b) the Tips URL; else (c) the fallback formula. A tile offering **no reachable address** instead of an Open action means the app declares no resolvable web UI: record that, and fall back to the formula before calling the app broken.
+**A — Session**
 
-**Phase E — Runtime checks (core gate)** — open `APP_URL` in the same context, assert **generically**:
-10. **Works immediately** — renders a real UI within a bounded `wait_for`; not an error page, not an endless spinner, no “run this command / check logs / edit config” prerequisite.
-11. **Auth enabled** *(mandatory)* — a login/registration form is present, OR a protected path redirects to an auth route. No auth → `FAIL` unless `rationale.md` documents a public exception (→ `SKIP` w/ note). ⚠️ **One sign-in now covers the dashboard, the admin page and every protected app for 30 days**, so the session Phase A established carries straight into `APP_URL`. An app that opens on its content *because this run is already signed in* has proved nothing about its own gate. The per-run isolated context and the profile-less browser exist for exactly this; when in doubt, re-open the same path in a second fresh context that has never signed in.
-12. **Clean boot** — `list_console_messages(error)` ≈ 0 first-party; no first-party `5xx` in `list_network_requests`. Breaches → warning / `NEEDS_HUMAN`.
-13. Screenshot.
+1. `new_page` → `https://<DEMO>/` in a fresh isolated context. The bare host opens the Maison
+   dashboard directly; `https://maison-<DEMO>/` is the same page.
+2. The gate is the **platform SSO**, not a dashboard account. Take whichever route the login
+   page offers — *Log in with Yundera* (the `LOGIN` credentials) or *Local Account* — then
+   `wait_for` `["App Store", "System status"]`, the dashboard's own markers. A **Getting
+   Started** wizard at `admin-<DEMO>` means the box has never been set up: infra → `errored`.
 
-**Phase F — Zero-config usability** *(optional deep)* — complete the obvious in-UI setup (e.g. create admin) to a usable screen **purely in-browser** → PASS “no manual config”; needs files/commands → FAIL.
+**C — Fresh install**
 
-**Phase G — Data persistence** — **on Maison an uninstall never deletes, it archives.** There is no "keep data" option to tick, and no plain reinstall that finds the old data still in place. The phase is therefore:
+3. Navigate to `https://<DEMO>/store`.
+4. `take_snapshot`, find the card whose heading `== APP`, click its **Install** pill. The search
+   box matches name, tagline *and* category, so confirm the heading matches `APP` exactly rather
+   than taking the first hit.
+5. ⚠️ **The backup picker.** If the box already holds an archive of `APP`, the Install click
+   opens a **menu** instead of installing: **Fresh install** at the top, then **Restore from
+   backup** with one row per archive. Phase C is the *fresh* install — click **Fresh install**.
+   Phase G is the only place an archive row is ever chosen. With no archives present the click
+   installs straight away and no menu appears.
+6. Optional **Tips** dialog — capture any URLs or paths it shows. Maison also keeps it on the
+   tile's menu under **Tips**.
+7. Watch the single progress bar on the tile and on the store's install pill: **Download**
+   (blue, real per-layer pull progress), then **Start** (green). Progress rides the live app
+   list, so it keeps advancing after the store panel is closed — closing the panel is not
+   "continue in background", it is just closing a panel. ✅ **pass** when the tile settles with
+   an **Open** action and no error. Record the duration.
+8. A failed install **stays visible** as a red `!` on the tile with the error in its tooltip; it
+   does not vanish. Read that tooltip before concluding anything — it is the install's own
+   diagnosis, and it is evidence.
 
-14. Create state in the app (account / item / `upload_file`) and write down exactly what to look for afterwards.
-15. **Uninstall.** The confirm dialog says the folder is renamed to `<app>.<date>.archive` under `AppData/`, and offers **“Compress the archive to a **`.zip`**”** — leave it **off**: a rename is instant, a zip is a full second copy and can take minutes. The tile shows the same single bar in red: **Remove**, then **Archive**.
-16. **Reinstall from that archive.** Back in the store, click **Install** → the picker opens → choose the newest row under **“Restore from backup”** (each row carries its date). Choosing **“Fresh install”** here lands on a clean slate and tests nothing.
-17. Assert the state from 14 survived.
+**D — Discover the app URL**
 
-**What this proves, and why it is still the right test.** An archive carries the *whole* app folder — compose, override, `.env` and the data under `AppData/<app>/` — so a state location the app keeps **outside** its mapped volumes is not in the archive and does not come back. That is precisely the fault the phase was written to catch (the runtime counterpart of the Static leaf's §B persistence check), and it now catches it along the path a real user takes. A restore that comes back empty is a `fail` **against the app**, not against Maison.
+9. `APP_URL` by priority: (a) the tile's **Open** action — the URL Maison built from
+   `x-compose-app.webui-host`/`webui-path`, or the `x-casaos` fallback — read back via
+   `list_pages`; else (b) the Tips URL; else (c) the fallback formula. A tile offering no
+   reachable address instead of an Open action means the app declares no resolvable web UI:
+   record that, and try the formula before calling the app broken.
 
-**Phase G′ — Migration** *(conditional — only when *`PRIOR_VERSION`* is supplied)* — install `PRIOR_VERSION`, seed state, **upgrade to the target version**, assert data + functionality survive. Skipped entirely when no prior version is provided (e.g. audits run a single current version).
+**E — Runtime checks (the core gate)** — open `APP_URL` in the same context and assert
+**generically**, never against fixed selectors:
 
-**Phase H — Verdict & cleanup**
-18. Aggregate → neutral verdict (§4) + evidence (screenshots, per-phase results). **Return it to the caller** — do not post or archive it yourself.
-19. **Cleanup (mandatory on every exit path, incl. failure):** uninstall `APP` (and any `PRIOR_VERSION`) — **and then delete the archives this run left behind**, from the app's **Backups** tab or **Settings → Backups**, where an uninstalled app's archives are listed and marked `uninstalled`. Uninstalling alone no longer leaves the instance as found: it leaves every archive the run created on the demo box's data disk, and the next run's Install click opens a backup picker because of it.
+10. **E8 works immediately** — a real UI renders within a bounded `wait_for`. Not an error page,
+    not an endless spinner, no "run this command / check the logs / edit this config" prerequisite.
+11. **E9 auth gate** *(mandatory)* — a login or registration form is present, **or** a protected
+    path redirects to an auth route. No auth → `fail`, unless `rationale.md` documents a public
+    exception, which makes it a `pass` with the exception named in the note.
 
-## 4. Verdict rubric (neutral)
+    ⚠️ **This is the phase the platform makes easy to fool.** One sign-in covers the dashboard,
+    the admin page and every protected app for 30 days, so the session Phase A established
+    carries straight into `APP_URL`: an app that opens on its content may simply be riding this
+    run's session, and has proved nothing about its own gate. The per-run isolated context and
+    the deliberately profile-less browser are the guard. **When in doubt, re-open the same path
+    in a second, never-signed-in context** — that is the tie-breaker.
 
-- **not-functional** — any Phase-E failure (won't open / needs terminal steps / no auth & no documented exception).
-- **needs-changes** — runtime OK, but the caller's static result has a failing item (the orchestrator supplies this; this leaf flags runtime-OK-with-caveat).
-- **needs-human** — anything not conclusively determinable (ambiguous auth, threshold console errors, install timeout, unrecoverable browser session); attach screenshots.
-- **functional** — all applicable checks PASS.
-Return: `{ functional_verdict, phases: [{phase, result, note}], evidence: [...], install_seconds }`.
+    The recommended gate for a new app is the **AppShield** OIDC sidecar
+    (`ghcr.io/yundera/appshield`), which registers with the PCS `auth-registrar` and protects
+    the app with the platform SSO. Such an app has **no login form of its own** — its gate is
+    the redirect to the SSO, which a signed-in run never sees. Reference deployments:
+    `Apps/ConvertX`, `Apps/Spliit`, `Apps/BrowserMCP`. An app's own built-in auth (Jellyfin,
+    Immich onboarding) and Basic Auth are equally acceptable, as long as the gate is on by
+    default.
+12. **E10 clean boot** — `list_console_messages(error)` ≈ 0 first-party, and no first-party
+    `5xx` in `list_network_requests`. A breach is a `fail` with a note, at the severity the
+    breach deserves; it is not a reason to defer to a human.
+13. Screenshot every pass and every fail. Screenshots are the evidence.
 
-## 5. Worked example — `APP = "Immich"` (reference run, 2026-06-16, **on CasaOS**)
+**F — Zero-config usability** *(mandatory)* — complete the obvious in-UI setup (create the
+admin account, accept the wizard) to a usable screen **purely in the browser** → `pass`. Needing
+a file edited or a command run → `fail`.
 
-> Kept because the *shape* of a run is unchanged. Two steps below are pre-Maison and read
-> differently today: the App Store is reached by navigating to `/store` rather than clicking a
-> tile into a modal, and there is no “Tips dialog → Next Steps” step in the install path.
+**G — Data persistence** *(mandatory)* — on Maison an uninstall never deletes, it **archives**.
+There is no "keep data" option to tick, and a plain reinstall lands on a clean slate and proves
+nothing. The sequence is therefore:
 
-| Phase | Result |
-| --- | --- |
-| A | Logged into `demostaging1`, dashboard reached. |
-| C | App Store tile (figure) → modal → **Immich** → Install → **Tips** dialog (gave `https://immich-demostaging1.inojob.com/`, import `/DATA/Gallery/`) → Next Steps → 0→100% → **“Open Immich”** tile. |
-| D | `APP_URL = https://immich-demostaging1.inojob.com/`. |
-| E8 | Loads to **“Welcome to Immich”** — no error/spinner/terminal. ✅ |
-| E9 | **Auth gate ✅** — `/photos` redirected to `/auth/register`. |
-| E10 | Console errors: **0**. ✅ |
-| **Verdict** | **functional** on all browser-checkable criteria. |
+14. Create state in the app — an account, an item, an `upload_file` — and write down exactly
+    what to look for afterwards.
+15. **Uninstall.** The confirm dialog says the folder is renamed to `<app>.<date>.archive` under
+    `AppData/`, and offers *Compress the archive to a `.zip`* — leave it **off**: a rename is
+    instant, a zip is a full second copy and can take minutes. The tile shows the same single
+    bar in red: **Remove**, then **Archive**.
+16. **Reinstall from that archive.** Back in the store, click **Install**, let the picker open,
+    and choose the newest row under **Restore from backup** (each row carries its date).
+    Choosing **Fresh install** here lands on a clean slate and tests nothing.
+17. Assert the state from step 14 survived.
 
-## 6. Determinism & resilience
+*What this proves.* An archive carries the **whole** app folder — compose, override, `.env` and
+the data under `AppData/<app>/` — so a state location the app keeps **outside** its mapped
+volumes is not in the archive and does not come back. That is exactly the fault the phase exists
+to catch, and it now catches it along the path a real user takes. A restore that comes back
+empty is a `fail` **against the app**, not against Maison. Cost and duration are never a reason
+to skip it; the harness budgets the time.
 
-- “Same plan for every app” = same ordered phases + same pass criteria. Per-app variation (store card, `APP_URL`, the specific auth UI) is **discovered at runtime**, never branched.
-- The agent absorbs UI differences by evaluating the **generic Phase-E assertions** rather than fixed selectors.
-- One `isolatedContext` per run; the orchestrator reserves/serialises the two demo instances so parallel runs don't collide.
-- **Resilience:** if the browser session becomes unrecoverable, do NOT abort — return whatever evidence was gathered with `functional_verdict = needs-human`. The orchestrator decides what to publish.
+**G′ — Migration** *(never run here — record `n-a`)* — a migration test installs the version
+a user is running today, seeds state, upgrades to the new one and asserts both data and function
+survive. That needs two versions and an audit has one: this protocol runs `main` as it stands,
+and Maison cannot install an earlier version anyway — the manual "install a customised app" form
+went with CasaOS (§2).
 
----
+**The PR path owns migration**, because a version bump is what a PR *is*: it carries both refs,
+so it is the only caller that can supply a prior version. Record G′ `n-a` with that as the
+reason — *migration is covered on version bump by the PR review, not by this audit* — rather than
+"no `PRIOR_VERSION` supplied", which reads as an accident instead of a division of labour. State
+it in the prose too. It is a standing limit on what a store audit covers, and a row that says so
+is the only thing keeping it from looking like a phase that quietly passed.
 
-### Tip — reaching the store on Maison
+What an audit *does* exercise of the same fault: Phase G installs the app, seeds it, and then
+runs its install hooks a second time against data that already exists — the failure mode most
+upgrades actually trip on. The static leaf carries the matching rule, *install hooks are safe to
+rerun on every reinstall and upgrade*. Neither is a substitute for G′; both mean the gap is
+narrower than the `n-a` row suggests.
 
-**The synthetic-pointer-event technique is obsolete and must not be used.** It existed because
-CasaOS's App Store tile was a non-anchor card with `href=null` and no route, so an a11y `click`
-on it was a no-op and the modal had to be prised open with a hand-dispatched
-`pointerdown→mousedown→pointerup→mouseup→click`. Maison has none of that: the store is a real
-route.
+**H — Cleanup.** See §6. Mandatory on every exit path, including failure.
 
-- `https://<DEMO>/store` — the catalog.
-- `https://<DEMO>/store/<app-id>` — one app's detail page, straight in. `<app-id>` is the compose
-  project `name`, i.e. the lowercase slug, not the display title.
-- `https://<DEMO>/settings/backups` — the box-wide archive list, for the Phase H cleanup.
+## 4. Gate
 
-Navigating there is more reliable than clicking, and it survives the dashboard being slow to
-paint. The store panel is fully in the a11y tree, so the search box and every Install pill are
-uids. Two caveats that do survive: the search matches **name, tagline and category** (not the
-title alone), so install the app whose heading **exactly** matches `APP` rather than the first
-result — and an Install click on an app with existing archives opens the backup picker instead
-of installing (Phase C.5).
+Every mandatory phase must `pass` for the app to be functional. Any mandatory phase `fail` makes
+the app non-compliant; any mandatory phase `errored` or missing makes the **audit** errored and
+retried — it is not a verdict about the app. Record the phases; the caller applies this.
 
----
+## 5. Determinism
 
-## Amendment — strict full-run (2026-07-07) — BINDING, supersedes §3/§4 where they conflict
+- "Same plan for every app" means the same ordered phases and the same pass criteria. Per-app
+  variation — the store card, `APP_URL`, the specific auth UI — is **discovered at runtime**,
+  never branched on.
+- Absorb UI differences by evaluating the generic Phase-E assertions, not by hunting for
+  selectors you saw last time.
+- One `isolatedContext` per run. The caller serialises the demo instances so two runs cannot
+  collide on one.
+- **Resilience with no escape hatch.** If the browser session becomes unrecoverable, do not
+  abort and do not reach for a human: record the phases you reached, mark the rest `errored`,
+  write up what you have. Infra is the caller's problem to retry.
 
-**Why:** audits were declaring apps `functional` while Phases F/G were skipped as "optional deep / economical", so the highest-consequence checks (zero-config, data persistence) were never exercised. That license is removed.
+## 6. Cleanup — two halves
 
-1. **No optional phases.** Phases **F (zero-config usability)** and **G (data persistence)** are **mandatory** on every functional run, exactly like A/C/D/E/H. Every "optional deep", "economise on browser calls", "not attempted", "at your discretion" phrase above is void as a license to skip.
-2. **Phase G is a real reinstall.** Create state → uninstall (keep data) → reinstall → assert state survived. **Cost/duration is not a reason to skip**; the harness must budget enough time (orchestrator `__beacon_timeout`) for the reinstall to complete rather than time out.
-3. **Per-phase result is exactly one of **`pass`** / **`fail`** / **`errored`**.** There is **no **`skipped`** / **`not-attempted`** value** — it is inexpressible. If a phase cannot run because infra failed (host 502, browser session unrecoverable) mark it `errored` and the orchestrator retries the whole audit. The agent may never *choose* not to run a phase.
-4. `n-a`** is allowed ONLY for a deterministic, input-forced condition, never a choice.** The sole current n-a case is **Phase G′ (migration) when no **`PRIOR_VERSION`** exists** — there is genuinely nothing to migrate from. "Skipped to save time" is not `n-a`; it is a protocol violation.
-5. **Return schema:** `phases: [{ phase, result: pass|fail|errored, note }]` (G′ may be `n-a` only when `PRIOR_VERSION` is absent). `functional_verdict = functional` **requires every mandatory phase = **`pass`.
-6. **Verdict mapping:** any mandatory phase `fail` → `not-functional`; any mandatory phase `errored` (or missing) → the audit is `errored` (retry), **not** a verdict; all `pass` → `functional`. `needs-human` survives only for genuinely ambiguous *observations* (e.g. threshold console errors) — **never** as a substitute for running a phase.
----
+Uninstalling is no longer enough to leave the box as found, because the uninstall itself creates
+an archive.
 
-## Amendment — demo host selection (2026-07-17) — BINDING, supersedes §2 and §6 where they conflict
+1. Uninstall `APP` from the demo host.
+2. **Delete every archive this run produced** — from the app's own **Backups** tab, or
+   **Settings → Backups** (`/settings/backups`), where an uninstalled app's archives are listed
+   and marked `uninstalled`.
 
-**Why:** `DEMO` was treated as a fixed host (`demostaging1.inojob.com`, baked into the App Audit `Build prompt` node). The demo PCS instances are **wiped on a daily cleanup cycle**, and an instance that is mid-cleanup still serves a login page while silently failing to install. Audits pointed at it reported "the install phase was never reachable" and were recorded as `errored` **against the app** — a false negative that says nothing about the app. Observed 2026-07-17: `demostaging1` sat in `🔄 Processing` while `demostaging2` was `✅ Ready`.
-
-1. `DEMO`** is selected at runtime, never hardcoded.** Before Phase A, open the **Demo Management** board — [https://app.nasselle.com/demo/admin/manage](https://app.nasselle.com/demo/admin/manage) — via `browser-mcp` and read the instance cards. Each card carries: host, **status**, URL, User ID, **Next Cleanup**, **Time Remaining**, Last Cleanup.
-2. **Only a **`✅ Ready`** instance may be used.** An instance showing `🔄 Processing` is mid-cleanup and is **not usable**, regardless of whether its login page responds.
-3. **Respect **`Time Remaining`**.** Among Ready instances pick the one with the **most** time remaining, and require **> 1h** — a full run (incl. the Phase G uninstall→reinstall) must finish before the daily cleanup wipes it mid-audit. A Ready instance with ≤ 1h left does not qualify.
-4. **If no instance qualifies**, mark the functional phases `errored` with note `no-demo-available` and return. This is an **infra** condition, not an app fault — the caller retries; it must not be recorded as a verdict about the app.
-5. **Never click **`🧹 Trigger Cleanup`**.** It resets a shared instance that another run may be using. The cleanup obligation is unchanged: §3 Phase H.15 — uninstall the app *you* installed.
-6. **Report the host used.** Name the selected instance in the evidence/notes so a failed run can be traced back to the instance it ran on.
-> The pool is still the two `demostaging*.inojob.com` instances, so §6's serialisation note still applies — but the board, not this page, is the source of truth for which one is usable right now.
-
----
-
-## Local amendment — Touchstone (2026-08-19) — BINDING, supersedes §2 and the demo-host amendment
-
-**The caller supplies the host and the browser; the agent chooses neither.**
-
-1. `DEMO` is given in the prompt. Touchstone probes each instance's login flow end to end
-   before dispatching, which the management board does not — on 2026-08-19 the board reported
-   an instance `✅ Ready` while its login gate answered HTTP 500, and the "pick the most Time
-   Remaining" rule preferred exactly that one. **Do not open the board and do not substitute a
-   different instance.** If the supplied host does not work, mark the phases `errored`; that is
-   infra, and the caller retries.
-2. The **browser** is likewise supplied: a sidecar leased to this run alone. Do not use a
-   shared browser — its tabs belong to other work, and a tab stolen mid-install is recorded
-   against the app.
-3. The runway rule survives in the caller: an instance with less than an hour before its daily
-   cleanup is never dispatched, so a run is not wiped mid-Phase-G.
-
----
-
-## Amendment — Maison replaces CasaOS (2026-08-20) — BINDING, supersedes §3, §5 and the demo-host amendment where they conflict
-
-**Why:** the demo PCS no longer runs CasaOS. It runs **Maison**, a from-scratch dashboard with
-the same app grid, the same tiles and the same store format — but a different front door, a
-different way in, and a genuinely different uninstall. The body above has been brought into
-line; this amendment states the parts that are *policy* rather than mechanics, so they bind
-even if an older copy of the body is read.
-
-1. **The rubric does not change.** Maison consumes the unmodified store format, the on-disk app
-   layout is the same, and `CONTRIBUTING.md` is still the source of truth. Nothing about which
-   apps pass moves because the dashboard was replaced. In particular, the features CasaOS had
-   and Maison dropped — Files, terminal, disk/RAID, Samba, the custom-app form — are **never**
-   a finding against an app.
-
-2. **Never fail an app for a Maison behaviour.** A backup picker where an install used to be, an
-   archive left over from an earlier run, a tile marked `unmanaged`, an app in the **System**
-   grid that refuses Stop and Uninstall — these are the platform, not the subject. A phase that
-   cannot proceed because of one is `errored` (infra, retried by the caller), never `fail`.
-
-3. **Phase G tests the archive path.** Uninstall always archives and never deletes, so the old
-   "uninstall keep-data, then reinstall" sequence no longer exists and a plain reinstall proves
-   nothing. The mandatory sequence is: seed state → uninstall (archive, **not** zipped) →
-   Install → **Restore from backup** → assert the state came back. It still fails the app when
-   state does not survive, for the same reason as before: an archive carries the whole app
-   folder, so anything the app keeps outside its mapped volumes is not in it.
-
-4. **Cleanup now has two halves.** Uninstalling is no longer enough to leave the box as found —
-   the uninstall itself creates an archive. Every archive this run produced must also be deleted
-   (`/settings/backups`, or the app's own **Backups** tab). An archive left behind changes the
-   *next* run's Phase C, which is how one run's untidiness becomes another run's false result.
-
-5. **One session covers everything for 30 days.** The platform SSO signs the run into the
-   dashboard, the admin page and every protected app at once. Phase E9 is therefore easier to
-   fool than it was: an app that opens on its content may simply be riding this run's session.
-   The per-run isolated context and the deliberately profile-less browser are the guard; a
-   second, never-signed-in context is the tie-breaker.
+An archive left behind turns the *next* run's Phase C install into a restore prompt. That is how
+one run's untidiness becomes another run's false result.
 
 ---
 
-## Local amendment — Touchstone (2026-08-20) — BINDING, supersedes §4 and §6
+## Changelog — not part of the rubric
 
-**There is no orchestrator in Touchstone.** (*AppStore PR Review* still is one, in n8n, against the
-Docmost copies of these leaves — it is not affected by anything here.) §4's neutral vocabulary — `functional`, `not-functional`,
-`needs-changes`, `needs-human` — had exactly one consumer: the workflow that folded the two
-leaves into one verdict, and it is gone. Touchstone takes the phase results directly.
-
-1. **Record each phase as it completes** with `touchstone__record_phase`: `pass`, `fail`,
-   `errored` or `n-a`. There is deliberately no way to say you chose not to run one — a phase
-   that could not run is `errored`, which is infra and never a fault of the app. Record the
-   checklist ids from `touchstone__list_requirements` the same way, through
-   `touchstone__record_requirement`, with a severity on every `fail`.
-2. **`needs-changes` and `needs-human` do not exist.** Never defer to a human: a runtime caveat
-   is a `fail` with a severity and a note, or a `pass` with the caveat stated in the prose.
-3. **`{ functional_verdict, phases, evidence, install_seconds }` is superseded** by the two
-   calls above. Evidence and the install duration go in each record's `note` and in the prose.
-4. **§6's resilience rule loses its escape hatch.** A browser session that cannot be recovered
-   does not become `needs-human`: record the phases you reached, mark the rest `errored`, and
-   report what you have. Infra is the caller's problem to retry.
-5. **Write this section's prose under a `## Functionality` heading.**
+- **v5 (2026-08-20)** — migration (G′) is stated as belonging to the PR path rather than to an
+  audit, and its `n-a` now carries that reason instead of "no `PRIOR_VERSION` supplied". Dropped
+  the `PRIOR_VERSION` input and its mention in cleanup: nothing here ever supplies one, and
+  Maison has no way to install an earlier version.
+- **v4 (2026-08-20)** — folded four stacked amendments (strict full-run 2026-07-07, demo-host
+  selection 2026-07-17, Touchstone 2026-08-19, Maison 2026-08-20, Touchstone 2026-08-20) into
+  one present-tense body and deleted what they had superseded: the `functional` /
+  `not-functional` / `needs-changes` / `needs-human` vocabulary, the
+  `{ functional_verdict, phases, evidence, install_seconds }` return shape, the board-reading
+  host-selection procedure, and the pre-Maison Immich worked example. Reconciled with
+  `CONTRIBUTING.md` at `6758715`: E9 now names AppShield, whose apps have no login form of
+  their own and are therefore the easiest kind to mis-pass on a signed-in session.
+- **v3 (2026-08-20)** — Maison replaces CasaOS: store routes, archive-based Phase G, two-half
+  cleanup.
+- **v2 and earlier** — the fixed phase plan, mandatory F and G, per-phase pass/fail/errored.
+  Imported from Docmost on 2026-08-19.

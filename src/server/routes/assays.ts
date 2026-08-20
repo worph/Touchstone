@@ -34,6 +34,12 @@ export interface AssayRoutesOptions {
 /** How many settled requirements ride along. Enough to see movement, not a second report. */
 const RECENT_REQUIREMENTS = 5;
 
+/** A section's phase plan, labelled. The labels are the protocol's; `PHASE_LABEL` is the
+ * fallback for a plan that names an id the table predates. */
+function planOf(section: { phases: string[] }): { id: string; label: string }[] {
+  return section.phases.map((id) => ({ id, label: PHASE_LABEL[id] ?? id }));
+}
+
 interface Body {
   subject?: string;
   /** Block until the audit finishes and return the report with it. Default false. */
@@ -68,9 +74,21 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
             of_canonical: live.canonical.length,
             // The plan, so the page can draw the track before anything has been reported —
             // and so it draws no track at all for a run whose sections have no phases.
-            phase_plan: live.sections.flatMap((s) =>
-              s.phases.map((id) => ({ id, label: PHASE_LABEL[id] ?? id })),
-            ),
+            phase_plan: live.sections.flatMap((s) => planOf(s)),
+            // The same work, split by the section that owns it. The merged fraction above
+            // is true of the run and of neither section — `static` can be nearly done while
+            // `functional` has not started, and one bar cannot say that.
+            sections: live.sections.map((s) => {
+              const mine = live.requirements.filter((r) => r.section === s.id);
+              const { verified, failed } = coverageOf(mine);
+              return {
+                id: s.id,
+                verified,
+                failed,
+                of_canonical: live.canonical.filter((c) => c.section === s.id).length,
+                phase_plan: planOf(s),
+              };
+            }),
             phases: live.phases,
             // Settled order, newest first. The ledger appends and revises in place, so the
             // tail is the most recent work without sorting timestamps that may tie.

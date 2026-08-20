@@ -931,6 +931,90 @@ changed here: the shipped default is still 7.
 
 ---
 
+## 5i. The protocol is one document again — 2026-08-20
+
+The two leaves had accumulated **six** `## Amendment` sections between them (static one,
+functional five), each declaring itself BINDING and superseding named parts of the body above
+it. `runner/prompt.ts` step 2 then told the agent to read every one of them and resolve the
+conflicts. That resolution was real inference work, redone on every assay of every app, with a
+silently wrong verdict as the failure mode — and by 2026-08-20 whole amendments had been
+superseded by later ones (the 2026-07-17 demo-host-selection procedure was reversed in full by
+the 2026-08-19 Touchstone amendment, which the agent could only discover by reading to the end).
+
+The format was a **fossil of Docmost**: in a wiki with no diff view, amend-in-place was the only
+way to record a change. The protocol is a git-tracked file now, so it isn't.
+
+Both files were consolidated into one present-tense body each, with the history demoted to a
+`## Changelog — not part of the rubric` at the end. `static` 5 → **6**, `functional` 3 → **4**.
+What went, because it had already been superseded:
+
+- static: the "reusable leaf, output-neutral, consumed by two orchestrators" framing (false for
+  this copy), the `{ items, static_verdict, scope, opinions }` return shape, `flagged`, and
+  `scope` detection (there is no base ref here).
+- functional: the `functional` / `not-functional` / `needs-changes` / `needs-human` vocabulary,
+  the `{ functional_verdict, phases, evidence, install_seconds }` return shape, the board-reading
+  host selection, the "optional deep" licence on F and G, and the pre-Maison Immich worked
+  example (a wrong example is worse than none).
+
+Net: 40.5 KB → 35.2 KB across both, *including* the new material below. functional's body alone
+dropped 38%.
+
+The Docmost copies are untouched — they still drive `AppStore PR Review` in n8n and still carry
+their amendments, which is why `prompt.ts`'s **Docmost** branch still says "read every dated
+Amendment section" while the inline branch no longer does.
+
+### Reconciled against `CONTRIBUTING.md` @ `6758715` (Yundera/AppStore, same day)
+
+The store's contribution guide had been rewritten hours earlier. Four deltas changed verdicts:
+
+1. **`volume-env-descriptions` is obsolete and was actively wrong.** Maison parses the
+   per-service `x-casaos.envs` / `volumes` / `ports` / `devices` description lists and never
+   consumes them — the CasaOS per-field config form they fed does not exist. The guide now says
+   don't write them in new apps and don't churn old ones. Touchstone was failing apps for
+   omitting something that reaches no user. The id is **removed**, replaced by
+   **`broad-mount-disclosure`**: a mount exposing a broad slice of `/DATA` must be called out in
+   the `description`, `tips.before_install` or `rationale.md`.
+2. **`hook-idempotency` added** (new Tech checklist line). A hook reruns on every reinstall and
+   every upgrade; one-shot initialisers chained with `&&` and no guard exit non-zero and leave
+   the app **installed but stopped**. It passes a fresh install and fails every reinstall after,
+   which is why it survives review. Major.
+3. **`mkdir` in a hook is now a fail, not a redundancy.** Hooks run inside the *Maison container*
+   against the *host* Docker daemon, so `/DATA` in a `docker run -v` is a host path while a plain
+   `mkdir /DATA/...` in the same hook creates the directory in the wrong place. v5 called this
+   "redundant → Minor". Now: Major when the app bind-mounts that path.
+4. **`schema_version` raised Minor → Major** and folded into `declared-folders`, matching the
+   guide's pairing of the two. Missing it means an older Maison starts the app silently without
+   its directories — the permission-denied first start the declaration exists to prevent.
+
+Also folded in, without new ids: `webui-port` is a URL port not a container port;
+`store` / `store-app-id` / `generated-routes` are Maison's own keys and an author shipping them
+is Minor; `recursive: true` on a large already-correct tree is Minor; and the hook lifecycle
+(`pre_up` fatal on *every* start, `post_*` swallowed) is stated once in a §7 that did not exist.
+
+On the functional side, **E9 now names AppShield** (`ghcr.io/yundera/appshield`), the recommended
+OIDC gate. An AppShield app has **no login form of its own** — its gate is the redirect to the
+platform SSO, which a run already signed in for 30 days never sees. That is the single easiest
+way to mis-`pass` an unprotected app, and the fresh-second-context tie-breaker is now written
+next to it rather than three paragraphs away.
+
+### Two things to raise with the store, not fix here
+
+- `CONTRIBUTING.md`'s Functionality checklist still says *"uninstall/reinstall tested (See the
+  keep user data option when uninstalling)"*. There is no keep-data option on Maison — uninstall
+  always archives. The protocol already encodes the archive path; the guide is stale.
+- The guide's Style A hook is still described as *"plain shell on the host"*, which contradicts
+  its own "hooks run inside the Maison container" paragraph a few sections above. The protocol
+  encodes the explicit rule (don't `mkdir` in a hook) and leaves the contradiction alone.
+
+### Not changed
+
+Requirement ids already recorded in the archive keep their meaning; only `volume-env-descriptions`
+left the canonical list, and an agent that still finds it is recorded `unlisted` by design.
+Cleanup was deliberately **not** given a requirement id: it is an obligation on the run, not a
+property of the app, and an id would let an untidy run fail an innocent app.
+
+---
+
 ## 6. Reference — facts read off the running system
 
 Cited so they can be re-checked when they drift. Read 2026-08-07.

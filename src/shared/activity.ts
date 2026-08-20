@@ -176,6 +176,26 @@ export interface PhasePlanStep {
 }
 
 /**
+ * One section of the run, counted against its own list.
+ *
+ * The run-level `verified/of_canonical` is true of the run and of neither section: while
+ * `static` sits at twelve of fourteen and `functional` has not started, the merged number
+ * reads eighteen of twenty-five — a fraction that describes nothing anyone can act on, and
+ * that cannot say which half is the slow one. Sections are independent (invariant 2), so
+ * their denominators are too, and the UI draws one bar each rather than one bar for both.
+ */
+export interface SectionProgress {
+  id: Section;
+  /** pass + fail, within this section. */
+  verified: number;
+  failed: number;
+  /** How many requirements this section's protocol lists. Its own denominator. */
+  of_canonical: number;
+  /** This section's phase plan, in protocol order. Empty for a section that declares none. */
+  phase_plan: PhasePlanStep[];
+}
+
+/**
  * Labels for phases recorded before the plan moved into the protocol file.
  *
  * A live run gets its labels from `RunProgress.phase_plan`, which comes from
@@ -252,6 +272,13 @@ export interface RunProgress {
    * draws before anything has been reported. Empty when no running section has phases.
    */
   phase_plan: PhasePlanStep[];
+  /**
+   * The same work split by the section that owns it, in protocol order. The counts above are
+   * the run's; these are each section's, which is the only form in which a bar is true of
+   * anything — and the form the phase track needs, since a plan belongs to one section and a
+   * track floating free of it reads as the whole run having stalled.
+   */
+  sections: SectionProgress[];
   /** Phases recorded so far. Empty for a run whose sections have no phase plan. */
   phases: RecordedPhase[];
   /** The last few requirements settled, newest first. */

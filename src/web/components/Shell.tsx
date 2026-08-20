@@ -41,6 +41,7 @@ const TABS = NAV.flatMap((section) => section.items);
 
 export default function Shell({ children }: { children: ReactNode }) {
   const badge = useBadge();
+  const location = useLocation();
 
   return (
     <div className="app">
@@ -76,7 +77,9 @@ export default function Shell({ children }: { children: ReactNode }) {
           ))}
         </div>
 
-        <RunningStrip />
+        {/* Not on Activity: the run card is the first thing on that page, and the strip a
+            few centimetres away saying the same thing twice is furniture. */}
+        {location.pathname === '/activity' ? null : <RunningStrip />}
 
         <div className="sidebar-foot">conformance agent</div>
       </nav>

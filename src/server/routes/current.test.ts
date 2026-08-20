@@ -102,6 +102,26 @@ describe('GET /assays/current', () => {
     // The plan comes from the protocol, so the page can draw the track before the first
     // phase is reported — and draws none at all for a run whose sections have no phases.
     expect(body.progress?.phase_plan.map((p) => p.id)).toEqual(['A', 'C', 'D']);
+    /**
+     * The same work split by owner. The merged `2 of 3` above is true of the run and of
+     * neither section — `static` is two-of-two done while `functional` has not started, and
+     * a card with one bar cannot say that. The plan rides on the section that declared it,
+     * so the track is drawn under `functional` rather than floating beside the whole run.
+     */
+    expect(body.progress?.sections).toEqual([
+      { id: 'static', verified: 2, failed: 1, of_canonical: 2, phase_plan: [] },
+      {
+        id: 'functional',
+        verified: 0,
+        failed: 0,
+        of_canonical: 1,
+        phase_plan: [
+          { id: 'A', label: 'session' },
+          { id: 'C', label: 'fresh install' },
+          { id: 'D', label: 'discover URL' },
+        ],
+      },
+    ]);
     // Newest first, so the UI's "what it is doing now" is the head of the list.
     expect(body.progress?.recent[0]?.id).toBe('pinned-image-tag');
   });

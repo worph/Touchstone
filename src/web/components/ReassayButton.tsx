@@ -22,7 +22,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { getBenches, startAssay } from '../data/client';
 import { refreshRunStatus, useRunStatus } from '../data/runStatus';
 import { useElapsed } from '../hooks/useElapsed';
-import { describeLast, mmss, progressLabel } from '../lib/run';
+import { describeLast, mmss } from '../lib/run';
 
 interface Props {
   subject: string;
@@ -79,21 +79,17 @@ export default function ReassayButton({ subject, onFinished, label = 're-assay' 
   }
 
   if (running) {
-    // Progress, not a spinner. The agent records each requirement as it settles it, so there
-    // is something true to show — and "7/16 · 3:20" is the difference between a wait and a
-    // black box.
-    const p = status?.progress ?? null;
-    const done = progressLabel(p);
+    // A clock, not a spinner: after ninety seconds a spinner reads as hung, and the elapsed
+    // time is the difference between a wait and a black box.
+    //
+    // The fraction and the failing count used to be here too, and are not any more: the run
+    // card is on the same page now, three lines below, saying both at the weight they
+    // deserve. A control that restates the panel under it is a third place to keep in sync.
     return (
       <span className="reassay">
         <button className="btn" type="button" disabled>
-          {ours
-            ? `auditing…${done ? ` ${done}` : ''} · ${mmss(elapsed)}`
-            : `busy — ${status?.running?.subject}`}
+          {ours ? `auditing… ${mmss(elapsed)}` : `busy — ${status?.running?.subject}`}
         </button>
-        {ours && p && p.failed > 0 ? (
-          <span className="reassay-note">{p.failed} failing so far</span>
-        ) : null}
       </span>
     );
   }

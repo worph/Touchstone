@@ -906,11 +906,14 @@
   border-radius: var(--r);
   background: var(--bg-1);
 }
-.run-card__head { display: flex; align-items: baseline; gap: 10px; }
+.run-card__head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.run-card__head .spacer { flex: 1; min-inline-size: 8px; }
 .run-card__subject { font-size: 15px; font-weight: 600; color: var(--fg); text-decoration: none; }
 .run-card__subject:hover { text-decoration: underline; }
 .run-card__depth { color: var(--fg-2); font-size: 12.5px; }
+.run-card__counted { color: var(--fg-1); font-size: 12.5px; }
 .run-card__clock { color: var(--running); font-size: 15px; font-variant-numeric: tabular-nums; }
+.run-card__failing { color: var(--crit); }
 
 .run-card__degraded {
   margin-top: 8px;
@@ -921,17 +924,52 @@
   font-size: 12.5px;
 }
 
-.run-card__bar { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
-.run-card__counted { color: var(--fg-1); font-size: 12.5px; }
-.run-card__failing { color: var(--crit); }
+/* The failure, at the weight it deserves. It used to be a grey clause in the count and a row
+   among five — the wrong size for the only thing on the card anyone has to act on. */
+.run-card__headline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: var(--r-s);
+  background: var(--crit-dim);
+  font-size: 12.5px;
+}
+.run-card__headline .spacer { flex: 1; }
+.run-card__headline-mark { color: var(--crit); font-weight: 700; }
+.run-card__headline .run-card__req { flex: 0 1 auto; color: var(--crit); }
+.run-card__headline .run-card__sev { inline-size: auto; }
 
-/* The eight phases, in protocol order. The ones not reached yet are the point: a track that
-   showed only what happened could not show what is left. */
+/* Only when the run has not split into sections yet. */
+.run-card__bar { margin-top: 12px; }
+
+/* -- one row per section, each against its own list ------------------------ */
+
+.run-sections { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.run-section__line { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.run-section__name {
+  inline-size: 5.5rem;
+  flex: none;
+  color: var(--fg-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-section__line .run-bar { flex: 1; min-inline-size: 60px; }
+.run-bar--empty { opacity: 0.5; }
+/* A fixed column, so the two fractions line up under each other: misaligned numbers are
+   the thing a reader compares first and the thing this row exists to let them compare. */
+.run-section__count { flex: none; inline-size: 10rem; color: var(--fg-2); }
+
+/* The plan, under the section that owns it. The unreached steps are the point — a track that
+   showed only what happened could not show what is left — but they carry their id alone, so
+   eight of them are one line rather than three. */
 .phase-track {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin: 12px 0 0;
+  gap: 5px;
+  margin: 6px 0 0 calc(5.5rem + 10px);
   padding: 0;
   list-style: none;
 }
@@ -939,12 +977,12 @@
   display: flex;
   align-items: baseline;
   gap: 5px;
-  padding: 3px 8px;
+  padding: 2px 7px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--bg-2);
   color: var(--fg-2);
-  font-size: 11.5px;
+  font-size: 11px;
 }
 .phase__id { font-weight: 650; font-family: var(--mono); }
 .phase[data-result="pass"] { border-color: var(--ok); background: var(--ok-dim); color: var(--ok); }
@@ -952,16 +990,8 @@
 .phase[data-result="errored"] { border-color: var(--major); background: var(--major-dim); color: var(--major); }
 .phase[data-result="n-a"] { border-style: dashed; }
 .phase[data-result="pending"] { border-style: dotted; opacity: 0.75; }
-
-.run-card__where {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 2px 12px;
-  margin: 12px 0 0;
-  font-size: 11.5px;
-}
-.run-card__where dt { color: var(--fg-2); }
-.run-card__where dd { margin: 0; color: var(--fg-1); overflow-wrap: anywhere; }
+/* The step in hand: the only unreached one that spells its label out. */
+.phase[data-current] { border-style: solid; border-color: var(--running); color: var(--running); opacity: 1; }
 
 .run-card__recent {
   margin: 12px 0 0;
@@ -971,13 +1001,36 @@
   font-size: 12px;
 }
 .run-card__recent li { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; }
+.run-card__recent .run-card__at { inline-size: 3.5rem; flex: none; }
 .run-card__req { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-1); }
-.run-card__verdict { color: var(--fg-2); }
+.run-card__verdict { flex: none; inline-size: 4.5rem; color: var(--fg-2); }
 .run-card__recent li[data-verdict="pass"] .run-card__verdict { color: var(--ok); }
 .run-card__recent li[data-verdict="fail"] .run-card__verdict { color: var(--crit); }
 .run-card__recent li[data-verdict="unverified"] .run-card__verdict { color: var(--unverified); }
-.run-card__sev { color: var(--crit); }
+.run-card__sev { flex: none; inline-size: 4rem; color: var(--crit); }
+.run-card__owner { flex: none; inline-size: 5rem; text-align: end; font-size: 11.5px; }
 .run-card__at { font-size: 11.5px; }
+
+/* Where it is running. Last, and one line: a diagnostic that is only wanted when something
+   looks wrong, and that between the progress and the feed split the two moving things. */
+.run-card__where {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-2);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+/* The phone has no room for a name column and a bar and a count on one line. */
+@media (max-width: 620px) {
+  .run-section__line { flex-wrap: wrap; }
+  .run-section__name { inline-size: auto; }
+  .run-section__line .run-bar { order: 3; flex-basis: 100%; }
+  .phase-track { margin-inline-start: 0; }
+  .run-card__owner { display: none; }
+  .run-section__count { inline-size: auto; }
+}
 
 /* The row whose audit is in flight, on the Overview. A tint, because the cell already says
    `◴ running` in words — this only helps the eye find the row it is waiting on. */

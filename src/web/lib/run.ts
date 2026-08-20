@@ -7,8 +7,14 @@
  * the second tells a slow run from a stuck one.
  */
 
-import { PHASE_LABEL, type LastRun, type RunLive, type RunProgress } from '@shared/activity';
-import type { Section } from '@shared/types';
+import {
+  PHASE_LABEL,
+  type LastRun,
+  type RunLive,
+  type RunProgress,
+  type SectionProgress,
+} from '@shared/activity';
+import type { RecordedPhase, RecordedRequirement, Section } from '@shared/types';
 
 export function mmss(seconds: number): string {
   const safe = Math.max(0, Math.floor(seconds));
@@ -56,29 +62,69 @@ export interface PhaseStep {
 }
 
 /**
- * The run's phase plan as a track, in protocol order, whether or not each step has been
- * reached yet. The empty ones are the point — a track that only shows what happened cannot
- * show what is left.
+ * A plan and what has been recorded against it, as one list.
  *
- * The plan comes from the server, which reads it off the protocol files, so a run whose
- * sections have no phases draws no track: a row of grey pills beside a run that will never
- * fill them would invent a failure.
+ * `section` narrows the recorded side: two sections may both name a phase `A`, and a phase
+ * recorded by one of them must not colour the other's pill. A phase with no section at all
+ * predates the attribution and is let through — dropping it would lose the only evidence
+ * there is.
  */
-export function phaseTrack(
-  live: RunLive | null | undefined,
-  progress: RunProgress | null | undefined,
+function mergeTrack(
+  plan: { id: string; label: string }[],
+  recorded: RecordedPhase[],
+  section?: Section,
 ): PhaseStep[] {
-  const plan = progress?.phase_plan ?? [];
   if (plan.length === 0) return [];
-  const recorded = new Map((progress?.phases ?? []).map((p) => [p.phase, p]));
+  const hits = new Map(
+    recorded
+      .filter((p) => !section || p.section === undefined || p.section === section)
+      .map((p) => [p.phase, p]),
+  );
   return plan.map((step) => {
-    const hit = recorded.get(step.id);
+    const hit = hits.get(step.id);
     return {
       id: step.id,
       label: step.label,
       ...(hit ? { result: hit.result, at: hit.at } : {}),
     };
   });
+}
+
+/**
+ * The run as one row per section: its own fraction, and its own phase track.
+ *
+ * This is the shape the card draws. A single `18 of 25` merges two independent sections into
+ * a number that is true of neither, and a phase track floating beside it belongs to a section
+ * the card never names — so a run twelve-fourteenths through `static` with `functional` not
+ * yet started reads as a stalled run with a dead track. One row each fixes both.
+ */
+export interface SectionRow extends SectionProgress {
+  /** 0–1, or null when there is nothing to be a fraction of yet. */
+  ratio: number | null;
+  /** This section's plan, merged with what it has actually recorded. */
+  track: PhaseStep[];
+}
+
+export function sectionRows(progress: RunProgress | null | undefined): SectionRow[] {
+  const rows = progress?.sections ?? [];
+  const recorded = progress?.phases ?? [];
+  return rows.map((row) => ({
+    ...row,
+    ratio: row.of_canonical > 0 ? Math.min(1, row.verified / row.of_canonical) : null,
+    track: mergeTrack(row.phase_plan, recorded, row.id),
+  }));
+}
+
+/**
+ * The failure worth putting at the top of the card.
+ *
+ * The count says `1 failing` in grey and the row itself is one of five in a list — which is
+ * the wrong weight for the only thing on the card anyone has to act on. There is no history
+ * to search: `recent` is a five-row pulse, so this is the newest failure *still in it*, and
+ * the count beside it is what says whether that is all of them.
+ */
+export function headlineFailure(progress: RunProgress | null | undefined): RecordedRequirement | null {
+  return (progress?.recent ?? []).find((r) => r.verdict === 'fail') ?? null;
 }
 
 /**
