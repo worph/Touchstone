@@ -46,12 +46,12 @@
 .status[data-kind="ok"] .status-mark {
   background: var(--ok);
   border-color: var(--ok);
-  color: #04120e;
+  color: var(--on-solid);
 }
 .status[data-kind="ok"] .status-label { color: var(--ok); }
 
 /* --- observed and failing ---------------------------------------------- */
-.status[data-kind="fail"] .status-mark { color: #120404; }
+.status[data-kind="fail"] .status-mark { color: var(--on-solid); }
 .status[data-kind="fail"][data-sev="critical"] .status-mark { background: var(--crit);  border-color: var(--crit); }
 .status[data-kind="fail"][data-sev="major"]    .status-mark { background: var(--major); border-color: var(--major); }
 .status[data-kind="fail"][data-sev="minor"]    .status-mark { background: var(--minor); border-color: var(--minor); }
@@ -115,6 +115,17 @@
 .status--lg .status-label { font-size: 14px; font-weight: 550; }
 
 /* ============================================================== tables */
+/* The subject table has seven columns and a phone has none of the room for
+ * them: the box scrolls sideways, the page never does. Only below the desk
+ * breakpoint — an overflow container also captures the sticky header, which is
+ * worth having wherever the columns do fit. */
+@media (max-width: 859px) {
+  .tbl-wrap { overflow-x: auto; }
+  /* overflow-x also makes overflow-y a scroll container, and a sticky header
+     inside one that never scrolls vertically parks itself over the rows. */
+  .tbl-wrap .tbl th { position: static; }
+}
+
 .tbl {
   width: 100%;
   border-collapse: separate;
@@ -123,7 +134,7 @@
 }
 .tbl th {
   position: sticky;
-  top: 46px;
+  top: var(--top-chrome);
   z-index: 10;
   padding: 7px 12px;
   background: var(--bg-1);
@@ -148,7 +159,7 @@
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
-.tbl tbody tr:hover td { background: var(--bg-1); }
+.tbl tbody tr:hover td { background: var(--bg-2); }
 .tbl tbody tr:last-child td { border-bottom: 0; }
 
 .tbl .col-num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
@@ -160,7 +171,7 @@
   text-decoration: none;
   font-weight: 550;
 }
-.row-link:hover { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
+.row-link:hover { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
 
 .risk-val { font-weight: 600; }
 .risk-val[data-zero="true"] { color: var(--fg-3); font-weight: 400; }
@@ -255,7 +266,7 @@
 .leg-meta { display: flex; gap: 14px; flex-wrap: wrap; color: var(--fg-2); font-size: 11.5px; }
 @media (max-width: 1080px) { }
 
-.pane { display: flex; flex-direction: column; min-width: 0; max-height: calc(100vh - 120px); }
+.pane { display: flex; flex-direction: column; min-width: 0; max-height: calc(100vh - var(--top-chrome) - 96px); }
 .pane-head {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 8px 12px;
@@ -265,8 +276,15 @@
   position: sticky; top: 0; z-index: 5;
 }
 .pane-body { overflow: auto; flex: 1; min-height: 0; }
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
 .legend .status { gap: 5px; }
-.legend .status-label { font-size: 11.5px; }
+.legend .status-label { font-size: 11.5px; color: var(--fg-2); }
 @media (max-width: 720px) {
 }
 
@@ -316,7 +334,7 @@
 .alert-stack { display: flex; flex-direction: column; gap: 10px; }
 
 .alert {
-  border: 1px solid var(--crit-dim);
+  border: 1px solid var(--border);
   border-left: 3px solid var(--crit);
   border-radius: var(--r);
   background: var(--bg-1);
@@ -414,7 +432,7 @@
   padding: 5px 12px;
   font-size: 12.5px;
 }
-.log-row + .log-row { border-top: 1px solid #0f151b; }
+.log-row + .log-row { border-top: 1px solid var(--border); }
 .log-row:hover { background: var(--bg-2); }
 
 .log-time { font-family: var(--mono); font-size: 11.5px; color: var(--fg-3); }
@@ -462,14 +480,29 @@
 /* -- the nav badge ------------------------------------------------------- */
 
 .nav-badge {
-  margin-left: 6px;
-  padding: 0 5px;
-  border-radius: 8px;
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 999px;
   background: var(--crit);
-  color: #180505;
+  color: var(--on-solid);
   font: 600 10.5px/16px var(--mono);
   display: inline-block;
-  vertical-align: 1px;
+}
+
+/* The same count as a dot over a tab icon, where there is no room for a word. */
+.tab-glyph { position: relative; display: block; }
+
+.tab-badge {
+  position: absolute;
+  top: -3px;
+  left: 55%;
+  min-width: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--crit);
+  color: var(--on-solid);
+  font: 600 9.5px/15px var(--mono);
+  text-align: center;
 }
 
 /* ── the manual trigger ─────────────────────────────────────────────────────
@@ -495,7 +528,7 @@
   background: var(--bg-2);
   border: 1px solid var(--border-2);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  box-shadow: var(--shadow);
 }
 
 .reassay-menu button {
@@ -614,7 +647,7 @@
 
 .req-id { font-size: 12px; color: var(--fg-1); }
 .req-text { margin-top: 2px; font-size: 12.5px; color: var(--fg); }
-.req-note { margin-top: 3px; font-size: 12px; line-height: 1.55; color: var(--fg-2); }
+.req-note { margin-top: 3px; font-size: 12px; line-height: 1.55; color: var(--fg-1); }
 
 .req-toggle {
   align-self: flex-start;

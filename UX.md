@@ -40,12 +40,26 @@ the UI is down.
 
 ## 2. Pages
 
+The chrome follows Newsdesk: a light page, and the whole nav down the left on a desk. Below 860px
+that column becomes a sticky header plus a bottom tab bar — four destinations fit as tabs, so
+nothing hides behind a "more" sheet.
+
 ```
-Overview   Activity ●                                                    ⚙
+┌──────────────┬───────────────────────────────────────────────┐
+│ ▮≡ Touchstone│                                               │
+│              │                                               │
+│ CONFORMANCE  │                                               │
+│  Overview    │                   page                        │
+│  Protocol    │                                               │
+│              │                                               │
+│ OPERATIONS   │                                               │
+│  Activity  ● │                                               │
+│  Administrat…│                                               │
+└──────────────┴───────────────────────────────────────────────┘
 ```
 
-Two nav items, plus subject detail reached by clicking. Everything else is a filtered view of one
-of these — resist adding a third.
+Four destinations, plus subject detail reached by clicking. Everything else is a filtered view of
+one of these — resist adding a fifth.
 
 ---
 

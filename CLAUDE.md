@@ -119,6 +119,11 @@ because its data access was smeared through two 200-line n8n Code nodes.
 - **`src/web/`** — React + Vite SPA, four pages (Overview, Subject detail, Activity,
   Administrator chat) plus Protocols. `src/web/data/client.ts` is the only thing that talks to the API. `@shared/*` aliases
   `src/shared/` in both the Vite and Vitest configs; the server imports it with `.js` specifiers.
+  Hand-written CSS, no framework: **every colour is a token in `styles/base.css`** — the light
+  "desk" palette is Newsdesk's, and the `prefers-color-scheme: dark` block below it redefines the
+  same names and nothing else. A hard-coded hex anywhere else is a bug; `components.css` and
+  `markdown.css` only ever reference the tokens. `components/Shell.tsx` owns the sidebar, the
+  phone header and the tab bar.
 
 ## Invariants — do not "fix" these
 
