@@ -6,10 +6,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { EventLog } from './events.js';
 import { RunLedger, coverageOf, type CanonicalRequirement } from './ledger.js';
 
+const SECTIONS = [
+  { id: 'static', name: 'Static Review Protocol', phases: [] as string[] },
+  { id: 'functional', name: 'Functional Review Protocol', phases: ['A', 'C', 'D'] },
+];
+
 const CANONICAL: CanonicalRequirement[] = [
-  { id: 'cpu-shares', text: 'cpu_shares set on all services' },
-  { id: 'pinned-image-tag', text: 'Specific version tag (no :latest)' },
-  { id: 'phase-g-persistence', text: 'G — data survives a reinstall', requires: 'bench' },
+  { id: 'cpu-shares', text: 'cpu_shares set on all services', section: 'static' },
+  { id: 'pinned-image-tag', text: 'Specific version tag (no :latest)', section: 'static' },
+  { id: 'phase-g-persistence', text: 'G — data survives a reinstall', section: 'functional', requires: 'bench' },
 ];
 
 let dir: string;
@@ -17,7 +22,7 @@ let events: EventLog;
 let ledger: RunLedger;
 
 function open() {
-  return ledger.open({ subject: 'Ntfy', depth: 'full', canonical: CANONICAL });
+  return ledger.open({ subject: 'Ntfy', sections: SECTIONS, canonical: CANONICAL });
 }
 
 beforeEach(async () => {
@@ -58,7 +63,7 @@ describe('the run token', () => {
   it('refuses one that has expired', () => {
     let now = new Date('2026-08-19T12:00:00Z');
     const l = new RunLedger({ events, ttlMs: 60_000, now: () => now });
-    const t = l.open({ subject: 'Ntfy', depth: 'static', canonical: CANONICAL });
+    const t = l.open({ subject: 'Ntfy', sections: SECTIONS, canonical: CANONICAL });
     now = new Date('2026-08-19T12:02:00Z');
     expect(l.recordRequirement(t.token, { id: 'cpu-shares', verdict: 'pass' })).toMatchObject({
       error: 'this run_token has expired',
@@ -216,5 +221,78 @@ describe('coverage', () => {
 
   it('is empty rather than wrong when nothing was recorded', () => {
     expect(coverageOf([])).toMatchObject({ verified: 0, applicable: 0, risk: 0 });
+  });
+});
+
+/**
+ * Section attribution — what makes an assay per section possible at all.
+ *
+ * The canonical list is built by walking the protocol files, so Touchstone already knows
+ * which section owns every id it handed out. The agent is never asked, and never believed
+ * over the list: an id it could route into the wrong section is an id whose severity could
+ * miss the gate that reads it.
+ */
+describe('which section a record belongs to', () => {
+  it('takes it from the protocol that listed the id, not from the agent', () => {
+    const t = open();
+    const out = ledger.recordRequirement(t.token, {
+      id: 'phase-g-persistence',
+      verdict: 'pass',
+      // The agent says static. The protocol says functional, and the protocol decides.
+      section: 'static',
+    });
+    expect(out.ok && out.recorded.section).toBe('functional');
+  });
+
+  it('accepts the agent\'s section for an item the protocol does not list', () => {
+    const t = open();
+    const out = ledger.recordRequirement(t.token, {
+      id: 'undeclared-healthcheck',
+      verdict: 'fail',
+      severity: 'Minor',
+      section: 'functional',
+    });
+    expect(out.ok && out.recorded.unlisted).toBe(true);
+    expect(out.ok && out.recorded.section).toBe('functional');
+  });
+
+  /**
+   * Invariant 6, at the section level. A section the agent invents would be a partition the
+   * gate does not know to read, so a Critical filed there would never reach a verdict. It
+   * lands on the first section instead, recorded and marked unlisted.
+   */
+  it('refuses to mint a section the protocol never declared', () => {
+    const t = open();
+    const out = ledger.recordRequirement(t.token, {
+      id: 'cosmetic-thing',
+      verdict: 'fail',
+      severity: 'Critical',
+      section: 'cosmetic',
+    });
+    expect(out.ok && out.recorded.section).toBe('static');
+    expect(out.ok && out.recorded.unlisted).toBe(true);
+  });
+
+  it('attributes a phase to the section whose plan names it', () => {
+    const t = open();
+    const out = ledger.recordPhase(t.token, { phase: 'C', result: 'pass' });
+    expect(out.ok && out.recorded.section).toBe('functional');
+  });
+
+  /** A phase nobody planned still gets recorded — dropping it would lose real work. */
+  it('keeps a phase outside the plan, attributed to the only section that has one', () => {
+    const t = open();
+    const out = ledger.recordPhase(t.token, { phase: 'Z', result: 'errored' });
+    expect(out.ok).toBe(true);
+    expect(out.ok && out.recorded.section).toBe('functional');
+  });
+
+  it('tells the agent what the run is made of, not only what to check', () => {
+    const t = open();
+    const plan = ledger.planFor(t.token);
+    expect('error' in plan).toBe(false);
+    if ('error' in plan) return;
+    expect(plan.sections.map((s) => s.id)).toEqual(['static', 'functional']);
+    expect(plan.requirements.every((r) => r.section)).toBe(true);
   });
 });

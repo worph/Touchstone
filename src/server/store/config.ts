@@ -27,9 +27,14 @@ export interface Standard {
   id: string;
   name: string;
   version: number;
-  leg: 'static' | 'functional';
-  /** `depth` to pass the assay agent. Static runs one leaf; `full` runs both. */
-  depth: 'static' | 'full';
+  /**
+   * Which section this standard names and versions. Matches a leaf protocol's `id`.
+   *
+   * A section with no standard file is not an error: the runner falls back to the protocol's
+   * own name and version, which is the rubric that actually judged the assay. The file is an
+   * override — it exists so a standard can be versioned independently of the prose.
+   */
+  section: string;
   /** Anything else the file declares — bench selection policy, and whatever comes next. */
   [key: string]: unknown;
 }
@@ -85,7 +90,6 @@ export interface TouchstoneConfig {
   /** Off. P4 ships the runner disabled; validation is a single hand-run assay, never a loop. */
   runner: {
     enabled: boolean;
-    depth: 'static' | 'full';
     /** Minutes to wait before the single retry when the agent answers 409. n8n waits 10. */
     busy_backoff_min: number;
     /**
@@ -161,7 +165,6 @@ function defaults(dataDir: string): TouchstoneConfig {
     },
     runner: {
       enabled: false,
-      depth: 'full',
       busy_backoff_min: 10,
       agent_url: process.env.TOUCHSTONE_AGENT_URL ?? 'http://beacon-backend:9300/mcp',
       agent_tool: process.env.TOUCHSTONE_AGENT_TOOL ?? 'claude-code__query_claude',
@@ -251,14 +254,15 @@ export async function loadStandards(standardsDir: string): Promise<Standard[]> {
   for (const name of names) {
     const parsed = YAML.parse(await fs.readFile(path.join(standardsDir, name), 'utf8')) as unknown;
     if (!isPlainObject(parsed)) continue;
-    const leg = parsed.leg === 'functional' ? 'functional' : 'static';
+    const id = String(parsed.id ?? name.replace(/\.ya?ml$/i, ''));
     out.push({
       ...parsed,
-      id: String(parsed.id ?? name.replace(/\.ya?ml$/i, '')),
+      id,
       name: String(parsed.name ?? parsed.id ?? name),
       version: Number(parsed.version ?? 1),
-      leg,
-      depth: parsed.depth === 'full' ? 'full' : 'static',
+      // `leg` is the pre-rename spelling; a file that carries neither names its section after
+      // itself, minus the version suffix, which is how `static-v4.yaml` finds `static`.
+      section: String(parsed.section ?? parsed.leg ?? id.replace(/-v\d+$/, '')),
     });
   }
   return out;
@@ -297,7 +301,10 @@ scheduler:
 # endpoint — n8n's PR Review workflow shares it and is not being replaced.
 runner:
   enabled: false
-  depth: full        # static | full
+  # There is no depth. An audit covers every section that data/protocols/*.md declares, and a
+  # section whose requires: cannot be satisfied — no demo bench, no browser — is recorded
+  # blocked rather than narrowing the run.
+  #
   # The wait before the one retry when the agent answers 409. PR Review stays in n8n on the
   # same endpoint, so a busy agent is routine and costs the app nothing either way.
   busy_backoff_min: 10

@@ -32,7 +32,7 @@ export interface ChatToolContext {
   ports?: PortProber;
   prober?: BenchProber;
   /** How a started run is actually dispatched — the same path `POST /assays` takes. */
-  startAssay?: (job: { subject: string; depth: 'static' | 'full' }) => void;
+  startAssay?: (job: { subject: string }) => void;
 }
 
 export interface ChatToolResult {
@@ -95,7 +95,7 @@ export const CHAT_TOOLS: ChatTool[] = [
         const live = ctx.ledger?.live();
         const cov = live ? coverageOf(live.requirements) : null;
         lines.push(
-          `Running: ${status.running.subject} (${status.running.depth}), started ${status.running.started_at}` +
+          `Running: ${status.running.subject}${status.running.sections?.length ? ` (${status.running.sections.join(' + ')})` : ''}, started ${status.running.started_at}` +
             (cov ? ` — ${cov.verified} of ${cov.applicable} requirements settled so far.` : '.'),
         );
       } else {
@@ -138,12 +138,11 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: 'run_assay',
     description:
-      'Start an audit of one app. It returns as soon as the audit has STARTED — a real audit takes minutes, far longer than this conversation will wait, so do not expect a verdict here and do not call this twice hoping for one. The operator is notified when it finishes. Use depth "static" to check the compose file and its metadata (needs nothing but the repository), or "full" to also install the app on a demo instance and drive it through a browser. When no demo instance is usable, a full audit still does its static half and records the functional half as blocked.',
+      'Start an audit of one app. It returns as soon as the audit has STARTED — a real audit takes minutes, far longer than this conversation will wait, so do not expect a verdict here and do not call this twice hoping for one. The operator is notified when it finishes. An audit covers every section of the protocol; a section that needs something unavailable — a demo instance, a browser — is not attempted and is recorded as blocked, which never counts against the app.',
     inputSchema: {
       type: 'object',
       properties: {
         subject: { type: 'string', description: 'The app name, exactly as list_subjects gives it.' },
-        depth: { type: 'string', enum: ['static', 'full'], description: 'Defaults to static.' },
       },
       required: ['subject'],
     },
@@ -151,7 +150,6 @@ export const CHAT_TOOLS: ChatTool[] = [
       const subject = String(input.subject ?? '').trim();
       if (!subject) return failed('run_assay needs a subject.');
 
-      const depth = input.depth === 'full' ? 'full' : 'static';
       const runner = ctx.runner;
       if (!runner) return failed('No runner is wired, so nothing can be audited.');
       if (!runner.enabled) {
@@ -174,9 +172,9 @@ export const CHAT_TOOLS: ChatTool[] = [
         return failed(`There is no subject called "${subject}". Call list_subjects to see the names.`);
       }
 
-      ctx.startAssay?.({ subject: name ?? subject, depth });
+      ctx.startAssay?.({ subject: name ?? subject });
       return ok(
-        `Started a ${depth} audit of ${name ?? subject}. It runs in the background; the operator gets a notification when it finishes.`,
+        `Started an audit of ${name ?? subject}. It runs in the background; the operator gets a notification when it finishes.`,
       );
     },
   },

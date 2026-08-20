@@ -5,9 +5,9 @@
  *
  * | tool | what it does |
  * | --- | --- |
- * | `list_requirements` | the canonical ids for this run's protocol |
+ * | `list_requirements` | this run's sections, and the canonical ids in each |
  * | `record_requirement` | one requirement settled: id, verdict, severity, note |
- * | `record_phase` | one functional phase: A, C, D, E8, E9, E10, F, G |
+ * | `record_phase` | one phase of a section that has a phase plan |
  *
  * **There is no `record_result`, and there will not be one.** The moment an agent can post
  * its own verdict, the protocol's gate — *any Critical is non-compliant unconditionally* —
@@ -47,7 +47,7 @@ const TOOLS = [
   {
     name: 'list_requirements',
     description:
-      'The canonical requirement ids for the audit you are running. Call this FIRST and record against these ids rather than inventing wording — ids that drift between runs cannot be compared across apps. An item you find that is not in this list is still worth recording; it will be marked unlisted so the protocol can be corrected.',
+      'The sections of this audit and the canonical requirement ids in each. Call this FIRST and record against these ids rather than inventing wording — ids that drift between runs cannot be compared across apps. Each requirement names the section it belongs to, so you do not have to; you only pass a section when you record something the list does not name. An item you find that is not in this list is still worth recording; it will be marked unlisted so the protocol can be corrected.',
     inputSchema: {
       type: 'object',
       properties: { run_token: { type: 'string', description: 'The run token given to you in the prompt.' } },
@@ -63,6 +63,11 @@ const TOOLS = [
       properties: {
         run_token: { type: 'string' },
         id: { type: 'string', description: 'A canonical id from list_requirements where one fits.' },
+        section: {
+          type: 'string',
+          description:
+            'Only for an item list_requirements does not name: which section of this audit it belongs to, as listed there. A canonical id already knows its section and this is ignored for one; a section that is not in the list is ignored too.',
+        },
         requirement: { type: 'string', description: 'The requirement in your own words, as evidence.' },
         verdict: { type: 'string', enum: ['pass', 'fail', 'n-a', 'unverified'] },
         severity: {
@@ -78,12 +83,16 @@ const TOOLS = [
   {
     name: 'record_phase',
     description:
-      'Record one functional phase (A, C, D, E8, E9, E10, F, G). A phase that could not run is `errored`, never skipped — there is no way to say you chose not to run one.',
+      'Record one phase of a section that has a phase plan — list_requirements gives the plan and its ids. A phase that could not run is `errored`, never skipped — there is no way to say you chose not to run one.',
     inputSchema: {
       type: 'object',
       properties: {
         run_token: { type: 'string' },
-        phase: { type: 'string', description: 'The phase letter or code, e.g. "E9".' },
+        phase: { type: 'string', description: 'The phase id from the section phase plan, e.g. "E9".' },
+        section: {
+          type: 'string',
+          description: 'Only needed when more than one section has a phase plan. Otherwise inferred.',
+        },
         result: { type: 'string', enum: ['pass', 'fail', 'errored', 'n-a'] },
         note: { type: 'string' },
       },
@@ -131,24 +140,33 @@ const routes: FastifyPluginAsync<McpRoutesOptions> = async (app, options) => {
         const token = String(args.run_token ?? '');
 
         if (name === 'list_requirements') {
-          const found = ledger.requirementsFor(token);
+          const found = ledger.planFor(token);
           if ('error' in found) return toolError(found.error);
           return text({
-            requirements: found,
-            note: 'Record against these ids. An item not listed here is still recorded, marked unlisted.',
+            // Sections first: they are the shape of this run, and a run does not always have
+            // the same ones — a section whose prerequisites were missing is not attempted and
+            // does not appear here.
+            sections: found.sections,
+            requirements: found.requirements,
+            note: 'Record against these ids; each names its section. An item not listed here is still recorded, marked unlisted.',
           });
         }
 
         if (name === 'record_requirement') {
           const out = ledger.recordRequirement(token, args as never);
           if (!out.ok) return toolError(out.error);
-          return text({ recorded: out.recorded.id, verdict: out.recorded.verdict, unlisted: out.recorded.unlisted ?? false });
+          return text({
+            recorded: out.recorded.id,
+            section: out.recorded.section ?? null,
+            verdict: out.recorded.verdict,
+            unlisted: out.recorded.unlisted ?? false,
+          });
         }
 
         if (name === 'record_phase') {
           const out = ledger.recordPhase(token, args as never);
           if (!out.ok) return toolError(out.error);
-          return text({ recorded: out.recorded.phase, result: out.recorded.result });
+          return text({ recorded: out.recorded.phase, section: out.recorded.section ?? null, result: out.recorded.result });
         }
 
         return toolError(`no such tool: ${name}`);

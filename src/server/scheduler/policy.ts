@@ -85,8 +85,6 @@ export interface Reclaim {
 export interface TickDecision {
   action: 'audit' | 'idle';
   subject?: string;
-  /** n8n has only `static` and `full`; the loop always runs `full`. */
-  depth: 'static' | 'full';
   /** One clause, in n8n's wording, so the two systems' State lines compare by eye. */
   reason: string;
   /** How many subjects are stale or never run — the roll-up's Backlog figure. */
@@ -214,7 +212,6 @@ export function decide(input: PolicyInput): TickDecision {
   });
 
   const base = {
-    depth: 'full' as const,
     backlog: eligible.length,
     reclaimed,
     unparked,

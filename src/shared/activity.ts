@@ -9,7 +9,7 @@
  * `types.ts` is the frozen MVP-0 archive contract and is not touched by any of this.
  */
 
-import type { Leg, RecordedPhase, RecordedRequirement } from './types.js';
+import type { RecordedPhase, RecordedRequirement, Section } from './types.js';
 
 // ── events ─────────────────────────────────────────────────────────────────────────────
 
@@ -38,7 +38,7 @@ export interface EventRecord {
   code: string;
   category: EventCategory;
   subject?: string;
-  leg?: Leg;
+  section?: Section;
   /** One human sentence. Never carries an id, an error string or JSON — see events.ts. */
   message: string;
   /** The technical payload. Rendered only on `warn` and `error`. */
@@ -63,7 +63,7 @@ export interface Alert {
   state: 'open' | 'resolved';
   title: string;
   detail?: string;
-  /** What the condition is currently stopping — `functional queue paused`. */
+  /** What the condition is currently stopping — the Overview banner's second line. */
   impact?: string;
   opened_at: string;
   last_seen_at: string;
@@ -169,17 +169,19 @@ export interface ChatState {
 
 // ── the run in flight ──────────────────────────────────────────────────────────────────
 
-/**
- * The eight functional phases, in the order the protocol runs them.
- *
- * `runner/prompt.ts` interpolates this list into the sentence that asks the agent to report
- * each phase, so the ids the UI draws a track for and the ids the agent is told to record
- * are one list. Changing it changes both, which is the point — the phase track is only
- * honest if it names the phases actually asked for.
- */
-export const FUNCTIONAL_PHASES = ['A', 'C', 'D', 'E8', 'E9', 'E10', 'F', 'G'] as const;
+/** One step of a section's phase plan: the id the agent records, and what it means. */
+export interface PhasePlanStep {
+  id: string;
+  label: string;
+}
 
-/** What each phase is, for a reader who has not memorised the protocol's letters. */
+/**
+ * Labels for phases recorded before the plan moved into the protocol file.
+ *
+ * A live run gets its labels from `RunProgress.phase_plan`, which comes from
+ * `protocols/<section>.md`. This table is the fallback for reading an assay off disk, where
+ * all that was stored is the letter.
+ */
 export const PHASE_LABEL: Record<string, string> = {
   A: 'session',
   C: 'fresh install',
@@ -201,17 +203,19 @@ export type RunOutcome =
 /**
  * The audit currently in flight.
  *
- * `depth` is what was *asked for* and `ran_depth` is what the agent was actually given: a
- * full run whose bench went missing is dispatched as a static one and its functional half
- * recorded blocked. Reporting only `depth` would have the UI draw a phase track for phases
- * nobody is running.
+ * There is no depth any more: a run attempts **every** section of the protocol, and the ones
+ * whose prerequisites are missing are recorded as blocked rather than narrowing the job.
+ * `sections` is therefore what is actually being audited right now, and `blocked` is what is
+ * not and why — the UI needs both, or it draws a phase track for a section nobody is running.
  */
 export interface RunLive {
   subject: string;
-  depth: 'static' | 'full';
   started_at: string;
-  ran_depth?: 'static' | 'full';
-  /** Why `ran_depth` is narrower than `depth` — `bench_unavailable`, `browser_unavailable`. */
+  /** The sections being attempted, in protocol order. Filled in once the run has probed. */
+  sections?: Section[];
+  /** Sections skipped this run — `bench_unavailable`, `browser_unavailable`. */
+  blocked?: { section: Section; reason: string }[];
+  /** Why any section was skipped, in one word, for the strip's one-line summary. */
   degraded_reason?: string | null;
   /** The demo instance this run leased, and the browser sidecar leased with it. */
   bench?: string | null;
@@ -220,7 +224,7 @@ export interface RunLive {
 
 export interface LastRun {
   subject: string;
-  depth: 'static' | 'full';
+  sections?: Section[];
   started_at: string;
   finished_at: string;
   outcome: RunOutcome;
@@ -241,9 +245,14 @@ export interface RunProgress {
   unverified: number;
   not_applicable: number;
   risk: number;
-  /** How many requirements the protocol listed for this depth. The denominator. */
+  /** How many requirements the sections of this run list between them. The denominator. */
   of_canonical: number;
-  /** Functional phases recorded so far. Empty on a static run — it has none. */
+  /**
+   * The phase plan of every section in this run that has one, in order — the track the UI
+   * draws before anything has been reported. Empty when no running section has phases.
+   */
+  phase_plan: PhasePlanStep[];
+  /** Phases recorded so far. Empty for a run whose sections have no phase plan. */
   phases: RecordedPhase[];
   /** The last few requirements settled, newest first. */
   recent: RecordedRequirement[];

@@ -14,11 +14,12 @@ const CONSTANTS = { fresh_days: 7, stuck_days: 7, lease_min: 120, cooldown_min: 
 let dir: string;
 let events: EventLog;
 
-/** Just enough index: the scheduler only ever asks for the latest completed assay. */
+/** Just enough index: the scheduler only ever asks which sections exist and their latest. */
 function indexOf(lastDone: Record<string, string>): ReportIndex {
   return {
-    latest: (subject: string, leg: string) =>
-      leg === 'static' && lastDone[subject]
+    sections: () => ['static', 'functional'],
+    latest: (subject: string, section: string) =>
+      section === 'static' && lastDone[subject]
         ? ({ meta: { finished_at: lastDone[subject] } } as never)
         : null,
     subjects: () => Object.keys(lastDone),
@@ -112,7 +113,7 @@ describe('armed', () => {
     const jobs: Parameters<NonNullable<SchedulerOptions['dispatch']>>[0][] = [];
     const s = make({ armed: true, dispatch: (job) => { jobs.push(job); } });
     await s.tick();
-    expect(jobs).toEqual([{ subject: 'Alpha', depth: 'full', try_n: 1 }]);
+    expect(jobs).toEqual([{ subject: 'Alpha', try_n: 1 }]);
   });
 
   /** An armed scheduler with no runner yet is a legitimate state during P4's bring-up. */
@@ -212,7 +213,8 @@ describe('freshness reads completed assays only', () => {
 describe('whose date counts as the last run', () => {
   function indexWith(meta: Record<string, unknown>): ReportIndex {
     return {
-      latest: (_s: string, leg: string) => (leg === 'static' ? ({ meta } as never) : null),
+      sections: () => ['static', 'functional'],
+      latest: (_s: string, section: string) => (section === 'static' ? ({ meta } as never) : null),
       subjects: () => ['Alpha'],
     } as unknown as ReportIndex;
   }

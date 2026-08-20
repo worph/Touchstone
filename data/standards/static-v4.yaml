@@ -7,7 +7,7 @@ version: 4
 # What v4 adds is the compose extension Maison reads alongside it (`x-compose-app`) — the
 # `declared-folders` item, the `webui-host`/Caddy-label agreement, and the quoted-`mode` trap
 # that makes an install fail outright. See `protocols/static.md` §D.
-leg: static
+section: static
 
 # The rubric itself lives in Docmost and is fetched by the assay agent at run time — the
 # orchestrator composes it, and the agent is instructed to read the dated Amendment section
@@ -27,5 +27,5 @@ source:
   orchestrator: In2NAGjv0h
   protocol: LPwfKYUVig
 
-# Passed to the runner as `depth` (P4). The static leg needs no bench and no browser.
-depth: static
+# What this section needs before it can run is declared by `protocols/static.md` (`requires`),
+# not here: the rubric and its prerequisites belong together.

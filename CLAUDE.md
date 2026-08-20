@@ -17,8 +17,14 @@ findings-as-rows, rule codes, cross-subject aggregation, regression detection, h
 
 Vocabulary used throughout the code: **subject** (an app), **standard** (a versioned rubric),
 **assay** (one run of one standard against one subject), **hallmark** (the composed verdict),
-**bench** (a leasable demo instance), **leg** (`static` | `functional`), **alert** (a deduplicated
-environment condition).
+**bench** (a leasable demo instance), **section** (one leaf of the protocol — one rubric, one
+assay file; `static` and `functional` today, but the set is whatever `data/protocols/*.md`
+declares), **alert** (a deduplicated environment condition).
+
+`leg` is the old name for a section and survives only in report files written before
+2026-08-20, in the two-column Overview, and in `Leg`/`LEGS` in `domain/hallmark.ts`. New code
+says `section`. There is **no `depth`**: a run audits every section, and a section whose
+`requires:` cannot be satisfied is recorded blocked rather than narrowing the run.
 
 ## Commands
 
@@ -79,9 +85,9 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | Path | What |
 | --- | --- |
 | `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile` |
-| `standards/*.yaml` | name, version, leg, depth per standard |
-| `protocols/*.md` | **the rubric itself**, local markdown Touchstone owns and edits |
-| `reports/<Subject>/<ISO>-<leg>.md` | **the assay record IS the frontmatter of the report file** |
+| `standards/*.yaml` | name and version per section — an *override*; a section with no file is named and versioned by its protocol |
+| `protocols/*.md` | **the rubric itself**, and the definition of the sections: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads |
+| `reports/<Subject>/<ISO>-<section>.md` | **the assay record IS the frontmatter of the report file** |
 | `state/*.json`, `events.jsonl` | small mutable runtime state and the append-only log |
 | `state/index.json` | cache only — deleting it must always be safe |
 
@@ -100,11 +106,18 @@ because its data access was smeared through two 200-line n8n Code nodes.
   (`busy → forced → cooldown → backlog empty → pick the stalest`; the bench gate sits *after* that
   chain so the pick stays diffable against n8n). `record.ts` is the pure port of `Record result`.
   `index.ts` does all the world-reading and owns `state/schedule.json` and the timer.
-- **`runner/`** — `prompt.ts` (assembles the protocol text into the prompt), `agent.ts` (the MCP
-  call plus n8n's exact failure classification: `agent-auth` / `agent-busy` / `agent-error` /
-  `parse-failed`), `index.ts` (one job in, one or two assay files out, a `RunOutcome` back).
+- **`store/protocols.ts`** — the protocol files, and `sectionsOf()`, which turns the leaves into
+  the `ProtocolSection[]` every other piece reads. This is the **only** place frontmatter is
+  interpreted, so a new field has exactly one place to be understood.
+- **`runner/`** — `prompt.ts` (assembles the sections being run into the prompt), `agent.ts` (the
+  MCP call plus n8n's exact failure classification: `agent-auth` / `agent-busy` / `agent-error` /
+  `parse-failed`), `index.ts` (one job in, one assay file per section out, a `RunOutcome` back).
+  `execute()` resolves sections → capabilities → what runs and what is recorded blocked; there is
+  no depth parameter anywhere in the chain.
 - **`services/ledger.ts` + `routes/mcp.ts`** — the callback surface the agent uses to record each
   requirement *as it settles it*, so a run that dies at requirement 12 of 16 keeps twelve results.
+  It also resolves each record's **section** from the canonical list, which is what lets one
+  agent response become one assay per section without parsing the prose for headings.
 - **`domain/fixreport.ts`** — the audit composed into a brief for whoever has to fix the app,
   served as markdown by `GET /subjects/:name/fix.md`. It **quotes**: findings, severities,
   evidence and remedies all come out of the frontmatter, and where the agent proposed no remedy
@@ -137,8 +150,10 @@ because its data access was smeared through two 200-line n8n Code nodes.
 1. **The agent's declaration is authoritative.** Verdict, tier and risk come from the headline /
    the agent's JSON contract, parsed once. Nothing re-derives them from prose. A previous importer
    did derive them and silently promoted four Critical apps to `compliant`.
-2. **Legs are independent.** A dead bench degrades the functional leg only; the static assay stands
-   on its own.
+2. **Sections are independent, and nothing enumerates them in code.** The set of sections comes
+   from the protocol files; a missing capability costs exactly the sections that declared
+   `requires: [that capability]`, and each is written `blocked` on its own while the rest of the
+   run proceeds. Adding `data/protocols/security.md` adds a section, with no code change.
 3. **No infra condition consumes a subject's retry budget or produces a verdict about the subject.**
    `agent_busy` and an unclaimable bench restore the subject *untouched* — no try burned, no
    last-run stamped. This is the rule that keeps an outage from parking thirteen innocent apps.
@@ -148,8 +163,11 @@ because its data access was smeared through two 200-line n8n Code nodes.
 5. **The browser profile is ephemeral, by design.** No volume on the browser sidecar: a surviving
    session cookie makes an unprotected app look protected on the one check that catches auth
    bypass. This is the single deliberate divergence from Newsdesk's packaging.
-6. **Nothing an agent or a model can call may write a verdict** — not the assay MCP surface
-   (`routes/mcp.ts` has no `record_result`) and not the chat's tool registry. The agent judges each
+6. **Nothing an agent or a model can call may write a verdict, or mint a section** — not the
+   assay MCP surface (`routes/mcp.ts` has no `record_result`) and not the chat's tool registry.
+   A canonical id's section comes from the protocol that listed it, and a section the agent
+   invents is recorded against the run's primary section and marked `unlisted`: a section the
+   gate does not know to read is a place a Critical could hide. The agent judges each
    requirement; Touchstone computes the gate (any Critical ⇒ non-compliant, unconditionally). An
    agent that can post its own verdict makes the rubric advisory.
 7. **The app stays diagnosable with every outbound port broken.** Activity must render with Beacon
@@ -174,6 +192,13 @@ approved and is documented in HANDOFF.md §5c.
 - **`src/server/domain/extract.ts` defeats grep.** It contains a byte that makes grep treat the
   file as binary, so `grep -n export src/server/domain/extract.ts` prints *nothing at all* — not an
   error, just silence, which reads as "the symbol isn't there". Use `grep -a`.
+- **Restarting `dev` orphans the browser sidecar.** `browser` runs in the dev container's
+  network namespace (`network_mode: service:dev`), so
+  `docker compose -f docker-compose.dev.yml restart dev` leaves it attached to a namespace that
+  no longer exists: the container still reports healthy, and `/benches` reports `browser-1`
+  `unreachable` with `fetch failed`. Restart `browser` too, then `POST /api/v1/benches/probe`.
+  A run started in that state records the sections that need a browser as blocked — which is
+  correct, and is not the app's fault.
 - **The index is built at boot.** Anything that changes report files from another process needs an
   API restart to be visible.
 - **`yarn dev` runs the API under `tsx watch`, so any edit under `src/server/` restarts it and

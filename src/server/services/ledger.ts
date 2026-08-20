@@ -32,12 +32,30 @@ export type PhaseResult = 'pass' | 'fail' | 'errored' | 'n-a';
 export interface CanonicalRequirement {
   id: string;
   text: string;
+  /**
+   * The section that lists this id — the leaf protocol it came from.
+   *
+   * This is what makes section attribution free: Touchstone builds the canonical list by
+   * walking the protocol files, so it already knows which section owns every id and never has
+   * to ask the agent, or guess from a heading in the prose.
+   */
+  section: string;
   /** A capability the check needs. `bench` means it cannot run without a live instance. */
   requires?: string;
 }
 
+/** One section of the protocol, as the run sees it. */
+export interface RunSection {
+  id: string;
+  name: string;
+  /** The ids this section's phase plan names. Empty for a section that has no phases. */
+  phases: string[];
+}
+
 export interface RecordedRequirement {
   id: string;
+  /** Which section this belongs to. Resolved here, never taken on trust — see `sectionFor`. */
+  section?: string;
   /** The wording the agent used. Kept even when the id is canonical — it is the evidence. */
   requirement?: string;
   verdict: RequirementVerdict;
@@ -52,6 +70,8 @@ export interface RecordedRequirement {
 
 export interface RecordedPhase {
   phase: string;
+  /** The section whose phase plan names this phase. */
+  section?: string;
   result: PhaseResult;
   note?: string;
   at: string;
@@ -60,7 +80,8 @@ export interface RecordedPhase {
 export interface RunTicket {
   token: string;
   subject: string;
-  depth: 'static' | 'full';
+  /** The sections this run is actually attempting, in protocol order. */
+  sections: RunSection[];
   started_at: string;
   expires_at: string;
 }
@@ -109,14 +130,14 @@ export class RunLedger {
    */
   open(input: {
     subject: string;
-    depth: 'static' | 'full';
+    sections: RunSection[];
     canonical: CanonicalRequirement[];
   }): RunTicket {
     const now = this.now();
     const ticket: RunTicket = {
       token: randomBytes(24).toString('base64url'),
       subject: input.subject,
-      depth: input.depth,
+      sections: input.sections,
       started_at: now.toISOString(),
       expires_at: new Date(now.getTime() + (this.opts.ttlMs ?? DEFAULT_TTL_MS)).toISOString(),
     };
@@ -159,6 +180,19 @@ export class RunLedger {
   }
 
   /**
+   * What this run is made of: its sections and their canonical ids.
+   *
+   * The sections go out with the requirements because they are the run's actual shape — a
+   * section whose prerequisites were missing was never attempted and is not in this list, so
+   * an agent asking what to do is told what is being asked of it and nothing else.
+   */
+  planFor(token: string): { sections: RunSection[]; requirements: CanonicalRequirement[] } | { error: string } {
+    const found = this.resolve(token);
+    if ('error' in found) return found;
+    return { sections: found.run.sections, requirements: found.run.canonical };
+  }
+
+  /**
    * Record one requirement.
    *
    * Validation happens here rather than after the run, which is the point of the whole
@@ -166,7 +200,14 @@ export class RunLedger {
    */
   recordRequirement(
     token: string,
-    input: { id?: string; requirement?: string; verdict?: string; severity?: string; note?: string },
+    input: {
+      id?: string;
+      section?: string;
+      requirement?: string;
+      verdict?: string;
+      severity?: string;
+      note?: string;
+    },
   ): RecordOutcome {
     const found = this.resolve(token);
     if ('error' in found) return { ok: false, error: found.error };
@@ -188,10 +229,12 @@ export class RunLedger {
     }
 
     const unlisted = !run.canonical.some((c) => c.id === id);
+    const section = sectionFor(run, id, input.section);
     const at = this.now().toISOString();
     const existing = run.requirements.find((r) => r.id === id);
     const recorded: RecordedRequirement = {
       id,
+      ...(section ? { section } : {}),
       ...(input.requirement ? { requirement: String(input.requirement) } : {}),
       verdict,
       ...(severity ? { severity } : {}),
@@ -222,7 +265,7 @@ export class RunLedger {
         code: 'ASSAY_REQUIREMENT_UNLISTED',
         message: 'The audit reported a requirement the protocol does not list',
         subject: run.subject,
-        detail: { subject: run.subject, id },
+        detail: { subject: run.subject, id, section },
       });
     }
 
@@ -231,7 +274,7 @@ export class RunLedger {
 
   recordPhase(
     token: string,
-    input: { phase?: string; result?: string; note?: string },
+    input: { phase?: string; section?: string; result?: string; note?: string },
   ): { ok: true; recorded: RecordedPhase } | { ok: false; error: string } {
     const found = this.resolve(token);
     if ('error' in found) return { ok: false, error: found.error };
@@ -246,8 +289,10 @@ export class RunLedger {
       return { ok: false, error: `result must be one of pass, fail, errored, n-a (got "${input.result}")` };
     }
 
+    const section = phaseSectionFor(found.run, phase, input.section);
     const recorded: RecordedPhase = {
       phase,
+      ...(section ? { section } : {}),
       result,
       ...(input.note ? { note: String(input.note).slice(0, 4000) } : {}),
       at: this.now().toISOString(),
@@ -274,6 +319,37 @@ export function normaliseSeverity(value: unknown): Severity | undefined {
  * verdict is gated on severity — one Critical outranks fifteen passes — and a count cannot
  * express that. Keeping them apart is the whole reason this is reported separately.
  */
+/**
+ * Which section a recorded requirement belongs to.
+ *
+ * The canonical list decides it: an id the protocol named is owned by the protocol that
+ * named it, whatever the agent says. Only an id nobody listed can take the agent's word, and
+ * only when it names a section this run is actually running — an invented section id would
+ * be a partition Touchstone's gate does not know to read, which is the hole invariant 6
+ * exists to close. Anything else falls back to the run's primary section.
+ */
+function sectionFor(run: RunState, id: string, declared: string | undefined): string | undefined {
+  const canonical = run.canonical.find((c) => c.id === id);
+  if (canonical?.section) return canonical.section;
+  const asked = String(declared ?? '').trim();
+  if (asked && run.sections.some((s) => s.id === asked)) return asked;
+  return run.sections[0]?.id;
+}
+
+/**
+ * Which section owns a phase: the one whose plan names it. A phase nobody planned is
+ * attributed to the only section that has phases at all, and to nothing when several do —
+ * an unattributed phase is recorded, never dropped.
+ */
+function phaseSectionFor(run: RunState, phase: string, declared: string | undefined): string | undefined {
+  const owner = run.sections.find((s) => s.phases.includes(phase));
+  if (owner) return owner.id;
+  const asked = String(declared ?? '').trim();
+  if (asked && run.sections.some((s) => s.id === asked)) return asked;
+  const withPhases = run.sections.filter((s) => s.phases.length > 0);
+  return withPhases.length === 1 ? withPhases[0]!.id : undefined;
+}
+
 export function coverageOf(requirements: readonly RecordedRequirement[]): {
   verified: number;
   applicable: number;

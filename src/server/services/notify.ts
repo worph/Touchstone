@@ -141,7 +141,8 @@ export class Notifier {
 
   /**
    * Alerts route on their transition rather than through `handleEvent`, so the outlet
-   * message can carry the impact line ("functional queue paused") that makes a two-word
+   * message can carry the impact line ("sections that need a bench will be recorded blocked")
+   * that makes a two-word
    * alert actionable. The dedup that matters already happened in `AlertStore`: this is
    * only ever called on an actual open or resolve.
    */
@@ -210,7 +211,7 @@ export class Notifier {
   }
 
   private formatEvent(event: EventRecord): string {
-    const subject = event.subject ? ` · ${event.subject}${event.leg ? ` (${event.leg})` : ''}` : '';
+    const subject = event.subject ? ` · ${event.subject}${event.section ? ` (${event.section})` : ''}` : '';
     return `${levelGlyph(event.level)} Touchstone${subject}: ${event.message}`;
   }
 }
@@ -241,7 +242,7 @@ export function pushBodyFor(event: EventRecord): string {
       if (typeof d.risk === 'number' && d.risk > 0) parts.push(`risk ${d.risk}`);
       // The functional half being blocked is the difference between "this app is fine" and
       // "half of this was never checked", so it belongs in the two lines someone reads.
-      if (d.blocked) parts.push(`functional leg blocked (${describeReason(String(d.blocked))})`);
+      if (d.blocked) parts.push(`a section was blocked (${describeReason(String(d.blocked))})`);
       return parts.join(' · ');
     }
     case 'ASSAY_BLOCKED':

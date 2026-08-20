@@ -14,9 +14,16 @@
  *   `hallmark` — newest `done` assay; the last real verdict, and what risk and age use.
  */
 
-import type { AssayMeta, AssayRecord, Leg, SubjectState } from '../../shared/types.js';
+import type { AssayMeta, AssayRecord, Section, SubjectState } from '../../shared/types.js';
 
-export const LEGS: readonly Leg[] = ['static', 'functional'];
+/**
+ * The two sections the Overview still draws a column for.
+ *
+ * Not the set of sections that exists — that comes from the archive and from the protocol
+ * files, and `subjectHallmark` composes whatever it finds. This list is only what the
+ * two-column table asks for by name, and it goes when the table learns to draw N.
+ */
+export const LEGS: readonly Section[] = ['static', 'functional'];
 
 const DAY_MS = 86_400_000;
 
@@ -48,7 +55,7 @@ export function isDone(record: AssayRecord): boolean {
 }
 
 export interface LegState {
-  leg: Leg;
+  leg: Section;
   /** Newest assay of any status — blocked and running included. */
   current: AssayRecord | null;
   /** Newest `done` assay: the last verdict actually issued. */
@@ -57,8 +64,8 @@ export interface LegState {
   stale: boolean;
 }
 
-export function legState(records: readonly AssayRecord[], leg: Leg): LegState {
-  const forLeg = sortNewestFirst(records.filter((r) => r.meta.leg === leg));
+export function legState(records: readonly AssayRecord[], leg: Section): LegState {
+  const forLeg = sortNewestFirst(records.filter((r) => r.meta.section === leg));
   const current = forLeg[0] ?? null;
   const hallmark = forLeg.find(isDone) ?? null;
   return {
@@ -71,7 +78,7 @@ export function legState(records: readonly AssayRecord[], leg: Leg): LegState {
 
 export interface SubjectHallmark {
   state: SubjectState;
-  legs: Record<Leg, LegState>;
+  legs: Record<Section, LegState>;
 }
 
 export interface HallmarkOptions {
@@ -95,15 +102,21 @@ export function subjectHallmark(
 ): SubjectHallmark {
   const now = options.now === undefined ? Date.now() : Number(options.now);
   const mine = records.filter((r) => r.subject === name);
-  const legs = {
-    static: legState(mine, 'static'),
-    functional: legState(mine, 'functional'),
-  } satisfies Record<Leg, LegState>;
+
+  // Whatever sections this subject actually has, plus the two the table names — so a subject
+  // with no functional assay still gets an (empty) functional cell, and a subject carrying a
+  // section nobody has heard of still has its risk counted.
+  const ids = [...new Set([...LEGS, ...mine.map((r) => r.meta.section)])];
+  const legs: Record<Section, LegState> = {};
+  for (const id of ids) legs[id] = legState(mine, id);
 
   let risk = 0;
   let newestDone: number | null = null;
-  for (const leg of LEGS) {
-    const done = legs[leg].hallmark;
+  const current: Record<Section, AssayRecord | null> = {};
+  for (const id of ids) {
+    const state = legs[id]!;
+    current[id] = state.current;
+    const done = state.hallmark;
     if (!done) continue;
     risk += Number(done.meta.risk_score) || 0;
     const t = assayTime(done.meta);
@@ -114,8 +127,9 @@ export function subjectHallmark(
     legs,
     state: {
       name,
-      static: legs.static.current,
-      functional: legs.functional.current,
+      sections: current,
+      static: legs.static?.current ?? null,
+      functional: legs.functional?.current ?? null,
       risk,
       age_days: newestDone === null ? null : Math.max(0, Math.floor((now - newestDone) / DAY_MS)),
     },
@@ -137,11 +151,11 @@ export function hallmarks(
     .sort((a, b) => b.risk - a.risk || a.name.localeCompare(b.name));
 }
 
-/** The latest `done` assay for one leg — the hallmark proper. */
+/** The latest `done` assay for one section — the hallmark proper. */
 export function latestDone(
   records: readonly AssayRecord[],
   subject: string,
-  leg: Leg,
+  leg: Section,
 ): AssayRecord | null {
   return legState(
     records.filter((r) => r.subject === subject),

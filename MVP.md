@@ -139,12 +139,12 @@ Two smaller data defects went with it: `subject_ref` was matching `ref` inside "
 
 ### Report file
 
-`data/reports/<Subject>/<ISO with ':' → '-'>-<leg>.md`
+`data/reports/<Subject>/<ISO with ':' → '-'>-<section>.md`
 
 ```yaml
 ---
 subject: OpenClaw
-leg: static
+section: static              # the leaf protocol that judged it — `data/protocols/static.md`
 standard: Static Review Protocol
 standard_version: 3
 status: done                 # queued | running | done | blocked
@@ -154,8 +154,8 @@ risk_score: 232              #                                    ← from the h
 blocked_reason: null         # bench_unavailable | agent_busy | browser_unavailable
 try_n: 1
 trigger: schedule            # schedule | webhook | form | reassay
-bench: null                  # demostaging1 | demostaging2 | null for static
-browser: null                # touchstone-browser-1 | null for static
+bench: null                  # the demo instance, when this section needed one
+browser: null                # the sidecar it drove, when this section needed one
 subject_ref: Yundera/AppStore@main:Apps/OpenClaw
 commit: 6b9af120ba7f
 images: [openclaw:2.1.0]
@@ -172,6 +172,13 @@ and — since findings are no longer extracted — never parsed by anything exce
 
 There is no `findings:` list. That is the single biggest change from the previous contract.
 
+**`section` replaced `leg` on 2026-08-20** and the set is open: it is the `id` of a leaf in
+`data/protocols/`, not a two-value enum. Files written before then carry `leg:` instead, and
+`parseReportMeta` fills `section` from it on read — the archive was not rewritten, and nothing
+downstream has to know which spelling a file used. `requirements[].section` records which
+section settled each item, resolved from the protocol that listed the id rather than from the
+agent.
+
 ### HTTP API
 
 See [ARCHITECTURE.md §6](ARCHITECTURE.md#6-api). Errors are `{ error: string }` with a sane status
@@ -187,8 +194,9 @@ Three streams, disjoint directories.
 | **B — runner** | `src/server/runner/**`, `src/server/services/{bench,browser,mcp}.ts` | D1–D7, E4 |
 | **C — notification & UI** | `src/server/services/{events,alerts,notify,push}.ts`, `src/web/**` | F1–F5 |
 
-A and B meet at one interface — the scheduler hands the runner a claimed `(subject, leg, bench,
-browser)` and gets back a verdict or a `blocked_reason`. Both write through the store; neither
+A and B meet at one interface — the scheduler hands the runner a claimed subject and gets back a
+verdict or a `blocked_reason`. It does not say *what* to audit: the runner reads the protocol
+files, runs every section whose `requires:` it can satisfy, and records the rest as blocked. Both write through the store; neither
 touches the filesystem directly.
 
 ## 7. Definition of done per stream

@@ -35,7 +35,7 @@ export default function EventRow({ event }: { event: EventRecord }) {
         {event.subject ? (
           <Link className="log-subject" to={`/s/${encodeURIComponent(event.subject)}`}>
             {event.subject}
-            {event.leg ? ` ${event.leg}` : ''}
+            {event.section ? ` ${event.section}` : ''}
           </Link>
         ) : null}
         {event.message}

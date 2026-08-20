@@ -60,7 +60,7 @@ describe('report files', () => {
     const dir = await tmp();
     const meta = {
       subject: 'Prowlarr',
-      leg: 'static' as const,
+      section: 'static' as const,
       standard: 'Static Review Protocol',
       standard_version: 3,
       status: 'done' as const,
@@ -85,10 +85,10 @@ describe('report files', () => {
     expect(back.body).toBe(body);
   });
 
-  it('names files <Subject>/<ISO with : replaced by ->-<leg>.md', async () => {
+  it('names files <Subject>/<ISO with : replaced by ->-<section>.md', async () => {
     const rel = reportRelPathFor({
       subject: 'OpenClaw',
-      leg: 'static',
+      section: 'static',
       started_at: '2026-08-05T09:14:22Z',
     } as never);
     expect(rel).toBe('OpenClaw/2026-08-05T09-14-22Z-static.md');

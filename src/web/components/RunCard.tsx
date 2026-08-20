@@ -52,7 +52,8 @@ export default function RunCard() {
   const counted = progressLabel(progress);
   const ratio = progressRatio(progress);
   const track = phaseTrack(live, progress);
-  const depth = live.ran_depth ?? live.depth;
+  const sections = live.sections ?? [];
+  const blocked = live.blocked ?? [];
 
   return (
     <section className="act-section">
@@ -67,19 +68,20 @@ export default function RunCard() {
             {live.subject}
           </Link>
           <span className="run-card__depth">
-            {depth === 'full' ? 'static + functional' : 'static only'}
+            {sections.length > 0 ? sections.join(' + ') : 'choosing sections…'}
           </span>
           <span className="spacer" />
           <span className="run-card__clock num">{mmss(seconds)}</span>
         </div>
 
-        {/* Degrading is not a failure: the static half is running and the functional half
-            will be *recorded* blocked, which is a statement about the bench, not the app. */}
-        {live.degraded_reason ? (
+        {/* A skipped section is not a failure: the rest of the audit is running, and the
+            section that could not be attempted is *recorded* blocked — a statement about the
+            environment, not about the app. */}
+        {blocked.length > 0 ? (
           <div className="run-card__degraded">
-            Asked for a full audit; running the static half only —{' '}
-            {live.degraded_reason.replace(/_/g, ' ')}. The functional leg will be recorded
-            blocked, and no retry budget is spent on it.
+            Not running {blocked.map((b) => b.section).join(', ')} —{' '}
+            {blocked[0]!.reason.replace(/_/g, ' ')}. {blocked.length > 1 ? 'Those sections' : 'That section'}{' '}
+            will be recorded blocked, and no retry budget is spent on {blocked.length > 1 ? 'them' : 'it'}.
           </div>
         ) : null}
 

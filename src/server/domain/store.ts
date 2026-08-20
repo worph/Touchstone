@@ -7,7 +7,7 @@
  * Integration is a one-line change: pass A's index into `registerRoutes`.
  */
 
-import type { AssayMeta, AssayRecord, Leg } from '../../shared/types.js';
+import type { AssayMeta, AssayRecord, Section } from '../../shared/types.js';
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -32,7 +32,7 @@ export interface AssayStore {
    * so an implementation may provide neither, either, or both.
    */
   forSubject?(name: string): readonly AssayRecord[];
-  latest?(subject: string, leg: Leg): AssayRecord | null;
+  latest?(subject: string, section: Section): AssayRecord | null;
 }
 
 /** `forSubject` if the store has it, otherwise a scan of `all()`. Subject match is exact. */

@@ -8,10 +8,52 @@ import type { BenchProber } from '../services/bench.js';
 import { classify, extractText } from './agent.js';
 import { Runner, type RunnerOptions } from './index.js';
 
-const STANDARDS = {
-  staticStd: { name: 'Static Review Protocol', version: 3 },
-  functionalStd: { name: 'Functional Review Protocol', version: 2 },
-};
+const STANDARDS = [
+  { id: 'static-v3', section: 'static', name: 'Static Review Protocol', version: 3 },
+  { id: 'functional-v2', section: 'functional', name: 'Functional Review Protocol', version: 2 },
+];
+
+/**
+ * The protocol, as two sections — which is now the *only* thing that says what a run is made
+ * of. `requires` is what used to be `depth: full`: the runner probes those capabilities and
+ * records the sections it cannot satisfy as blocked, without knowing what "functional" means.
+ */
+function protocolsOf(
+  sections: { id: string; order: number; requires: string[]; phases?: string[] }[] = [
+    { id: 'static', order: 1, requires: [] },
+    { id: 'functional', order: 2, requires: ['bench', 'browser'], phases: ['A', 'C', 'D', 'E8', 'E9', 'E10', 'F', 'G'] },
+  ],
+) {
+  return {
+    directory: '/protocols',
+    list: async () =>
+      sections.map((s) => ({
+        meta: {
+          id: s.id,
+          name: `${s.id[0]!.toUpperCase()}${s.id.slice(1)} Review Protocol`,
+          version: 1,
+          kind: 'leaf' as const,
+          order: s.order,
+          requires: s.requires,
+          phases: (s.phases ?? []).map((id) => ({ id })),
+          report_headings:
+            s.id === 'static' ? ['^tech\\s*&\\s*documentation'] : ['^functionality'],
+          requirements: [{ id: `${s.id}-item`, text: `something ${s.id}` }],
+        },
+        body: `the ${s.id} rubric`,
+        file: `${s.id}.md`,
+        bytes: 10,
+        modified_at: '2026-08-20T00:00:00Z',
+      })),
+  } as never;
+}
+
+function portsOf(browsers: string[]) {
+  return {
+    healthy: (kind: string) =>
+      kind === 'browser' ? browsers.map((url) => ({ name: 'browser-1', url })) : [],
+  } as never;
+}
 
 /** A report shaped like the ones the archive already holds — both legs, phase table and all. */
 function report(opts: { phases?: string } = {}): string {
@@ -64,6 +106,11 @@ function make(over: Partial<RunnerOptions> = {}, answers: string[] = [sse(agentJ
     enabled: true,
     reportsRoot: path.join(dir, 'reports'),
     standards: STANDARDS,
+    protocols: protocolsOf(),
+    // Both capabilities available by default. An *absent* prober is not "we could not check"
+    // — it is a capability nothing can satisfy, and the sections needing it are blocked.
+    prober: proberOf(['https://demostaging1.example']),
+    ports: portsOf(['http://touchstone-browser:9746/mcp']),
     events,
     busyBackoffMs: 1,
     sleep: async () => {},
@@ -175,8 +222,8 @@ describe('classifying a failure', () => {
 });
 
 describe('a run that produces a verdict', () => {
-  it('writes one file per leg and takes the verdict from the declaration', async () => {
-    const out = await make().run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+  it('writes one file per section and takes the verdict from the declaration', async () => {
+    const out = await make().run({ subject: 'Tuwunel', try_n: 1 });
     expect(out.kind).toBe('verdict');
     expect(out.kind === 'verdict' && out.files).toHaveLength(2);
 
@@ -194,14 +241,13 @@ describe('a run that produces a verdict', () => {
     const contradicting = agentJson({
       report_markdown: report().replace('risk score 113', 'risk score 1'),
     });
-    const out = await make({}, [sse(contradicting)]).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    const out = await make({}, [sse(contradicting)]).run({ subject: 'Tuwunel', try_n: 1 });
     expect(out.kind === 'verdict' && out.risk).toBe(113);
   });
 
   it('records the bench it ran against', async () => {
     await make({ prober: proberOf(['https://demostaging1.example']) }).run({
       subject: 'Tuwunel',
-      depth: 'full',
       try_n: 1,
     });
     const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
@@ -209,9 +255,40 @@ describe('a run that produces a verdict', () => {
     expect(body).toContain('bench_host:');
   });
 
-  it('writes one file only at depth static', async () => {
-    const out = await make().run({ subject: 'Tuwunel', depth: 'static', try_n: 1 });
-    expect(out.kind === 'verdict' && out.files).toHaveLength(1);
+  /**
+   * Nothing tells the runner which sections to audit — there is no depth any more. It reads
+   * the protocol directory, and a third rubric would produce a third file with no code change.
+   */
+  it('audits every section the protocol declares', async () => {
+    const three = make({
+      protocols: protocolsOf([
+        { id: 'static', order: 1, requires: [] },
+        { id: 'licensing', order: 2, requires: [] },
+        { id: 'functional', order: 3, requires: ['bench', 'browser'], phases: ['A'] },
+      ]),
+    });
+    const out = await three.run({ subject: 'Tuwunel', try_n: 1 });
+    expect(out.kind === 'verdict' && out.files).toHaveLength(3);
+    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    expect(files.filter((f) => f.endsWith('-licensing.md'))).toHaveLength(1);
+  });
+
+  /** Principle 6, without a standards file: the rubric that judged it is the protocol. */
+  it('stamps a section with no standard file from its protocol', async () => {
+    await make({ standards: [] }).run({ subject: 'Tuwunel', try_n: 1 });
+    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    const body = await fs.readFile(
+      path.join(dir, 'reports', 'Tuwunel', files.find((f) => f.endsWith('-static.md'))!),
+      'utf8',
+    );
+    expect(body).toContain('standard: Static Review Protocol');
+    expect(body).toContain('standard_version: 1');
+  });
+
+  /** There is no rubric on disk, so there is nothing to judge against and nothing to write. */
+  it('refuses to run with no protocol at all', async () => {
+    const out = await make({ protocols: protocolsOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
+    expect(out).toEqual({ kind: 'blocked', reason: 'no_protocol' });
   });
 });
 
@@ -226,7 +303,7 @@ describe('a functional half that could not run', () => {
   });
 
   it('writes the functional leg blocked, not errored', async () => {
-    await make({}, [sse(noPhases)]).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    await make({}, [sse(noPhases)]).run({ subject: 'Tuwunel', try_n: 1 });
     const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
     const fn = files.find((f) => f.endsWith('-functional.md'))!;
     const body = await fs.readFile(path.join(dir, 'reports', 'Tuwunel', fn), 'utf8');
@@ -236,7 +313,7 @@ describe('a functional half that could not run', () => {
   });
 
   it('still reports the run as a verdict, because the static half did produce one', async () => {
-    const out = await make({}, [sse(noPhases)]).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    const out = await make({}, [sse(noPhases)]).run({ subject: 'Tuwunel', try_n: 1 });
     expect(out.kind).toBe('verdict');
   });
 });
@@ -248,19 +325,18 @@ describe('the agent being busy', () => {
   it('waits and tries once more', async () => {
     const out = await make({}, [busy, sse(agentJson())]).run({
       subject: 'Tuwunel',
-      depth: 'full',
       try_n: 1,
     });
     expect(out.kind).toBe('verdict');
   });
 
   it('gives the subject back untouched when the retry is busy too', async () => {
-    const out = await make({}, [busy, busy]).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    const out = await make({}, [busy, busy]).run({ subject: 'Tuwunel', try_n: 1 });
     expect(out).toEqual({ kind: 'agent_busy' });
   });
 
   it('writes no report when it gives up', async () => {
-    await make({}, [busy, busy]).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    await make({}, [busy, busy]).run({ subject: 'Tuwunel', try_n: 1 });
     await expect(fs.readdir(path.join(dir, 'reports', 'Tuwunel'))).rejects.toThrow();
   });
 
@@ -274,14 +350,14 @@ describe('the agent being busy', () => {
         }) as unknown as typeof fetch,
       },
     });
-    await runner.run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    await runner.run({ subject: 'Tuwunel', try_n: 1 });
     expect(calls).toBe(2);
   });
 });
 
 describe('refusing to run', () => {
   it('does nothing at all while disabled', async () => {
-    const out = await make({ enabled: false }).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    const out = await make({ enabled: false }).run({ subject: 'Tuwunel', try_n: 1 });
     expect(out).toEqual({ kind: 'blocked', reason: 'runner_disabled' });
   });
 
@@ -292,13 +368,13 @@ describe('refusing to run', () => {
    * *static* verdict too — an infra outage attributed to the subject, which is §2.2 all over
    * again one layer down. The job degrades instead: static runs, functional is recorded.
    */
-  it('degrades a functional job to static when no bench is leasable', async () => {
-    const out = await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+  it('runs the rest of the audit when no bench is leasable', async () => {
+    const out = await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
     expect(out.kind).toBe('verdict');
   });
 
-  it('still writes both legs, the functional one blocked', async () => {
-    await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+  it('still writes both sections, the one that needed a bench blocked', async () => {
+    await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
     const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
     expect(files.filter((f) => f.endsWith('-static.md'))).toHaveLength(1);
     expect(files.filter((f) => f.endsWith('-functional.md'))).toHaveLength(1);
@@ -313,14 +389,14 @@ describe('refusing to run', () => {
     expect(functional).toMatch(/verdict: null/);
   });
 
-  it('says out loud that it only did half the job', async () => {
-    await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+  it('says out loud which section it could not attempt', async () => {
+    await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
     await events.flush();
     expect(events.query({ code: 'ASSAY_DEGRADED' })).toHaveLength(1);
   });
 
   /** The agent must not be sent to install onto a pool we already know is unusable. */
-  it('asks the agent for the static leaf only', async () => {
+  it('asks the agent for the runnable sections only', async () => {
     let prompt = '';
     const runner = make({
       prober: proberOf([]),
@@ -331,14 +407,23 @@ describe('refusing to run', () => {
         }) as unknown as typeof fetch,
       },
     });
-    await runner.run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
-    expect(prompt).toContain('depth=static');
+    await runner.run({ subject: 'Tuwunel', try_n: 1 });
+    expect(prompt).toContain('sections=static');
+    // And it is told what is NOT being audited, so it does not judge it or invent it.
+    expect(prompt).toContain('NOT part of this run');
+    expect(prompt).not.toContain('the functional rubric');
   });
 
-  /** A static assay needs no bench, so a dead pool must not stop it. */
-  it('runs a static job with no bench at all', async () => {
-    const out = await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', depth: 'static', try_n: 1 });
-    expect(out.kind).toBe('verdict');
+  /** A section that requires nothing runs whatever the state of the pool. */
+  it('still produces a verdict for the sections that need no bench', async () => {
+    await make({ prober: proberOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
+    const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
+    const body = await fs.readFile(
+      path.join(dir, 'reports', 'Tuwunel', files.find((f) => f.endsWith('-static.md'))!),
+      'utf8',
+    );
+    expect(body).toContain('status: done');
+    expect(body).toContain('verdict: non-compliant');
   });
 });
 
@@ -346,7 +431,6 @@ describe('a failure that is not busy', () => {
   it('reports the class so the scheduler can charge the try', async () => {
     const out = await make({}, [sse('Error calling remote tool: httpstatuserror 500')]).run({
       subject: 'Tuwunel',
-      depth: 'full',
       try_n: 1,
     });
     expect(out).toEqual({ kind: 'error', reason: 'agent-error' });
@@ -355,7 +439,6 @@ describe('a failure that is not busy', () => {
   it('calls out a logged-out agent separately, because no app is at fault', async () => {
     await make({}, [sse('failed to authenticate, please run /login')]).run({
       subject: 'Tuwunel',
-      depth: 'full',
       try_n: 1,
     });
     await events.flush();
@@ -370,18 +453,11 @@ describe('a failure that is not busy', () => {
  * rather than unlikely.
  */
 describe('the browser sidecar', () => {
-  function portsOf(browsers: string[]) {
-    return {
-      healthy: (kind: string) =>
-        kind === 'browser' ? browsers.map((url) => ({ name: 'browser-1', url })) : [],
-    } as never;
-  }
-
-  it('degrades to static when no sidecar is answering', async () => {
+  it('skips the sections that need it when no sidecar is answering', async () => {
     const out = await make({
       prober: proberOf(['https://demostaging1.example']),
       ports: portsOf([]),
-    }).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    }).run({ subject: 'Tuwunel', try_n: 1 });
     expect(out.kind).toBe('verdict');
   });
 
@@ -389,7 +465,6 @@ describe('the browser sidecar', () => {
   it('names the browser as the reason the functional leg is blocked', async () => {
     await make({ prober: proberOf(['https://x.example']), ports: portsOf([]) }).run({
       subject: 'Tuwunel',
-      depth: 'full',
       try_n: 1,
     });
     const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
@@ -404,16 +479,16 @@ describe('the browser sidecar', () => {
     await make({
       prober: proberOf(['https://demostaging1.example']),
       ports: portsOf(['http://touchstone-browser:9746/mcp']),
-    }).run({ subject: 'Tuwunel', depth: 'full', try_n: 1 });
+    }).run({ subject: 'Tuwunel', try_n: 1 });
 
     const files = await fs.readdir(path.join(dir, 'reports', 'Tuwunel'));
     const body = await fs.readFile(path.join(dir, 'reports', 'Tuwunel', files[0]!), 'utf8');
     expect(body).toContain('browser: ');
   });
 
-  /** A static assay drives no browser, so a dead sidecar must not stop it. */
-  it('does not need one for a static job', async () => {
-    const out = await make({ ports: portsOf([]) }).run({ subject: 'Tuwunel', depth: 'static', try_n: 1 });
+  /** A section that does not declare `browser` drives none, so a dead sidecar cannot stop it. */
+  it('is not needed by a section that does not ask for it', async () => {
+    const out = await make({ ports: portsOf([]) }).run({ subject: 'Tuwunel', try_n: 1 });
     expect(out.kind).toBe('verdict');
   });
 });

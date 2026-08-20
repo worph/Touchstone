@@ -23,7 +23,7 @@ import path from 'node:path';
 
 import { appendJsonl, readJsonl, trimJsonl } from '../store/state.js';
 import type { EventCategory, EventLevel, EventRecord } from '../../shared/activity.js';
-import type { Leg } from '../../shared/types.js';
+import type { Section } from '../../shared/types.js';
 
 export type { EventCategory, EventLevel, EventRecord };
 
@@ -90,7 +90,7 @@ export const EVENT_CODES = {
   ASSAY_COMPLETED: { category: 'assay', label: 'audit finished' },
   ASSAY_FAILED: { category: 'assay', label: 'audit failed' },
   ASSAY_BLOCKED: { category: 'assay', label: 'audit could not start' },
-  ASSAY_DEGRADED: { category: 'assay', label: 'audit ran its static half only' },
+  ASSAY_DEGRADED: { category: 'assay', label: 'a section could not be attempted' },
 
   CHAT_TOOL_FAILED: { category: 'chat', label: 'a tool call was refused' },
   CHAT_TURN_FAILED: { category: 'chat', label: 'the assistant could not finish' },
@@ -148,7 +148,8 @@ interface EventDetails {
   REGISTRY_FAILED: { error: string; live: boolean };
   ASSAY_STARTED: {
     subject: string;
-    depth: 'static' | 'full';
+    /** The sections this run is attempting — those whose prerequisites were met. */
+    sections: Section[];
     try_n: number;
     bench: string | null;
     browser: string | null;
@@ -157,17 +158,18 @@ interface EventDetails {
     subject: string;
     verdict: string;
     risk: number;
-    legs: Leg[];
-    /** The blocked reason when a leg could not run, `null` when both did. */
+    sections: Section[];
+    /** The blocked reason when a section could not run, `null` when all of them ran. */
     blocked: string | null;
   };
   ASSAY_FAILED: { subject: string; error: string; raw: string };
   ASSAY_BLOCKED: { subject: string; reason: string };
-  ASSAY_DEGRADED: { subject: string; reason: string; asked_for: 'full' };
+  /** One section could not be attempted; the rest of the run went ahead without it. */
+  ASSAY_DEGRADED: { subject: string; reason: string; section: Section };
   CHAT_TOOL_FAILED: { tool: string; error: string };
   CHAT_TURN_FAILED: { calls: number; error: string };
   ASSAY_REQUIREMENT_REVISED: { subject: string; id: string; from: string; to: string };
-  ASSAY_REQUIREMENT_UNLISTED: { subject: string; id: string };
+  ASSAY_REQUIREMENT_UNLISTED: { subject: string; id: string; section: string | undefined };
   PROTOCOL_MISSING: { dir: string };
   PROTOCOL_EDITED: { id: string; version: number; bytes: number };
   AGENT_BUSY: { subject: string; waitMs: number; attempt: number };
@@ -188,7 +190,7 @@ export type EventInput = {
     /** One sentence. No ids, no error strings, no JSON. */
     message: string;
     subject?: string;
-    leg?: Leg;
+    section?: Section;
   } & DetailPart<C>;
 }[EventCode];
 
@@ -295,7 +297,7 @@ export class EventLog {
       category: categoryOf(input.code),
       message: input.message,
       ...(input.subject ? { subject: input.subject } : {}),
-      ...(input.leg ? { leg: input.leg } : {}),
+      ...(input.section ? { section: input.section } : {}),
       ...(input.detail ? { detail: input.detail as Record<string, unknown> } : {}),
     };
 

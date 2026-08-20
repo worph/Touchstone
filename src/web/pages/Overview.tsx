@@ -11,14 +11,15 @@ import { Link, useSearchParams } from 'react-router-dom';
 
 import type { Leg, SubjectState } from '@shared/types';
 import CoverageCell from '../components/CoverageCell';
+import ReassayButton from '../components/ReassayButton';
 import StatusCell, { StatusLegend } from '../components/StatusCell';
 import { EmptyState, Loading, Notice } from '../components/Ui';
-import { getSubjects } from '../data/client';
+import { getAlerts, getSubjects } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
 import { ageLabel, duration, num, plural } from '../lib/format';
 import {
-  applyShow, coverageOf, deriveIncident, FRESH_DAYS, legState, search, sortSubjects, tally,
-  type LegTally, type LiveRun, type Tallies,
+  applyShow, coverageOf, deriveBacklog, FRESH_DAYS, legState, search, sortSubjects, tally,
+  type BlockedBacklog, type LegTally, type LiveRun, type Tallies,
 } from '../lib/overview';
 import { useRunStatus } from '../data/runStatus';
 import { liveLegs, progressLabel } from '../lib/run';
@@ -36,7 +37,15 @@ const SHOW_OPTIONS: { value: ShowFilter; label: string }[] = [
 ];
 
 export default function Overview() {
-  const { data, error, loading } = useAsync(getSubjects, []);
+  const { data, error, loading, reload } = useAsync(getSubjects, []);
+  /**
+   * The live environment, beside the archive's memory of it.
+   *
+   * These answer different questions and the page needs both: an open alert says the *next*
+   * audit will be narrower, a blocked record says an *old* one already was. Reading the second
+   * as the first is how this page came to announce a bench outage over a healthy pool.
+   */
+  const alerts = useAsync(getAlerts, []);
   const [params, setParams] = useSearchParams();
   const status = useRunStatus();
 
@@ -78,7 +87,8 @@ export default function Overview() {
   }, [status?.running, status?.progress]);
 
   const t = useMemo(() => tally(subjects, live), [subjects, live]);
-  const incident = useMemo(() => deriveIncident(subjects), [subjects]);
+  const backlog = useMemo(() => deriveBacklog(subjects, live), [subjects, live]);
+  const openAlerts = alerts.data?.open ?? [];
 
   const rows = useMemo(() => {
     const filtered = subjects.filter((s) => search(s, q) && applyShow(s, show, leg, live));
@@ -116,23 +126,34 @@ export default function Overview() {
     <div className="page page--wide">
       <Summary t={t} show={show} leg={leg} onPick={toggleShow} />
 
-      {incident ? (
+      {/*
+        Two different facts, and only one of them is chrome-worthy.
+
+        An OPEN alert changes what the next audit will do, so it gets the banner. A blocked
+        record with no open alert is a leftover: the environment recovered and nobody has been
+        back. That reads as a to-do, not an alarm — and saying "pool unavailable" over a
+        healthy pool is how this page used to contradict Activity one click away.
+      */}
+      {openAlerts.length > 0 ? (
         <div style={{ marginTop: 12 }}>
           <Notice
             tone="warn"
             title={
               <>
-                {titleForReason(incident.reason)} — functional queue paused{' '}
-                <span className="num">{duration(incident.since)}</span>
+                {openAlerts[0]!.title}
+                {openAlerts.length > 1 ? ` · and ${openAlerts.length - 1} more` : ''} — open{' '}
+                <span className="num">{duration(openAlerts[0]!.opened_at)}</span>
               </>
             }
           >
-            {plural(incident.count, 'assay')} blocked on{' '}
-            <code className="mono">{incident.reason}</code>. No retry budget was consumed and no
-            verdict was reached about any of these subjects — the functional column below is grey
-            and hatched, never red.
+            {openAlerts[0]!.detail ? <>{openAlerts[0]!.detail}. </> : null}
+            Audits still run: a section that needs nothing missing gets its verdict, the rest are
+            recorded blocked. No app is charged a retry for this and no verdict is reached about
+            one — a blocked cell is grey and hatched, never red.
           </Notice>
         </div>
+      ) : backlog ? (
+        <BacklogNote backlog={backlog} onShow={() => toggleShow('blocked', 'any')} onFinished={reload} />
       ) : null}
 
       <div className="toolbar">
@@ -152,7 +173,7 @@ export default function Overview() {
         <label>
           in
           <select className="control" value={leg} onChange={(e) => set({ leg: e.target.value })}>
-            <option value="any">either leg</option>
+            <option value="any">either section</option>
             <option value="static">static only</option>
             <option value="functional">functional only</option>
           </select>
@@ -346,10 +367,62 @@ function Tally({
   );
 }
 
-function titleForReason(reason: string): string {
-  const r = humaniseReason(reason) ?? reason;
-  if (r.includes('bench')) return 'Bench pool unavailable';
-  if (r.includes('agent')) return 'Assay agent unavailable';
-  if (r.includes('browser')) return 'Browser pool unavailable';
-  return `Assays blocked — ${r}`;
+/**
+ * The leftover, in the past tense, naming who it is about.
+ *
+ * Deliberately not a `Notice`: nothing is wrong right now, and warning chrome for a to-do is
+ * how a page teaches people to ignore its warnings. It says what has no verdict, why, how long
+ * it has been outstanding — and offers the two things a reader would go looking for: the rows
+ * themselves, and the re-assay that clears it.
+ */
+function BacklogNote({
+  backlog,
+  onShow,
+  onFinished,
+}: {
+  backlog: BlockedBacklog;
+  onShow: () => void;
+  onFinished: () => void;
+}) {
+  const named = backlog.items.slice(0, 3);
+  const rest = backlog.count - named.length;
+  const only = backlog.items.length === 1 ? backlog.items[0]! : null;
+
+  return (
+    <div className="backlog-note">
+      <span className="backlog-note__mark" aria-hidden="true">▨</span>
+      <span className="backlog-note__text">
+        {plural(backlog.count, 'section')} carrying no verdict —{' '}
+        {named.map((it, i) => (
+          <span key={`${it.subject}-${it.section}`}>
+            {i > 0 ? ', ' : ''}
+            <Link to={`/s/${encodeURIComponent(it.subject)}`}>{it.subject}</Link>
+            <span className="dim"> · {it.section}</span>
+          </span>
+        ))}
+        {rest > 0 ? <span className="dim"> and {rest} more</span> : null}
+        {', '}
+        {reasonPhrase(backlog.reason)} <span className="num">{duration(backlog.since)}</span> ago.
+        {' '}Nothing was concluded about {backlog.count === 1 ? 'it' : 'them'} and no retry was
+        spent; a re-assay clears it.
+      </span>
+      <span className="spacer" />
+      {backlog.count > 1 ? (
+        <button className="btn btn--sm" type="button" onClick={onShow}>
+          show {backlog.count === 1 ? 'it' : 'them'}
+        </button>
+      ) : null}
+      {only ? <ReassayButton subject={only.subject} onFinished={onFinished} label="re-assay" /> : null}
+    </div>
+  );
 }
+
+/** The reason as something that *happened*, since the record is history. */
+function reasonPhrase(reason: string): string {
+  const r = humaniseReason(reason) ?? reason;
+  if (r.includes('bench')) return 'no demo bench was available when it was last audited,';
+  if (r.includes('browser')) return 'no browser was answering when it was last audited,';
+  if (r.includes('agent')) return 'the audit agent was unavailable,';
+  return `blocked on ${reason},`;
+}
+

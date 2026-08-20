@@ -513,7 +513,13 @@ export class BenchProber {
     const rows = this.list();
     const authFailing = rows.filter((b) => b.status === 'auth');
     const unreachable = rows.filter((b) => b.status === 'unreachable');
-    const impact = this.leasable().length === 0 ? 'functional queue paused · no try consumed' : undefined;
+    // What this is currently stopping, in the operator's terms. Not "the functional queue":
+    // there is no queue (invariant 8), and which sections need a bench is the protocol's to
+    // say — an audit still runs, it is simply narrower while this holds.
+    const impact =
+      this.leasable().length === 0
+        ? 'sections that need a bench will be recorded blocked · no try consumed'
+        : undefined;
 
     if (authFailing.length > 0) {
       this.opts.alerts.open({

@@ -2,8 +2,8 @@
  * The runner — rows D1–D5 and E1, and the thing that makes Touchstone able to audit an app
  * rather than only decide which one to audit.
  *
- * One job in, one or two assay files out, and a `SchedulerOutcome` back so the scheduler
- * knows what it cost. The shape is n8n's, node for node:
+ * One job in, one assay file per section of the protocol out, and a `SchedulerOutcome` back
+ * so the scheduler knows what it cost. The shape is n8n's, node for node:
  *
  *   Build prompt → Call Claude Code → Extract → busy? → Wait → retry once → record
  *
@@ -12,8 +12,11 @@
  * 1. **A busy agent costs nothing.** `AppStore PR Review` stays in n8n on the same endpoint,
  *    so a 409 is routine and is never the subject's fault. It retries once after a wait, and
  *    if it is still busy the subject goes back to the queue untouched — no try, no last-run.
- * 2. **A dead bench is not a verdict.** The functional leg is written `blocked`, never
- *    `errored`, whenever no mandatory phase produced a real result.
+ * 2. **A dead bench is not a verdict.** A section whose prerequisites are missing is not
+ *    attempted and is written `blocked`, never `errored`, and never narrows the rest of the
+ *    run. What each section needs is declared by its protocol file (`requires:`), which is
+ *    what replaced the old `depth: static | full` — there is no such thing as a partial run
+ *    any more, only sections that could run and sections that could not.
  * 3. **The agent's declaration is authoritative.** The runner consumes the JSON contract and
  *    parses no markdown for its verdict, tier or score — principle 3.
  *
@@ -24,14 +27,15 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import type { AssayRecord, Leg } from '../../shared/types.js';
+import type { AssayRecord, Section } from '../../shared/types.js';
 import type { LastRun, RunLive, RunOutcome } from '../../shared/activity.js';
-import { assaysFromAgentReport, blockedFunctionalAssay, type Standard } from '../domain/assay.js';
+import { assaysFromAgentReport, type AssaySection } from '../domain/assay.js';
+import type { Standard } from '../store/config.js';
 import type { ReportIndex } from '../store/index.js';
 import { writeReport } from '../store/reports.js';
 import type { BenchProber } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
-import type { ProtocolStore } from '../store/protocols.js';
+import { sectionsOf, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
 import { coverageOf, type CanonicalRequirement, type RunLedger, type RunState } from '../services/ledger.js';
 import type { EventLog } from '../services/events.js';
 import { callAgent, type AgentOptions, type AgentOutcome } from './agent.js';
@@ -42,7 +46,6 @@ export { callAgent, classify, extractText, type AgentReport } from './agent.js';
 
 export interface RunnerJob {
   subject: string;
-  depth: 'static' | 'full';
   try_n: number;
 }
 
@@ -65,11 +68,18 @@ export interface RunnerOptions {
   /** False means refuse every job and say so. The default, until reviewed. */
   enabled: boolean;
   reportsRoot: string;
-  standards: { staticStd: Standard; functionalStd: Standard };
+  /**
+   * Standards by section — an override, not a requirement.
+   *
+   * A section with no entry here is named and versioned by its own protocol file, which is
+   * the rubric that actually judged it. The files exist so a standard can carry a version
+   * that moves independently of the prose.
+   */
+  standards?: Standard[];
   events: EventLog;
   index?: ReportIndex;
   prober?: BenchProber;
-  /** The agent and browser endpoints, so a functional run can lease a browser. */
+  /** The agent and browser endpoints, so a section that needs a browser can lease one. */
   ports?: PortProber;
   /** The rubric, read fresh per run so an edit takes effect on the next audit, not the next boot. */
   protocols?: ProtocolStore;
@@ -115,9 +125,9 @@ export class Runner {
   /**
    * Add to what `status()` says about the run already in flight.
    *
-   * The bench and the browser are chosen inside `execute`, after the run is announced, and a
-   * full run can be narrowed to a static one there too. Without this the UI would spend the
-   * whole audit describing the job as it was requested rather than as it is being run.
+   * The bench, the browser and the set of sections are all resolved inside `execute`, after
+   * the run is announced. Without this the UI would spend the whole audit describing the job
+   * as it was requested rather than as it is being run.
    */
   private note(patch: Partial<RunLive>): void {
     if (this.current) this.current = { ...this.current, ...patch };
@@ -144,12 +154,12 @@ export class Runner {
     }
     this.running = true;
     const startedAt = this.now().toISOString();
-    this.current = { subject: job.subject, depth: job.depth, started_at: startedAt };
+    this.current = { subject: job.subject, started_at: startedAt };
     try {
       const outcome = await this.execute(job);
       this.previous = {
         subject: job.subject,
-        depth: job.depth,
+        ...(this.current?.sections ? { sections: this.current.sections } : {}),
         started_at: startedAt,
         finished_at: this.now().toISOString(),
         outcome,
@@ -169,82 +179,123 @@ export class Runner {
     const events = this.opts.events;
     const startedAt = this.now().toISOString();
 
+    // ── what this run is made of ─────────────────────────────────────────────────────────
+    // Read per run, not cached: an operator who edits the protocol expects the next audit to
+    // use it, and a rubric held in memory since boot is the kind of staleness nobody suspects.
+    const plan = await this.plan();
+    if (!plan || plan.sections.length === 0) {
+      events.log({
+        level: 'error',
+        code: 'PROTOCOL_MISSING',
+        message: 'There is no protocol on disk, so there is nothing to audit against',
+        detail: { dir: this.opts.protocols?.directory ?? '<unset>' },
+      });
+      return { kind: 'blocked', reason: 'no_protocol' };
+    }
+
+    // ── what each section needs, and whether we have it ──────────────────────────────────
     // The bench is chosen here, not by the agent: the management board reports an instance
     // Ready while its login gate is broken, so the host handed to the prompt is one whose
     // login we probed ourselves. Rows D7/D8.
     //
-    // Nothing leasable no longer aborts the run. Principle 4 says legs are independent, and
-    // returning `blocked` here made a dead demo pool cost the static verdict as well — which
-    // is the very conflation §2.2 exists to complain about. So the job degrades: the static
-    // leaf runs, and the functional half is *recorded* as blocked by `blockedFunctionalAssay`.
+    // A capability is probed only if some section asks for it. Nothing leasable does not abort
+    // the run and does not narrow it: principle 4 says sections are independent, and returning
+    // `blocked` for the whole job made a dead demo pool cost the static verdict as well —
+    // the very conflation §2.2 exists to complain about. The sections that can run, run; the
+    // rest are *recorded* as blocked.
+    const wanted = new Set(plan.sections.flatMap((s) => s.requires));
     let benchHost: string | undefined;
-    let degradedFrom: 'full' | null = null;
-    let blockedReason: string | null = null;
-    if (job.depth === 'full' && this.opts.prober) {
-      const leasable = this.opts.prober.leasable();
-      if (leasable.length === 0) {
-        degradedFrom = 'full';
-        blockedReason = 'bench_unavailable';
-      } else {
-        benchHost = leasable[0]!.url;
-      }
-    }
-
-    // ── the browser, row D6 ──────────────────────────────────────────────────────────────
-    // A lease is `(bench, browser)` together. There is one functional run at a time — the
-    // scheduler's single-flight and this class's own guard both say so — so taking the first
-    // healthy sidecar *is* the lease, and no two assays can share a browser by construction.
-    // That is the whole point: the page-stealing race in §2.4 cannot occur.
     let browserEndpoint: string | undefined;
-    if (job.depth === 'full' && !degradedFrom && this.opts.ports) {
-      const browsers = this.opts.ports.healthy('browser');
-      if (browsers.length === 0) {
-        // Same degrade as the bench: a browser we cannot reach is our problem, not the app's.
-        degradedFrom = 'full';
-        blockedReason = 'browser_unavailable';
-      } else {
-        browserEndpoint = browsers[0]!.url;
-      }
+    const missing = new Map<string, string>();
+
+    if (wanted.has('bench')) {
+      const leasable = this.opts.prober?.leasable() ?? [];
+      if (leasable.length === 0) missing.set('bench', 'bench_unavailable');
+      else benchHost = leasable[0]!.url;
+    }
+    if (wanted.has('browser')) {
+      // A lease is `(bench, browser)` together. There is one run at a time — the scheduler's
+      // single-flight and this class's own guard both say so — so taking the first healthy
+      // sidecar *is* the lease, and no two assays can share a browser by construction. That is
+      // the whole point: the page-stealing race in §2.4 cannot occur.
+      const browsers = this.opts.ports?.healthy('browser') ?? [];
+      if (browsers.length === 0) missing.set('browser', 'browser_unavailable');
+      else browserEndpoint = browsers[0]!.url;
     }
 
-    /**
-     * What the agent is actually asked for. A degraded run asks for the static leaf only —
-     * telling it to install onto a bench we already know is unusable would burn minutes to
-     * arrive at the answer we have.
-     */
-    const runDepth: 'static' | 'full' = degradedFrom ? 'static' : job.depth;
+    const runSections: ProtocolSection[] = [];
+    const skipped: { section: ProtocolSection; reason: string }[] = [];
+    for (const section of plan.sections) {
+      const unmet = section.requires.find((c) => missing.has(c));
+      if (unmet) skipped.push({ section, reason: missing.get(unmet)! });
+      else runSections.push(section);
+    }
+
     this.note({
-      ran_depth: runDepth,
-      degraded_reason: blockedReason,
+      sections: runSections.map((s) => s.id),
+      blocked: skipped.map((s) => ({ section: s.section.id, reason: s.reason })),
+      degraded_reason: skipped[0]?.reason ?? null,
       bench: benchHost ?? null,
       browser: browserEndpoint ?? null,
     });
-    if (degradedFrom && blockedReason) {
+
+    for (const { section, reason } of skipped) {
       events.log({
         level: 'warn',
         code: 'ASSAY_DEGRADED',
-        message: 'An audit ran its static half only, because the functional half had nothing to run on',
+        message: 'An audit skipped one section, because it had nothing to run it on',
         subject: job.subject,
-        detail: { subject: job.subject, reason: blockedReason, asked_for: degradedFrom },
+        detail: { subject: job.subject, reason, section: section.id },
       });
     }
 
-    // Read per run, not cached: an operator who edits the protocol expects the next audit to
-    // use it, and a rubric held in memory since boot is the kind of staleness nobody suspects.
-    const protocols = await this.loadProtocols();
+    if (runSections.length === 0) {
+      // Every section blocked. There is no audit to run and nothing to say about the subject,
+      // so this costs it no try — the same rule that keeps an outage from parking innocent
+      // apps, applied to the case where the outage takes out everything at once.
+      return { kind: 'blocked', reason: skipped[0]?.reason ?? 'no_section_runnable' };
+    }
 
     // The ticket. Minted per dispatch, dead when the run ends — see `services/ledger.ts` for
     // why this is not a shared secret.
-    const canonical = await this.canonicalRequirements(runDepth);
+    const canonical = runSections.flatMap((section) =>
+      section.requirements
+        .filter((r) => r?.id && r?.text)
+        .map((r) => ({
+          id: String(r.id),
+          text: String(r.text),
+          // The section comes from the protocol that listed the id, so the ledger never has to
+          // ask the agent which section an item belongs to, or guess it from a heading.
+          section: section.id,
+          ...(r.requires ? { requires: String(r.requires) } : {}),
+        })),
+    );
     const ticket =
       this.opts.ledger && this.opts.callbackUrl
-        ? this.opts.ledger.open({ subject: job.subject, depth: runDepth, canonical })
+        ? this.opts.ledger.open({
+            subject: job.subject,
+            sections: runSections.map((s) => ({
+              id: s.id,
+              name: s.name,
+              phases: s.phases.map((p) => p.id),
+            })),
+            canonical,
+          })
         : null;
 
     const { prompt } = buildPrompt({
       app_name: job.subject,
-      depth: runDepth,
-      ...(protocols ? { protocols } : {}),
+      protocols: {
+        ...(plan.orchestrator ? { orchestrator: plan.orchestrator } : {}),
+        sections: runSections.map((s) => ({
+          id: s.id,
+          name: s.name,
+          body: s.body,
+          phases: s.phases,
+          requires: s.requires,
+        })),
+      },
+      skipped: skipped.map(({ section, reason }) => ({ id: section.id, name: section.name, reason })),
       ...(ticket && this.opts.callbackUrl
         ? { callback: { url: this.opts.callbackUrl, run_token: ticket.token } }
         : {}),
@@ -259,7 +310,7 @@ export class Runner {
       subject: job.subject,
       detail: {
         subject: job.subject,
-        depth: runDepth,
+        sections: runSections.map((s) => s.id),
         try_n: job.try_n,
         bench: benchHost ?? null,
         browser: browserEndpoint ?? null,
@@ -309,30 +360,17 @@ export class Runner {
     const assays = assaysFromAgentReport({
       subject: job.subject,
       declared: outcome.report,
-      standards: this.opts.standards,
+      // The sections that actually ran, and — recorded rather than dropped — the ones that
+      // could not, so a run always produces one file per section and the store can say "not
+      // checked" instead of nothing.
+      sections: runSections.map((s) => this.assaySection(s)),
+      blocked: skipped.map(({ section, reason }) => ({ section: this.assaySection(section), reason })),
       startedAt,
       finishedAt,
-      // The depth that was *run*. A degraded job produced a static report, and telling the
-      // splitter otherwise would have it look for a functional section that is not there.
-      depth: runDepth,
-      benchHost,
-      browserEndpoint,
+      ...(benchHost ? { benchHost } : {}),
+      ...(browserEndpoint ? { browserEndpoint } : {}),
       ...(flagged ? { requirements: flagged.requirements, phases: flagged.phases } : {}),
     });
-
-    // The half we could not do, recorded rather than dropped — so the pair of files a full
-    // run produces is still a pair, and the store can say "not checked" instead of nothing.
-    if (degradedFrom && blockedReason) {
-      assays.push(
-        blockedFunctionalAssay({
-          subject: job.subject,
-          standard: this.opts.standards.functionalStd,
-          reason: blockedReason,
-          startedAt,
-          finishedAt,
-        }),
-      );
-    }
 
     const files: string[] = [];
     for (const assay of assays) {
@@ -351,14 +389,14 @@ export class Runner {
       level: 'info',
       code: 'ASSAY_COMPLETED',
       message: blocked
-        ? 'An audit finished, but its functional half could not run'
+        ? 'An audit finished, but one of its sections could not run'
         : 'An audit finished',
       subject: job.subject,
       detail: {
         subject: job.subject,
         verdict: String(assays[0]!.meta.verdict ?? 'none'),
         risk: assays[0]!.meta.risk_score,
-        legs: assays.map((a) => a.meta.leg as Leg),
+        sections: assays.map((a) => a.meta.section),
         blocked: blocked ? String(blocked.meta.blocked_reason ?? 'unknown') : null,
       },
     });
@@ -379,50 +417,42 @@ export class Runner {
    * It still costs a try, as n8n charges it, but it opens the alert that says where to look.
    */
   /**
-   * The three texts, or nothing.
+   * The protocol, read fresh: the orchestrator's text and the sections it composes.
    *
-   * Nothing is a legitimate answer — it makes the prompt fall back to the wiki-fetching
-   * wording, which is what the n8n node still does. It is not the configuration this
-   * installation wants, so it is logged rather than passed over in silence.
+   * `null` means there is nothing on disk. That used to be survivable — the prompt fell back
+   * to wording that told the agent to fetch the rubric from a wiki — but the rubric lives
+   * here now, and there is no wiki to fall back to. A run with no protocol has nothing to
+   * judge against and no sections to write, so it stops instead of inventing either.
    */
-  private async loadProtocols(): Promise<{ orchestrator?: string; static?: string; functional?: string } | null> {
+  private async plan(): Promise<{ orchestrator?: string; sections: ProtocolSection[] } | null> {
     if (!this.opts.protocols) return null;
     const all = await this.opts.protocols.list();
-    if (all.length === 0) {
-      this.opts.events.log({
-        level: 'warn',
-        code: 'PROTOCOL_MISSING',
-        message: 'No protocol files were found, so the audit has no rubric of its own',
-        detail: { dir: this.opts.protocols.directory },
-      });
-      return null;
-    }
-    const byId = new Map(all.map((p) => [p.meta.id, p.body]));
+    if (all.length === 0) return null;
+    const orchestrator = all.find((p) => p.meta.kind === 'orchestrator')?.body;
     return {
-      orchestrator: byId.get('orchestrator'),
-      static: byId.get('static'),
-      functional: byId.get('functional'),
+      ...(orchestrator ? { orchestrator } : {}),
+      sections: sectionsOf(all),
     };
   }
 
   /**
-   * The canonical ids for this run — the static leaf always, the functional one at `full`.
+   * A section, plus the standard that names and versions it.
    *
-   * Handed to the agent through `list_requirements` so it maps to a stable vocabulary rather
-   * than inventing wording that drifts between runs and breaks every cross-app question.
+   * The protocol is the fallback and the standard file is the override — a section with no
+   * file is still stamped with a rubric and a version, which is principle 6, rather than
+   * refusing to run for want of a two-line YAML file.
    */
-  private async canonicalRequirements(depth: 'static' | 'full'): Promise<CanonicalRequirement[]> {
-    if (!this.opts.protocols) return [];
-    const all = await this.opts.protocols.list();
-    const out: CanonicalRequirement[] = [];
-    for (const p of all) {
-      if (p.meta.kind !== 'leaf') continue;
-      if (depth === 'static' && p.meta.leg === 'functional') continue;
-      for (const r of p.meta.requirements ?? []) {
-        if (r?.id && r?.text) out.push({ id: String(r.id), text: String(r.text), ...(r.requires ? { requires: String(r.requires) } : {}) });
-      }
-    }
-    return out;
+  private assaySection(section: ProtocolSection): AssaySection {
+    const standard = (this.opts.standards ?? []).find((s) => s.section === section.id);
+    return {
+      id: section.id,
+      name: section.name,
+      standard: standard
+        ? { name: standard.name, version: standard.version }
+        : { name: section.name, version: section.version },
+      phases: section.phases.map((p) => p.id),
+      headings: section.headings,
+    };
   }
 
   private async dump(job: RunnerJob, outcome: Extract<AgentOutcome, { ok: false }>): Promise<void> {

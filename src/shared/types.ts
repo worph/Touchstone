@@ -3,6 +3,25 @@
  * See MVP.md § Contracts.
  */
 
+/**
+ * A **section** of the protocol — one leaf rubric, and one assay file.
+ *
+ * The id is the leaf protocol's own `id` (`data/protocols/<id>.md`), so the set of sections
+ * is whatever the protocol directory declares. It used to be a two-value union called `Leg`
+ * (`static | functional`) hard-coded here, which meant a third rubric could not exist and a
+ * rename was a code change. Nothing in the server enumerates sections any more: they come
+ * from the protocol files, and everything downstream carries the id it was given.
+ *
+ * The one rule that does not relax: **only a protocol file may define a section.** An id an
+ * agent invents is recorded against the run's primary section and marked `unlisted` — it
+ * never mints a new one, or a run could route a Critical into a section the gate ignores.
+ */
+export type Section = string;
+
+/**
+ * @deprecated The old name for {@link Section}, still used by the two-column Overview and by
+ * report files written before the rename. New code says `section`.
+ */
 export type Leg = 'static' | 'functional';
 
 /** Ordered: comparisons rely on SEVERITY_RANK, never on string order. */
@@ -25,6 +44,14 @@ export type RequirementVerdict = 'pass' | 'fail' | 'n-a' | 'unverified';
 /** One requirement the agent settled and recorded while it worked. */
 export interface RecordedRequirement {
   id: string;
+  /**
+   * The section that owns this requirement — the leaf protocol that listed the id.
+   *
+   * Resolved by the ledger from the canonical list, so a canonical id needs no help from the
+   * agent. Only an `unlisted` id can carry a section the agent supplied, and only when that
+   * section already exists.
+   */
+  section?: Section;
   /** The agent's own wording, kept as the evidence for the id it chose. */
   requirement?: string;
   verdict: RequirementVerdict;
@@ -38,6 +65,8 @@ export interface RecordedRequirement {
 
 export interface RecordedPhase {
   phase: string;
+  /** The section whose phase plan names this phase. */
+  section?: Section;
   result: 'pass' | 'fail' | 'errored' | 'n-a';
   note?: string;
   at: string;
@@ -65,7 +94,10 @@ export interface Coverage {
 /** Exactly the YAML frontmatter of a report file. */
 export interface AssayMeta {
   subject: string;
-  leg: Leg;
+  /** Which section of the protocol this assay is. `parseReportMeta` guarantees it. */
+  section: Section;
+  /** The pre-rename spelling of `section`, still on every file written before 2026-08-20. */
+  leg?: Section;
   standard: string;
   standard_version: number;
   status: AssayStatus;
@@ -99,11 +131,17 @@ export interface AssayRecord {
 /** One row of the Overview table. */
 export interface SubjectState {
   name: string;
+  /**
+   * The current assay per section — every section the archive knows about, not a fixed two.
+   * `static` and `functional` below are the same records under their old names, kept while
+   * the Overview still draws exactly two columns.
+   */
+  sections: Record<Section, AssayRecord | null>;
   static: AssayRecord | null;
   functional: AssayRecord | null;
-  /** Sum of the two legs' latest risk scores. Overview sorts by this, descending. */
+  /** Sum of every section's latest risk score. Overview sorts by this, descending. */
   risk: number;
-  /** Age in days of the most recent assay of either leg; null if never assayed. */
+  /** Age in days of the most recent assay of any section; null if never assayed. */
   age_days: number | null;
 }
 

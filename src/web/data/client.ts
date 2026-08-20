@@ -195,9 +195,12 @@ export interface ProtocolSummary {
   id: string;
   name: string;
   version: number;
+  /** A `leaf` is one section of an audit; its id is the section id. */
   kind: 'orchestrator' | 'leaf';
-  leg?: 'static' | 'functional';
-  requires_bench?: boolean;
+  /** Where it sits in a run, and what it cannot run without. */
+  order?: number;
+  requires?: string[];
+  phases?: { id: string; label?: string }[];
   imported_from?: string;
   file: string;
   bytes: number;
@@ -235,8 +238,8 @@ export function saveProtocol(id: string, body: string): Promise<ProtocolDoc> {
  * minutes and a proxy closing the socket at minute four is indistinguishable from a failure.
  * Poll `getAssayStatus` and read `last` when `running` clears.
  */
-export function startAssay(subject: string, depth: 'static' | 'full'): Promise<{ started: boolean }> {
-  return post<{ started: boolean }>('/assays', { subject, depth });
+export function startAssay(subject: string): Promise<{ started: boolean }> {
+  return post<{ started: boolean }>('/assays', { subject });
 }
 
 /** The run in flight, its progress and the last one to finish. See `data/runStatus.ts`:

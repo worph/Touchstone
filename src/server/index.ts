@@ -141,21 +141,18 @@ const protocols = new ProtocolStore(cfg.protocolsDir);
  */
 const ledger = new RunLedger({ events });
 
+/**
+ * The standards, by section — an override over what each protocol file says about itself.
+ *
+ * Absent is not fatal any more: the section's own protocol supplies the name and the version
+ * that judged it, which is principle 6 satisfied by the rubric rather than by a second file
+ * that has to be kept in step with it.
+ */
 const standards = await loadStandards(cfg.standardsDir);
-const staticStd = standards.find((s) => s.leg === 'static');
-const functionalStd = standards.find((s) => s.leg === 'functional');
-if (!staticStd || !functionalStd) {
-  // The runner would otherwise write assays claiming a standard it never read. Refusing to
-  // start is louder than writing files stamped with a guess.
-  app.log.error({ standardsDir: cfg.standardsDir }, 'no standards found; the runner cannot label an assay');
-}
 const runner = new Runner({
-  enabled: cfg.runner.enabled && Boolean(staticStd && functionalStd),
+  enabled: cfg.runner.enabled,
   reportsRoot: cfg.reportsRoot,
-  standards: {
-    staticStd: staticStd ?? { name: 'Static Review Protocol', version: 0 },
-    functionalStd: functionalStd ?? { name: 'Functional Review Protocol', version: 0 },
-  },
+  standards,
   events,
   index: store,
   prober,

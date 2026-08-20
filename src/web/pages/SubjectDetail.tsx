@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import type { AssayRecord, Leg } from '@shared/types';
+import type { AssayRecord, Section, SubjectState } from '@shared/types';
 import MarkdownView, { MissingReport } from '../components/MarkdownView';
 import StatusCell from '../components/StatusCell';
 import { EmptyState, Loading, Notice } from '../components/Ui';
@@ -33,7 +33,7 @@ export default function SubjectDetail() {
   const { data, error, loading } = useAsync(() => getSubject(name), [name, nonce]);
   const reload = useCallback(() => setNonce((n) => n + 1), []);
 
-  const [selectedLeg, setSelectedLeg] = useState<Leg | null>(null);
+  const [selectedLeg, setSelectedLeg] = useState<Section | null>(null);
   const [view, setView] = useState<'rendered' | 'raw'>('rendered');
   const [fixOpen, setFixOpen] = useState(false);
 
@@ -48,10 +48,18 @@ export default function SubjectDetail() {
 
   const subject = data?.subject;
 
-  /** Default to the static report — the leg that most often has a body. */
-  const legWithReport: Leg | null = subject?.static ? 'static' : subject?.functional ? 'functional' : null;
-  const currentLeg = selectedLeg ?? legWithReport;
-  const currentRec = currentLeg ? (subject?.[currentLeg] ?? null) : null;
+  /**
+   * Which sections this subject has a report for, in archive order, and which one opens.
+   *
+   * The default is the first section that actually has a record — for the current protocol
+   * that is `static`, which is also the one that most often has a body, but nothing here
+   * names it.
+   */
+  const reported: Section[] = Object.entries(subject?.sections ?? {})
+    .filter(([, rec]) => rec)
+    .map(([id]) => id);
+  const currentLeg = (selectedLeg && reported.includes(selectedLeg) ? selectedLeg : reported[0]) ?? null;
+  const currentRec = currentLeg ? (subject?.sections?.[currentLeg] ?? null) : null;
   const currentFile = currentRec?.file ?? null;
 
   /** Recorded by the agent during the run. Absent on everything imported before the runner. */
@@ -138,11 +146,19 @@ export default function SubjectDetail() {
           ) : null}
         </div>
 
-        {/* The same overlay the Overview table uses: a leg being audited right now says so
-            in the card that will hold its verdict when the run lands. */}
+        {/*
+          One card per section the subject actually has, in the order the archive reports
+          them — plus any section this run is adding for the first time, so a brand-new
+          rubric shows up as `running` rather than appearing only once it has finished.
+
+          These used to be two hard-coded cards, `static` and `functional`. There are still
+          two of them here because the protocol has two leaves; there would be three if
+          `data/protocols/` held three, with no change to this file.
+        */}
         <div className="legs">
-          <LegCard leg="static" rec={subject.static} live={live} />
-          <LegCard leg="functional" rec={subject.functional} live={live} />
+          {sectionsOf(subject, live).map((id) => (
+            <LegCard key={id} leg={id} rec={subject.sections?.[id] ?? null} live={live} />
+          ))}
         </div>
       </div>
 
@@ -193,27 +209,24 @@ export default function SubjectDetail() {
             <span className="section-title">report</span>
             {currentRec ? (
               <span className="dim" style={{ fontSize: 11.5 }}>
-                {currentRec.meta.leg} · {stamp(currentRec.meta.started_at)}
+                {currentRec.meta.section} · {stamp(currentRec.meta.started_at)}
               </span>
             ) : null}
             <span style={{ flex: 1 }} />
 
-            {subject.static && subject.functional ? (
+            {/* One tab per section that has a report. Two today; the count is the archive's. */}
+            {reported.length > 1 ? (
               <div className="seg">
-                <button
-                  type="button"
-                  aria-pressed={currentLeg === 'static'}
-                  onClick={() => setSelectedLeg('static')}
-                >
-                  static
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={currentLeg === 'functional'}
-                  onClick={() => setSelectedLeg('functional')}
-                >
-                  functional
-                </button>
+                {reported.map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    aria-pressed={currentLeg === id}
+                    onClick={() => setSelectedLeg(id)}
+                  >
+                    {id}
+                  </button>
+                ))}
               </div>
             ) : null}
 
@@ -257,18 +270,34 @@ export default function SubjectDetail() {
 }
 
 interface LiveLeg {
-  legs: Leg[];
+  legs: Section[];
   started_at: string;
   note?: string;
 }
 
-function LegCard({ leg, rec, live }: { leg: Leg; rec: AssayRecord | null; live: LiveLeg | null }) {
-  const running = live?.legs.includes(leg) ? runningState(live.started_at, live.note) : null;
+/** The sections to draw: what the subject has, plus what this run is adding. */
+function sectionsOf(subject: SubjectState, live: LiveLeg | null): Section[] {
+  const known = Object.keys(subject.sections ?? {});
+  const extra = (live?.legs ?? []).filter((id) => !known.includes(id));
+  return [...known, ...extra];
+}
+
+function LegCard({ leg, rec, live }: { leg: Section; rec: AssayRecord | null; live: LiveLeg | null }) {
+  /**
+   * No count on the card. `16/25` is a fact about the *run*, and printing it once per section
+   * says each section is 16/25 of the way through its own list — two cards, the same number,
+   * neither of them true. The run's progress belongs to the run card, which is on screen
+   * beside this one; the section card says only that this section is being worked on.
+   */
+  const running = live?.legs.includes(leg) ? runningState(live.started_at) : null;
   const s = running ?? displayState(rec);
   return (
     <div className="leg-card">
       <span className="leg-name">{leg}</span>
-      <StatusCell state={s} size="lg" />
+      {/* While running the note is suppressed: the line below already says "being assayed
+          now", and the run's clock and count belong to the run card, once, not to each
+          section. A finished record keeps its note — that one is about the section. */}
+      <StatusCell state={s} size="lg" showNote={!running} />
       {running ? (
         <div className="leg-meta">
           <span>being assayed now</span>
@@ -287,7 +316,7 @@ function LegCard({ leg, rec, live }: { leg: Leg; rec: AssayRecord | null; live: 
         </div>
       ) : (
         <div className="leg-meta">
-          <span>this leg has never been assayed</span>
+          <span>this section has never been assayed</span>
         </div>
       )}
     </div>

@@ -14,7 +14,7 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 
-import type { RunStatus } from '../../shared/activity.js';
+import { PHASE_LABEL, type RunStatus } from '../../shared/activity.js';
 import type { ReportResponse } from '../../shared/types.js';
 import { renderMarkdown } from '../domain/markdown.js';
 import { coverageOf } from '../services/ledger.js';
@@ -36,7 +36,6 @@ const RECENT_REQUIREMENTS = 5;
 
 interface Body {
   subject?: string;
-  depth?: 'static' | 'full';
   /** Block until the audit finishes and return the report with it. Default false. */
   wait?: boolean;
 }
@@ -67,6 +66,11 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
         ? {
             ...coverageOf(live.requirements),
             of_canonical: live.canonical.length,
+            // The plan, so the page can draw the track before anything has been reported —
+            // and so it draws no track at all for a run whose sections have no phases.
+            phase_plan: live.sections.flatMap((s) =>
+              s.phases.map((id) => ({ id, label: PHASE_LABEL[id] ?? id })),
+            ),
             phases: live.phases,
             // Settled order, newest first. The ledger appends and revises in place, so the
             // tail is the most recent work without sorting timestamps that may tie.
@@ -95,8 +99,9 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
       });
     }
 
-    const depth = req.body?.depth === 'static' ? 'static' : 'full';
-    const job = { subject, depth, try_n: 1 } as const;
+    // No depth: a run audits every section of the protocol, and the ones whose prerequisites
+    // are missing are recorded as blocked rather than narrowing the job.
+    const job = { subject, try_n: 1 } as const;
 
     if (req.body?.wait !== true) {
       // Fire and report. Errors are already classified inside `run`, and anything thrown
@@ -104,11 +109,11 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
       void runAndRecord(runner, options.scheduler, job).catch((err) =>
         app.log.error({ err, subject }, 'hand-run assay failed'),
       );
-      return reply.code(202).send({ started: true, subject, depth });
+      return reply.code(202).send({ started: true, subject });
     }
 
     const outcome = await runAndRecord(runner, options.scheduler, job);
-    return { subject, depth, outcome, report: await readReport(options.store, outcome) };
+    return { subject, outcome, report: await readReport(options.store, outcome) };
   });
 
   /**
@@ -140,7 +145,7 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
 async function runAndRecord(
   runner: Runner,
   scheduler: Scheduler | undefined,
-  job: { subject: string; depth: 'static' | 'full'; try_n: number },
+  job: { subject: string; try_n: number },
 ): Promise<RunOutcome> {
   const outcome = await runner.run(job);
   await scheduler?.record(job.subject, toSchedulerOutcome(outcome));
