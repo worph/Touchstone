@@ -90,6 +90,10 @@ export const EVENT_CODES = {
   ASSAY_COMPLETED: { category: 'assay', label: 'audit finished' },
   ASSAY_FAILED: { category: 'assay', label: 'audit failed' },
   ASSAY_BLOCKED: { category: 'assay', label: 'audit could not start' },
+  ASSAY_DEGRADED: { category: 'assay', label: 'audit ran its static half only' },
+
+  CHAT_TOOL_FAILED: { category: 'chat', label: 'a tool call was refused' },
+  CHAT_TURN_FAILED: { category: 'chat', label: 'the assistant could not finish' },
   ASSAY_REQUIREMENT_REVISED: { category: 'assay', label: 'requirement re-recorded' },
   ASSAY_REQUIREMENT_UNLISTED: { category: 'assay', label: 'requirement not in the protocol' },
   PROTOCOL_MISSING: { category: 'assay', label: 'no protocol on disk' },
@@ -159,6 +163,9 @@ interface EventDetails {
   };
   ASSAY_FAILED: { subject: string; error: string; raw: string };
   ASSAY_BLOCKED: { subject: string; reason: string };
+  ASSAY_DEGRADED: { subject: string; reason: string; asked_for: 'full' };
+  CHAT_TOOL_FAILED: { tool: string; error: string };
+  CHAT_TURN_FAILED: { calls: number; error: string };
   ASSAY_REQUIREMENT_REVISED: { subject: string; id: string; from: string; to: string };
   ASSAY_REQUIREMENT_UNLISTED: { subject: string; id: string };
   PROTOCOL_MISSING: { dir: string };

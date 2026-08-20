@@ -1,6 +1,6 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
-import { existsSync } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
@@ -18,6 +18,8 @@ import { Runner } from './runner/index.js';
 import { PortProber } from './services/ports.js';
 import { ProtocolStore } from './store/protocols.js';
 import { RunLedger } from './services/ledger.js';
+import { ChatThreads } from './chat/thread.js';
+import { CHAT_TOOLS } from './chat/registry.js';
 import { loadStandards } from './store/config.js';
 
 const PORT = Number(process.env.TOUCHSTONE_PORT ?? 8080);
@@ -166,6 +168,23 @@ const runner = new Runner({
   dumpDir: cfg.stateDir,
 });
 
+/**
+ * The administrator chat.
+ *
+ * It runs on the same agent the runner audits with, so there is no second credential and
+ * nothing new pointing out of the box. The tools it holds are thin wrappers over the API —
+ * and none of them writes a verdict, for the reason `routes/mcp.ts` gives at length.
+ */
+const chatThreads = new ChatThreads(cfg.stateDir);
+await chatThreads.load();
+
+const chatPrompt = await fs
+  .readFile(fileURLToPath(new URL('./chat/prompt.md', import.meta.url)), 'utf8')
+  .catch(() => null);
+if (!chatPrompt) {
+  app.log.warn('the chat prompt could not be read; the administrator chat will refuse to run');
+}
+
 const scheduler = new Scheduler({
   constants: cfg.scheduler,
   armed: cfg.scheduler.armed,
@@ -207,6 +226,44 @@ await app.register(registerRoutes, {
   protocols,
   ledger,
   boardUrl: cfg.bench.board_url,
+  chat: {
+    threads: chatThreads,
+    ...(chatPrompt ? { template: chatPrompt } : {}),
+    ask: { agent: { url: cfg.runner.agent_url, tool: cfg.runner.agent_tool, via: cfg.runner.agent_via } },
+    ctx: {
+      runner,
+      registry,
+      ledger,
+      alerts,
+      ports,
+      prober,
+      // The same path `POST /assays` takes, so a run started by conversation is recorded,
+      // notified and charged to the schedule exactly as a hand-run one is.
+      startAssay: (job) => {
+        void runner
+          .run({ ...job, try_n: 1 })
+          .then((outcome) =>
+            scheduler.record(
+              job.subject,
+              outcome.kind === 'verdict'
+                ? { kind: 'verdict' }
+                : outcome.kind === 'agent_busy'
+                  ? { kind: 'agent_busy' }
+                  : outcome.kind === 'blocked'
+                    ? { kind: 'blocked', reason: outcome.reason }
+                    : { kind: 'error', reason: outcome.reason },
+            ),
+          )
+          .catch((err) => app.log.error({ err, subject: job.subject }, 'chat-started assay failed'));
+      },
+    },
+    status: async () => {
+      const tool = CHAT_TOOLS.find((t) => t.name === 'get_status');
+      if (!tool) return 'unavailable';
+      const result = await tool.handler({}, { runner, registry, ledger, alerts, ports, prober });
+      return result.text;
+    },
+  },
 });
 
 // In production the built SPA sits next to the compiled server. In dev, Vite serves it
@@ -247,8 +304,13 @@ events.log({
   },
 });
 
-if (cfg.benches.length === 0) {
-  app.log.warn('no benches configured — the functional queue stays paused');
+// `benches:` is the *override* for pinning a fixed box and is empty in every normal install;
+// the pool is discovered from `bench.pool_url`. Gating the prober on the override alone meant
+// the discovered case never probed at all — the app logged "no benches configured", never
+// asked the pool anything again, and the scheduler's D7/D8 gate read whatever was last
+// written to disk. An open bench alert could then never resolve on its own.
+if (cfg.benches.length === 0 && !cfg.bench.pool_url) {
+  app.log.warn('no benches configured and no pool to discover — the functional queue stays paused');
 } else {
   // Probe once at boot rather than waiting out the first interval: a restart during an
   // outage should not show a stale ✅ for five minutes.

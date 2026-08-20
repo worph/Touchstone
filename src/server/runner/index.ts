@@ -25,7 +25,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import type { AssayRecord, Leg } from '../../shared/types.js';
-import { assaysFromAgentReport, type Standard } from '../domain/assay.js';
+import { assaysFromAgentReport, blockedFunctionalAssay, type Standard } from '../domain/assay.js';
 import type { ReportIndex } from '../store/index.js';
 import { writeReport } from '../store/reports.js';
 import type { BenchProber } from '../services/bench.js';
@@ -166,20 +166,22 @@ export class Runner {
     // The bench is chosen here, not by the agent: the management board reports an instance
     // Ready while its login gate is broken, so the host handed to the prompt is one whose
     // login we probed ourselves. Rows D7/D8.
+    //
+    // Nothing leasable no longer aborts the run. Principle 4 says legs are independent, and
+    // returning `blocked` here made a dead demo pool cost the static verdict as well — which
+    // is the very conflation §2.2 exists to complain about. So the job degrades: the static
+    // leaf runs, and the functional half is *recorded* as blocked by `blockedFunctionalAssay`.
     let benchHost: string | undefined;
+    let degradedFrom: 'full' | null = null;
+    let blockedReason: string | null = null;
     if (job.depth === 'full' && this.opts.prober) {
       const leasable = this.opts.prober.leasable();
       if (leasable.length === 0) {
-        events.log({
-          level: 'warn',
-          code: 'ASSAY_BLOCKED',
-          message: 'An audit could not start because no demo bench was usable',
-          subject: job.subject,
-          detail: { subject: job.subject, reason: 'bench_unavailable' },
-        });
-        return { kind: 'blocked', reason: 'bench_unavailable' };
+        degradedFrom = 'full';
+        blockedReason = 'bench_unavailable';
+      } else {
+        benchHost = leasable[0]!.url;
       }
-      benchHost = leasable[0]!.url;
     }
 
     // ── the browser, row D6 ──────────────────────────────────────────────────────────────
@@ -188,19 +190,31 @@ export class Runner {
     // healthy sidecar *is* the lease, and no two assays can share a browser by construction.
     // That is the whole point: the page-stealing race in §2.4 cannot occur.
     let browserEndpoint: string | undefined;
-    if (job.depth === 'full' && this.opts.ports) {
+    if (job.depth === 'full' && !degradedFrom && this.opts.ports) {
       const browsers = this.opts.ports.healthy('browser');
       if (browsers.length === 0) {
-        events.log({
-          level: 'warn',
-          code: 'ASSAY_BLOCKED',
-          message: 'An audit could not start because no browser sidecar was answering',
-          subject: job.subject,
-          detail: { subject: job.subject, reason: 'browser_unavailable' },
-        });
-        return { kind: 'blocked', reason: 'browser_unavailable' };
+        // Same degrade as the bench: a browser we cannot reach is our problem, not the app's.
+        degradedFrom = 'full';
+        blockedReason = 'browser_unavailable';
+      } else {
+        browserEndpoint = browsers[0]!.url;
       }
-      browserEndpoint = browsers[0]!.url;
+    }
+
+    /**
+     * What the agent is actually asked for. A degraded run asks for the static leaf only —
+     * telling it to install onto a bench we already know is unusable would burn minutes to
+     * arrive at the answer we have.
+     */
+    const runDepth: 'static' | 'full' = degradedFrom ? 'static' : job.depth;
+    if (degradedFrom && blockedReason) {
+      events.log({
+        level: 'warn',
+        code: 'ASSAY_DEGRADED',
+        message: 'An audit ran its static half only, because the functional half had nothing to run on',
+        subject: job.subject,
+        detail: { subject: job.subject, reason: blockedReason, asked_for: degradedFrom },
+      });
     }
 
     // Read per run, not cached: an operator who edits the protocol expects the next audit to
@@ -209,15 +223,15 @@ export class Runner {
 
     // The ticket. Minted per dispatch, dead when the run ends — see `services/ledger.ts` for
     // why this is not a shared secret.
-    const canonical = await this.canonicalRequirements(job.depth);
+    const canonical = await this.canonicalRequirements(runDepth);
     const ticket =
       this.opts.ledger && this.opts.callbackUrl
-        ? this.opts.ledger.open({ subject: job.subject, depth: job.depth, canonical })
+        ? this.opts.ledger.open({ subject: job.subject, depth: runDepth, canonical })
         : null;
 
     const { prompt } = buildPrompt({
       app_name: job.subject,
-      depth: job.depth,
+      depth: runDepth,
       ...(protocols ? { protocols } : {}),
       ...(ticket && this.opts.callbackUrl
         ? { callback: { url: this.opts.callbackUrl, run_token: ticket.token } }
@@ -233,7 +247,7 @@ export class Runner {
       subject: job.subject,
       detail: {
         subject: job.subject,
-        depth: job.depth,
+        depth: runDepth,
         try_n: job.try_n,
         bench: benchHost ?? null,
         browser: browserEndpoint ?? null,
@@ -286,11 +300,27 @@ export class Runner {
       standards: this.opts.standards,
       startedAt,
       finishedAt,
-      depth: job.depth,
+      // The depth that was *run*. A degraded job produced a static report, and telling the
+      // splitter otherwise would have it look for a functional section that is not there.
+      depth: runDepth,
       benchHost,
       browserEndpoint,
       ...(flagged ? { requirements: flagged.requirements, phases: flagged.phases } : {}),
     });
+
+    // The half we could not do, recorded rather than dropped — so the pair of files a full
+    // run produces is still a pair, and the store can say "not checked" instead of nothing.
+    if (degradedFrom && blockedReason) {
+      assays.push(
+        blockedFunctionalAssay({
+          subject: job.subject,
+          standard: this.opts.standards.functionalStd,
+          reason: blockedReason,
+          startedAt,
+          finishedAt,
+        }),
+      );
+    }
 
     const files: string[] = [];
     for (const assay of assays) {

@@ -29,6 +29,9 @@ services:
     ports:
       - "5173:5173" # Vite dev server — the UI
       - "8081:8081" # Fastify API — proxied by Vite under /api, exposed for curl
+      # The browser sidecar shares this container's network namespace (see `browser` below),
+      # so its port is published here rather than on its own service.
+      - "9746:9746" # browser-mcp — MCP endpoint, noVNC and the web UI
     environment:
       # 8080 is the production default but is taken by ttyd in this environment;
       # vite.config.ts proxies /api to 8081 to match.
@@ -76,7 +79,19 @@ services:
       # here after half an hour is a leak.
       PAGE_COLLECTOR: "on"
       PAGE_TTL_MS: "1800000"
-    ports:
-      # Published for local validation only. In the packaged stack nothing is exposed: this
-      # is an unauthenticated browser-control API.
-      - "9746:9746"
+    # ── why it shares the dev container's network namespace ────────────────────────────
+    # A service worker — and therefore web push — only exists in a **secure context**:
+    # https, or http on localhost / 127.0.0.1 / [::1]. On its own network this container
+    # could reach the UI only as `172.19.0.1:5173` or `host.docker.internal:5173`, neither of
+    # which Chrome trusts, so `navigator.serviceWorker` was simply undefined and the Enable
+    # button on the Activity page did nothing at all — silently.
+    #
+    # Sharing the namespace makes `http://localhost:5173` inside Chrome the real Vite server
+    # and `localhost:8081` the real API, both trustworthy, with no Chrome flags. The image
+    # hard-codes its Chrome argv and reads no extra-args env, so
+    # `--unsafely-treat-insecure-origin-as-secure` is not reachable from out here.
+    #
+    # Dev only. The packaged stack puts every service on `pcs` and serves over https.
+    network_mode: "service:dev"
+    depends_on:
+      - dev

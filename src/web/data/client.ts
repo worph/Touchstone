@@ -12,6 +12,8 @@ import type { SubjectState, ReportResponse } from '@shared/types';
 import type {
   AlertsResponse,
   BenchesResponse,
+  ChatMessage,
+  ChatState,
   EventsResponse,
   PushStatus,
 } from '@shared/activity';
@@ -248,4 +250,91 @@ export function subscribePush(sub: unknown): Promise<PushStatus> {
 
 export function unsubscribePush(endpoint: string): Promise<PushStatus> {
   return post<PushStatus>('/push/unsubscribe', { endpoint });
+}
+
+// ── the administrator chat ───────────────────────────────────────────────────────────────
+
+export function getChat(): Promise<ChatState> {
+  return get<ChatState>('/chat');
+}
+
+export async function clearChat(): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/chat`, { method: 'DELETE', headers: { accept: 'application/json' } });
+  } catch {
+    throw new ApiError(0, 'The API is not reachable.');
+  }
+  if (!res.ok) throw new ApiError(res.status, await errorFrom(res));
+}
+
+/** The `{ error }` body the API answers refusals with, or a sentence about the status code. */
+async function errorFrom(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as unknown;
+    if (body && typeof body === 'object' && 'error' in body) {
+      return String((body as { error: unknown }).error);
+    }
+  } catch {
+    /* not JSON */
+  }
+  return `Request failed with ${res.status}.`;
+}
+
+/**
+ * Send one message and read the rows back as they are written.
+ *
+ * Server-sent events rather than polling, because a turn takes tens of seconds and shows its
+ * work: the tool it called, what came back, then the answer. Waiting for all of that and
+ * rendering it at once would be a worse answer than the same rows arriving as they land.
+ *
+ * Frames are `event: <name>\ndata: <json>` separated by a blank line, and a comment frame
+ * (`: ping`) has no event line at all — that is the heartbeat, and it is skipped.
+ */
+export async function streamChatTurn(
+  message: string,
+  handlers: { onMessage: (row: ChatMessage) => void; onError?: (error: string) => void },
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/chat/messages`, {
+      method: 'POST',
+      headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+  } catch {
+    throw new ApiError(0, 'The API is not reachable.');
+  }
+
+  // A refusal arrives as ordinary JSON before the stream starts, which is what makes "the
+  // agent is down" a sentence rather than an empty stream the page has to interpret.
+  if (!res.ok || !res.body) {
+    throw new ApiError(res.status, res.ok ? 'The assistant sent no answer.' : await errorFrom(res));
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let split = buffer.indexOf('\n\n');
+    while (split !== -1) {
+      const frame = buffer.slice(0, split);
+      buffer = buffer.slice(split + 2);
+      split = buffer.indexOf('\n\n');
+
+      const name = /^event: (.+)$/m.exec(frame)?.[1];
+      if (!name) continue; // a heartbeat
+      const dataAt = frame.indexOf('data: ');
+      if (dataAt === -1) continue;
+      const payload = JSON.parse(frame.slice(dataAt + 6)) as unknown;
+
+      if (name === 'message') handlers.onMessage(payload as ChatMessage);
+      else if (name === 'error') handlers.onError?.(String((payload as { error?: string }).error ?? 'failed'));
+    }
+  }
 }

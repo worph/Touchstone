@@ -227,14 +227,27 @@ wrong by successfully sending a message is an app that goes quiet exactly when y
 
 | | log | Beacon (Telegram / Discord / Talk) | push |
 | --- | --- | --- | --- |
-| tick summary | ✓ | ✓ | — |
-| assay finished | ✓ | ✓ | — |
-| assay failed after retry | ✓ | ✓ | ✓ |
+| tick summary | ✓ | — | — |
+| assay finished | ✓ | ✓ | **✓** |
+| assay failed / blocked | ✓ | ✓ | ✓ |
 | alert opened / resolved | ✓ | ✓ immediately | ✓ |
 | everything else | ✓ | — | — |
 
 The nav badge counts open alerts and unread `error` rows, and nothing else — a badge that counts
 routine completions is a badge people stop reading.
+
+**`assay finished` began pushing on 2026-08-20**, where this table had said it should not. That
+row was written for a loop grinding through 69 subjects unattended; the case that decided it is
+an operator who *asks* for a review — from the administrator chat, or the re-assay button — and
+walks away. For them the finished audit is the entire point of being notified, and an audit
+outlasts the page they asked from. The ceiling is one an hour even with the scheduler armed. If
+that ever becomes too many, the fix is to push only operator-initiated runs, which needs a
+`trigger` on the job — not to mute the thing people asked to be told about.
+
+**Every way an audit can end is on the list**, including `blocked`. A table covering only the
+happy path makes silence ambiguous: an operator who hears nothing cannot tell a slow run from a
+dead one, and the whole reason the runner separates `blocked` from `failed` is so the answer can
+be *"the demo pool is down"* rather than *"your app is broken"*.
 
 ---
 

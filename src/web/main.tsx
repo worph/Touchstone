@@ -10,6 +10,7 @@ import Shell from './components/Shell';
 import { EmptyState } from './components/Ui';
 import Activity from './pages/Activity';
 import Protocols from './pages/Protocols';
+import AdminChat from './pages/AdminChat';
 import Overview from './pages/Overview';
 import SubjectDetail from './pages/SubjectDetail';
 
@@ -25,6 +26,7 @@ createRoot(root).render(
           <Route path="/s/:name" element={<SubjectDetail />} />
           <Route path="/activity" element={<Activity />} />
           <Route path="/protocol" element={<Protocols />} />
+          <Route path="/chat" element={<AdminChat />} />
           <Route path="/subjects" element={<Navigate to="/" replace />} />
           <Route path="/findings" element={<Navigate to="/" replace />} />
           <Route

@@ -102,6 +102,7 @@ the other.
 - [MVP.md](MVP.md) — what "minimum viable" means here, and the order of work
 - [IMPLEMENTATION.md](IMPLEMENTATION.md) — stack, storage, the scheduler port, the runner, packaging
 - [UX.md](UX.md) — the three pages
+- [REQUIREMENTS.md](REQUIREMENTS.md) — what the operator asked for **beyond** parity, and its status
 
 Phase 0 was scoped before the parity rule and built some things that are no longer in the plan —
 findings-as-rows, the Findings page, history and regression detection. Those have been removed;

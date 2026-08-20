@@ -82,6 +82,8 @@ export default function Activity() {
   const [benches, setBenches] = useState<BenchesResponse | null>(null);
   const [log, setLog] = useState<EventsResponse | null>(null);
   const [push, setPush] = useState<PushStatus | null>(null);
+  /** Why the last attempt to register this device did not work. */
+  const [pushError, setPushError] = useState<string | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [probing, setProbing] = useState(false);
 
@@ -247,12 +249,17 @@ export default function Activity() {
           {push?.configured && push.public_key ? (
             <>
               {' '}
-              <button type="button" className="btn btn--sm" onClick={() => void enablePush(push.public_key!, refresh)}>
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={() => void enablePush(push.public_key!, refresh).then(setPushError)}
+              >
                 notify this device
               </button>
             </>
           ) : null}
           .
+          {pushError ? <div className="act-foot-error">{pushError}</div> : null}
         </div>
       </section>
 
@@ -306,23 +313,40 @@ export default function Activity() {
 /**
  * Register this browser for push.
  *
- * Deliberately inline and best-effort: a browser that refuses permission, has no service
- * worker, or is Safari is a browser that reads the log instead. Nothing else on the page
- * depends on it working.
+ * Best-effort, but **never silent**. This used to swallow every failure on the grounds that
+ * the environment block already says whether a device is registered — which is true and
+ * useless: a button that does nothing, twice, teaches the operator that push is broken
+ * rather than that their browser refused. The commonest cause is not even an error, it is
+ * an insecure context (`http://` on anything but localhost), where `serviceWorker` is simply
+ * not defined and nothing throws at all.
+ *
+ * Returns null on success, or a sentence to put on the page.
  */
-async function enablePush(publicKey: string, after: () => Promise<void>): Promise<void> {
+async function enablePush(publicKey: string, after: () => Promise<void>): Promise<string | null> {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return window.isSecureContext
+      ? 'This browser has no push support, so it cannot be notified.'
+      : 'Notifications need a secure page — open Touchstone over https, or at localhost.';
+  }
   try {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
     const permission = await Notification.requestPermission();
-    if (permission !== 'granted') return;
+    if (permission !== 'granted') {
+      return permission === 'denied'
+        ? 'This browser is blocking notifications for Touchstone. Allow them in the site settings and try again.'
+        : 'The permission prompt was dismissed, so nothing was registered.';
+    }
     const registration = await navigator.serviceWorker.register('/sw.js');
-    const sub = await registration.pushManager.subscribe({
+    // `.ready` rather than the registration itself: a worker that is installing has no
+    // `pushManager` to subscribe with yet, and the failure reads as a refusal.
+    const active = await navigator.serviceWorker.ready.catch(() => registration);
+    const sub = await active.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: publicKey,
     });
     await subscribePush(sub.toJSON());
     await after();
-  } catch {
-    // Nothing to show: the environment block already says whether a device is registered.
+    return null;
+  } catch (err) {
+    return `This device could not be registered: ${err instanceof Error ? err.message : String(err)}`;
   }
 }

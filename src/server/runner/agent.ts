@@ -215,6 +215,25 @@ export function classify(text: string, fallback = ''): AgentOutcome {
  * was spent.
  */
 export async function callAgent(prompt: string, opts: AgentOptions = {}): Promise<AgentOutcome> {
+  const raw = await postToAgent(prompt, opts);
+  if (!raw.ok) return classify(raw.errorText);
+  return classify(raw.text, raw.payload);
+}
+
+/** What the endpoint said, before anything decides what it means. */
+export type AgentRaw =
+  | { ok: true; text: string; payload: string }
+  | { ok: false; errorText: string };
+
+/**
+ * The transport, with no opinion about the answer.
+ *
+ * Split out of `callAgent` because the administrator chat talks to the same endpoint and
+ * wants a different contract back — `classify` reads the *assay* JSON and would quietly
+ * flatten a chat reply into an empty report. Everything about how the call is made, and in
+ * particular how a busy aggregator is surfaced, stays in one place.
+ */
+export async function postToAgent(prompt: string, opts: AgentOptions = {}): Promise<AgentRaw> {
   const url = opts.url ?? process.env.TOUCHSTONE_AGENT_URL ?? 'http://beacon-backend:9300/mcp';
   const tool = opts.tool ?? process.env.TOUCHSTONE_AGENT_TOOL ?? DEFAULT_TOOL;
   const timeoutS = opts.timeoutS ?? AGENT_TIMEOUT_S;
@@ -252,11 +271,14 @@ export async function callAgent(prompt: string, opts: AgentOptions = {}): Promis
       // An HTTP-level 409 is the same contention the text-level test looks for, and it must
       // reach the same branch — otherwise a busy agent burns a try depending only on how the
       // aggregator chose to report it.
-      return classify(`HTTPStatusError ${res.status} ${payload.slice(0, 400)}`);
+      return { ok: false, errorText: `HTTPStatusError ${res.status} ${payload.slice(0, 400)}` };
     }
   } catch (err) {
-    return classify(`Error calling remote tool: ${err instanceof Error ? err.message : String(err)}`);
+    return {
+      ok: false,
+      errorText: `Error calling remote tool: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 
-  return classify(extractText(payload), payload);
+  return { ok: true, text: extractText(payload), payload };
 }
