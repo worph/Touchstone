@@ -1097,6 +1097,74 @@ state and the UI badge. Step 4 is trials. The plan for all four is in
 
 ---
 
+## 5k. The administrator could not see a finished audit — 2026-08-20
+
+### What happened
+
+The operator asked the chat to review FileBrowser, it started one, and when they asked what came
+of it the assistant said "nothing yet". The log says why:
+
+```
+seq 163  18:37:48  ASSAY_STARTED    FileBrowser        ← started by the chat
+seq 164  18:38:15  SERVER_STARTED   read the archive   ← 27s later, a tsx-watch restart
+seq 166  18:39:37  SERVER_STARTED
+seq 167  18:40:00  SERVER_STARTED
+```
+
+That run never finished — it was killed 27 seconds in by a server restart, which is §7's known
+gotcha. But the *invisibility* was structural and would have happened anyway. All three chat
+tools read the live process: `get_status` is `runner.status()` — one in-memory slot emptied by
+every restart — plus the ledger. **Nothing in the chat read the archive.** Ten assays of
+FileBrowser were on disk, `/subjects/:name` served them, the Overview drew them, and the
+assistant could not see one.
+
+### What landed
+
+Four read tools in `chat/registry.ts`, each a thin wrapper over a route that already existed:
+
+| tool | wraps | answers |
+| --- | --- | --- |
+| `get_subject` | `GET /subjects/:name` | the hallmark, section by section: verdict, severity, risk, standard version, failed requirements |
+| `get_fix_brief` | `GET /subjects/:name/fix.md` | the findings, quoted, with `fixreport.ts`'s refusal to invent a remedy |
+| `list_activity` | `GET /events` | how a run *ended*, including one a restart cut short |
+| `get_schedule` | `GET /schedule` | armed state, cooldown, next tick, the backlog in order |
+
+Plus three smaller things:
+
+- **A finished run reports back into the conversation that started it.** `ChatRole` gains
+  `note`; `runTurn` puts the turn's `threadId` into the tool context (the model cannot supply
+  one — a turn may only write into its own thread); `startAssay` in `index.ts` appends the note
+  when the run resolves. The next turn reads it in `{{HISTORY}}` like any other row. The page
+  picks it up by watching the shared run poller for the running → idle edge — no second interval.
+- **`{{STATUS}}` is re-read every round** instead of once per turn. A turn lasts two minutes and
+  its own `run_assay` invalidates it.
+- **`get_status` now says where its answer comes from**, and where the durable one is: no `last`
+  reads as "nothing since this process started", not as "nothing has ever been audited".
+  `outcomeClause` in `shared/activity.ts` is the one wording, shared with the note.
+
+### What was deliberately not added
+
+`set_armed` and `force` were considered and skipped — the switch already has a page, and the
+question was never authority, only reading. **Invariant 6 is untouched**: no tool writes a
+verdict or mints a section, and the catalogue test still asserts no tool name contains
+`record|verdict|hallmark|compliant`.
+
+### State
+
+`yarn typecheck` clean, `yarn test` 405 passing across 29 files (8 new in `chat.test.ts`, all
+anchored on this failure: the archive answering when the live status has forgotten, `blocked`
+still reading as infra, never-assayed vs not-a-subject, oldest-first activity, the thread id
+coming from the turn). Verified end to end against the dev stack — "What came of the FileBrowser
+audit?" now makes one `get_subject` call and comes back in 12 seconds with both failed
+requirements named (`install-cmd-security`, `broad-mount-disclosure`, both major, risk 20).
+
+**Noticed, not fixed:** that run's functional record is `verdict: non-compliant` with
+`top_severity: none`, `risk_score: 0` and `combined_score_on: static`. The agent declared it and
+invariant 1 says it stands, but a non-compliant section carrying no severity and no risk is worth
+looking at before it is quoted at anyone.
+
+---
+
 ## 6. Reference — facts read off the running system
 
 Cited so they can be re-checked when they drift. Read 2026-08-07.

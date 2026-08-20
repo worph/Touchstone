@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ChatMessage } from '@shared/activity';
 
 import { clearChat, getChat, streamChatTurn } from '../data/client';
+import { useRunStatus } from '../data/runStatus';
 import { useAsync } from '../hooks/useAsync';
 
 const OPENERS = [
@@ -42,6 +43,18 @@ function ToolRow({ row }: { row: ChatMessage }) {
 
 function Turn({ row }: { row: ChatMessage }) {
   if (row.role === 'tool') return <ToolRow row={row} />;
+  // Touchstone itself, not either speaker: an audit started here has finished, minutes after
+  // the turn that asked for it ended. Set apart so it cannot be read as the assistant's claim.
+  if (row.role === 'note') {
+    return (
+      <p className="chat-note">
+        <span className="chat-note__mark" aria-hidden="true">
+          ◆
+        </span>
+        {row.content}
+      </p>
+    );
+  }
   if (row.role === 'user') {
     return (
       <div className="chat-turn chat-turn--user">
@@ -60,6 +73,7 @@ function Turn({ row }: { row: ChatMessage }) {
 
 export default function AdminChat() {
   const state = useAsync(getChat, []);
+  const run = useRunStatus();
   const [draft, setDraft] = useState('');
   const [streamed, setStreamed] = useState<ChatMessage[]>([]);
   const [thinking, setThinking] = useState(false);
@@ -75,6 +89,21 @@ export default function AdminChat() {
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages.length, thinking]);
+
+  /**
+   * Pick up the note a finished audit writes into the thread.
+   *
+   * The transcript is only refetched at mount and after a turn, so a completion arriving
+   * minutes later would sit unread in a file until the operator typed again. This watches the
+   * shared run poller — no second interval — and refetches on the running → idle edge, which
+   * is exactly when a note can have been written.
+   */
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    const running = Boolean(run?.running);
+    if (wasRunning.current && !running) void state.reload();
+    wasRunning.current = running;
+  }, [run?.running?.started_at, Boolean(run?.running)]);
 
   const unavailable = state.data && !state.data.available;
 

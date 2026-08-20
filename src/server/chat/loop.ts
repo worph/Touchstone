@@ -206,7 +206,13 @@ export async function runTurn(template: string, opts: TurnOptions): Promise<void
    * dies after doing real work, the work is what gets reported.
    */
   let lastGood: string | null = null;
-  const status = opts.status ? await opts.status().catch(() => 'unavailable') : 'unavailable';
+
+  /**
+   * The tools this turn calls run against the app's own functions, so they belong to this
+   * conversation. `threadId` is added here rather than by the caller because it is a property
+   * of the turn, not of the wiring — and it is deliberately not something the model can set.
+   */
+  const ctx = { ...opts.ctx, threadId: opts.threadId };
 
   // The `+ 1` is the model's chance to *speak* after its last call, not another call.
   for (let round = 1; round <= maxCalls + 1; round++) {
@@ -216,6 +222,15 @@ export async function runTurn(template: string, opts: TurnOptions): Promise<void
       break;
     }
 
+    /**
+     * Read every round, not once per turn.
+     *
+     * A turn lasts up to two minutes and its own `run_assay` changes the answer, so a block
+     * captured before the first round describes an app that no longer exists by the third.
+     * It is an in-process read of state already in memory; the cost is nothing and the
+     * alternative is the model reasoning from a status that its own last call invalidated.
+     */
+    const status = opts.status ? await opts.status().catch(() => 'unavailable') : 'unavailable';
     const history = await opts.threads.list(opts.threadId, HISTORY_MESSAGES);
     const prompt = buildPrompt({
       template,
@@ -249,7 +264,7 @@ export async function runTurn(template: string, opts: TurnOptions): Promise<void
     }
     calls++;
 
-    const step = await dispatch(answer.call, opts.ctx);
+    const step = await dispatch(answer.call, ctx);
     await write({
       threadId: opts.threadId,
       role: 'tool',
