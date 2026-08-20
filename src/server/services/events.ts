@@ -85,6 +85,22 @@ export const EVENT_CODES = {
   REGISTRY_REFRESHED: { category: 'scheduler', label: 'registry changed' },
   REGISTRY_FAILED: { category: 'scheduler', label: 'registry unreadable' },
 
+  // ── the runner (P4) ───────────────────────────────────────────────────────
+  ASSAY_STARTED: { category: 'assay', label: 'audit started' },
+  ASSAY_COMPLETED: { category: 'assay', label: 'audit finished' },
+  ASSAY_FAILED: { category: 'assay', label: 'audit failed' },
+  ASSAY_BLOCKED: { category: 'assay', label: 'audit could not start' },
+  ASSAY_REQUIREMENT_REVISED: { category: 'assay', label: 'requirement re-recorded' },
+  ASSAY_REQUIREMENT_UNLISTED: { category: 'assay', label: 'requirement not in the protocol' },
+  PROTOCOL_MISSING: { category: 'assay', label: 'no protocol on disk' },
+  PROTOCOL_EDITED: { category: 'config', label: 'protocol edited' },
+  AGENT_BUSY: { category: 'agent', label: 'agent busy' },
+  AGENT_UNAUTHENTICATED: { category: 'agent', label: 'agent not logged in' },
+
+  // ── the ports (P5) ────────────────────────────────────────────────────────
+  PORT_HEALTHY: { category: 'system', label: 'endpoint answering' },
+  PORT_UNREACHABLE: { category: 'system', label: 'endpoint unreachable' },
+
   SERVER_STARTED: { category: 'system', label: 'Touchstone started' },
   CONFIG_SEEDED: { category: 'system', label: 'configuration written' },
   LOG_TRIMMED: { category: 'system', label: 'log trimmed' },
@@ -126,6 +142,31 @@ interface EventDetails {
   CLAIM_UNPARKED: { subject: string };
   REGISTRY_REFRESHED: { count: number };
   REGISTRY_FAILED: { error: string; live: boolean };
+  ASSAY_STARTED: {
+    subject: string;
+    depth: 'static' | 'full';
+    try_n: number;
+    bench: string | null;
+    browser: string | null;
+  };
+  ASSAY_COMPLETED: {
+    subject: string;
+    verdict: string;
+    risk: number;
+    legs: Leg[];
+    /** The blocked reason when a leg could not run, `null` when both did. */
+    blocked: string | null;
+  };
+  ASSAY_FAILED: { subject: string; error: string; raw: string };
+  ASSAY_BLOCKED: { subject: string; reason: string };
+  ASSAY_REQUIREMENT_REVISED: { subject: string; id: string; from: string; to: string };
+  ASSAY_REQUIREMENT_UNLISTED: { subject: string; id: string };
+  PROTOCOL_MISSING: { dir: string };
+  PROTOCOL_EDITED: { id: string; version: number; bytes: number };
+  AGENT_BUSY: { subject: string; waitMs: number; attempt: number };
+  AGENT_UNAUTHENTICATED: { subject: string; error: string; raw: string };
+  PORT_HEALTHY: { port: string; kind: 'agent' | 'browser'; tools: number };
+  PORT_UNREACHABLE: { port: string; kind: 'agent' | 'browser'; url: string; error: string };
 }
 
 type DetailPart<C extends EventCode> = C extends keyof EventDetails
@@ -153,6 +194,7 @@ export function categoryOf(code: string): EventCategory {
   if (code.startsWith('PUSH_') || code.startsWith('NOTIFY_')) return 'notify';
   if (code.startsWith('IMPORT_')) return 'importer';
   if (code.startsWith('TICK_') || code.startsWith('CLAIM_')) return 'scheduler';
+  if (code.startsWith('PROTOCOL_')) return 'config';
   if (code.startsWith('ASSAY_')) return 'assay';
   if (code.startsWith('AGENT_')) return 'agent';
   return 'other';

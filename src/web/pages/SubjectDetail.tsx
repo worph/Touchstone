@@ -6,7 +6,7 @@
  * (ARCHITECTURE.md §1.4 G). The blocked card naming its reason and saying `no try used`
  * is the sentence this page exists to print.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import type { AssayRecord, Leg } from '@shared/types';
@@ -15,12 +15,19 @@ import StatusCell from '../components/StatusCell';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getReport, getSubject } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
+import ReassayButton from '../components/ReassayButton';
+import CoverageCell from '../components/CoverageCell';
+import RequirementList from '../components/RequirementList';
 import { dateOnly, num, since, stamp } from '../lib/format';
 import { displayState } from '../lib/status';
 
 export default function SubjectDetail() {
   const { name = '' } = useParams();
-  const { data, error, loading } = useAsync(() => getSubject(name), [name]);
+  // `nonce` is what a finished audit changes: it re-runs the subject fetch, which pulls in
+  // the assay the run just wrote without a page reload.
+  const [nonce, setNonce] = useState(0);
+  const { data, error, loading } = useAsync(() => getSubject(name), [name, nonce]);
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
 
   const [selectedLeg, setSelectedLeg] = useState<Leg | null>(null);
   const [view, setView] = useState<'rendered' | 'raw'>('rendered');
@@ -40,6 +47,9 @@ export default function SubjectDetail() {
   const currentLeg = selectedLeg ?? legWithReport;
   const currentRec = currentLeg ? (subject?.[currentLeg] ?? null) : null;
   const currentFile = currentRec?.file ?? null;
+
+  /** Recorded by the agent during the run. Absent on everything imported before the runner. */
+  const requirements = currentRec?.meta.requirements ?? [];
 
   const report = useAsync(
     () => (currentFile ? getReport(name, currentFile) : Promise.resolve(null)),
@@ -77,14 +87,7 @@ export default function SubjectDetail() {
               </div>
               <div className="section-title">risk</div>
             </div>
-            <button
-              className="btn"
-              type="button"
-              disabled
-              title="Re-assay needs the scheduler (P3). This build cannot start an assay."
-            >
-              re-assay ▾
-            </button>
+            <ReassayButton subject={subject.name} onFinished={reload} />
           </div>
 
           {refs ? (
@@ -109,17 +112,37 @@ export default function SubjectDetail() {
         </div>
       </div>
 
+      {/* What was actually checked. Above the report, because the report is the evidence for
+          these and a reader looking for "what failed" should not have to scroll a rubric. */}
+      {requirements.length > 0 ? (
+        <section className="panel" style={{ marginTop: 14 }}>
+          <div className="pane-head">
+            <span className="section-title">requirements</span>
+            {currentRec?.meta.coverage ? (
+              <span className="dim" style={{ fontSize: 11.5 }}>
+                <CoverageCell coverage={currentRec.meta.coverage} /> verified
+                {currentRec.meta.risk_score_declared !== undefined ? (
+                  // The agent's own score and the sum of its items came apart. Both are kept;
+                  // saying so is better than picking one and looking certain.
+                  <span className="req-mismatch">
+                    {' '}· the audit declared risk {currentRec.meta.risk_score_declared}, its items sum to{' '}
+                    {currentRec.meta.coverage.risk}
+                  </span>
+                ) : null}
+              </span>
+            ) : null}
+          </div>
+          <RequirementList items={requirements} />
+        </section>
+      ) : null}
+
       {never ? (
         <div className="panel" style={{ marginTop: 14 }}>
           <EmptyState
             glyph="⬜"
             title="No assay has ever run for this subject"
             sub="It is in the registry and nothing more. There is no verdict to disagree with, and no report to read."
-            action={
-              <button className="btn" type="button" disabled title="Needs the scheduler (P3)">
-                Run first assay
-              </button>
-            }
+            action={<ReassayButton subject={subject.name} onFinished={reload} label="Run first assay" />}
           />
         </div>
       ) : (

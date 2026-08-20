@@ -409,7 +409,8 @@ export class BenchProber {
       for (const name of [...this.health.keys()]) if (!live.has(name)) this.health.delete(name);
     }
 
-    await this.persist();
+    this.pendingWrite = this.persist();
+    await this.pendingWrite;
     this.reconcileAlerts();
 
     // The pool losing its last bench is a distinct fact from any one bench failing: it is
@@ -542,6 +543,14 @@ export class BenchProber {
       this.opts.alerts.resolve('bench.unreachable', 'The demo benches are answering again');
     }
   }
+
+  /** Await the in-flight state write. Same reason as `AlertStore.flush`. */
+  async flush(): Promise<void> {
+    await this.inFlight;
+    await this.pendingWrite;
+  }
+
+  private pendingWrite?: Promise<void>;
 
   private async persist(): Promise<void> {
     try {

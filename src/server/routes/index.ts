@@ -24,14 +24,21 @@ import { renderMarkdown } from '../domain/markdown.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
 import type { AlertStore } from '../services/alerts.js';
 import type { BenchProber } from '../services/bench.js';
+import type { PortProber } from '../services/ports.js';
+import type { ProtocolStore } from '../store/protocols.js';
+import type { RunLedger } from '../services/ledger.js';
 import type { EventLog } from '../services/events.js';
 import type { PushService } from '../services/push.js';
+import type { Runner } from '../runner/index.js';
 import type { Scheduler } from '../scheduler/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import alertRoutes from './alerts.js';
 import benchRoutes from './benches.js';
 import eventRoutes from './events.js';
 import pushRoutes from './push.js';
+import assayRoutes from './assays.js';
+import mcpRoutes from './mcp.js';
+import protocolRoutes from './protocols.js';
 import scheduleRoutes from './schedule.js';
 
 export interface RoutesOptions {
@@ -40,8 +47,12 @@ export interface RoutesOptions {
   events?: EventLog;
   alerts?: AlertStore;
   prober?: BenchProber;
+  ports?: PortProber;
+  protocols?: ProtocolStore;
+  ledger?: RunLedger;
   push?: PushService;
   scheduler?: Scheduler;
+  runner?: Runner;
   registry?: SubjectRegistry;
   boardUrl?: string;
 }
@@ -60,9 +71,21 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
 
   await app.register(eventRoutes, { events: options.events });
   await app.register(alertRoutes, { alerts: options.alerts });
-  await app.register(benchRoutes, { prober: options.prober, boardUrl: options.boardUrl });
+  await app.register(benchRoutes, {
+    prober: options.prober,
+    ports: options.ports,
+    boardUrl: options.boardUrl,
+  });
   await app.register(pushRoutes, { push: options.push });
   await app.register(scheduleRoutes, { scheduler: options.scheduler, registry: options.registry });
+  await app.register(mcpRoutes, { ledger: options.ledger });
+  await app.register(protocolRoutes, { protocols: options.protocols, events: options.events });
+  await app.register(assayRoutes, {
+    runner: options.runner,
+    scheduler: options.scheduler,
+    ledger: options.ledger,
+    store: options.store as never,
+  });
 
   /** Subjects are addressed by name; be forgiving about case, exact match wins. */
   function resolveSubject(name: string) {

@@ -18,6 +18,8 @@ export type EventLevel = 'debug' | 'info' | 'warn' | 'error';
 /** How the log groups a row. Derived from `code` by the server, never authored. */
 export type EventCategory =
   | 'scheduler'
+  /** Changes an operator made — the protocol, and whatever else becomes editable. */
+  | 'config'
   | 'assay'
   | 'bench'
   | 'agent'
@@ -100,6 +102,23 @@ export interface BenchHealth {
   processing?: boolean;
 }
 
+export type PortKind = 'agent' | 'browser';
+
+/** An external endpoint Touchstone needs — the agent, or a browser sidecar. */
+export interface PortHealth {
+  name: string;
+  kind: PortKind;
+  url: string;
+  status: 'healthy' | 'unreachable' | 'unconfigured' | 'unknown';
+  detail?: string;
+  /** How many tools the MCP surface offers. Zero is reachable and useless. */
+  tools?: number;
+  has_expected?: boolean;
+  latency_ms?: number;
+  probed_at?: string;
+  healthy_at?: string;
+}
+
 export interface BenchesResponse {
   benches: BenchHealth[];
   pool_up: boolean;
@@ -110,6 +129,8 @@ export interface BenchesResponse {
    */
   leasable: number;
   board_url: string | null;
+  /** The agent and the browser sidecars, reported beside the benches — one picture. */
+  ports: PortHealth[];
 }
 
 // ── push ───────────────────────────────────────────────────────────────────────────────

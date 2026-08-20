@@ -20,6 +20,48 @@ export const SEVERITY_RANK: Record<Severity, number> = {
   critical: 3,
 };
 
+export type RequirementVerdict = 'pass' | 'fail' | 'n-a' | 'unverified';
+
+/** One requirement the agent settled and recorded while it worked. */
+export interface RecordedRequirement {
+  id: string;
+  /** The agent's own wording, kept as the evidence for the id it chose. */
+  requirement?: string;
+  verdict: RequirementVerdict;
+  severity?: Severity;
+  note?: string;
+  /** The protocol does not list this id. Recorded anyway — that is how the list is corrected. */
+  unlisted?: boolean;
+  at: string;
+  revisions?: number;
+}
+
+export interface RecordedPhase {
+  phase: string;
+  result: 'pass' | 'fail' | 'errored' | 'n-a';
+  note?: string;
+  at: string;
+}
+
+/**
+ * How much of the checklist was actually checked — **not** whether the subject complies.
+ *
+ * The verdict is gated on severity: one Critical outranks fifteen passes, and no count can
+ * express that. Reporting them as one number would be the mistake this type exists to avoid.
+ */
+export interface Coverage {
+  /** pass + fail — the questions that got an answer. */
+  verified: number;
+  /** pass + fail + unverified — the questions that applied. */
+  applicable: number;
+  passed: number;
+  failed: number;
+  unverified: number;
+  not_applicable: number;
+  /** Summed from the declared items with the protocol's weights: 100·C + 10·M + 1·m. */
+  risk: number;
+}
+
 /** Exactly the YAML frontmatter of a report file. */
 export interface AssayMeta {
   subject: string;
@@ -36,6 +78,12 @@ export interface AssayMeta {
   images?: string[];
   started_at: string;
   finished_at: string;
+  /** Present from 2026-08-19; absent on every assay imported before the runner existed. */
+  coverage?: Coverage;
+  requirements?: RecordedRequirement[];
+  phases?: RecordedPhase[];
+  /** Only when the agent's own risk_score disagreed with the sum of its items. */
+  risk_score_declared?: number;
   /** Unrecognised frontmatter keys, preserved verbatim across a read/write cycle. */
   [key: string]: unknown;
 }

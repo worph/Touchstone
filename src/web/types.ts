@@ -45,4 +45,4 @@ export type ShowFilter =
   | 'stale'
   | 'running';
 
-export type SortKey = 'risk' | 'name' | 'age' | 'static' | 'functional';
+export type SortKey = 'risk' | 'coverage' | 'name' | 'age' | 'static' | 'functional';

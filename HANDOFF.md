@@ -311,6 +311,248 @@ deleting it is always safe and it re-adopts on the next import.
 
 ---
 
+## 4d. What P4 delivered — the runner
+
+`src/server/runner/` plus `domain/assay.ts`. **35 of 36 parity rows are now ✅**; the only one
+left is D6, the browser for the functional leg.
+
+| File | What |
+| --- | --- |
+| `runner/prompt.ts` | the protocol, **byte-identical** to the live n8n node |
+| `runner/agent.ts` | the call, the SSE unwrap, and the four error classes branch for branch |
+| `runner/index.ts` | job → prompt → agent → one retry on 409 → assay files → outcome |
+| `domain/assay.ts` | one report, two assay files — now shared with the importer |
+| `routes/assays.ts` | `POST /assays`, the hand-run validation path |
+
+**The prompt was ported mechanically, not retyped.** That text *is* the audit protocol — every
+verdict in the archive came from an agent reading those words — so it was transformed out of the
+live node by script and then asserted equal to it for three input shapes. A test would have
+caught a single changed character.
+
+**The runner ships disabled** and `POST /assays` answers `409` with the config key to change,
+rather than a 500. Validation is one hand-run assay, never a loop, because `AppStore PR Review`
+is still in n8n on the same agent.
+
+### Validated against the real agent
+
+Three hand-run static assays through `POST /assays`, on the live yunderalabs agent:
+
+```
+Spliit  4m15s  parse-failed                      <- the answer was fine; the parser was not
+Spliit  4m09s  parse-failed                      <- after the fence fix; still not
+Ntfy    6m01s  non-compliant · Minor    · risk 1
+Spliit  6m07s  non-compliant · Critical · risk 121
+```
+
+The last two are the whole path end to end: prompt → agent → declaration → assay file, with the
+frontmatter carrying the agent's own verdict and the body its report verbatim. Spliit is the same
+subject that failed twice, so the brace scan is confirmed as the fix rather than assumed.
+
+Worth noting for anyone comparing runs: the agent scored Spliit 120 on the run that failed to
+parse and 121 on the one that succeeded. Its judgement moves a little between runs, which is
+another reason the archive keeps the assay's own declaration rather than recomputing anything.
+
+### The manual trigger
+
+`POST /assays` and `GET /assays/current`, with a working `re-assay ▾` on Subject detail — n8n's
+`Audit an app` form, as a button. Two choices, `static only` and `static + functional`, the second
+disabled with its reason when no bench is leasable.
+
+It is **asynchronous on purpose**: `202` and then polling, because an audit runs five to ten
+minutes and a proxy closing the socket at minute four looks exactly like a failed audit. `wait:
+true` is still there for a shell that would rather block, and that form returns the rendered
+report with the outcome — the point of a manual trigger is to read the thing.
+
+A hand-run assay records against the schedule exactly as a scheduled one does, so running one by
+hand does not leave the subject looking untouched for the next tick to pick straight back up.
+
+### Three bugs worth keeping in mind
+
+1. **`writeJsonAtomic` could silently lose a write.** The temp filename carried only the pid,
+   which separates two *processes* and nothing at all inside one — and overlapping writes to the
+   same file are routine here: a bench probe and the alert it raises, a tick and the result it
+   records. Both wrote one scratch path, the first `rename` consumed it, the second failed
+   `ENOENT` and its contents were gone. It surfaced as a test failing about one run in three, in
+   a different file each time. The name is now unique per call.
+2. **The JSON extractor threw away good answers, twice over.** Both defects are inherited
+   from n8n's `Extract LLM response` and both cost the app a try:
+   - It unwrapped *the first* ``` it found anywhere. `report_markdown` almost always contains a
+     fenced block, so the "unwrap" sliced from inside the JSON string. A fence is only a
+     wrapper when it comes **before** the object.
+   - It took `lastIndexOf('}')` as the end of the object, which is right only when nothing
+     follows it. Replaced with a brace scan that tracks string and escape state.
+
+   Neither showed up in fixtures; both showed up on the first real answer. There is now a dump
+   of any unparsable response at `state/last-unparsed-response.txt`, because 800 characters in
+   a log line cannot tell a truncated report from a malformed one.
+3. **The agent envelope differs by route.** n8n posts `tools/call` straight at
+   `beacon-backend:9300` from inside the yunderalabs stack. Anything outside that network has to
+   go through a Beacon aggregator's own `call` tool — a different envelope, not just a different
+   address. `runner.agent_via` says which, and it is `direct` by default so production matches
+   n8n exactly.
+
+---
+
+## 4e. D6 — the browser sidecar, and the ports
+
+**Parity is complete: 36 of 36 rows.**
+
+`touchstone-browser` is in `docker-compose.dev.yml` — `ghcr.io/worph/browser-mcp:1.1.5`,
+`shm_size: 2gb`, `IDLE_TTL_MS`, `PAGE_COLLECTOR`, and **no profile volume**. That last one is
+the deliberate divergence from Newsdesk: a session surviving between assays makes an
+unprotected app look protected, which is a false pass on the check that catches auth bypass.
+
+The runner leases it. Single-flight means taking the first healthy sidecar *is* the lease, so
+two assays cannot share a browser by construction — §2.4's page-stealing race is impossible
+rather than unlikely. A functional job with no sidecar is `blocked · browser_unavailable`,
+which by principle 5 costs no try. The prompt names the leased endpoint and tells the agent
+**not** to use the shared browser; with no lease it is still byte-identical to the n8n node,
+and a test asserts both.
+
+### What is not proven
+
+The sidecar is built, probed and leased. **The agent has never actually driven it**, because
+the agent runs on yunderalabs and this sidecar runs here — they have to share a network, and
+that is the deploy the operator has reserved. Everything up to that boundary works; the last
+mile is a deployment, not a feature.
+
+### services/ports.ts — the third dependency finally has a face
+
+The bench pool had a prober, an alert and a row since P2. The **agent** and the **browser** had
+a line in `config.yaml` and nothing else, which is a bug in its own right: an audit needs all
+three, and a dependency whose state you cannot see is one you learn about from a failed run.
+
+The probe is `tools/list` over MCP for both, and it is the honest one — `browser-mcp` serves a
+landing page on `/health` that answers `200` whether or not Chrome is reachable, which is
+exactly the kind of green light this codebase has been burned by twice. A surface that answers
+with no tools is reported unreachable, not healthy, and the agent port is additionally asked
+whether the tool the runner will actually call is on it.
+
+No alerts from this prober, on purpose: no browser means the functional queue is already paused
+by the bench gate, and no agent means the failed assay says so itself. A third alert source
+would turn one outage into three cards.
+
+Live, on the Activity page:
+
+```
+agent        answering    4 tools · 5ms
+browser-1    answering   29 tools · 8ms
+demostaging1 not usable   HTTP 502 · board says 🔄 Processing · 23.0h
+demostaging2 not usable   HTTP 500 · board says ✅ Ready · 15.0h
+```
+
+---
+
+## 4f. Docmost is gone, and the protocol is a file
+
+Two of the operator's seven points, and they turned out to be one task.
+
+**Everything that talked to a wiki is deleted:** `services/importer.ts`, `tools/import.ts`,
+`scheduler/adopt.ts` (+ its tests), `parseRollup` and the roll-up types, the `docmost:` config
+block and its page cache, and the `yarn sync` script. `tools/` is empty and gone. The scheduler
+no longer adopts n8n's try counts or takes its cooldown anchor from a wiki page — it uses its
+own recorded finishes, and freshness reads `finished_at` alone.
+
+**The protocol was the load-bearing part nobody had noticed.** The rubric was three Docmost
+pages the *agent* fetched at run time; Touchstone held a slug and a version. It is now
+`data/protocols/{orchestrator,static,functional}.md`, exported once by a throwaway script that
+was deleted after it ran, with `imported_from: docmost:<slug>` kept as provenance.
+
+The exported text told the agent to publish to the wiki, cross-link an App KB page and fetch
+its own leaves. Rather than silently rewriting it, each file carries a visible **Local
+amendment — Touchstone (2026-08-19)** block that supersedes those sections. An operator can
+read exactly what changed and why, and edit it.
+
+**The prompt embeds all three** instead of naming slugs — 32 KB with the functional leaf, and
+an audit can no longer error because a wiki was slow. With no protocol supplied the prompt is
+still byte-identical to the n8n node, and a test asserts both halves.
+
+**The config is fully local.** `agent_tool: claude-code__query_claude` through the local Beacon
+aggregator — the Claude Code in *this* container, not yunderalabs' — and the browser is the
+local sidecar. Nothing in the running system reaches yunderalabs.
+
+Proved end to end: a hand-run static assay on Ntfy, local agent, local protocol, no wiki —
+`non-compliant · Minor · risk 3` in 7m34s, written to `data/reports/Ntfy/`.
+
+### The editor
+
+`GET /protocols`, `GET /protocols/:id`, `PUT /protocols/:id`, and a **Protocol** screen with a
+tab per document, rendered markdown, and a plain textarea. Deliberately not a rich editor: the
+files are markdown that an operator may also edit on disk or in git, and anything that rewrote
+the source on save would fight that.
+
+Saving bumps the version and writes a `PROTOCOL_EDITED` event. Round-tripped through the API:
+v3 → v4 on save, `400` on an empty body, and the change on disk.
+
+### One more teardown flake, same family
+
+`bench.test.ts` failed about one run in five with `ENOTEMPTY` — `AlertStore.open` does not await
+its own write, by design, so one landed while `rm -r` was walking the directory. Same fix as
+`alerts.test.ts`: settle with `flush()` in teardown. Five clean suite runs since.
+
+---
+
+## 4g. The agent reports as it works
+
+Stage 1 of the generic-requirements plan, built as an MCP surface on the operator's suggestion
+rather than as an extension of the JSON contract — and it is the better design.
+
+`POST /api/v1/mcp`: `list_requirements`, `record_requirement`, `record_phase`. No
+`record_result`, ever — see ARCHITECTURE §5.8 for why. Run-scoped token, minted per dispatch,
+argument on every call, dead when the run ends. `services/ledger.ts` holds the in-flight run;
+`data/protocols/*.md` frontmatter now declares the canonical ids (16 for the static leaf, 8
+phases for the functional one).
+
+**The first live test justified the whole thing on its own.** The agent called
+`list_requirements`, recorded all 16 canonical requirements plus one unlisted
+(`cors-credentials-hardening`, correctly flagged) — and then the final JSON blob failed to
+parse. Under the old contract that was six minutes discarded. Instead:
+
+```
+ASSAY_FAILED  {subject: Dufs, error: parse-failed, verified: 16, of: 16}
+```
+
+### The parse bug, third and final variant
+
+The dump gave me the real payload this time, so the fix is against evidence rather than a
+guess. All three failures were one bug — the parser looked for the object's *boundaries* using
+fences, and `report_markdown` is markdown, so it contains fences:
+
+1. it unwrapped the **first** ``` anywhere, which was usually inside the JSON string;
+2. it took `lastIndexOf('}')` as the end, wrong the moment anything follows the object;
+3. even unwrapping only a *leading* fence, it took the next ``` as the closing one — and that
+   next fence was a ```yaml block inside the report.
+
+All three vanish if the fence is ignored entirely: a fence marker contains no braces, so the
+object still starts at a `{`, and a scanner that tracks string state finds its end regardless of
+what follows. Candidate braces are tried in order, so prose containing a `{` before the object
+costs an attempt rather than the run. The real failing answer is checked in as
+`test/fixtures/agent/prose-then-fenced-json.txt` and asserted against.
+
+Re-running the same audit after the fix: `non-compliant · risk 2`, 17 requirements and a
+`coverage` block in the frontmatter.
+
+### Stage 2 — the display
+
+- **Overview** gains a `Verified` column, sortable, `—` for anything imported before the runner.
+  Neutral-coloured on purpose: coverage is not compliance, and green would merge two questions.
+- **Subject detail** gains a `requirements` section above the report — failures first, worst
+  tier first, then unchecked, then passes folded behind a count. Canonical id, the agent's
+  wording, its note, and an `unlisted` tag where the protocol does not name the id.
+- **The re-assay button counts requirements**, not just minutes: `auditing… 7/16 · 3:20`.
+- `GET /assays/current` carries `progress` from the live ledger.
+
+Live on Dufs: `REQUIREMENTS 16/16 verified`, two `FAIL · MINOR` rows with the agent's reasoning,
+one `N-A`, fourteen passes folded.
+
+### Not done here
+
+The endpoint is not beaconified yet, so the agent reaches it over HTTP rather than as a
+discovered MCP server. ARCHITECTURE §8 already plans a `touchstone-mcp` beaconify sidecar; that
+is where it belongs, and it is packaging rather than function.
+
+---
+
 ## 5. Open items
 
 - **P2 is not committed.** P1 is (`66e13cf`).

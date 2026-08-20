@@ -1,6 +1,7 @@
 /** Tallies, filtering and sorting for the Overview table. Pure functions. */
 import type { AssayRecord, Leg, SubjectState } from '@shared/types';
 import { SEVERITY_RANK } from '@shared/types';
+import type { Coverage } from '@shared/types';
 import type { ShowFilter, SortKey, StateKind } from '../types';
 import { displayState } from './status';
 
@@ -107,6 +108,26 @@ export function search(s: SubjectState, q: string): boolean {
   return false;
 }
 
+/**
+ * A subject's coverage, taking the better-covered leg.
+ *
+ * Two legs, and only one of them may have been checked — a static-only run leaves the
+ * functional leg with none at all. Summing them would make a subject look half-checked when
+ * it was fully checked at the depth it was run.
+ */
+export function coverageOf(s: SubjectState): Coverage | undefined {
+  const legs = [s.static?.meta.coverage, s.functional?.meta.coverage].filter(Boolean) as Coverage[];
+  if (legs.length === 0) return undefined;
+  return legs.reduce((best, c) => (c.applicable > best.applicable ? c : best));
+}
+
+/** `-1` for "no coverage at all", so unmeasured subjects sort apart from fully-verified ones. */
+function coverageRatio(s: SubjectState): number {
+  const c = coverageOf(s);
+  if (!c || c.applicable === 0) return -1;
+  return c.verified / c.applicable;
+}
+
 export function sortSubjects(
   rows: SubjectState[],
   key: SortKey,
@@ -127,6 +148,13 @@ export function sortSubjects(
         return stateRank(a.static) - stateRank(b.static);
       case 'functional':
         return stateRank(a.functional) - stateRank(b.functional);
+      case 'coverage': {
+        // Least-checked first when ascending: the interesting end of this column is the
+        // assay that could not answer, not the one that answered everything.
+        const av = coverageRatio(a);
+        const bv = coverageRatio(b);
+        return av - bv;
+      }
       case 'risk':
       default:
         return a.risk - b.risk;

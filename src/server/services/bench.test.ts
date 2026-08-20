@@ -42,6 +42,10 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.unstubAllGlobals();
+  // `alerts.open`/`resolve` do not await their own writes, by design — an alert must be
+  // raised the moment it is true. Settle them, or one lands while `rm -r` is walking the
+  // directory and the teardown fails ENOTEMPTY about one run in five.
+  await alerts.flush();
   await events.flush();
   await fs.rm(dir, { recursive: true, force: true });
 });

@@ -3,7 +3,7 @@
  *
  * Two requirements, both from MVP.md §6:
  *   - HTML in the source is **escaped, not passed through** (`html: false`). Report bodies
- *     are written by an agent and arrive over MCP from Docmost; they are not trusted
+ *     are written by an agent and arrive over MCP; they are not trusted
  *     markup and there is no auth in front of this app.
  *   - Headings carry anchors, so a finding in the left pane can deep-link to the section
  *     of the report that evidences it (UX.md §2.2).

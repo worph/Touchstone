@@ -82,7 +82,7 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 | A1 | Hourly tick | `Schedule (hourly)` | ✅ `Scheduler.start`, `tick_min` — dry-run until armed |
 | A2 | Programmatic kick | webhook `POST /weekly-store-qa` | ✅ `POST /schedule/tick` |
 | A3 | Forced run of a named app list, bypassing freshness | form trigger, `apps` CSV | ✅ `POST /schedule/tick {forced:[…]}` |
-| A4 | Audit entry points (form, webhook, sub-workflow) | 3 triggers on the audit | ⬜ |
+| A4 | Audit entry points (form, webhook, sub-workflow) | 3 triggers on the audit | ✅ `POST /assays` — the hand-run path, and the scheduler dispatch |
 
 #### B. Target selection and scheduling policy — `Pick next target`, 9,374 chars
 
@@ -109,12 +109,12 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 
 | # | Capability | n8n | Touchstone |
 | --- | --- | --- | --- |
-| D1 | Prompt assembly from the protocol | `Build prompt` | ⬜ |
-| D2 | Call the agent | `POST http://beacon-backend:9300/mcp` | ⬜ |
-| D3 | Parse the agent response | `Extract LLM response` | ⬜ |
-| D4 | Agent-busy (409) detection | `Agent busy (retriable)?` | ⬜ |
-| D5 | Backoff and one retry | `Wait` → `Call Claude Code (retry)` → `Retry still failed?` | ⬜ |
-| D6 | A browser to drive the functional leg | shared box-wide `browsermcp` — **contended, see §2.4** | ⬜ — own sidecar, §5.4 |
+| D1 | Prompt assembly from the protocol | `Build prompt` | ✅ `runner/prompt.ts`, byte-identical to the n8n node |
+| D2 | Call the agent | `POST http://beacon-backend:9300/mcp` | ✅ `callAgent`, direct or through a Beacon aggregator |
+| D3 | Parse the agent response | `Extract LLM response` | ✅ `classify` — the four error classes reproduced branch for branch |
+| D4 | Agent-busy (409) detection | `Agent busy (retriable)?` | ✅ text-level and HTTP-level reach the same branch |
+| D5 | Backoff and one retry | `Wait` → `Call Claude Code (retry)` → `Retry still failed?` | ✅ one retry, then the subject is returned untouched |
+| D6 | A browser to drive the functional leg | shared box-wide `browsermcp` — **contended, see §2.4** | ✅ own sidecar, leased with the bench, ephemeral profile — §5.4. **Not yet exercised end to end:** the agent and the sidecar have to share a network, which is the deploy step |
 | D7 | Bench preflight before claiming | **absent — this is the defect of record, §2.3** | ✅ the gate is in the policy; `leasable()` feeds it |
 | D8 | Only claim an instance with **> 1h** of runway and not mid-cleanup | inside `Build prompt`, so it never reached this matrix | ✅ `BenchProber.leasable()`, §5.4 |
 
@@ -122,7 +122,7 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 
 | # | Capability | n8n | Touchstone |
 | --- | --- | --- | --- |
-| E1 | Accept a result | `Record result` code node | ◑ `Scheduler.record` is built and tested; nothing calls it until the runner (P4) |
+| E1 | Accept a result | `Record result` code node | ✅ `Scheduler.record`, called by the dispatch and by `POST /assays` |
 | E2 | Store the verdict | one wiki row, overwritten | ✅ frontmatter on a file |
 | E3 | Store the report | `Publish to Docmost`, one page per app | ✅ markdown on disk |
 | E4 | Risk score and severity tier | parsed from the agent's headline | ✅ from the assay's own headline, per principle 3 |
@@ -136,9 +136,9 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 | # | Capability | n8n | Touchstone |
 | --- | --- | --- | --- |
 | F1 | Per-tick log | `Log tick` → `POST notify-hub` | ✅ `TICK_*` / `CLAIM_*`, every tick |
-| F2 | Error notification | `Notify Agent Logs and Error`, `Notify error to Hub` | ◑ alerts, bench failures and push work today; assay errors arrive with the runner (P4) |
-| F3 | Success notification | `Notify App Audit room` → Beacon MCP | ◑ the log and push work; there is no completion to announce yet |
-| F4 | Per-run audit log | `Build audit run-log` → `Post run-log to Hub` | ◑ same — an assay run-log needs the runner |
+| F2 | Error notification | `Notify Agent Logs and Error`, `Notify error to Hub` | ✅ `ASSAY_FAILED` / `AGENT_UNAUTHENTICATED`, in the log and on push |
+| F3 | Success notification | `Notify App Audit room` → Beacon MCP | ✅ `ASSAY_COMPLETED` |
+| F4 | Per-run audit log | `Build audit run-log` → `Post run-log to Hub` | ✅ the event log is the run log |
 | F5 | An in-app place to read all of the above | **none — you read n8n executions** | ✅ the Activity page — §5.5, the one addition |
 
 **F1–F4 are satisfied in-app, not by re-posting.** Decided 2026-08-19: Touchstone notifies the way
@@ -165,6 +165,12 @@ They are removed from the plan.
 | ✂ Findings → pull requests | phase 4 |
 | ✂ Incident ack / mute / impact accounting | a stateful incident engine |
 | ✂ Generic `subject.kind`, pluggable tenants | a generic conformance product |
+
+**Parity is complete as of 2026-08-19** — every row above is ✅. What that does *not* mean is
+that everything has been proven against the live system: D6's sidecar is built, probed and
+leased, but the agent driving *it* rather than the shared browser needs both on one network,
+and that is the deploy the operator has reserved for themselves. Row by row the capability is
+there; the last mile is a deployment, not a feature.
 
 The rule is simple and it is why this section exists: **if n8n does not do it, it is not in the
 plan.** There are **four sanctioned exceptions**, each asked for by the operator directly:
@@ -524,23 +530,97 @@ operator named as the model on 2026-08-19, three things are not:
   to the one that fired. Touchstone's push targets are already the right narrow set; they need to
   land on the subject rather than the app root.
 
+### 5.8 Requirements are recorded as they are settled
+
+The agent calls back while it works. `POST /api/v1/mcp` exposes three tools and no more:
+
+| tool | what it does |
+| --- | --- |
+| `list_requirements` | the canonical ids for this run's protocol |
+| `record_requirement` | one requirement settled — id, verdict, severity, note |
+| `record_phase` | one functional phase — A, C, D, E8, E9, E10, F, G |
+
+**There is deliberately no `record_result`.** The moment an agent can post its own verdict the
+gate — *any Critical is non-compliant unconditionally* — becomes advisory, and a run that says
+`compliant` walks past the rubric. The agent judges each requirement; Touchstone computes the
+outcome.
+
+**Why incremental at all.** The whole result used to ride home in one JSON blob, and on
+2026-08-19 that lost three complete audits to parse failures and would have lost everything
+from any run that died partway. Recording as you go fixes both: each call is validated where
+the agent can still be told what it got wrong, and a run interrupted at requirement 12 of 16
+keeps twelve facts instead of none. It happened on the first live test — the blob failed to
+parse and `verified: 16 of 16` survived it.
+
+**`list_requirements` solves id drift at the source.** Left to free text an agent writes
+`cpu_shares` on one run and `cpu_shares set on all services` on the next, and *which apps fail
+this?* quietly stops working. The protocol names the ids; the agent maps to them. An id it does
+not know is still recorded, marked `unlisted`, which is how the list gets corrected.
+
+**Authentication is a run-scoped token**, minted at dispatch, passed as an argument on every
+call, dead when the run ends. Not a header and not a shared secret: this is the one surface
+that points inward, and an unauthenticated "record an audit result" endpoint is a way to forge
+audit results. A stale agent still writing after we gave up is rejected and visible.
+
+#### Coverage is not compliance
+
+The assay stores both, and they answer different questions:
+
+```yaml
+coverage: { verified: 16, applicable: 16, passed: 14, failed: 2, unverified: 0, risk: 2 }
+verdict: non-compliant
+top_severity: minor
+```
+
+`14/16` is how much of the checklist got checked. The verdict is gated on **severity** — one
+Critical outranks fifteen passes, and no count can express that. Merging them would be the
+subtle mistake here. `risk` is summed from the declared items using the protocol's own weights,
+and when it disagrees with the agent's declared `risk_score` both are kept and the divergence
+recorded rather than smoothed away.
+
+### 5.7 The protocol lives here now
+
+`data/protocols/*.md`, one file per document, frontmatter carrying `id`, `name`, `version`,
+`kind` and `requires_bench`. `GET /protocols`, `PUT /protocols/:id`, and a screen that edits
+them.
+
+Three properties that are not incidental:
+
+- **The whole text is embedded in the prompt**, not fetched. That removes an entire class of
+  failure — an audit can no longer error because a wiki was slow — and it is what makes the
+  rubric editable at all.
+- **Saving bumps the version.** Every assay records the standard and version it was graded
+  against, so an edit that left the number alone would make two different rubrics
+  indistinguishable in the archive.
+- **`requires_bench` is where genericity starts.** "Static" and "functional" are currently an
+  axis hardcoded through the whole system; expressed as a property of a protocol it is one
+  step from being a property of a *requirement*, which is what the generic model needs.
+
+The exported copies carry `imported_from: docmost:<slug>` as provenance. Nothing reads it.
+
 ### 5.6 Reports and outlets
 
 An assay writes one markdown file under `<data>/reports/<subject>/<iso>-<leg>.md`, frontmatter
 carrying the structured verdict, body carrying the report verbatim. That file is the archive of
 record: sortable, greppable, backed up with the rest of the data dir, readable without the app.
 
-**Docmost is exited entirely** — decided 2026-08-19, superseding an earlier draft that kept it as
-an optional publisher. Touchstone never writes to Docmost and, after M5, never reads from it
-either. The report file *is* the report, and the app renders it.
+**Docmost is gone — done 2026-08-19.** Not "exited at M5", not "optional publisher": there is no
+code left in Touchstone that reads or writes a wiki, and no configuration that names one. The
+report file *is* the report, and the app renders it.
 
-Two consequences worth stating plainly:
+What went, and what it means:
 
-- **The importer is transitional, not architectural.** It exists to read results back during M4,
-  while n8n still executes assays — see §9. At M5 the runner produces `report_markdown` in-process
-  and `services/importer.ts` is deleted rather than kept behind a flag.
-- **`Store QA — Results` is frozen with a pointer** at cutover, not kept in sync. That resolves the
-  open item HANDOFF §5 carried.
+- **`services/importer.ts`, `tools/import.ts`, `scheduler/adopt.ts` and `parseRollup` are
+  deleted.** Nothing reads the roll-up, so nothing inherits n8n's scheduling state, and the
+  scheduler's cooldown anchor is its own recorded finishes.
+- **The protocol came with it, and that was the part nobody had noticed.** The rubric every
+  verdict is measured against was three wiki pages the *agent* fetched at run time —
+  `In2NAGjv0h`, `LPwfKYUVig`, `7HxjTwe63H` — while Touchstone held a slug and a version number.
+  Freezing the wiki would have stranded it. It is now `data/protocols/*.md`, exported once,
+  amended in place to drop its publish-to-wiki instructions, embedded in the prompt, and
+  **editable from the app that enforces it** (§5.7).
+- **`Store QA — Results` is simply left alone.** There is nothing to freeze: nothing points at
+  it any more.
 
 ---
 

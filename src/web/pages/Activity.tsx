@@ -41,8 +41,17 @@ const CATEGORIES = [
   'agent',
   'importer',
   'notify',
+  'config',
   'system',
 ];
+
+/** Same rule as the benches: the status word is never carried by colour alone. */
+const PORT_LABEL: Record<string, string> = {
+  healthy: 'answering',
+  unreachable: 'not answering',
+  unconfigured: 'not configured',
+  unknown: 'not probed yet',
+};
 
 /** What the probe found, in words. The status word is never carried by colour alone. */
 const BENCH_LABEL: Record<string, string> = {
@@ -163,6 +172,33 @@ export default function Activity() {
           </button>
         </h2>
 
+        {/* The agent and the browser first: without the agent nothing runs at all, and a
+            page that reports only the benches was the asymmetry that hid two of the three
+            dependencies an audit needs. */}
+        {(benches?.ports.length ?? 0) > 0 ? (
+          <div className="env" style={{ marginBottom: 10 }}>
+            {benches?.ports.map((p) => (
+              <div className="env-row" key={p.name} data-status={p.status}>
+                <span className="env-name">{p.name}</span>
+                <span className="env-status">
+                  <span className="env-dot" aria-hidden="true" />
+                  {PORT_LABEL[p.status] ?? p.status}
+                </span>
+                <span className="env-note">
+                  {p.status === 'healthy'
+                    ? `${p.tools ?? 0} tools · ${p.latency_ms ?? 0}ms`
+                    : `last ok ${p.healthy_at ? stamp(p.healthy_at) : 'never'}`}
+                </span>
+                <span className="env-probe">
+                  {p.kind === 'agent' ? 'agent · ' : 'browser · '}
+                  {p.url}
+                  {p.detail ? ` → ${p.detail}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         {(benches?.benches.length ?? 0) === 0 ? (
           <div className="act-quiet">
             The demo pool has not been read yet, so the functional queue stays paused. The
@@ -206,8 +242,7 @@ export default function Activity() {
         )}
 
         <div className="act-foot">
-          Browsers and the agent are not probed yet — the browser pool lands with functional
-          leasing and the agent check with the runner. Push is{' '}
+          Push is{' '}
           {push?.configured ? `configured · ${push.devices} device${push.devices === 1 ? '' : 's'}` : 'not configured'}
           {push?.configured && push.public_key ? (
             <>

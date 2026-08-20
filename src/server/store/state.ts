@@ -27,18 +27,35 @@ export async function readJson<T>(file: string, fallback: T): Promise<T> {
   }
 }
 
+/** Distinguishes concurrent writes *within* this process. See `writeJsonAtomic`. */
+let writeSeq = 0;
+
 /**
  * Write JSON so a reader never sees a partial file.
  *
  * `rename` within a directory is atomic on both POSIX and NTFS, so the file is either the
- * old contents or the new ones. The temp name carries the pid to keep two processes — the
- * API and a hand-run tool — from colliding on it.
+ * old contents or the new ones.
+ *
+ * **The temp name has to be unique per call, not per process.** It carried only the pid,
+ * which is enough to keep the API and a hand-run tool apart but nothing at all inside one
+ * process — and two writes to the same file overlap routinely here: a bench probe persists
+ * while the alert transition it caused persists, a tick persists while a result is recorded.
+ * Both wrote the same temp path, the first `rename` consumed it, and the second failed
+ * `ENOENT` with its write silently lost. It showed up as a test that failed roughly one run
+ * in three; in production it is a state file that quietly does not survive a restart.
  */
 export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}`;
-  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-  await fs.rename(tmp, file);
+  const tmp = `${file}.tmp-${process.pid}-${++writeSeq}`;
+  try {
+    await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await fs.rename(tmp, file);
+  } catch (err) {
+    // Do not leave the scratch file behind on a failure; a directory of `.tmp-*` files is
+    // how a reader finds out about this the hard way.
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 /** Append one object as a line. `O_APPEND` makes each write atomic up to a pipe buffer. */

@@ -9,21 +9,30 @@ import { EventLog } from './events.js';
 let dir: string;
 let events: EventLog;
 let transitions: { alert: Alert; kind: AlertTransition }[];
+/** Every store a test made, so teardown can settle their writes before deleting the dir. */
+let made: AlertStore[];
 
 function store(): AlertStore {
-  return new AlertStore(dir, {
+  const s = new AlertStore(dir, {
     events,
     onTransition: (alert, kind) => transitions.push({ alert, kind }),
   });
+  made.push(s);
+  return s;
 }
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'touchstone-alerts-'));
   events = new EventLog(dir);
   transitions = [];
+  made = [];
 });
 
 afterEach(async () => {
+  // `open` and `resolve` do not await their own writes, by design. Without settling them a
+  // write lands while `rm -r` is walking the directory and the teardown fails ENOTEMPTY —
+  // roughly one full-suite run in five.
+  await Promise.all(made.map((s) => s.flush()));
   await events.flush();
   await fs.rm(dir, { recursive: true, force: true });
 });

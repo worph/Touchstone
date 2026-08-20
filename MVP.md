@@ -55,7 +55,7 @@ marked ⬜ or ◑, grouped by the milestone that closes it:
 | **Triggering** | A1–A4 | hourly timer, programmatic webhook, forced-list form, re-assay action |
 | **Scheduling** | B1–B9 | registry from GitHub, eligibility, cooldown, lease + reclaim, tries, parking, single-flight, no-queue |
 | **Claim** | C1–C2 | write `running`; never stamp last-run at claim |
-| **Runner** | D1–D5 | prompt, agent call, response extraction, busy detection, backoff + one retry |
+| **Runner** | D1–D5 | prompt, agent call, response extraction, busy detection, backoff + one retry — **done** |
 | **Bench & browser** | D6–D8 | preflight before claiming; **> 1h of runway**; own browser sidecar; `(bench, browser)` leasing |
 | **Recording** | E1, E4–E7 | result path, headline-authoritative verdict, busy restores the row, parking, completion stamp |
 | **Notification** | F1–F5 | the in-app log, alerts and push. **Not** the Telegram/`notify-hub` fan-out: F1–F4 ask whether the operator finds out, and the Activity page answers it — ARCHITECTURE §1.4 F |
@@ -221,8 +221,8 @@ unconfigured — principle 7. Overview keeps `blocked` visually distinct from `n
 | **M2** | events + alerts + Activity page + push | you can watch the *existing* n8n loop, via a temporary ingest endpoint |
 | **M3** | bench prober + preflight + alert | the outage shows as one alert with the functional queue paused |
 | **M4** | scheduler, calling n8n's `Webhook (programmatic)` to execute | **the QA Loop workflow can be disabled** — *built and running dry; needs the shadow diff, then arming* |
-| **M5** | runner: prompt, agent call, busy retry; **the importer is deleted** | assays execute in-process; Docmost is fully exited |
-| **M6** | browser sidecar + `(bench, browser)` leasing | functional assays run on a private, empty-profile browser |
+| **M5** | runner: prompt, agent call, busy retry; **the importer is deleted** | assays execute in-process; Docmost is fully exited — *built and validated by a hand-run assay; the importer stays until the scheduler is armed* |
+| **M6** | browser sidecar + `(bench, browser)` leasing | functional assays run on a private, empty-profile browser — *built, probed and leased; the agent driving it needs both on one network, i.e. the deploy* |
 | **M7** | packaging behind AppShield, PWA manifest + icons through the sidecar bypass | reachable at `touchstone-yunderalabs.nsl.sh`; installable on a phone; **the App Audit workflow can be disabled** |
 
 M4 is the first milestone that retires something, and M2/M3 exist before it because a scheduler

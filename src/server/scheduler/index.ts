@@ -26,15 +26,12 @@ import type { ReportIndex } from '../store/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import type { BenchProber } from '../services/bench.js';
 import type { EventLog } from '../services/events.js';
-import { adoptRollupSchedule, type RollupScheduleRow } from './adopt.js';
 import { decide, stateLine, type SchedulerConstants, type SubjectSchedule, type TickDecision } from './policy.js';
 import { openClaim, recordResult, type Outcome } from './record.js';
 
 export { decide, stateLine } from './policy.js';
 export type { PolicyInput, SchedulerConstants, SubjectSchedule, TickDecision } from './policy.js';
 export { recordResult, openClaim } from './record.js';
-export { adoptRollupSchedule, readRollupSchedule } from './adopt.js';
-export type { RollupScheduleRow } from './adopt.js';
 export type { Outcome, RecordResult } from './record.js';
 
 interface ScheduleFile {
@@ -58,7 +55,7 @@ export interface SchedulerOptions {
    * Called when an armed scheduler has claimed a subject. Absent until the runner lands
    * (P4), which is why an armed scheduler with no dispatcher still only claims.
    */
-  dispatch?: (job: { subject: string; depth: 'static' | 'full'; try_n: number }) => void;
+  dispatch?: (job: { subject: string; depth: 'static' | 'full'; try_n: number }) => void | Promise<void>;
 }
 
 export class Scheduler {
@@ -67,8 +64,6 @@ export class Scheduler {
   private subjects: Record<string, SubjectSchedule> = {};
   private lastFinished?: string;
   private lastTick?: ScheduleFile['last_tick'];
-  /** n8n's own cooldown anchor, handed over by the importer. See `lastFinishedAt`. */
-  private externalFinish?: string;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
 
@@ -93,72 +88,32 @@ export class Scheduler {
     subjects: Record<string, SubjectSchedule>;
     last_finished_at?: string;
     last_tick?: ScheduleFile['last_tick'];
-    their_claims: string[];
   } {
     return {
       armed: this.opts.armed,
       subjects: this.subjects,
       last_finished_at: this.lastFinishedAt(),
       last_tick: this.lastTick,
-      their_claims: this.adoptedClaims,
     };
   }
 
-  /**
-   * Tell the scheduler when n8n last finished an audit.
-   *
-   * Cooldown is the one input shadow mode cannot derive for itself. The archive's
-   * `finished_at` comes from the roll-up, which carries a *date* and no clock — every
-   * imported assay reads as finished at midnight, so a 55-minute cooldown computed from it
-   * has always already expired. The importer reads `- **Last audit finished:**` off the same
-   * page it was already fetching and passes it here, which is what makes a cooldown tick
-   * comparable between the two systems instead of a guaranteed divergence.
-   *
-   * Once Touchstone drives, its own recorded finishes take over and this stops mattering.
-   */
-  noteExternalFinish(iso: string | undefined): void {
-    if (iso && !Number.isNaN(Date.parse(iso))) this.externalFinish = iso;
-  }
 
-  /**
-   * Take n8n's try counts and parks from its roll-up — see `adopt.ts` for why this is not
-   * optional. Ours always wins; this only fills in subjects we know nothing about.
-   *
-   * Transitional by construction: when the roll-up goes with Docmost at M5, the importer
-   * stops calling this and every subject's state is one we recorded ourselves.
-   */
-  async adoptRollup(rows: readonly RollupScheduleRow[]): Promise<void> {
-    const { schedule, adopted, theirClaims } = adoptRollupSchedule(this.subjects, rows);
-    this.subjects = schedule;
-    this.adoptedClaims = theirClaims;
-    if (adopted.length > 0) await this.persist();
-  }
 
-  /** Subjects n8n itself is auditing right now. Reported, never adopted. */
-  private adoptedClaims: string[] = [];
-
+  /** When we last finished an audit. Ours alone now that nothing else feeds this. */
   private lastFinishedAt(): string | undefined {
-    const ours = this.lastFinished;
-    const theirs = this.externalFinish;
-    if (ours && theirs) return Date.parse(ours) >= Date.parse(theirs) ? ours : theirs;
-    return ours ?? theirs;
+    return this.lastFinished;
   }
 
   /**
    * Latest *completed* assay per subject — `blocked` and `running` are not completions.
    *
-   * **`rollup_last_run` wins over `finished_at` while it is there**, and that is a
-   * transitional rule with a reason. `finished_at` is the date on the report *page*;
-   * `rollup_last_run` is the Last run column of the *row*, which is what n8n's own
-   * eligibility reads. The two can disagree — on 2026-08-19 the roll-up listed Spliit as
-   * audited on the 19th while the page it links to still carried the 12th — and while n8n
-   * owns the loop, its row is the scheduling truth even where its page is behind. Reading
-   * the page instead made Touchstone call Spliit stale, pick it, and diverge from n8n by
-   * exactly one app.
+   * `finished_at` is the only source now. It used to prefer `rollup_last_run`, because while
+   * n8n owned the loop its wiki row was the scheduling truth even where its own report page
+   * was behind. That row no longer exists here: nothing reads the wiki, and the files
+   * Touchstone writes carry a real timestamp rather than a date at midnight.
    *
-   * This is not principle 3 in reverse: the verdict, tier and risk still come from the
-   * assay's own headline. Only *when it last ran* comes from the row, and only until
-   * Touchstone writes the files itself at M5, after which no row exists to prefer.
+   * Imported files from the migration still carry midnight timestamps. That is accurate to
+   * day granularity, which is all `fresh_days` needs.
    */
   private lastDoneAt(subjects: string[]): Record<string, string | undefined> {
     const out: Record<string, string | undefined> = {};
@@ -166,9 +121,7 @@ export class Scheduler {
       let newest: string | undefined;
       for (const leg of ['static', 'functional'] as const) {
         const rec = this.opts.index.latest(subject, leg);
-        if (!rec) continue;
-        const row = rec.meta.rollup_last_run;
-        const at = typeof row === 'string' && row ? row : rec.meta.finished_at ? String(rec.meta.finished_at) : undefined;
+        const at = rec?.meta.finished_at ? String(rec.meta.finished_at) : undefined;
         if (at && (!newest || at > newest)) newest = at;
       }
       out[subject] = newest;
@@ -281,7 +234,13 @@ export class Scheduler {
         });
         // No dispatcher yet is not an error: an armed scheduler with no runner claims and
         // waits, which is a legitimate state during P4's bring-up.
-        this.opts.dispatch?.({ subject: decision.subject, depth: decision.depth, try_n: claim.try_n });
+        //
+        // Deliberately not awaited. An audit takes half an hour; a tick that waited for it
+        // would hold the timer, and the claim it just wrote is what stops the next tick from
+        // starting a second one. The dispatcher reports back through `record()`.
+        void Promise.resolve(
+          this.opts.dispatch?.({ subject: decision.subject, depth: decision.depth, try_n: claim.try_n }),
+        ).catch((err) => console.error('dispatch failed', err));
       }
     } else if (decision.reason.startsWith('no usable demo bench')) {
       this.opts.events.log({

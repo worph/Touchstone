@@ -92,7 +92,7 @@ export class AlertStore {
         last_seen_at: now,
       };
       this.byKey.set(input.key, alert);
-      void this.persist();
+      void this.track();
       return { alert, transitioned: false };
     }
 
@@ -108,7 +108,7 @@ export class AlertStore {
       last_seen_at: now,
     };
     this.byKey.set(input.key, alert);
-    void this.persist();
+    void this.track();
 
     this.events?.log({
       level: 'error',
@@ -139,7 +139,7 @@ export class AlertStore {
       resolved_at: now,
     };
     this.byKey.set(key, alert);
-    void this.persist();
+    void this.track();
 
     const openForMinutes = Math.max(
       0,
@@ -187,6 +187,27 @@ export class AlertStore {
     } catch (err) {
       console.error('alert routing failed', alert.key, err);
     }
+  }
+
+  /**
+   * Await whatever write is in flight.
+   *
+   * `open` and `resolve` deliberately do not await their own persistence — an alert must be
+   * raised the moment it is true, not one disk write later, and a slow filesystem must not
+   * hold up the probe that noticed. That leaves a write that can land after its caller has
+   * moved on, which is fine in a running process and is not fine for a test that is about to
+   * delete the directory underneath it. This is how a caller says "and now settle".
+   */
+  async flush(): Promise<void> {
+    await this.inFlight;
+  }
+
+  private inFlight?: Promise<void>;
+
+  /** Start a write and remember it, so `flush` has something to await. */
+  private track(): void {
+    const previous = this.inFlight ?? Promise.resolve();
+    this.inFlight = previous.then(() => this.persist()).catch(() => {});
   }
 
   private async persist(): Promise<void> {
