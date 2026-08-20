@@ -56,7 +56,7 @@ src/
       reports.ts        read/write report files + frontmatter              [built]
       registry.ts       subjects from the GitHub contents API + overrides  ← B1
       state.ts          alerts.json / events.jsonl / benches.json, atomic writes
-      config.ts         config.yaml + standards/*.yaml                     [built]
+      config.ts         config.yaml                                        [built]
     scheduler/
       tick.ts           the hourly timer; one tick end to end              ← A1
       eligibility.ts    freshness, cooldown, parking, ordering             ← B4,B5,B7
@@ -107,9 +107,9 @@ scheduler and the runner get the index, never a path.
 ```
 /data/
   config.yaml                benches + credentials, routing, constants   (hand-edited)
-  standards/
-    static-v3.yaml           name, version, leg, prompt fragment
-    functional-v2.yaml
+  protocols/
+    static.md                the rubric; its frontmatter names and versions the section
+    functional.md
   reports/
     OpenClaw/
       2026-08-05T09-14-22Z-static.md        ← frontmatter = the assay record
@@ -240,7 +240,7 @@ Closes D1–D6 and E4.
 
 ```
 POST http://beacon-backend:9300/mcp        JSON-RPC over SSE, one call
-  → claude-code tool, prompt assembled from standards/<leg>-v<n>.yaml
+  → claude-code tool, prompt assembled from protocols/<section>.md
   ← the report markdown, headline included
 ```
 

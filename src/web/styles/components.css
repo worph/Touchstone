@@ -1011,3 +1011,101 @@
   overflow-wrap: anywhere;
   tab-size: 2;
 }
+
+/* -- automated mode ------------------------------------------------------- */
+/*
+ * The switch. It is the one control in the app that makes the machine act on its own, so it
+ * reads as a state first and a button second: the word "Running" or "Stopped" is what the
+ * eye should land on, and the button next to it says what pressing it would change to.
+ *
+ * The dot is `--running` when armed and `--unknown` when not — deliberately not `--crit`.
+ * Stopped is the shipped default and a perfectly good state to be in; painting it as a fault
+ * would teach people to arm the loop to make the page stop shouting.
+ */
+.auto-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--unknown);
+  border-radius: var(--r);
+  background: var(--bg-1);
+}
+.auto-switch[data-armed='yes'] { border-left-color: var(--running); }
+
+.auto-switch-state { display: flex; align-items: center; gap: 12px; }
+
+.auto-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--unknown);
+}
+.auto-switch[data-armed='yes'] .auto-dot { background: var(--running); }
+
+.auto-state-word { font-size: 15px; font-weight: 600; color: var(--fg); }
+.auto-state-sub { margin-top: 2px; font-size: 12.5px; color: var(--fg-1); max-width: 62ch; }
+
+.auto-btn { flex: none; min-width: 84px; padding: 7px 14px; font-weight: 600; }
+.auto-btn--start { border-color: var(--running); color: var(--running); }
+.auto-btn--stop { border-color: var(--border-3); color: var(--fg); }
+
+.auto-tick {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-1);
+}
+.auto-tick-state { font-size: 13px; color: var(--fg); }
+.auto-tick-when { margin-top: 3px; font-size: 11.5px; color: var(--fg-2); font-family: var(--mono); }
+
+/* Six short facts, not a table: each is one number and its name, and they wrap on a phone
+ * rather than scrolling sideways. */
+.auto-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--border);
+  overflow: hidden;
+}
+.auto-fact { padding: 9px 12px; background: var(--bg-1); }
+.auto-fact-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-2);
+}
+.auto-fact-value { margin-top: 2px; font-size: 13px; color: var(--fg); }
+
+.auto-foot { margin-top: 10px; font-size: 12px; color: var(--fg-1); max-width: 78ch; }
+
+/* The queue reuses the environment row so the two lists read the same way; the position
+ * column is the only thing it adds. */
+.auto-row { grid-template-columns: 24px minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1.4fr); }
+.auto-pos {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-3);
+  text-align: right;
+}
+.auto-row[data-state='running'] .auto-pos,
+.auto-row[data-state='running'] .env-status { color: var(--running); }
+.auto-row[data-state='parked'] .env-status { color: var(--major); }
+.auto-row[data-state='retry'] .env-status { color: var(--major); }
+.auto-row[data-state='fresh'] { color: var(--fg-2); }
+
+@media (max-width: 720px) {
+  /* Stack rather than squeeze: four columns at 190px each is a sideways scroll on a phone,
+     and the queue is the block most likely to be read on one. */
+  .auto-switch { flex-direction: column; align-items: stretch; }
+  .auto-btn { width: 100%; }
+  .auto-row { grid-template-columns: 24px 1fr; }
+  .auto-row .env-status,
+  .auto-row .env-note { grid-column: 2; }
+}

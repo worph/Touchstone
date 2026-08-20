@@ -456,7 +456,10 @@ own recorded finishes, and freshness reads `finished_at` alone.
 **The protocol was the load-bearing part nobody had noticed.** The rubric was three Docmost
 pages the *agent* fetched at run time; Touchstone held a slug and a version. It is now
 `data/protocols/{orchestrator,static,functional}.md`, exported once by a throwaway script that
-was deleted after it ran, with `imported_from: docmost:<slug>` kept as provenance.
+was deleted after it ran. (The `imported_from: docmost:<slug>` stamp it left behind was
+removed on 2026-08-20 — it was rendered as a chip on the Protocol screen, and a pointer at a
+wiki nothing fetches reads as though the rubric still lived there. The export is recorded
+here instead.)
 
 The exported text told the agent to publish to the wiki, cross-link an App KB page and fetch
 its own leaves. Rather than silently rewriting it, each file carries a visible **Local
@@ -560,6 +563,8 @@ is where it belongs, and it is packaging rather than function.
   paused. Credentials go under `benches:` in `data/config.yaml`; the demo pool is the one
   behind the management board in §6. Until then the Activity environment block says so rather
   than showing green.
+- **`scheduler.fresh_days` is still 7**, so automated mode drains the backlog and then idles for
+  the rest of the week. That is the number to lower if "continuous" is meant literally; see §5h.
 - **No notify outlet is configured**, so alerts stay in the log. `notify.outlets` takes
   `{kind: telegram|discord, target}`.
 - ~~**The `Store QA — Results` page**~~ — **resolved 2026-08-19: freeze it with a pointer.** Docmost
@@ -812,6 +817,117 @@ written with `leg` and no `section` are discarded and re-read. Verified against 
 
 349 tests pass (24 new: sections in `store/protocols.test.ts`, section attribution in
 `ledger.test.ts`, and a new `domain/assay.test.ts` for the per-section composition).
+
+---
+
+## 5g. The orchestrator is gone — 2026-08-20
+
+`data/protocols/orchestrator.md` (the export of n8n's *AppStore App Audit*, Docmost `In2NAGjv0h`)
+is **deleted**. The operator's call: the record of an audit is the recorded requirements plus the
+per-section prose, and nothing else needs a third document.
+
+What it had actually been carrying, and where each piece went:
+
+- **Translating the leaves' neutral outputs** (`static_verdict: pass|flagged|blocked`,
+  `functional_verdict: functional|not-functional|needs-changes|needs-human`) into one verdict.
+  Superseded by the ledger — `record_requirement` / `record_phase` take a strict superset of both
+  shapes — and each leaf now says so in a **Local amendment — Touchstone (2026-08-20)** block.
+  `static.md` had had no local amendment at all, so its `## Output (neutral — the orchestrator
+  formats it)` block and its "downgrade to `flagged`" guardrail were live text against a consumer
+  that no longer existed. `flagged` is now `unverified`; `blocked` is reserved for the
+  environment, per invariant 4.
+- **The report template's heading names** — `Tech & Documentation` and `Functionality` appeared
+  nowhere else, and they are what `report_headings` matches to split one response into one assay
+  per section. Each leaf now names its own heading; `prompt.ts` asks for "one H2 per section under
+  the heading that section's protocol names" rather than referring to a template that is gone.
+- **The verdict gate and risk score** (Amendment 2026-07-07 B–E). Already stated in full in the
+  prompt's JSON output contract, so nothing was lost — but see the open item below.
+
+No code change was required: `plan()` already treated the orchestrator body as optional,
+`protocolsInline` stays true off the section bodies, and `sectionsOf` never read it. `kind:
+'orchestrator'` and the orchestrator-first sort in `ProtocolStore.list()` are kept: they cost ten
+lines and let an operator add a composing document back.
+
+### `data/standards/` went with it
+
+Same argument, one file down. A standard file held `name`, `version`, `section` and nothing
+else — the loader read those three and dropped everything else into an `unknown` bag — and it
+**overrode** the protocol's own version. That had already gone wrong: the editor bumped
+`static.md` to v5 on 2026-08-20 while `static-v4.yaml` kept stamping every assay `v4`, so
+assays claimed to be judged by a rubric one version behind the one that judged them. The
+`source:` slugs in both files pointed at Docmost pages nobody fetches since 2026-08-19, and
+`functional-v3.yaml`'s `bench:` block was a second, ignored copy of the runway rule that
+`config.yaml` actually supplies.
+
+Deleted: both yaml files, `loadStandards`, the `Standard` interface, `cfg.standardsDir`, and
+`cfg.standards` (a fourth stale copy of the two versions, hardcoding the section names in
+`defaults()`). `assaySection` now reads name and version off the protocol, which is what
+principle 6 wanted in the first place: the thing that judged the assay is the thing that
+names its version. No config migration — an operator's `config.yaml` may still carry
+`standardsDir` or `standards`, and both are now ignored.
+
+**Open, and unchanged by this:** invariants 1 and 6 still disagree. The gate — *any Critical is
+non-compliant, unconditionally* — is not computed anywhere; `assay.ts:332` takes the agent's
+declared verdict verbatim for the primary section, and only later sections derive theirs from
+their own recorded fails. With the orchestrator gone, the gate exists only as wording in the
+prompt. Deciding this is the next protocol-level task.
+
+---
+
+## 5h. Automated mode gets a page and a switch — 2026-08-20
+
+The operator's ask: *test the apps one after another continuously, an hour between each, one at a
+time, with start and stop buttons and a page of its own.*
+
+**Nearly all of that already existed.** The loop is `scheduler/`, shipped in P3: `decide()` picks
+the stalest, the `busy` branch plus the claim make concurrency 1 structural rather than a knob,
+`cooldown_min: 55` anchored on `last_finished_at` is the hour between audits, and `tick_min: 60`
+is the check. What was missing was a way to start it that is not "edit `config.yaml` and restart",
+and any view of the queue the pick comes out of. So this is a control surface over an existing
+engine, not a second driver — building one would have given the app two things that could disagree
+about who is stale.
+
+### What landed
+
+| Piece | Where |
+| --- | --- |
+| `armed` at runtime, persisted | `Scheduler.setArmed()`; `state/schedule.json` gains an optional `armed` |
+| the queue as a pure function | `policy.queue()`, over the same `plan()` `decide()` uses |
+| `POST /schedule/arm` | `routes/schedule.ts`; `GET /schedule` grew the queue, the cadence and `runner_enabled` |
+| the page | `src/web/pages/Automation.tsx`, route `/automation`, fifth nav entry |
+| `SubjectSchedule` / `TickDecision` / `Reclaim` | moved to `src/shared/schedule.ts` — the page renders them, and a second copy would drift |
+
+`plan()` is a pure extraction out of `decide()`: reclaim expired claims, release served parks, sort
+the eligible. `decide()` calls it and behaves exactly as it did — the 21 policy tests were the
+check — and `queue()` calls it and stops there. **The pick stays the diffable n8n port**, which is
+the whole reason the queue is a second reader of one rule set rather than a second rule set.
+
+### Three decisions worth keeping
+
+1. **The button writes `state/schedule.json`, not `config.yaml`.** The config file is hand-edited
+   and seeded inert; an app that writes to it turns a file people edit into a file it owns. The
+   state file's `armed` is an *override*: absent means the config value stands, and deleting the
+   state file returns the loop to whatever the config asks for. `GET /schedule` reports which of
+   the two is in effect, so the page never has to guess why it is on.
+2. **Stop does not touch the run in flight.** It means "claim nothing further". Killing a run
+   mid-flight burns a try — principle 3 refunds only infra conditions — orphans the ledger token
+   the agent is still writing against, and holds the claim until `lease_min`. The page says this
+   next to the button rather than after it.
+3. **Start does not enable the runner.** `runner.enabled` gates hand-run audits too, so arming
+   through it would switch on a path nobody asked about. `GET /schedule` carries `runner_enabled`
+   and the page names the "armed but the runner is off" state instead.
+
+Both switches are still shipped off, and **nothing was armed**: the button exists, the operator
+presses it. `SCHEDULER_ARMED` / `SCHEDULER_DISARMED` log who changed it and what the config file
+would have said, because arming is the one control that makes the app act on its own.
+
+### The gap the feature actually has
+
+"Continuous" collides with `fresh_days: 7`. The backlog is subjects staler than a week, so with 69
+apps at ~1h each the loop drains in three days and then correctly idles for four. A perpetual
+carousel means lowering `scheduler.fresh_days`, not adding a mode — and the page says so under the
+cadence block rather than leaving the arithmetic to whoever notices the loop went quiet. Not
+changed here: the shipped default is still 7.
 
 ---
 

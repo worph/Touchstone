@@ -26,16 +26,35 @@ import type { ReportIndex } from '../store/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import type { BenchProber } from '../services/bench.js';
 import type { EventLog } from '../services/events.js';
-import { decide, stateLine, type SchedulerConstants, type SubjectSchedule, type TickDecision } from './policy.js';
+import {
+  cooldownLeftMin,
+  decide,
+  queue,
+  stateLine,
+  type SchedulerConstants,
+  type SubjectSchedule,
+  type TickDecision,
+} from './policy.js';
+import type { QueueRow, ScheduleConstants } from '../../shared/schedule.js';
 import { openClaim, recordResult, type Outcome } from './record.js';
 
-export { decide, stateLine } from './policy.js';
+export { decide, stateLine, queue, cooldownLeftMin } from './policy.js';
 export type { PolicyInput, SchedulerConstants, SubjectSchedule, TickDecision } from './policy.js';
 export { recordResult, openClaim } from './record.js';
 export type { Outcome, RecordResult } from './record.js';
 
 interface ScheduleFile {
   subjects: Record<string, SubjectSchedule>;
+  /**
+   * The automated-mode switch, when someone has pressed it.
+   *
+   * `config.yaml` is hand-edited and seeded inert (`store/config.ts`), so the button cannot
+   * write there without turning a file people edit into a file the app edits. Absent means
+   * "no one has said otherwise" and the config value stands; present, it wins. Deleting this
+   * file therefore returns the loop to whatever the config file asks for, which is the
+   * behaviour you want from a state file holding a switch that dispatches work.
+   */
+  armed?: boolean;
   /** Set when *we* record a finish. In shadow mode it stays empty; see `lastFinishedAt`. */
   last_finished_at?: string;
   /** The most recent decision, so the UI can show what the scheduler thinks without a tick. */
@@ -64,6 +83,8 @@ export class Scheduler {
   private subjects: Record<string, SubjectSchedule> = {};
   private lastFinished?: string;
   private lastTick?: ScheduleFile['last_tick'];
+  private armedOverride?: boolean;
+  private tickMs?: number;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
 
@@ -77,24 +98,90 @@ export class Scheduler {
     this.subjects = stored?.subjects && typeof stored.subjects === 'object' ? stored.subjects : {};
     this.lastFinished = stored?.last_finished_at;
     this.lastTick = stored?.last_tick;
+    this.armedOverride = typeof stored?.armed === 'boolean' ? stored.armed : undefined;
   }
 
   get armed(): boolean {
-    return this.opts.armed;
+    return this.armedOverride ?? this.opts.armed;
+  }
+
+  /**
+   * Start or stop the loop at runtime — the start/stop button.
+   *
+   * Stopping is deliberately *only* "claim nothing further". An audit already dispatched
+   * runs to its end and records normally, because tearing one down mid-flight burns a try
+   * (invariant 3 gives that back only for infra conditions), orphans the ledger token the
+   * agent is still writing against, and leaves the claim held until `lease_min` expires. A
+   * loop you can stop without corrupting the run in flight is worth the extra half hour.
+   */
+  async setArmed(armed: boolean, by = 'operator'): Promise<void> {
+    if (this.armed === armed) return;
+    this.armedOverride = armed;
+    this.opts.events.log({
+      level: 'info',
+      code: armed ? 'SCHEDULER_ARMED' : 'SCHEDULER_DISARMED',
+      message: armed
+        ? 'Automated mode is on — the scheduler will claim and dispatch audits'
+        : 'Automated mode is off — any audit already running will finish, and nothing new starts',
+      detail: { armed, by, config_default: this.opts.armed },
+    });
+    await this.persist();
   }
 
   snapshot(): {
     armed: boolean;
+    armed_default: boolean;
+    armed_source: 'config' | 'override';
     subjects: Record<string, SubjectSchedule>;
     last_finished_at?: string;
     last_tick?: ScheduleFile['last_tick'];
+    next_tick_at?: string;
+    cooldown_left_min: number;
+    constants: ScheduleConstants;
   } {
     return {
-      armed: this.opts.armed,
+      armed: this.armed,
+      armed_default: this.opts.armed,
+      armed_source: this.armedOverride === undefined ? 'config' : 'override',
       subjects: this.subjects,
       last_finished_at: this.lastFinishedAt(),
       last_tick: this.lastTick,
+      ...(this.nextTickAt() ? { next_tick_at: this.nextTickAt() } : {}),
+      cooldown_left_min: cooldownLeftMin({
+        now: new Date(),
+        cooldown_min: this.opts.constants.cooldown_min,
+        lastFinishedAt: this.lastFinishedAt(),
+      }),
+      // Named one by one rather than spread: `config.yaml`'s scheduler block carries
+      // `armed` and `tick_min` too, and a spread would ship the switch inside the block of
+      // numbers describing the cadence.
+      constants: {
+        tick_min: (this.tickMs ?? 0) / 60_000,
+        fresh_days: this.opts.constants.fresh_days,
+        stuck_days: this.opts.constants.stuck_days,
+        lease_min: this.opts.constants.lease_min,
+        cooldown_min: this.opts.constants.cooldown_min,
+        max_tries: this.opts.constants.max_tries,
+      },
     };
+  }
+
+  /**
+   * When the timer next fires, derived from the last tick rather than from when the process
+   * booted — after a restart the two differ by however long the box was down, and a
+   * countdown that lies about that is worse than no countdown.
+   */
+  private nextTickAt(): string | undefined {
+    if (!this.tickMs || !this.lastTick) return undefined;
+    return new Date(Date.parse(this.lastTick.at) + this.tickMs).toISOString();
+  }
+
+  /**
+   * The backlog in the order it would be worked. Reads the world exactly as a tick does and
+   * decides nothing — safe to call from a route on every poll.
+   */
+  async previewQueue(now = new Date()): Promise<QueueRow[]> {
+    return queue(this.buildInput({ now }));
   }
 
 
@@ -153,14 +240,16 @@ export class Scheduler {
     }
   }
 
-  private async runTick(opts: { forced?: string[]; now?: Date }): Promise<TickDecision> {
-    const now = opts.now ?? new Date();
+  /**
+   * The world, as the policy wants it. One reader, so a tick and the queue the page renders
+   * cannot disagree about who is stale.
+   */
+  private buildInput(opts: { forced?: string[]; now: Date }) {
     const subjects = this.opts.registry.list();
     const leasable = this.opts.prober?.leasable() ?? [];
     const benchAvailable = this.opts.prober ? leasable.length > 0 : true;
-
-    const decision = decide({
-      now,
+    return {
+      now: opts.now,
       constants: this.opts.constants,
       subjects,
       lastDoneAt: this.lastDoneAt(subjects),
@@ -169,7 +258,12 @@ export class Scheduler {
       forced: opts.forced,
       benchAvailable,
       benchNote: benchAvailable ? undefined : this.benchNote(),
-    });
+    };
+  }
+
+  private async runTick(opts: { forced?: string[]; now?: Date }): Promise<TickDecision> {
+    const now = opts.now ?? new Date();
+    const decision = decide(this.buildInput({ now, forced: opts.forced }));
 
     // Reclaims and unparks are state changes the decision already made; apply them whether
     // or not we are armed, because they are bookkeeping about *our own* claims. In dry-run
@@ -211,7 +305,7 @@ export class Scheduler {
       this.opts.events.log({
         level: 'info',
         code: 'TICK_SELECTED',
-        message: this.opts.armed
+        message: this.armed
           ? 'The scheduler picked the next app to audit'
           : 'The scheduler would have picked an app, but it is not armed',
         subject: decision.subject,
@@ -220,11 +314,11 @@ export class Scheduler {
           reason: decision.reason,
           backlog: decision.backlog,
           try_n: decision.try_n ?? 1,
-          dry_run: !this.opts.armed,
+          dry_run: !this.armed,
         },
       });
 
-      if (this.opts.armed) {
+      if (this.armed) {
         this.subjects[decision.subject] = openClaim({ now, schedule: this.subjects[decision.subject] });
         const claim = this.subjects[decision.subject]!.claim!;
         this.opts.events.log({
@@ -311,6 +405,7 @@ export class Scheduler {
   }
 
   start(intervalMs: number): void {
+    this.tickMs = intervalMs;
     if (this.timer) return;
     this.timer = setInterval(() => {
       void this.tick().catch((err) => console.error('scheduler tick failed', err));
@@ -327,6 +422,7 @@ export class Scheduler {
     try {
       await writeJsonAtomic(this.file, {
         subjects: this.subjects,
+        ...(this.armedOverride === undefined ? {} : { armed: this.armedOverride }),
         last_finished_at: this.lastFinished,
         last_tick: this.lastTick,
       } satisfies ScheduleFile);

@@ -235,3 +235,128 @@ describe('whose date counts as the last run', () => {
     expect((await s.tick()).action).toBe('audit');
   });
 });
+
+/**
+ * The start/stop button. What matters is not that a boolean flips — it is that the flip
+ * survives a restart without anyone editing `config.yaml`, and that stopping does not reach
+ * into the run in flight.
+ */
+describe('automated mode — the runtime switch', () => {
+  it('arms a scheduler the config file shipped disarmed, and dispatches', async () => {
+    const dispatched: string[] = [];
+    const s = make({ dispatch: (job) => void dispatched.push(job.subject) });
+    await s.load();
+
+    expect(s.armed).toBe(false);
+    await s.setArmed(true);
+    expect(s.armed).toBe(true);
+
+    await s.tick();
+    expect(dispatched).toEqual(['Alpha']);
+    expect(s.snapshot().subjects.Alpha?.claim).toBeDefined();
+  });
+
+  it('remembers the switch across a restart, and says the config did not set it', async () => {
+    const first = make();
+    await first.load();
+    await first.setArmed(true);
+
+    // A whole new instance over the same state dir — the restart.
+    const second = make();
+    await second.load();
+    expect(second.armed).toBe(true);
+    expect(second.snapshot().armed_default).toBe(false);
+    expect(second.snapshot().armed_source).toBe('override');
+  });
+
+  it('falls back to the config default when nothing has been pressed', async () => {
+    const s = make({ armed: true });
+    await s.load();
+    expect(s.armed).toBe(true);
+    expect(s.snapshot().armed_source).toBe('config');
+  });
+
+  it('leaves the claim in flight alone when it stops', async () => {
+    const s = make({ armed: true });
+    await s.load();
+    await s.tick();
+    const claim = s.snapshot().subjects.Alpha?.claim;
+    expect(claim).toBeDefined();
+
+    await s.setArmed(false);
+    // The audit is still running and still holds its subject: stopping means "claim nothing
+    // further", never "abandon the run", or the try is burned for nothing.
+    expect(s.snapshot().subjects.Alpha?.claim).toEqual(claim);
+    // And the next tick claims nobody else.
+    await s.tick();
+    expect(s.snapshot().subjects.Beta?.claim).toBeUndefined();
+  });
+
+  it('logs who changed it and what the config would have said', async () => {
+    const s = make();
+    await s.load();
+    await s.setArmed(true);
+    await s.setArmed(false);
+    await events.flush();
+
+    expect(events.query({ code: 'SCHEDULER_ARMED' })[0]?.detail).toMatchObject({
+      armed: true,
+      config_default: false,
+    });
+    expect(events.query({ code: 'SCHEDULER_DISARMED' })).toHaveLength(1);
+  });
+
+  it('does not log a change that changes nothing', async () => {
+    const s = make();
+    await s.load();
+    await s.setArmed(false);
+    await events.flush();
+    expect(events.query({ code: 'SCHEDULER_DISARMED' })).toHaveLength(0);
+  });
+});
+
+describe('the queue the page renders', () => {
+  it('is the pick, extended — position 1 is the subject the next tick audits', async () => {
+    const s = make({
+      registry: registryOf(['Alpha', 'Beta', 'Gamma']),
+      index: indexOf({
+        Alpha: new Date(Date.now() - 30 * 86_400_000).toISOString(),
+        Beta: new Date(Date.now() - 9 * 86_400_000).toISOString(),
+        Gamma: new Date().toISOString(),
+      }),
+    });
+    await s.load();
+
+    const rows = await s.previewQueue();
+    const decision = await s.tick();
+
+    expect(rows[0]?.subject).toBe(decision.subject);
+    expect(rows[0]?.position).toBe(1);
+    expect(rows.map((r) => r.subject)).toEqual(['Alpha', 'Beta', 'Gamma']);
+    expect(rows.map((r) => r.state)).toEqual(['due', 'due', 'fresh']);
+    // Fresh subjects are listed but hold no position: "why is my app not being tested" is
+    // the question the list has to answer, and an app missing from it answers nothing.
+    expect(rows[2]?.position).toBeUndefined();
+  });
+
+  it('names the running subject rather than hiding it behind the backlog', async () => {
+    const s = make({ armed: true });
+    await s.load();
+    await s.tick();
+
+    const rows = await s.previewQueue();
+    expect(rows.find((r) => r.subject === 'Alpha')?.state).toBe('running');
+    expect(rows.find((r) => r.subject === 'Alpha')?.claim_since).toBeDefined();
+  });
+
+  it('reports a parked subject as parked, with the tries it burned', async () => {
+    const s = make({ armed: true });
+    await s.load();
+    for (let i = 0; i < 3; i++) await s.record('Alpha', { kind: 'error', reason: 'agent-error' });
+
+    const row = (await s.previewQueue()).find((r) => r.subject === 'Alpha');
+    expect(row?.state).toBe('parked');
+    expect(row?.try_n).toBe(3);
+    expect(row?.position).toBeUndefined();
+  });
+});

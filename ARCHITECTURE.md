@@ -308,10 +308,11 @@ protocol   -- data/protocols/<id>.md; a `leaf` IS a section definition
   -- requires  the capabilities it cannot run without — bench, browser. This replaced `depth`.
   -- phases    its fixed steps, if it has any; the UI track and the prompt both read this list
 
-standard
-  name, version, section
-  -- section = the id of a leaf protocol; an OVERRIDE over what that protocol says about
-  --   itself, so a section with no standard file is still named and versioned
+standard   -- not a separate entity: a section's standard IS its protocol file
+  name, version
+  -- taken from the leaf's own frontmatter, which the editor bumps on every save. There was
+  --   a `data/standards/*.yaml` override until 2026-08-20; it could only ever disagree with
+  --   the rubric it claimed to version, and did.
 
 -- WHAT HAPPENED ---------------------------------------------------------
 assay                        -- the frontmatter of a report file IS this record
@@ -350,8 +351,8 @@ it is today. §1.4 G explains why.
 
 | Entity | Storage |
 | --- | --- |
-| `standard` | `standards/*.yaml` — name and version per section, overriding the protocol's own |
-| `protocol` | `protocols/*.md` — the rubric, and the definition of the sections |
+| `standard` | the protocol file itself — a section's name and version are its own rubric's |
+| `protocol` | `protocols/*.md` — the rubric, the definition of the sections, and the version every assay records |
 | `subject` | GitHub contents API + overrides in `config.yaml` |
 | `assay` | **frontmatter of the report file** — the record and the artefact are one thing |
 | `bench`, `browser` | `state/benches.json`, `state/browsers.json` — re-probed at boot anyway |
@@ -614,7 +615,9 @@ Three properties that are not incidental:
   axis hardcoded through the whole system; expressed as a property of a protocol it is one
   step from being a property of a *requirement*, which is what the generic model needs.
 
-The exported copies carry `imported_from: docmost:<slug>` as provenance. Nothing reads it.
+The exported copies carried `imported_from: docmost:<slug>` until 2026-08-20; nothing read it,
+the Protocol screen showed it, and it outlived the wiki. `ProtocolStore` still parses the field
+for any future import — no protocol on disk sets it.
 
 ### 5.6 Reports and outlets
 

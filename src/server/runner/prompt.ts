@@ -81,8 +81,8 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
   const app = (f.app_name || '').trim();
   const repo = (f.repo || 'Yundera/AppStore').trim();
   // Demo hosts are wiped daily; one mid-cleanup still serves a login page but silently fails to
-  // install. Never hardcode a host - pick a Ready one off the board at runtime. See 7HxjTwe63H
-  // amendment 'demo host selection (2026-07-17)'.
+  // install. Never hardcode a host - pick a Ready one off the board at runtime. See
+  // protocols/functional.md, amendment 'demo host selection (2026-07-17)'.
   const DEMO_MANAGE = 'https://app.nasselle.com/demo/admin/manage';
   // The caller may hand us a host it has already logged into. It probes the OIDC flow end to
   // end, which the board does not: on 2026-08-19 the board called an instance Ready while its
@@ -161,9 +161,9 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
   L.push('- risk_score: integer = 100*(#Critical) + 10*(#Major) + 1*(#Minor); 0 when compliant; triage only, it never changes the verdict.');
   L.push('- summary: at most three short lines suitable for a chat notification; include the severity tier and risk_score.');
   if (live) {
-    L.push('- report_markdown: the full report body following the orchestrator report template (omit PR-only lines). It MUST include a Functionality section with the REAL functional results (fresh install and duration, works-immediately, auth gate, clean boot, zero-config (F), and data persistence (G, the real uninstall-then-reinstall outcome - persistence is mandatory, never not-attempted). Every failing item must carry a severity tag (Critical/Major/Minor) and each root/permission deviation must cite the applied deviation-table rule id (D1-D5), and the headline verdict line must carry the top severity and risk score. Verdict rubric: non-compliant if any Phase E functional check fails OR any applicable static/checklist item fails; compliant only if the app is functional AND every applicable checklist item passes. If you genuinely cannot tell, still commit to compliant or non-compliant (best judgement) and explain the uncertainty in the report body; use errored only when the audit could not run.');
+    L.push('- report_markdown: the full report body, one H2 per section of this run under the heading that section\'s protocol names (omit PR-only lines). It MUST include a Functionality section with the REAL functional results (fresh install and duration, works-immediately, auth gate, clean boot, zero-config (F), and data persistence (G, the real uninstall-then-reinstall outcome - persistence is mandatory, never not-attempted). Every failing item must carry a severity tag (Critical/Major/Minor) and each root/permission deviation must cite the applied deviation-table rule id (D1-D5), and the headline verdict line must carry the top severity and risk score. Verdict rubric: non-compliant if any Phase E functional check fails OR any applicable static/checklist item fails; compliant only if the app is functional AND every applicable checklist item passes. If you genuinely cannot tell, still commit to compliant or non-compliant (best judgement) and explain the uncertainty in the report body; use errored only when the audit could not run.');
   } else {
-    L.push('- report_markdown: the full report body following the orchestrator report template (omit PR-only lines); mark any section that is not part of this run as not run.');
+    L.push('- report_markdown: the full report body, one H2 per section of this run under the heading that section\'s protocol names (omit PR-only lines); mark any section that is not part of this run as not run.');
   }
   // Appended last, after every instruction, so the rubric reads as reference material rather
   // than as more orders — and so a long protocol never pushes the output contract out of view.

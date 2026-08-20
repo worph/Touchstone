@@ -74,6 +74,8 @@ export const EVENT_CODES = {
 
   // ── system ────────────────────────────────────────────────────────────────
   // ── the scheduler (P3) ────────────────────────────────────────────────────
+  SCHEDULER_ARMED: { category: 'scheduler', label: 'automated mode started' },
+  SCHEDULER_DISARMED: { category: 'scheduler', label: 'automated mode stopped' },
   TICK_SELECTED: { category: 'scheduler', label: 'target picked' },
   TICK_IDLE: { category: 'scheduler', label: 'tick idled' },
   TICK_BENCH_GATED: { category: 'scheduler', label: 'tick refused for want of a bench' },
@@ -136,6 +138,13 @@ interface EventDetails {
    * between a decision and an action, and someone reading the log after the scheduler is
    * armed needs to be able to filter the shadow period out.
    */
+  /**
+   * Who started or stopped the loop, and what the config file would have said. Arming is the
+   * one control in the app that makes it act on its own, so it is worth a row that survives
+   * the person who pressed it forgetting they did.
+   */
+  SCHEDULER_ARMED: { armed: boolean; by: string; config_default: boolean };
+  SCHEDULER_DISARMED: { armed: boolean; by: string; config_default: boolean };
   TICK_SELECTED: { subject: string; reason: string; backlog: number; try_n: number; dry_run: boolean };
   TICK_IDLE: { reason: string; backlog: number };
   TICK_BENCH_GATED: { reason: string; backlog: number };

@@ -59,8 +59,6 @@ requirements:
   - id: phase-g-persistence
     text: G — data survives an uninstall (which archives) then a restore-from-archive reinstall
     requires: bench
-imported_from: docmost:7HxjTwe63H
-imported_at: 2026-08-19
 ---
 > **Reusable leaf — output-neutral.** Source of truth for the *functional / runtime* checks of an AppStore app: install it on a demo PCS, drive a real browser, decide whether it actually works. Consumed by the **AppStore PR Review** and **AppStore App Audit** orchestrators, which own ALL formatting, labels, and publishing. **Do not put GitHub labels, comment templates, or Docmost wiring here.** The *static / compose* checks live in the **Static Review Protocol** (`static`). Per-app hints: **Functional QA — App KB** (`NeFOTSJPGH`).
 > **Status: VALIDATED end-to-end** (Immich incl. Phases F/G; Jellyfin depth=full e2e) on the CDP-based `browser-mcp` — the old instability cap is resolved. Renamed from “Functional Bot — Operating Protocol” on 2026-06-25 as part of the protocol-decomposition refactor.
@@ -282,3 +280,26 @@ even if an older copy of the body is read.
    fool than it was: an app that opens on its content may simply be riding this run's session.
    The per-run isolated context and the deliberately profile-less browser are the guard; a
    second, never-signed-in context is the tie-breaker.
+
+---
+
+## Local amendment — Touchstone (2026-08-20) — BINDING, supersedes §4 and §6
+
+**There is no orchestrator in Touchstone.** (*AppStore PR Review* still is one, in n8n, against the
+Docmost copies of these leaves — it is not affected by anything here.) §4's neutral vocabulary — `functional`, `not-functional`,
+`needs-changes`, `needs-human` — had exactly one consumer: the workflow that folded the two
+leaves into one verdict, and it is gone. Touchstone takes the phase results directly.
+
+1. **Record each phase as it completes** with `touchstone__record_phase`: `pass`, `fail`,
+   `errored` or `n-a`. There is deliberately no way to say you chose not to run one — a phase
+   that could not run is `errored`, which is infra and never a fault of the app. Record the
+   checklist ids from `touchstone__list_requirements` the same way, through
+   `touchstone__record_requirement`, with a severity on every `fail`.
+2. **`needs-changes` and `needs-human` do not exist.** Never defer to a human: a runtime caveat
+   is a `fail` with a severity and a note, or a `pass` with the caveat stated in the prose.
+3. **`{ functional_verdict, phases, evidence, install_seconds }` is superseded** by the two
+   calls above. Evidence and the install duration go in each record's `note` and in the prose.
+4. **§6's resilience rule loses its escape hatch.** A browser session that cannot be recovered
+   does not become `needs-human`: record the phases you reached, mark the rest `errored`, and
+   report what you have. Infra is the caller's problem to retry.
+5. **Write this section's prose under a `## Functionality` heading.**
