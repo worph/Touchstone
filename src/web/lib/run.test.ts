@@ -5,12 +5,13 @@ import {
   describeLast,
   documentTitle,
   elapsedSeconds,
+  headlineFailure,
   liveLegs,
   mmss,
   nowDoing,
-  phaseTrack,
   progressLabel,
   progressRatio,
+  sectionRows,
 } from './run';
 
 const live = (over: Partial<RunLive> = {}): RunLive => ({
@@ -33,6 +34,7 @@ const PLAN = [
 
 const progress = (over: Partial<RunProgress> = {}): RunProgress => ({
   phase_plan: [],
+  sections: [],
   verified: 0,
   applicable: 0,
   passed: 0,
@@ -118,23 +120,78 @@ describe('progress', () => {
   });
 });
 
-describe('phaseTrack', () => {
-  it('is the plan the protocol declared, in order, reached or not', () => {
-    const track = phaseTrack(live(), progress({
-      phase_plan: PLAN,
-      phases: [
-        { phase: 'A', result: 'pass', at: '2026-08-20T10:01:00.000Z' },
-        { phase: 'C', result: 'pass', at: '2026-08-20T10:03:00.000Z' },
-      ],
-    }));
-    expect(track.map((p) => p.id)).toEqual(['A', 'C', 'D', 'E8', 'E9', 'E10', 'F', 'G']);
-    expect(track[0]?.result).toBe('pass');
-    expect(track[2]?.result).toBeUndefined();
-    expect(track[4]?.label).toBe('auth gate');
+const SECTIONS = [
+  { id: 'static', verified: 12, failed: 1, of_canonical: 14, phase_plan: [] },
+  { id: 'functional', verified: 6, failed: 0, of_canonical: 11, phase_plan: PLAN },
+];
+
+describe('sectionRows', () => {
+  /**
+   * The reason this exists: `18 of 25` is true of the run and of neither section, so a card
+   * drawing one bar cannot say that `static` is nearly done and `functional` has barely
+   * started. Each row is counted against its own protocol's list.
+   */
+  it('counts each section against its own list', () => {
+    const rows = sectionRows(progress({ sections: SECTIONS, verified: 18, of_canonical: 25 }));
+    expect(rows.map((r) => [r.id, r.verified, r.of_canonical])).toEqual([
+      ['static', 12, 14],
+      ['functional', 6, 11],
+    ]);
+    expect(rows[0]?.ratio).toBeCloseTo(12 / 14);
+    expect(rows[1]?.failed).toBe(0);
   });
 
-  it('is empty for a run whose sections declare no phases', () => {
-    expect(phaseTrack(live({ sections: ['static'] }), progress())).toEqual([]);
+  it('hangs the phase track off the section that owns the plan', () => {
+    const rows = sectionRows(progress({
+      sections: SECTIONS,
+      phases: [
+        { phase: 'A', section: 'functional', result: 'pass', at: '2026-08-20T10:01:00.000Z' },
+        { phase: 'C', section: 'functional', result: 'pass', at: '2026-08-20T10:03:00.000Z' },
+      ],
+    }));
+    // A section with no plan draws no track — a row of grey pills beside a run that will
+    // never fill them would invent a failure.
+    expect(rows[0]?.track).toEqual([]);
+    expect(rows[1]?.track.map((p) => p.id)).toEqual(['A', 'C', 'D', 'E8', 'E9', 'E10', 'F', 'G']);
+    expect(rows[1]?.track[0]?.result).toBe('pass');
+    expect(rows[1]?.track[2]?.result).toBeUndefined();
+    expect(rows[1]?.track[4]?.label).toBe('auth gate');
+  });
+
+  /** Two sections may both name a phase `A`; one recording it must not colour the other. */
+  it('does not let one section\'s phase colour another\'s pill', () => {
+    const rows = sectionRows(progress({
+      sections: [
+        { id: 'security', verified: 0, failed: 0, of_canonical: 3, phase_plan: [{ id: 'A', label: 'threat model' }] },
+        ...SECTIONS,
+      ],
+      phases: [{ phase: 'A', section: 'functional', result: 'pass', at: '2026-08-20T10:01:00.000Z' }],
+    }));
+    expect(rows[0]?.track[0]?.result).toBeUndefined();
+    expect(rows[2]?.track[0]?.result).toBe('pass');
+  });
+
+  it('is empty before the run has probed its sections', () => {
+    expect(sectionRows(progress())).toEqual([]);
+    expect(sectionRows(null)).toEqual([]);
+  });
+});
+
+describe('headlineFailure', () => {
+  it('is the newest failure in the pulse, so the card can lead with it', () => {
+    const p = progress({
+      recent: [
+        { id: 'auth-default', verdict: 'pass', at: '2026-08-20T10:04:00.000Z' },
+        { id: 'broad-mount-disclosure', verdict: 'fail', severity: 'major', at: '2026-08-20T10:03:00.000Z' },
+        { id: 'pinned-image-tag', verdict: 'fail', severity: 'minor', at: '2026-08-20T10:01:00.000Z' },
+      ],
+    });
+    expect(headlineFailure(p)?.id).toBe('broad-mount-disclosure');
+  });
+
+  it('is nothing when nothing has failed', () => {
+    expect(headlineFailure(progress({ recent: [{ id: 'x', verdict: 'pass', at: '' }] }))).toBeNull();
+    expect(headlineFailure(null)).toBeNull();
   });
 });
 

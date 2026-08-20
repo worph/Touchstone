@@ -79,7 +79,10 @@ not navigation. It appears when an audit starts, on every page, and disappears w
 ends — a permanent bar that usually reads "idle" is furniture people stop seeing, and then the one
 time it matters they do not see it either. On a phone it is a pill in the sticky header, so it
 costs no height. It carries the subject, the sections actually being run, `verified/canonical`, the
-clock, and the last requirement or phase the agent settled; clicking it opens the subject.
+clock, and the last requirement or phase the agent settled; clicking it opens the subject, **where
+the same card is drawn** — the strip promises live detail, and a click that landed on two section
+cards saying "being assayed now" and nothing else did not keep that promise. The strip is
+suppressed on Activity, where the card is the first thing on the page anyway.
 
 The browser tab's **title** carries the same thing (`◴ SegmentPlayer · 7/24 · 4:12 — Touchstone`),
 because the case this exists for is an operator who asked for a review and switched tabs. A
@@ -238,22 +241,47 @@ list again.
 
 **Running now comes first.** The log cannot answer "what is happening": a run writes one row when
 it starts and the next when it finishes, and for the six to ten minutes in between the page reads
-as an idle system. The card names the bench and the browser this run leased, draws the eight
-functional phases as a track, and lists the last few requirements settled — which is what tells a
-slow run from a stuck one. With nothing running it says so, and names the last run rather than
-rendering an empty box.
+as an idle system. With nothing running it says so, and names the last run rather than rendering
+an empty box.
+
+The card is one hierarchy, top to bottom: **the run** (subject, sections, settled, clock), **the
+failure worth acting on**, **a row per section**, **the feed**, and last **where it is running**.
+Three things that arrangement fixes, all of them reasons the earlier stacked version read as
+strange:
+
+- **One fraction over two sections is true of neither.** `18 of 25` cannot say that `static` is
+  twelve-fourteenths done while `functional` has not started. Each section is counted against its
+  own protocol's list instead, which is also the only form in which a bar means anything — and the
+  same rule `LegCard` already followed by refusing to print the merged number.
+- **A phase track belongs to the section that declared it**, indented under that row rather than
+  floating beside the whole run, where eight untouched pills beside a moving counter read as a
+  stalled audit. Unreached steps still show — a track that shows only what happened cannot show
+  what is left — but they carry their id alone; only the step in hand spells its label out.
+- **The failure is the thing anyone acts on**, so it leads. As a grey clause inside the count it
+  was the smallest word on the card.
+
+The bench, the browser and the start time are a diagnostic and sit last, in one line: between the
+progress and the feed they split the two things that are actually moving, and a card with an
+elapsed clock, an absolute start and relative row stamps left three time bases to reconcile.
 
 ```
 ┌ Activity ────────────────────────────────────────────────────────────────────┐
 │                                                                              │
 │  RUNNING NOW  ◴                                                              │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │ SegmentPlayer   static + functional                              4:12   │  │
+│  │ SegmentPlayer  static + functional          18 of 25 settled     4:12  │  │
 │  │   ↑ the sections this run is actually attempting, named by the protocol │  │
-│  │ ▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░  7/24 requirements settled · 1 failing         │  │
-│  │ (A session)(C fresh install)(D discover URL)(E8 …)(E9 …)(F …)(G …)     │  │
-│  │ started 10:24:28 · bench demostaging1 · browser touchstone-browser:9746│  │
-│  │ pinned-image-tag  fail  major  20s ago                                 │  │
+│  │ ┌────────────────────────────────────────────────────────────────────┐ │  │
+│  │ │ ✗ broad-mount-disclosure   major                           6m ago  │ │  │
+│  │ └────────────────────────────────────────────────────────────────────┘ │  │
+│  │ static      ▓▓▓▓▓▓▓▓▓▓▓▓▓░░  12 of 14 · 1 failing                      │  │
+│  │ functional  ▓▓▓▓▓░░░░░░░░░░   6 of 11                                  │  │
+│  │             (A session)(C fresh install)(D discover URL)(E8)(E9)(F)(G) │  │
+│  │ ──────────────────────────────────────────────────────────────────     │  │
+│  │  6m ago  broad-mount-disclosure          fail    major        static   │  │
+│  │  7m ago  auth-default                    pass                 static   │  │
+│  │ ──────────────────────────────────────────────────────────────────     │  │
+│  │ started 10:24 · bench demostaging1.inojob.com · browser …:9746         │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 │  OPEN ALERTS (1)                                                             │
@@ -440,7 +468,7 @@ These matter more than usual, because the system's normal condition includes "la
 | --- | --- |
 | No assays yet | Overview lists subjects as `⬜ not yet run` with a *Run first assay* action. Never an empty page. |
 | Bench pool down | Banner + functional column uniformly `▨ blocked`. Functional re-assay disabled with the reason. Static work continues visibly. |
-| Assay running | The row shows `◴ running · 7/24`, the shell shows the strip, the tab title shows the clock and Activity shows the card. All four come from `GET /assays/current` and none from a file: the runner writes a report when it has a verdict, so a run in progress has no record and must not be given a placeholder one. |
+| Assay running | The row shows `◴ running · 7/24`, the shell shows the strip, the tab title shows the clock, and both Activity and the subject's own page show the card. All of them come from `GET /assays/current` and none from a file: the runner writes a report when it has a verdict, so a run in progress has no record and must not be given a placeholder one. |
 | Subject parked | `⚠ parked ·3` with the date it is released. Not styled as an error. |
 | Agent busy | Log row and a `agent.unavailable` alert if it persists. The row is restored, not failed. |
 | Report file missing | The section card still renders from the index; the report pane says the file is gone and offers a re-assay. |

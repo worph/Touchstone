@@ -255,9 +255,10 @@ const PHASE_ROW =
   /^\|\s*\*{0,2}(A|B|C|D|E\d{1,2}|F|G[-−]?(?:prime|′|')?|H)\s*\*{0,2}\s*(?:[—–-]\s*)?([^|]*)\|\s*[^|]*?\*{0,2}(pass|fail|errored|error|n-?\/?a|skipped|not[- ]run)\*{0,2}[^|]*\|([^|]*)\|?/i;
 
 /**
- * The phases that constitute a functional run. `B` is pre-flight, `G′` is n-a whenever no
- * PRIOR_VERSION was supplied, and `H` passes trivially when nothing was ever installed — so
- * none of the three is evidence that the leg actually happened.
+ * The phases that constitute a functional run. `B` is pre-flight, `G′` is n-a in every
+ * audit (the PR path owns migration, an audit having only one version), and `H` passes
+ * trivially when nothing was ever installed — so none of the three is evidence that the
+ * leg actually happened.
  */
 export const MANDATORY_PHASES = new Set(['A', 'C', 'D', 'E8', 'E9', 'E10', 'F', 'G']);
 

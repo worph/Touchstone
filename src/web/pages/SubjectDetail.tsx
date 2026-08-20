@@ -19,6 +19,7 @@ import ReassayButton from '../components/ReassayButton';
 import FixReportPanel, { FixReportButton } from '../components/FixReport';
 import CoverageCell from '../components/CoverageCell';
 import RequirementList from '../components/RequirementList';
+import RunCard from '../components/RunCard';
 import { dateOnly, num, since, stamp } from '../lib/format';
 import { displayState, runningState } from '../lib/status';
 import { useRunStatus } from '../data/runStatus';
@@ -160,6 +161,20 @@ export default function SubjectDetail() {
             <LegCard key={id} leg={id} rec={subject.sections?.[id] ?? null} live={live} />
           ))}
         </div>
+      </div>
+
+      {/*
+        The audit in flight, when it is this one's — the same card Activity draws, off the
+        same poll.
+
+        The strip in the shell points here, and until now that click went from the densest
+        live thing in the app to two cards saying "being assayed now" and nothing else. The
+        promise the strip makes is live detail; this is where it has to be kept. It sits
+        above the report because while a run is on, the report below is the *previous*
+        verdict, and the live one outranks it.
+      */}
+      <div style={{ marginTop: 14 }}>
+        <RunCard subject={subject.name} showSubject={false} showIdle={false} heading="This audit, in flight" />
       </div>
 
       {fixOpen && fixable ? (
