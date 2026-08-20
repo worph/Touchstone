@@ -55,11 +55,28 @@ nothing hides behind a "more" sheet.
 │ OPERATIONS   │                                               │
 │  Activity  ● │                                               │
 │  Administrat…│                                               │
+│              │                                               │
+│ ┌──────────┐ │                                               │
+│ │◴ SegmentP│ │                                               │
+│ │ static + │ │                                               │
+│ │ 7/24 · 4:│ │                                               │
+│ └──────────┘ │                                               │
 └──────────────┴───────────────────────────────────────────────┘
 ```
 
 Four destinations, plus subject detail reached by clicking. Everything else is a filtered view of
 one of these — resist adding a fifth.
+
+**The strip above the footer is the run in flight**, and it is the only piece of chrome that is
+not navigation. It appears when an audit starts, on every page, and disappears when the audit
+ends — a permanent bar that usually reads "idle" is furniture people stop seeing, and then the one
+time it matters they do not see it either. On a phone it is a pill in the sticky header, so it
+costs no height. It carries the subject, the depth actually being run, `verified/canonical`, the
+clock, and the last requirement or phase the agent settled; clicking it opens the subject.
+
+The browser tab's **title** carries the same thing (`◴ SegmentPlayer · 7/24 · 4:12 — Touchstone`),
+because the case this exists for is an operator who asked for a review and switched tabs. A
+background tab shows no strip, no page and no badge.
 
 ---
 
@@ -106,6 +123,11 @@ Answers, in order: *is the loop running*, *what's broken*, *what do I fix first*
   exists to rank a fix backlog.
 - **The environment banner appears only when something is wrong**, and links to Activity. When the
   pool is healthy the row is absent — no permanent yellow furniture that people learn to ignore.
+- **`◴ running` is overlaid, not stored.** The audit in flight is read from `/assays/current` and
+  applied to the cells, the tallies and the `running` filter at render time. A full run whose bench
+  vanished marks the *static* cell only — its functional half is not running and will be recorded
+  blocked, and a cell that claimed otherwise would be a lie the page tells for four minutes and
+  then contradicts.
 - **`⚠ parked ·3`** is its own state, not an error: three tries used, waiting out `STUCK_DAYS`.
   Today this is legible only by reading `stuck after 3 tries` out of a wiki cell.
 - **Age, not timestamp.** `7d` is actionable; `2026-07-30` requires arithmetic.
@@ -127,7 +149,7 @@ from the report prose is precisely the mistake the archive was cleaned of in P1.
 ### 2.2 Subject detail — one app
 
 ```
-┌ ‹ OpenClaw ──────────────────────────────────────── risk 232   [ re-assay ▾ ]┐
+┌ ‹ OpenClaw ─────────────────────── risk 232  [ fix report ]  [ re-assay ▾ ]──┐
 │ Yundera/AppStore@main:Apps/OpenClaw                                          │
 │ openclaw:2.1.0 · appshield:2.0.7 · commit 6b9af120                           │
 │                                                                              │
@@ -169,6 +191,19 @@ from the report prose is precisely the mistake the archive was cleaned of in P1.
   failing on submit. Beside it, the last run for this subject in one clause: `last run:
   non-compliant · risk 1`, or `the agent was busy — nothing was charged`, which is not a failure
   and must not read as one.
+- **`fix report`** turns the audit round to face the person who has to change the app. It opens a
+  panel of raw markdown — findings worst-first, the audit's own evidence quoted verbatim, the
+  remedy it proposed where it proposed one, and the failing requirement ids as the acceptance
+  criteria — with `copy` and `download`. The same document is `GET /api/v1/subjects/:name/fix.md`
+  for a script or a CI job, so what someone pastes and what CI fetches cannot drift.
+  - **Composed from the record, never regenerated.** Every sentence comes out of the frontmatter
+    the agent wrote. Where the audit proposed no remedy the report says so; a guessed fix in a
+    document whose purpose is to be executed is worse than none.
+  - **Raw, not rendered.** The point of the panel is to take the text away, and rendered markdown
+    is markdown you cannot copy correctly.
+  - The button is absent unless something is actually failing, and gated on *recorded findings*
+    rather than on the verdict: an assay imported before the ledger has a verdict and no
+    requirements, and the report built from it would be headings with nothing underneath.
 - **A `requirements` section above the report**, when the assay has one. Ordered by what a
   reader is looking for rather than by id: failures first and worst tier first, then anything
   that could not be checked, then the passes — which are folded behind a count, because a page
@@ -183,13 +218,29 @@ from the report prose is precisely the mistake the archive was cleaned of in P1.
 
 ---
 
-### 2.3 Activity — the log, alerts and the environment
+### 2.3 Activity — what is running, the log, alerts and the environment
 
 The page you open when something has gone wrong, and the reason you never need the n8n executions
 list again.
 
+**Running now comes first.** The log cannot answer "what is happening": a run writes one row when
+it starts and the next when it finishes, and for the six to ten minutes in between the page reads
+as an idle system. The card names the bench and the browser this run leased, draws the eight
+functional phases as a track, and lists the last few requirements settled — which is what tells a
+slow run from a stuck one. With nothing running it says so, and names the last run rather than
+rendering an empty box.
+
 ```
 ┌ Activity ────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│  RUNNING NOW  ◴                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ SegmentPlayer   static + functional                              4:12   │  │
+│  │ ▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░  7/24 requirements settled · 1 failing         │  │
+│  │ (A session)(C fresh install)(D discover URL)(E8 …)(E9 …)(F …)(G …)     │  │
+│  │ started 10:24:28 · bench demostaging1 · browser touchstone-browser:9746│  │
+│  │ pinned-image-tag  fail  major  20s ago                                 │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 │  OPEN ALERTS (1)                                                             │
 │  ┌────────────────────────────────────────────────────────────────────────┐  │
@@ -315,7 +366,7 @@ These matter more than usual, because the system's normal condition includes "la
 | --- | --- |
 | No assays yet | Overview lists subjects as `⬜ not yet run` with a *Run first assay* action. Never an empty page. |
 | Bench pool down | Banner + functional column uniformly `▨ blocked`. Functional re-assay disabled with the reason. Static work continues visibly. |
-| Assay running | Row shows `◴ running · 4m` with the try counter and bench; live, no reload needed. |
+| Assay running | The row shows `◴ running · 7/24`, the shell shows the strip, the tab title shows the clock and Activity shows the card. All four come from `GET /assays/current` and none from a file: the runner writes a report when it has a verdict, so a run in progress has no record and must not be given a placeholder one. |
 | Subject parked | `⚠ parked ·3` with the date it is released. Not styled as an error. |
 | Agent busy | Log row and a `agent.unavailable` alert if it persists. The row is restored, not failed. |
 | Report file missing | The leg card still renders from the index; the report pane says the file is gone and offers a re-assay. |

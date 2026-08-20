@@ -27,7 +27,7 @@
 .md h3 { font-size: 14px; color: var(--fg); }
 .md h4 { font-size: 13px; color: var(--fg-1); }
 
-.md .header-anchor {
+.md .heading-anchor {
   position: absolute;
   left: -1em;
   width: 1em;
@@ -35,10 +35,10 @@
   text-decoration: none;
   opacity: 0;
 }
-.md h1:hover .header-anchor,
-.md h2:hover .header-anchor,
-.md h3:hover .header-anchor,
-.md h4:hover .header-anchor { opacity: 1; }
+.md h1:hover .heading-anchor,
+.md h2:hover .heading-anchor,
+.md h3:hover .heading-anchor,
+.md h4:hover .heading-anchor { opacity: 1; }
 
 /* the flash used when a finding scrolls the report to its section */
 .md .md-flash {

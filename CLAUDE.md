@@ -105,6 +105,10 @@ because its data access was smeared through two 200-line n8n Code nodes.
   `parse-failed`), `index.ts` (one job in, one or two assay files out, a `RunOutcome` back).
 - **`services/ledger.ts` + `routes/mcp.ts`** — the callback surface the agent uses to record each
   requirement *as it settles it*, so a run that dies at requirement 12 of 16 keeps twelve results.
+- **`domain/fixreport.ts`** — the audit composed into a brief for whoever has to fix the app,
+  served as markdown by `GET /subjects/:name/fix.md`. It **quotes**: findings, severities,
+  evidence and remedies all come out of the frontmatter, and where the agent proposed no remedy
+  the report says so rather than inventing one.
 - **`services/ports.ts`** — probes the two non-bench dependencies (agent, browser) by `tools/list`
   over MCP. `services/bench.ts` keeps its own prober because the bench pool is **discovered** from
   the pool API, not configured.
@@ -117,7 +121,10 @@ because its data access was smeared through two 200-line n8n Code nodes.
   `prompt.md` is an asset — `build:api` copies it into `dist/`, so a new non-TS file there
   needs the same treatment.
 - **`src/web/`** — React + Vite SPA, four pages (Overview, Subject detail, Activity,
-  Administrator chat) plus Protocols. `src/web/data/client.ts` is the only thing that talks to the API. `@shared/*` aliases
+  Administrator chat) plus Protocols. `src/web/data/client.ts` is the only thing that talks to the API,
+  and `data/runStatus.ts` is the **single poller** for the run in flight — the shell strip, the
+  Overview's `◴ running` cells, Activity's card and the re-assay button all subscribe to it rather
+  than polling `/assays/current` themselves. `@shared/*` aliases
   `src/shared/` in both the Vite and Vitest configs; the server imports it with `.js` specifiers.
   Hand-written CSS, no framework: **every colour is a token in `styles/base.css`** — the light
   "desk" palette is Newsdesk's, and the `prefers-color-scheme: dark` block below it redefines the
@@ -169,6 +176,9 @@ approved and is documented in HANDOFF.md §5c.
   error, just silence, which reads as "the symbol isn't there". Use `grep -a`.
 - **The index is built at boot.** Anything that changes report files from another process needs an
   API restart to be visible.
+- **`yarn dev` runs the API under `tsx watch`, so any edit under `src/server/` restarts it and
+  kills the audit in flight** — no report, no completion event, and the agent goes on recording
+  against a ledger token that no longer exists. Finish server edits before dispatching a run.
 - The repo layout listed in IMPLEMENTATION.md §3 predates P2–P4 and names files that no longer
   exist (`scheduler/tick.ts`, `eligibility.ts`, `lease.ts`, `services/browser.ts`, `tools/import.ts`).
   The tree on disk is the truth; the doc's *rules* still hold.

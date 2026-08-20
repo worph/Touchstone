@@ -31,6 +31,7 @@ surprise.
 | **R6** | The browser MCP sidecar is configurable from inside the app | ◑ same |
 | **R7** | A notification page in the shape of Newsdesk's | ◑ Activity, deep links and assistable failures done; two parts missing |
 | **R8** | A central LLM chat that administrates the app | ✅ built 2026-08-20, proved end to end |
+| **R9** | The audit hands the dev team something they can act on | ✅ built 2026-08-20 — the fix report |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -356,6 +357,45 @@ The confirmation round-trip — Newsdesk's `confirmWith`, where a destructive to
 and the operator types a word to run it. Nothing in the current registry is destructive, so
 there is nothing to guard; it becomes necessary the moment a tool can arm the scheduler or
 rewrite the configuration.
+
+## 9b. R9 — The audit hands the dev team something they can act on ✅
+
+**Asked for 2026-08-20**, after the first end-to-end audit of SegmentPlayer: a button on the app
+panel producing a markdown report that states the issue and proposes the fix, *"to serve as an LLM
+prompt on the dev team so they can use that to fix the app"*.
+
+It is not on the parity matrix — n8n has no equivalent — and it is not in ARCHITECTURE §1.4 G's
+dropped list either. It is a new capability, asked for directly.
+
+**Composed, not generated.** The decision put to the operator was agent-written versus composed
+from the record; composed won. Every sentence comes out of the frontmatter the agent already
+wrote — the finding, its severity, its evidence, the remedy where it proposed one — so the report
+is instant, deterministic, works with the agent down, and re-derives nothing (invariant 1). Where
+the audit proposed no remedy, the document **says so** rather than inventing one: a guessed fix in
+a document whose purpose is to be executed is worse than none.
+
+**Shape.** `# Fix <App>` → the subject (repo, ref, path, images, standard versions, per-leg
+verdict) → rules of engagement → findings worst-first with evidence quoted and remedy split out →
+functional phases → what already passes and must not regress → **acceptance: the requirement ids
+that must flip to `pass`**. Those ids are what make it a brief rather than a complaint.
+
+**Where it lives.**
+
+| Piece | Where |
+| --- | --- |
+| The composer, pure | `src/server/domain/fixreport.ts` (+ 17 tests) |
+| The document | `GET /api/v1/subjects/:name/fix.md` — `text/markdown`, for a script or CI |
+| The button and panel | `src/web/components/FixReport.tsx`, on the subject page |
+
+The panel shows raw markdown, not rendered: the point is to take the text away, and rendered
+markdown is markdown you cannot copy. Copy needs a secure context, so the button says `needs
+https` rather than failing silently on a plain-http LAN address.
+
+The button is hidden unless something is actually failing — gated on recorded findings, not on
+the verdict, because an assay imported before the ledger has a verdict and no requirements, and
+the report built from it would be headings with nothing underneath.
+
+---
 
 ## 10. Sequencing
 
