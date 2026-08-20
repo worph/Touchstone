@@ -12,9 +12,10 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { memoryStore } from '../domain/fixtures.js';
 import { EventLog } from '../services/events.js';
 import { extractJson } from './driver.js';
-import { dispatch, runTurn } from './loop.js';
+import { buildPrompt, dispatch, runTurn } from './loop.js';
 import { ChatThreads } from './thread.js';
 import { renderCatalogue } from './catalogue.js';
 import { CHAT_TOOLS } from './registry.js';
@@ -213,6 +214,139 @@ describe('the catalogue', () => {
   it('offers no way to record an outcome', () => {
     const names = CHAT_TOOLS.map((t) => t.name).join(' ');
     expect(names).not.toMatch(/record|verdict|hallmark|compliant/i);
+  });
+});
+
+/**
+ * The failure these exist for.
+ *
+ * An audit of FileBrowser started from the chat, the API restarted 27 seconds later, and when
+ * the operator asked what came of it the assistant said "nothing yet" — over an archive holding
+ * ten assays of that app. Everything it could see was the live process, and the live process
+ * is the one thing a restart empties.
+ */
+describe('reading what was written down', () => {
+  const registry = { list: () => ['yundera~OpenClaw', 'yundera~NeverAssayed'] } as never;
+  const archive = { store: memoryStore(), registry };
+
+  it('answers about a finished audit that the live status has forgotten', async () => {
+    const forgetful = {
+      ...archive,
+      runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }) },
+    } as never;
+
+    const status = await dispatch({ tool: 'get_status', input: {} }, forgetful);
+    // It must not leave that reading as "nothing has ever been audited".
+    expect(status.text).toContain('Nothing has finished since this process started');
+    expect(status.text).toContain('get_subject');
+
+    const subject = await dispatch({ tool: 'get_subject', input: { subject: 'openclaw' } }, forgetful);
+    expect(subject.ok).toBe(true);
+    expect(subject.text).toContain('non-compliant');
+    expect(subject.text).toContain('risk 232');
+  });
+
+  /** Invariant 4: blocked is infra, and it never retracts the verdict the subject carries. */
+  it('reads a blocked section as infra, not as a result about the app', async () => {
+    const res = await dispatch({ tool: 'get_subject', input: { subject: 'OpenClaw' } }, archive as never);
+    expect(res.text).toContain('functional: blocked — bench_unavailable');
+    expect(res.text).toContain('nothing was decided about the app');
+    expect(res.text).toContain('The verdict it still carries is compliant');
+  });
+
+  it('knows the difference between never assayed and not a subject', async () => {
+    const never = await dispatch({ tool: 'get_subject', input: { subject: 'NeverAssayed' } }, archive as never);
+    expect(never.ok).toBe(true);
+    expect(never.text).toContain('no assay of it exists yet');
+
+    const nobody = await dispatch({ tool: 'get_subject', input: { subject: 'Nonesuch' } }, archive as never);
+    expect(nobody.ok).toBe(false);
+    expect(nobody.text).toContain('list_subjects');
+  });
+
+  it('hands back the fix brief, and refuses rather than implying a clean bill', async () => {
+    const brief = await dispatch({ tool: 'get_fix_brief', input: { subject: 'OpenClaw' } }, archive as never);
+    expect(brief.ok).toBe(true);
+    expect(brief.text).toContain('# Fix OpenClaw');
+
+    const none = await dispatch({ tool: 'get_fix_brief', input: { subject: 'NeverAssayed' } }, archive as never);
+    expect(none.ok).toBe(false);
+    expect(none.text).toContain('no assay');
+  });
+
+  it('shows how a run ended — including one a restart cut short', async () => {
+    events.log({
+      level: 'info',
+      code: 'ASSAY_STARTED',
+      message: 'An audit has started',
+      subject: 'yundera~OpenClaw',
+      detail: { subject: 'yundera~OpenClaw', sections: ['static'], try_n: 1, bench: null, browser: null },
+    });
+    events.log({ level: 'info', code: 'SERVER_STARTED', message: 'Touchstone started and read the archive' });
+    await events.flush();
+
+    const res = await dispatch({ tool: 'list_activity', input: {} }, { ...archive, events } as never);
+    expect(res.ok).toBe(true);
+    // Oldest first: the turn reads it as a story, and the restart has to come after the start.
+    expect(res.text.indexOf('ASSAY_STARTED')).toBeLessThan(res.text.indexOf('SERVER_STARTED'));
+    expect(res.text).toContain('OpenClaw');
+
+    const scoped = await dispatch(
+      { tool: 'list_activity', input: { subject: 'openclaw' } },
+      { ...archive, events } as never,
+    );
+    // A bare name resolves to the key the log actually writes, or it matches nothing at all.
+    expect(scoped.text).toContain('ASSAY_STARTED');
+  });
+
+  it('refuses a level it does not know rather than silently ignoring it', async () => {
+    const res = await dispatch({ tool: 'list_activity', input: { level: 'shouty' } }, { ...archive, events } as never);
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('debug, info, warn, error');
+  });
+});
+
+describe('a run started here reports back into the conversation', () => {
+  it('gives the dispatcher the turn\'s thread, which the model never supplies', async () => {
+    const started: { subject: string; threadId?: string }[] = [];
+    const thread = await threads.forTurn();
+    await runTurn(TEMPLATE, {
+      threads,
+      threadId: thread.id,
+      message: 'review OpenClaw',
+      ctx: {
+        registry: { list: () => ['yundera~OpenClaw'] } as never,
+        runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }) } as never,
+        startAssay: (job, opts) => started.push({ subject: job.subject, threadId: opts?.threadId }),
+      },
+      events,
+      ask: {
+        callImpl: scripted([
+          JSON.stringify({ say: '', call: { tool: 'run_assay', input: { subject: 'openclaw', threadId: 'not-yours' } } }),
+          JSON.stringify({ say: 'Started it.', call: null }),
+        ]) as never,
+      },
+    });
+    expect(started).toEqual([{ subject: 'yundera~OpenClaw', threadId: thread.id }]);
+  });
+
+  it('carries the note into the next turn\'s history, as Touchstone rather than the operator', async () => {
+    const thread = await threads.forTurn();
+    await threads.append({
+      threadId: thread.id,
+      role: 'note',
+      content: 'The audit of OpenClaw you started has finished: non-compliant (risk 232).',
+    });
+    const prompt = buildPrompt({
+      template: TEMPLATE,
+      history: await threads.list(thread.id),
+      message: 'what came of it?',
+      status: 'No audit is running.',
+      callsUsed: 0,
+      maxCalls: 8,
+      msLeft: 60_000,
+    });
+    expect(prompt).toContain('**note:** The audit of OpenClaw you started has finished');
   });
 });
 

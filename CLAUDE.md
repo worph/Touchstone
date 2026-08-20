@@ -137,8 +137,13 @@ because its data access was smeared through two 200-line n8n Code nodes.
   authoritative; alerts dedup an environment condition to one row; outlets and push are
   best-effort.
 - **`src/server/chat/`** — the administrator chat: a bounded turn loop (`loop.ts`, 8 calls and
-  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), three tools wrapping the
+  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), six tools wrapping the
   API (`registry.ts`), and the agent call (`driver.ts`) reusing `postToAgent` from the runner.
+  Five of the six **read**, and four of those read what is *written down* — the archive, the fix
+  brief, the log, the backlog — not the live process, which a `tsx watch` restart empties while
+  the operator is still waiting for the run it started (HANDOFF §5k). A run started from a turn
+  appends a `note` row back into that thread when it finishes, so the conversation knows what
+  became of its own work.
   `prompt.md` is an asset — `build:api` copies it into `dist/`, so a new non-TS file there
   needs the same treatment.
 - **`src/web/`** — React + Vite SPA, five pages (Overview, Subject detail, Automation,

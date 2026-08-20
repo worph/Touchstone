@@ -755,6 +755,20 @@
   color: var(--fg-1);
 }
 
+/* Touchstone's own voice: quieter than either speaker, and not in a bubble — a bubble would
+   read as somebody having said it. */
+.chat-note {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+  color: var(--fg-2);
+  font-size: 13px;
+}
+.chat-note__mark { color: var(--fg-3); }
+
 /* Three dots, because a turn takes tens of seconds and a still screen reads as a dead one. */
 .chat-thinking { display: flex; gap: 5px; padding: 4px 2px; margin: 0; }
 .chat-thinking span {

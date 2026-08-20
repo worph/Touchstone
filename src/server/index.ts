@@ -19,6 +19,8 @@ import { Runner } from './runner/index.js';
 import { PortProber } from './services/ports.js';
 import { ProtocolStore } from './store/protocols.js';
 import { RunLedger } from './services/ledger.js';
+import { outcomeClause, type RunOutcome } from '../shared/activity.js';
+import { subjectName } from '../shared/subject.js';
 import { ChatThreads } from './chat/thread.js';
 import { CHAT_TOOLS } from './chat/registry.js';
 
@@ -242,24 +244,59 @@ await app.register(registerRoutes, {
       alerts,
       ports,
       prober,
+      // The archive, the log and the backlog: what the chat's read tools answer from. All
+      // three are durable, which is the point — the live runner state they used to be limited
+      // to is empty after a restart, and an audit that ended is exactly what gets asked about.
+      store,
+      events,
+      scheduler,
       // The same path `POST /assays` takes, so a run started by conversation is recorded,
       // notified and charged to the schedule exactly as a hand-run one is.
-      startAssay: (job) => {
+      startAssay: (job, opts) => {
         void runner
           .run({ ...job, try_n: 1 })
-          .then((outcome) =>
-            scheduler.record(
-              job.subject,
-              outcome.kind === 'verdict'
-                ? { kind: 'verdict' }
-                : outcome.kind === 'agent_busy'
-                  ? { kind: 'agent_busy' }
-                  : outcome.kind === 'blocked'
-                    ? { kind: 'blocked', reason: outcome.reason }
-                    : { kind: 'error', reason: outcome.reason },
-            ),
-          )
+          .then(async (outcome) => {
+            try {
+              await scheduler.record(
+                job.subject,
+                outcome.kind === 'verdict'
+                  ? { kind: 'verdict' }
+                  : outcome.kind === 'agent_busy'
+                    ? { kind: 'agent_busy' }
+                    : outcome.kind === 'blocked'
+                      ? { kind: 'blocked', reason: outcome.reason }
+                      : { kind: 'error', reason: outcome.reason },
+              );
+            } finally {
+              // `finally`, so a schedule that could not be written does not also cost the
+              // operator the answer. The two are independent: one is bookkeeping, the other
+              // is the reply to a question somebody actually asked.
+              await noteFinished(outcome, opts?.threadId);
+            }
+          })
           .catch((err) => app.log.error({ err, subject: job.subject }, 'chat-started assay failed'));
+
+        /**
+         * Tell the conversation that asked for it.
+         *
+         * The turn that started this ended minutes ago, so there is nobody to return to; the
+         * row is written into the thread instead, and the next turn reads it in its history
+         * like any other. Without it the assistant is asked "what came of it?" and has to go
+         * looking for work it did itself.
+         *
+         * Best-effort on purpose: a thread file that cannot be appended to must not turn a
+         * completed audit into a logged failure.
+         */
+        async function noteFinished(outcome: RunOutcome, threadId?: string): Promise<void> {
+          if (!threadId) return;
+          await chatThreads
+            .append({
+              threadId,
+              role: 'note',
+              content: `The audit of ${subjectName(job.subject)} you started has finished: ${outcomeClause(outcome)}.`,
+            })
+            .catch((err) => app.log.warn({ err }, 'could not note a finished audit in its thread'));
+        }
       },
     },
     status: async () => {

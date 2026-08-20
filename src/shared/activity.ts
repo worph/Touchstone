@@ -143,8 +143,15 @@ export interface PushStatus {
   devices: number;
 }
 
-/** One row of the administrator chat. Written by the server, rendered by the page. */
-export type ChatRole = 'user' | 'assistant' | 'tool';
+/**
+ * One row of the administrator chat. Written by the server, rendered by the page.
+ *
+ * `note` is the app speaking rather than the assistant: an audit the chat started has
+ * finished, minutes after the turn that started it ended. It is a row rather than a
+ * notification because the transcript is what the next turn reads — a completion the
+ * conversation cannot see is one the assistant will be asked about and still not know.
+ */
+export type ChatRole = 'user' | 'assistant' | 'tool' | 'note';
 
 export interface ChatMessage {
   id: string;
@@ -219,6 +226,26 @@ export type RunOutcome =
   | { kind: 'error'; reason: string }
   | { kind: 'agent_busy' }
   | { kind: 'blocked'; reason: string };
+
+/**
+ * How a run ended, as one clause — `non-compliant (risk 8)`, `blocked — no bench was free`.
+ *
+ * Here rather than beside either caller because the chat's status tool and the note a
+ * finished run writes into the conversation must say the same thing about the same outcome.
+ * `blocked` keeps its "infra, not the app" reading: it is a reason, never a verdict.
+ */
+export function outcomeClause(outcome: RunOutcome): string {
+  switch (outcome.kind) {
+    case 'verdict':
+      return `${outcome.verdict} (risk ${outcome.risk})`;
+    case 'blocked':
+      return `blocked — ${outcome.reason}, which says nothing about the app`;
+    case 'agent_busy':
+      return 'not run — the agent was busy';
+    case 'error':
+      return `failed — ${outcome.reason}`;
+  }
+}
 
 /**
  * The audit currently in flight.
