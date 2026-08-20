@@ -6,13 +6,14 @@ import { fileURLToPath, URL } from 'node:url';
 
 import registerRoutes from './routes/index.js';
 import { buildIndex } from './store/index.js';
+import { logArchiveMigration, migrateArchiveLayout } from './store/migrate.js';
 import { ensureConfigFile, loadConfig, resolveDataDir } from './store/config.js';
 import { AlertStore } from './services/alerts.js';
 import { BenchProber } from './services/bench.js';
 import { EventLog } from './services/events.js';
 import { Notifier } from './services/notify.js';
 import { PushService } from './services/push.js';
-import { SubjectRegistry } from './store/registry.js';
+import { appsUrlFor, SubjectRegistry } from './store/registry.js';
 import { Scheduler } from './scheduler/index.js';
 import { Runner } from './runner/index.js';
 import { PortProber } from './services/ports.js';
@@ -38,6 +39,14 @@ try {
 }
 const cfg = await loadConfig(dataDir);
 
+// Reports moved under a store folder when the store became a configured value:
+// `reports/<Subject>/` → `reports/<origin>/<Subject>/`. This runs before the index, or the
+// index and its cache would hold paths that are about to move. It is tidying and nothing more —
+// `coerceMeta` defaults a missing `origin`, so an archive this fails to move still reads
+// correctly — which is why it cannot throw and why its event is emitted later, once there is an
+// event log to emit it to.
+const migration = await migrateArchiveLayout(cfg.reportsRoot);
+
 // The index is the entire data layer: scan the archive, parse frontmatter, hold it in
 // memory. `state/index.json` only makes a restart cheaper — deleting it is always safe.
 const store = await buildIndex(cfg.reportsRoot, {
@@ -56,6 +65,9 @@ const events = new EventLog(cfg.stateDir, {
   onWriteError: (err, event) => app.log.error({ err, code: event.code }, 'event not written'),
 });
 await events.load();
+// Deferred from before the index was built, because that is when the move had to happen and
+// this is the first moment there is anywhere to say so.
+logArchiveMigration(migration, events);
 
 const push = new PushService({ stateDir: cfg.stateDir, events, subject: cfg.notify.push_subject });
 await push.load();
@@ -91,9 +103,15 @@ await prober.load();
 // The driver. Ships dry-run: with `scheduler.armed: false` it decides and logs and claims
 // nothing, which is what lets its pick be diffed against the live n8n loop's before it is
 // ever allowed to drive.
+// One origin today. `cfg.origins[0]` is always the default one — `resolveOrigins` puts it
+// there — and a second store is R10 step 3, which turns this into one registry per origin.
+const origin = cfg.origins[0]!;
 const registry = new SubjectRegistry({
   stateDir: cfg.stateDir,
   events,
+  origin: origin.id,
+  url: appsUrlFor(origin),
+  ...(origin.seed ? { seed: origin.seed } : {}),
   archived: () => store.subjects(),
 });
 await registry.load();

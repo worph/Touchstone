@@ -19,7 +19,16 @@ Vocabulary used throughout the code: **subject** (an app), **standard** (a versi
 **assay** (one run of one standard against one subject), **hallmark** (the composed verdict),
 **bench** (a leasable demo instance), **section** (one leaf of the protocol — one rubric, one
 assay file; `static` and `functional` today, but the set is whatever `data/protocols/*.md`
-declares), **alert** (a deduplicated environment condition).
+declares), **alert** (a deduplicated environment condition), **origin** (an app store — one
+`{repo, ref, apps_path}` a subject comes from, labelled "Store" in the UI; **not** `store/`,
+which is the filesystem layer, and **not** `AssayStore`, which is the read interface the routes
+take), **trial** (a one-shot audit of an arbitrary ref, written under `data/trials/` and never
+read by the report index, so it cannot move a hallmark).
+
+A subject's identity is `<origin>~<name>` — `yundera~FileBrowser`. The separator is `~` because
+it is unreserved in `encodeURIComponent` and therefore survives a URL untouched, which is what
+lets every route keep the single-segment shape it already had. `src/shared/subject.ts` owns the
+key, and `SubjectKey` is a branded type so the compiler catches a bare name used as a key.
 
 `leg` is the old name for a section and survives only in report files written before
 2026-08-20, in the two-column Overview, and in `Leg`/`LEGS` in `domain/hallmark.ts`. New code
@@ -86,7 +95,7 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | --- | --- |
 | `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile` |
 | `protocols/*.md` | **the rubric itself**, the definition of the sections, and the version every assay records: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads. There is no separate `standards/` — a second file could only disagree with the rubric it versioned |
-| `reports/<Subject>/<ISO>-<section>.md` | **the assay record IS the frontmatter of the report file** |
+| `reports/<origin>/<Subject>/<ISO>-<section>.md` | **the assay record IS the frontmatter of the report file**. The origin level is a namespace, not a uniqueness rule: two stores may both ship a `FileBrowser` |
 | `state/*.json`, `events.jsonl` | small mutable runtime state and the append-only log |
 | `state/index.json` | cache only — deleting it must always be safe |
 

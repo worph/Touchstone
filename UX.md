@@ -425,16 +425,21 @@ Docmost stops being storage. Layout inside the data dir:
 ```
 /data/
   reports/
-    OpenClaw/
-      2026-08-05T09-14-22Z-static.md
-      2026-08-05T09-31-08Z-functional.md
-    Prowlarr/
-      2026-08-06T07-00-16Z-static.md
+    yundera/                         one directory per store — `config.yaml`'s `origins[].id`
+      OpenClaw/
+        2026-08-05T09-14-22Z-static.md
+        2026-08-05T09-31-08Z-functional.md
+      Prowlarr/
+        2026-08-06T07-00-16Z-static.md
   state/                             alerts, events, benches, cached index — all regenerable
 ```
 
-Sortable, greppable, one directory per subject. Each file carries YAML frontmatter so it is
-self-describing — the full shape is in [MVP.md §5](MVP.md#5-contracts).
+Sortable, greppable, one directory per subject inside one directory per store. Each file carries
+YAML frontmatter so it is self-describing — the full shape is in [MVP.md §5](MVP.md#5-contracts).
+
+The store level is a **namespace, not a uniqueness rule**: two stores may each ship a `FileBrowser`,
+and they are two subjects with two folders and two rows. Nothing in the UI mentions a store while
+only one is configured — a column that always reads the same word is furniture.
 
 **The folder is the archive of record; the index over it is disposable.** There is no database. That
 is the property that makes dropping Docmost safe: losing everything in `state/` costs a reindex.

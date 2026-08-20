@@ -12,6 +12,8 @@
  * mode answered rather than leaving the caller to assume.
  */
 
+import { asSubjectKey } from '../../shared/subject.js';
+import { resolveSubjectKey } from '../domain/subjects.js';
 import type { FastifyPluginAsync } from 'fastify';
 
 import type { ScheduleResponse } from '../../shared/schedule.js';
@@ -86,7 +88,19 @@ const routes: FastifyPluginAsync<ScheduleRoutesOptions> = async (app, options) =
 
   app.post<{ Body?: { forced?: string[] } }>('/schedule/tick', async (req) => {
     if (!options.scheduler) return { ...(await answer()), ran: false };
-    const forced = Array.isArray(req.body?.forced) ? req.body.forced.filter((s) => typeof s === 'string') : undefined;
+    // A wire boundary: `forced` is app names a person typed, so resolve each to a key against
+    // what the loop actually knows. An unresolvable one is passed through rather than dropped —
+    // the tick's own reason then says it is not in the backlog, which is a better answer than
+    // silently forcing nothing.
+    const known = options.scheduler.knownSubjects();
+    const forced = Array.isArray(req.body?.forced)
+      ? req.body.forced
+          .filter((s): s is string => typeof s === 'string')
+          .map((s) => {
+            const hit = resolveSubjectKey(s, known);
+            return hit.kind === 'ok' ? hit.key : asSubjectKey(s);
+          })
+      : undefined;
     const decision = await options.scheduler.tick({ forced });
     return { ...(await answer()), ran: true, decision };
   });

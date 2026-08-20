@@ -16,6 +16,7 @@
  * page, which is where the strip in the shell points.
  */
 
+import { subjectName } from '@shared/subject';
 import { Link } from 'react-router-dom';
 
 import { useRunStatus } from '../data/runStatus';
@@ -75,7 +76,7 @@ export default function RunCard({
           {last ? (
             <>
               {' '}
-              <Link to={`/s/${encodeURIComponent(last.subject)}`}>{last.subject}</Link> finished{' '}
+              <Link to={`/s/${encodeURIComponent(last.subject)}`}>{subjectName(last.subject)}</Link> finished{' '}
               {since(last.finished_at)} — {describeLast(last).replace(/^last run: /, '')}.
             </>
           ) : null}
@@ -102,7 +103,7 @@ export default function RunCard({
         <div className="run-card__head">
           {showSubject ? (
             <Link className="run-card__subject" to={`/s/${encodeURIComponent(live.subject)}`}>
-              {live.subject}
+              {subjectName(live.subject)}
             </Link>
           ) : null}
           <span className="run-card__depth">

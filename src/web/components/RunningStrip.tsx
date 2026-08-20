@@ -11,6 +11,7 @@
  * time it matters they do not see it either.
  */
 
+import { subjectName } from '@shared/subject';
 import { Link } from 'react-router-dom';
 
 import { useRunStatus } from '../data/runStatus';
@@ -33,14 +34,14 @@ export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 
   const sections = live.sections ?? [];
 
   const label =
-    `Auditing ${live.subject}${sections.length > 0 ? `, ${sections.join(' and ')}` : ''}, running ${clock}` +
+    `Auditing ${subjectName(live.subject)}${sections.length > 0 ? `, ${sections.join(' and ')}` : ''}, running ${clock}` +
     (counted ? `, ${counted} requirements settled` : '');
 
   if (variant === 'compact') {
     return (
       <Link className="run-strip run-strip--compact" to={`/s/${encodeURIComponent(live.subject)}`} aria-label={label}>
         <span className="run-strip__mark" aria-hidden="true">◴</span>
-        <span className="run-strip__name">{live.subject}</span>
+        <span className="run-strip__name">{subjectName(live.subject)}</span>
         <span className="run-strip__clock num">{clock}</span>
       </Link>
     );
@@ -50,7 +51,7 @@ export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 
     <Link className="run-strip" to={`/s/${encodeURIComponent(live.subject)}`} aria-label={label}>
       <span className="run-strip__head">
         <span className="run-strip__mark" aria-hidden="true">◴</span>
-        <span className="run-strip__name">{live.subject}</span>
+        <span className="run-strip__name">{subjectName(live.subject)}</span>
         <span className="run-strip__clock num">{clock}</span>
       </span>
 

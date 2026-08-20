@@ -3,6 +3,10 @@
  * See MVP.md § Contracts.
  */
 
+import type { SubjectKey } from './subject.js';
+
+export type { SubjectKey };
+
 /**
  * A **section** of the protocol — one leaf rubric, and one assay file.
  *
@@ -93,7 +97,22 @@ export interface Coverage {
 
 /** Exactly the YAML frontmatter of a report file. */
 export interface AssayMeta {
+  /**
+   * The **bare** app name, as it has always been. Not the key — `AssayRecord.subject` is that.
+   *
+   * The pair `(origin, subject)` is the identity; keeping this half bare means the frontmatter
+   * contract barely moved and no report file had to be rewritten.
+   */
   subject: string;
+  /**
+   * Which store the subject came from — `store/config.ts`'s `origins[].id`.
+   *
+   * Filled in by `coerceMeta` when absent, exactly as `leg` → `section` is, so every assay
+   * written before origins existed reads as belonging to `DEFAULT_ORIGIN`. Deriving it from the
+   * directory instead would make a moved file a different assay and contradict the rule that
+   * the record *is* the frontmatter.
+   */
+  origin?: string;
   /** Which section of the protocol this assay is. `parseReportMeta` guarantees it. */
   section: Section;
   /** The pre-rename spelling of `section`, still on every file written before 2026-08-20. */
@@ -122,15 +141,33 @@ export interface AssayMeta {
 
 export interface AssayRecord {
   meta: AssayMeta;
-  /** Path relative to the reports root, e.g. `OpenClaw/2026-08-05T09-14-22Z-static.md`. */
+  /**
+   * Path relative to the reports root, e.g.
+   * `yundera/OpenClaw/2026-08-05T09-14-22Z-static.md`.
+   */
   path: string;
-  subject: string;
+  /**
+   * **Identity**, `<origin>~<name>` — what every lookup, map key and link uses.
+   *
+   * Note this is deliberately *not* `meta.subject`, which stays the bare name: `rec.subject` is
+   * `yundera~OpenClaw` where `rec.meta.subject` is `OpenClaw`. Use `name` to render.
+   */
+  subject: SubjectKey;
+  /** The origin half of the key, split out so callers do not re-parse. */
+  origin: string;
+  /** The bare app name — **the one to display**. Equal to `meta.subject`. */
+  name: string;
   file: string;
 }
 
 /** One row of the Overview table. */
 export interface SubjectState {
-  name: string;
+  /** Identity, `<origin>~<name>`. Links and lookups use this; nothing renders it. */
+  name: SubjectKey;
+  /** The origin id, for the badge the Overview draws once more than one is configured. */
+  origin: string;
+  /** The bare app name — every heading, cell, page title and notification renders this. */
+  label: string;
   /**
    * The current assay per section — every section the archive knows about, not a fixed two.
    * `static` and `functional` below are the same records under their old names, kept while

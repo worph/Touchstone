@@ -9,6 +9,7 @@
  * every block degrades to a sentence rather than to an error — the one thing this page may
  * never do is fail to tell you why it is failing.
  */
+import { subjectName } from '@shared/subject';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { AlertsResponse, BenchesResponse, BenchHealth, EventsResponse, PushStatus } from '@shared/activity';
@@ -292,7 +293,7 @@ export default function Activity() {
               <option value="all">all subjects</option>
               {subjects.map((s) => (
                 <option key={s} value={s}>
-                  {s}
+                  {subjectName(s)}
                 </option>
               ))}
             </select>

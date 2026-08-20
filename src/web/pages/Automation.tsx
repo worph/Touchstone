@@ -10,6 +10,7 @@
  * It degrades like Activity does — every block falls back to a sentence rather than an
  * error, because a page about whether the machine is running must render when it is not.
  */
+import { subjectName } from '@shared/subject';
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -250,7 +251,7 @@ function QueueLine({ row, maxTries }: { row: QueueRow; maxTries: number }) {
         {row.position ?? '·'}
       </span>
       <Link className="env-name" to={`/s/${encodeURIComponent(row.subject)}`}>
-        {row.subject}
+        {subjectName(row.subject)}
       </Link>
       <span className="env-status">{STATE_LABEL[row.state]}</span>
       <span className="env-note">{note(row, maxTries)}</span>

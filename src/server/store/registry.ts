@@ -17,10 +17,26 @@
 
 import path from 'node:path';
 
+import { DEFAULT_ORIGIN, subjectKey, type SubjectKey } from '../../shared/subject.js';
 import { readJson, writeJsonAtomic } from './state.js';
 import type { EventLog } from '../services/events.js';
 
 export const GITHUB_APPS_URL = 'https://api.github.com/repos/Yundera/AppStore/contents/Apps';
+
+/**
+ * The contents API for one origin.
+ *
+ * `?ref=` is not optional. Without it the API answers for the repo's default branch whatever
+ * `ref` says, so an origin pinned to a branch would list `main`'s app directory and audit the
+ * wrong set of apps — a wrong answer rather than an error, which is the worst kind.
+ */
+export function appsUrlFor(origin: { repo: string; ref: string; apps_path: string }): string {
+  const path = origin.apps_path.replace(/^\/+|\/+$/g, '');
+  return (
+    `https://api.github.com/repos/${origin.repo}/contents/${path}` +
+    `?ref=${encodeURIComponent(origin.ref)}`
+  );
+}
 
 /**
  * n8n's cold-start list, verbatim as of 2026-08-19. Deliberately not sorted or tidied: it is
@@ -48,7 +64,27 @@ export interface SubjectRegistryOptions {
   events?: EventLog;
   url?: string;
   fetchTimeoutMs?: number;
-  /** Subjects already in the archive, appended to whatever the live list returns. */
+  /**
+   * Which store this registry reads. Subjects come back as `<origin>~<name>` keys.
+   *
+   * One origin for now — a second is R10 step 3, and it turns `names` into a per-origin map.
+   */
+  origin?: string;
+  /**
+   * A cold-start list for this origin, used only until the contents API answers once.
+   *
+   * The Yundera store's list is `DEFAULT_APPS` below and stays in code deliberately — see the
+   * comment on it. This is what a *second* origin gets, and it is legitimately empty: a new
+   * store cold-starting with nothing is honest, whereas the known store emptying is the
+   * failure that list exists to prevent.
+   */
+  seed?: string[];
+  /**
+   * Subject **keys** already in the archive, appended to whatever the live list returns.
+   *
+   * These are already keys, so they are not re-namespaced: an archived subject belongs to the
+   * origin its own reports say it does.
+   */
   archived?: () => string[];
 }
 
@@ -73,20 +109,32 @@ export class SubjectRegistry {
     }
   }
 
+  /** Which store this registry reads. */
+  get origin(): string {
+    return this.opts.origin ?? DEFAULT_ORIGIN;
+  }
+
   /**
    * The registry, in render order: the live list, then anything only the archive knows.
+   *
+   * Returns `<origin>~<name>` **keys**. The names GitHub gives are bare, so they are namespaced
+   * here; the archived ones already are keys and are passed through untouched, because a subject
+   * belongs to whichever origin its own reports say it does — including an origin that is no
+   * longer configured.
    *
    * Never empty while `DEFAULT_APPS` exists — an empty registry would read as "backlog
    * empty" and idle the loop forever on the one failure it is least able to notice.
    */
-  list(): string[] {
-    const base = this.names.length > 0 ? this.names : [...DEFAULT_APPS];
-    const seen = new Set(base);
+  list(): SubjectKey[] {
+    const origin = this.origin;
+    const fallback = this.opts.seed ?? (origin === DEFAULT_ORIGIN ? [...DEFAULT_APPS] : []);
+    const base = (this.names.length > 0 ? this.names : fallback).map((n) => subjectKey(origin, n));
+    const seen = new Set<string>(base);
     const out = [...base];
-    for (const name of this.opts.archived?.() ?? []) {
-      if (!seen.has(name)) {
-        seen.add(name);
-        out.push(name);
+    for (const key of this.opts.archived?.() ?? []) {
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(key as SubjectKey);
       }
     }
     return out;

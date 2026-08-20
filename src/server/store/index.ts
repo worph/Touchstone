@@ -14,16 +14,19 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import type { AssayMeta, AssayRecord, Section } from '../../shared/types.js';
-import { readReport, readReportMeta, ReportFormatError } from './reports.js';
+import { readReport, readReportMeta, recordFor, ReportFormatError } from './reports.js';
 
 /**
- * Bumped to 2 on 2026-08-20, when `leg` became `section`.
+ * Bumped to 2 on 2026-08-20, when `leg` became `section`; to 3 the same day, when a subject
+ * became `<origin>~<name>`.
  *
- * The cache stores whole parsed records, so entries written by the previous build carry `leg`
- * and no `section` — and every lookup is by section now. A version bump discards them, which
- * is exactly what a cache is for: the files on disk are unchanged and are simply re-read.
+ * The cache stores whole parsed records, so entries written by a previous build carry the old
+ * shape — `leg` and no `section` at 1, and at 2 a bare `subject` with no `origin` or `name`.
+ * Every lookup is by the new shape, so a stale entry does not merely miss, it answers wrongly
+ * and silently. A version bump discards them, which is exactly what a cache is for: the files
+ * on disk are unchanged and are simply re-read.
  */
-export const CACHE_VERSION = 2;
+export const CACHE_VERSION = 3;
 
 export interface BuildIndexOptions {
   /** Defaults to `<reportsRoot>/../state/index.json`. `null` disables the cache entirely. */
@@ -174,7 +177,12 @@ export function defaultCacheFile(reportsRoot: string): string {
   return path.join(path.dirname(reportsRoot), 'state', 'index.json');
 }
 
-/** Scan `reportsRoot` for `*.md`, one directory level per subject, returned sorted. */
+/**
+ * Scan `reportsRoot` for `*.md`, returned sorted.
+ *
+ * The walk is depth-agnostic and always was, which is why `<origin>/<Subject>/<file>` needed no
+ * change here. What a file *is* comes from its frontmatter, never from how deep it sits.
+ */
 async function scan(reportsRoot: string): Promise<string[]> {
   const out: string[] = [];
   const walk = async (dir: string): Promise<void> => {
@@ -256,12 +264,7 @@ export async function buildIndex(
     }
     try {
       const meta = await readReportMeta(abs);
-      const record: AssayRecord = {
-        meta,
-        path: rel,
-        subject: meta.subject,
-        file: path.basename(rel),
-      };
+      const record = recordFor(meta, rel);
       index.upsert(record);
       next.set(rel, { size: stat.size, mtimeMs: stat.mtimeMs, record });
     } catch (err) {

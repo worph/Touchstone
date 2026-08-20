@@ -111,9 +111,10 @@ scheduler and the runner get the index, never a path.
     static.md                the rubric; its frontmatter names and versions the section
     functional.md
   reports/
-    OpenClaw/
-      2026-08-05T09-14-22Z-static.md        ← frontmatter = the assay record
-      2026-08-05T09-31-08Z-functional.md
+    yundera/                   ← the origin: one app store, `config.yaml`'s `origins[].id`
+      OpenClaw/
+        2026-08-05T09-14-22Z-static.md      ← frontmatter = the assay record
+        2026-08-05T09-31-08Z-functional.md
   state/
     alerts.json              small, mutable
     events.jsonl             append-only
@@ -127,6 +128,8 @@ Filenames use ISO-8601 with `:` replaced by `-`, so they sort lexically and are 
 ### The index
 
 At boot, scan `reports/**`, parse frontmatter only, hold it in memory, update in place on write.
+The scan is depth-agnostic — what a file *is* comes from its frontmatter, never from how deep it
+sits — so the origin level cost it nothing.
 `index.json` is an **mtime-keyed cache** so a restart re-parses only changed files. The test for
 whether something is a cache rather than a database is that deleting it must always be safe. It is.
 

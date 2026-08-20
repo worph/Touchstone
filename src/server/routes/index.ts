@@ -20,9 +20,10 @@ import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import type { ReportResponse, SubjectState } from '../../shared/types.js';
 import { fixtureStore } from '../domain/fixtures.js';
 import { buildFixReport, fixReportFilename } from '../domain/fixreport.js';
-import { hallmarks, sortNewestFirst, subjectHallmark } from '../domain/hallmark.js';
+import { hallmarks, sortNewestFirst, subjectHallmark, subjectNames } from '../domain/hallmark.js';
 import { renderMarkdown } from '../domain/markdown.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
+import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import type { AlertStore } from '../services/alerts.js';
 import type { BenchProber } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
@@ -101,14 +102,15 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     store: options.store as never,
   });
 
-  /** Subjects are addressed by name; be forgiving about case, exact match wins. */
-  function resolveSubject(name: string) {
-    const exact = recordsForSubject(store, name);
-    if (exact.length > 0) return { name, records: exact };
-    const lower = name.toLowerCase();
-    const match = store.all().find((r) => r.subject.toLowerCase() === lower);
-    if (!match) return null;
-    return { name: match.subject, records: recordsForSubject(store, match.subject) };
+  /**
+   * Subjects are addressed by key, `<origin>~<name>`, but a bare name still resolves — a URL
+   * bookmarked before stores existed, or a person typing an app name. `resolveSubjectKey` is
+   * the one matcher; `ambiguous` only becomes reachable with a second origin configured.
+   */
+  function resolveSubject(input: string) {
+    const resolved = resolveSubjectKey(input, subjectNames(store.all()));
+    if (resolved.kind !== 'ok') return resolved;
+    return { kind: 'ok' as const, name: resolved.key, records: recordsForSubject(store, resolved.key) };
   }
 
   // GET /subjects — the Overview table. One row per subject, both legs, risk descending.
@@ -117,7 +119,10 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
   // GET /subjects/:name — the subject detail page: the composed row plus full history.
   app.get<{ Params: { name: string } }>('/subjects/:name', async (request, reply) => {
     const resolved = resolveSubject(request.params.name);
-    if (resolved) {
+    if (resolved.kind === 'ambiguous') {
+      return fail(reply, 400, ambiguousMessage(request.params.name, resolved.candidates));
+    }
+    if (resolved.kind === 'ok') {
       return {
         subject: subjectHallmark(resolved.name, resolved.records).state,
         history: sortNewestFirst(resolved.records), // newest first, both legs interleaved
@@ -136,11 +141,13 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
      * the state for this ("It is in the registry and nothing more"); it was never given the
      * chance to render.
      */
-    const known = options.registry?.list() ?? [];
     const name = request.params.name;
-    const match = known.find((s) => s === name) ?? known.find((s) => s.toLowerCase() === name.toLowerCase());
-    if (!match) return fail(reply, 404, `unknown subject: ${name}`);
-    return { subject: subjectHallmark(match, []).state, history: [] };
+    const fromRegistry = resolveSubjectKey(name, options.registry?.list() ?? []);
+    if (fromRegistry.kind === 'ambiguous') {
+      return fail(reply, 400, ambiguousMessage(name, fromRegistry.candidates));
+    }
+    if (fromRegistry.kind !== 'ok') return fail(reply, 404, `unknown subject: ${name}`);
+    return { subject: subjectHallmark(fromRegistry.key, []).state, history: [] };
   });
 
   /**
@@ -152,11 +159,16 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
    */
   app.get<{ Params: { name: string } }>('/subjects/:name/fix.md', async (request, reply) => {
     const resolved = resolveSubject(request.params.name);
-    if (!resolved) return fail(reply, 404, `unknown subject: ${request.params.name}`);
+    if (resolved.kind === 'ambiguous') {
+      return fail(reply, 400, ambiguousMessage(request.params.name, resolved.candidates));
+    }
+    if (resolved.kind !== 'ok') return fail(reply, 404, `unknown subject: ${request.params.name}`);
 
     const state = subjectHallmark(resolved.name, resolved.records).state;
     const markdown = buildFixReport({
-      subject: resolved.name,
+      // The brief is for a person fixing an app, so it is headed with the app's name. The
+      // store it came from is already in the `subject_ref` line the report quotes.
+      subject: state.label,
       // Every section the subject has, in the order the archive reports them — the brief is
       // as wide as the protocol is, not as wide as a two-column table.
       sections: Object.values(state.sections)
@@ -169,7 +181,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
 
     return reply
       .type('text/markdown; charset=utf-8')
-      .header('content-disposition', `inline; filename="${fixReportFilename(resolved.name)}"`)
+      .header('content-disposition', `inline; filename="${fixReportFilename(state.label)}"`)
       .send(markdown);
   });
 
@@ -182,7 +194,19 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
         return fail(reply, 400, 'invalid report path');
       }
 
-      const record = store.all().find((r) => r.subject === subject && r.file === file);
+      // `:subject` is a key, but a bare name still resolves — a report URL bookmarked before
+      // stores existed, or one pasted out of an older report. Resolving first is also what
+      // fixes the older bug in this line: matching on a bare name and taking the *first* hit
+      // would serve one store's report for another store's identically-named app, which is a
+      // wrong answer rather than a 404.
+      const resolved = resolveSubject(subject);
+      if (resolved.kind === 'ambiguous') {
+        return fail(reply, 400, ambiguousMessage(subject, resolved.candidates));
+      }
+      const record =
+        resolved.kind === 'ok'
+          ? resolved.records.find((r) => r.file === file)
+          : undefined;
       if (!record) return fail(reply, 404, `unknown report: ${subject}/${file}`);
 
       const stored = await store.read(record.path);

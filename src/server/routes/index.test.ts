@@ -1,5 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+import { DEFAULT_ORIGIN, subjectKey } from '../../shared/subject.js';
 import type { ReportResponse, SubjectState } from '../../shared/types.js';
 import { FIXTURE_RECORDS, fixtureStore } from '../domain/fixtures.js';
 import routes from './index.js';
@@ -38,13 +40,15 @@ describe('GET /subjects', () => {
     const { status, body } = await get<SubjectState[]>('/api/v1/subjects');
     expect(status).toBe(200);
     expect(body).toHaveLength(new Set(FIXTURE_RECORDS.map((r) => r.subject)).size);
-    expect(body[0]?.name).toBe('OpenClaw');
+    // `name` addresses the row, `label` names the app.
+    expect(body[0]?.label).toBe('OpenClaw');
+    expect(body[0]?.name).toBe(subjectKey(DEFAULT_ORIGIN, 'OpenClaw'));
     expect(body.map((r) => r.risk)).toEqual([...body.map((r) => r.risk)].sort((a, b) => b - a));
   });
 
   it('reports blocked legs as blocked, with no verdict standing in', async () => {
     const { body } = await get<SubjectState[]>('/api/v1/subjects');
-    const openclaw = body.find((r) => r.name === 'OpenClaw');
+    const openclaw = body.find((r) => r.label === 'OpenClaw');
     expect(openclaw?.static?.meta.verdict).toBe('non-compliant');
     expect(openclaw?.functional?.meta.status).toBe('blocked');
     expect(openclaw?.functional?.meta.verdict).toBeNull();
@@ -57,7 +61,8 @@ describe('GET /subjects/:name', () => {
       '/api/v1/subjects/OpenClaw',
     );
     expect(status).toBe(200);
-    expect(body.subject.name).toBe('OpenClaw');
+    expect(body.subject.label).toBe('OpenClaw');
+    expect(body.subject.name).toBe(subjectKey(DEFAULT_ORIGIN, 'OpenClaw'));
     expect(body.history).toHaveLength(4); // both legs interleaved
     expect(body.history[0]?.path).toContain('2026-08-05T09-31-00Z-functional');
   });
@@ -92,7 +97,9 @@ describe('GET /subjects/:name', () => {
       expect(res.statusCode).toBe(200);
       const body = res.json() as { subject: SubjectState; history: unknown[] };
       expect(body.subject).toEqual({
-        name: 'SegmentPlayer',
+        name: subjectKey(DEFAULT_ORIGIN, 'SegmentPlayer'),
+        origin: DEFAULT_ORIGIN,
+        label: 'SegmentPlayer',
         // Every section the archive knows about, all empty — plus the two the table names.
         sections: { static: null, functional: null },
         static: null,

@@ -27,11 +27,12 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import type { AssayRecord, Section } from '../../shared/types.js';
+import { splitSubjectKey, type SubjectKey } from '../../shared/subject.js';
+import type { Section } from '../../shared/types.js';
 import type { LastRun, RunLive, RunOutcome } from '../../shared/activity.js';
 import { assaysFromAgentReport, type AssaySection } from '../domain/assay.js';
 import type { ReportIndex } from '../store/index.js';
-import { writeReport } from '../store/reports.js';
+import { recordFor, writeReport } from '../store/reports.js';
 import type { BenchProber } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 import { sectionsOf, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
@@ -44,7 +45,12 @@ export { buildPrompt } from './prompt.js';
 export { callAgent, classify, extractText, type AgentReport } from './agent.js';
 
 export interface RunnerJob {
-  subject: string;
+  /**
+   * Identity, `<origin>~<name>`. The runner splits it: the origin decides which store the
+   * subject is fetched from and which folder its report lands in, and the bare name is what
+   * the prompt and the report call the app.
+   */
+  subject: SubjectKey;
   try_n: number;
 }
 
@@ -169,6 +175,7 @@ export class Runner {
   private async execute(job: RunnerJob): Promise<RunOutcome> {
     const events = this.opts.events;
     const startedAt = this.now().toISOString();
+    const { origin, name: appName } = splitSubjectKey(job.subject);
 
     // ── what this run is made of ─────────────────────────────────────────────────────────
     // Read per run, not cached: an operator who edits the protocol expects the next audit to
@@ -275,7 +282,7 @@ export class Runner {
         : null;
 
     const { prompt } = buildPrompt({
-      app_name: job.subject,
+      app_name: appName,
       protocols: {
         ...(plan.orchestrator ? { orchestrator: plan.orchestrator } : {}),
         sections: runSections.map((s) => ({
@@ -349,7 +356,8 @@ export class Runner {
     // ── the result ───────────────────────────────────────────────────────────────────────
     const finishedAt = this.now().toISOString();
     const assays = assaysFromAgentReport({
-      subject: job.subject,
+      subject: appName,
+      origin,
       declared: outcome.report,
       // The sections that actually ran, and — recorded rather than dropped — the ones that
       // could not, so a run always produces one file per section and the store can say "not
@@ -367,12 +375,10 @@ export class Runner {
     for (const assay of assays) {
       const res = await writeReport(this.opts.reportsRoot, assay.meta, assay.body);
       files.push(res.rel);
-      this.opts.index?.upsert({
-        meta: assay.meta,
-        path: res.rel,
-        subject: assay.meta.subject,
-        file: path.basename(res.rel),
-      } satisfies AssayRecord);
+      // `recordFor` rather than a second literal: how a record is derived from a file is one
+      // definition, shared with `buildIndex`'s scan, so the in-memory record and the one a
+      // restart would rebuild cannot drift apart.
+      this.opts.index?.upsert(recordFor(assay.meta, res.rel));
     }
 
     const blocked = assays.find((a) => a.meta.status === 'blocked');

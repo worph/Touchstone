@@ -116,7 +116,7 @@ export default function SubjectDetail() {
           <div className="subject-head-top">
             <h1 className="subject-title">
               <Link to="/" className="back-link" aria-label="Back to overview">‹</Link>
-              {subject.name}
+              {subject.label}
             </h1>
             <div style={{ flex: 1 }} />
             <div style={{ textAlign: 'right' }}>
