@@ -12,9 +12,13 @@ import { BenchProber } from './services/bench.js';
 import { EventLog } from './services/events.js';
 import { Notifier } from './services/notify.js';
 import { PushService } from './services/push.js';
-import { runImport } from './services/importer.js';
 import { SubjectRegistry } from './store/registry.js';
 import { Scheduler } from './scheduler/index.js';
+import { Runner } from './runner/index.js';
+import { PortProber } from './services/ports.js';
+import { ProtocolStore } from './store/protocols.js';
+import { RunLedger } from './services/ledger.js';
+import { loadStandards } from './store/config.js';
 
 const PORT = Number(process.env.TOUCHSTONE_PORT ?? 8080);
 const HOST = process.env.TOUCHSTONE_HOST ?? '0.0.0.0';
@@ -59,7 +63,7 @@ const notifier = new Notifier({
   outlets: cfg.notify.outlets,
   events,
   push,
-  beaconUrl: cfg.docmost.beaconUrl,
+  beaconUrl: cfg.notify.beacon_url,
 });
 
 const alerts = new AlertStore(cfg.stateDir, {
@@ -93,6 +97,75 @@ const registry = new SubjectRegistry({
 });
 await registry.load();
 
+/**
+ * The runner. Ships disabled — `runner.enabled: false` — so an armed scheduler would claim
+ * and be told the runner is off, which is a legitimate and visible state. Validation is a
+ * single hand-run assay through `POST /assays`, never a loop: `AppStore PR Review` is still
+ * in n8n on the same agent endpoint.
+ */
+/**
+ * The ports — the agent and the browser sidecars.
+ *
+ * They were configuration and nothing else until now: an audit needs both, and a dependency
+ * whose state you cannot see is one you learn about from a failed run. The bench pool has had
+ * a prober since P2; these two get the same treatment.
+ */
+const ports = new PortProber({
+  ports: [
+    {
+      name: 'agent',
+      kind: 'agent',
+      url: cfg.runner.agent_url,
+      // Through an aggregator the namespaced tool is not in `tools/list` — the aggregator's
+      // own `call` is — so only a direct endpoint can be asked for the tool by name.
+      ...(cfg.runner.agent_via === 'direct' ? { expectTool: cfg.runner.agent_tool } : {}),
+    },
+    ...cfg.browsers.map((b) => ({ name: b.name, kind: 'browser' as const, url: b.url, enabled: b.enabled })),
+  ],
+  stateDir: cfg.stateDir,
+  events,
+});
+await ports.load();
+
+/**
+ * The rubric. Local markdown, read per run — see `store/protocols.ts` for why it stopped
+ * being three wiki pages fetched by the agent.
+ */
+const protocols = new ProtocolStore(cfg.protocolsDir);
+
+/**
+ * Where the agent records requirements while it works. See `services/ledger.ts` — the point
+ * is that a run which dies two-thirds through keeps what it established.
+ */
+const ledger = new RunLedger({ events });
+
+const standards = await loadStandards(cfg.standardsDir);
+const staticStd = standards.find((s) => s.leg === 'static');
+const functionalStd = standards.find((s) => s.leg === 'functional');
+if (!staticStd || !functionalStd) {
+  // The runner would otherwise write assays claiming a standard it never read. Refusing to
+  // start is louder than writing files stamped with a guess.
+  app.log.error({ standardsDir: cfg.standardsDir }, 'no standards found; the runner cannot label an assay');
+}
+const runner = new Runner({
+  enabled: cfg.runner.enabled && Boolean(staticStd && functionalStd),
+  reportsRoot: cfg.reportsRoot,
+  standards: {
+    staticStd: staticStd ?? { name: 'Static Review Protocol', version: 0 },
+    functionalStd: functionalStd ?? { name: 'Functional Review Protocol', version: 0 },
+  },
+  events,
+  index: store,
+  prober,
+  ports,
+  protocols,
+  ledger,
+  callbackUrl: cfg.runner.callback_url,
+  busyBackoffMs: cfg.runner.busy_backoff_min * 60_000,
+  agent: { url: cfg.runner.agent_url, tool: cfg.runner.agent_tool, via: cfg.runner.agent_via },
+  dumpDir: cfg.stateDir,
+});
+
 const scheduler = new Scheduler({
   constants: cfg.scheduler,
   armed: cfg.scheduler.armed,
@@ -101,6 +174,22 @@ const scheduler = new Scheduler({
   registry,
   events,
   prober,
+  // The seam between the two halves: the scheduler claims, the runner audits, and the
+  // outcome comes back through `record` — which is where E5's "a busy agent costs nothing"
+  // is actually applied.
+  dispatch: async (job) => {
+    const outcome = await runner.run(job);
+    await scheduler.record(
+      job.subject,
+      outcome.kind === 'verdict'
+        ? { kind: 'verdict' }
+        : outcome.kind === 'agent_busy'
+          ? { kind: 'agent_busy' }
+          : outcome.kind === 'blocked'
+            ? { kind: 'blocked', reason: outcome.reason }
+            : { kind: 'error', reason: outcome.reason },
+    );
+  },
 });
 await scheduler.load();
 
@@ -112,7 +201,11 @@ await app.register(registerRoutes, {
   prober,
   push,
   scheduler,
+  runner,
   registry,
+  ports,
+  protocols,
+  ledger,
   boardUrl: cfg.bench.board_url,
 });
 
@@ -163,45 +256,10 @@ if (cfg.benches.length === 0) {
   prober.start(cfg.bench.probe_interval_min * 60_000);
 }
 
-/**
- * The transitional data feed.
- *
- * n8n still owns the loop and rewrites its Docmost roll-up every tick, so re-reading it is
- * how Touchstone stays current with zero changes to n8n. It runs in-process, and upserts
- * into the live index, because the index is built at boot and never re-scanned — a shelled
- * out import would rewrite files this process keeps ignoring.
- */
-const importOnce = async () => {
-    try {
-      const summary = await runImport({ dataDir, index: store });
-      // n8n's own cooldown anchor, and its try counts and parks. The archive supplies
-      // neither, and a shadow diff missing them is noise — see scheduler/adopt.ts.
-      scheduler.noteExternalFinish(summary.lastAuditFinished);
-      await scheduler.adoptRollup(summary.rollupSchedule);
-      events.log({
-        level: 'info',
-        code: 'IMPORT_COMPLETED',
-        message: 'Re-read the audit roll-up from the wiki',
-        detail: {
-          subjects: summary.subjects,
-          written: summary.written,
-          unchanged: summary.unchanged,
-        },
-      });
-    } catch (err) {
-      events.log({
-        level: 'warn',
-        code: 'IMPORT_FAILED',
-        message: 'The audit roll-up could not be read, so the archive may be behind',
-        detail: { error: err instanceof Error ? err.message : String(err) },
-      });
-    }
-};
-
-if (cfg.importer.enabled) {
-  const timer = setInterval(() => void importOnce(), cfg.importer.interval_min * 60_000);
-  timer.unref?.();
-}
+// The ports are probed on the same cadence as the benches, and at boot for the same reason:
+// a restart during an outage should not show a stale green for five minutes.
+void ports.probeAll().catch((err) => app.log.error({ err }, 'first port probe failed'));
+ports.start(cfg.bench.probe_interval_min * 60_000);
 
 /**
  * The tick.
@@ -227,20 +285,18 @@ registry.start(60 * 60_000);
  * Both steps are async and neither blocks the server, which is already listening.
  */
 setTimeout(() => {
-  void (async () => {
-    if (cfg.importer.enabled) await importOnce();
-    await scheduler.tick();
-  })().catch((err) => app.log.error({ err }, 'boot sequence failed'));
+  void scheduler.tick().catch((err) => app.log.error({ err }, 'first tick failed'));
 }, 15_000).unref?.();
 scheduler.start(cfg.scheduler.tick_min * 60_000);
 app.log.info(
-  { armed: cfg.scheduler.armed, tick_min: cfg.scheduler.tick_min },
+  { armed: cfg.scheduler.armed, tick_min: cfg.scheduler.tick_min, runner: cfg.runner.enabled },
   cfg.scheduler.armed ? 'scheduler ARMED' : 'scheduler in dry-run',
 );
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     prober.stop();
+    ports.stop();
     registry.stop();
     scheduler.stop();
     void events.flush().finally(() => process.exit(0));

@@ -10,13 +10,14 @@ import { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import type { Leg, SubjectState } from '@shared/types';
+import CoverageCell from '../components/CoverageCell';
 import StatusCell, { StatusLegend } from '../components/StatusCell';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getSubjects } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
 import { ageLabel, duration, num, plural } from '../lib/format';
 import {
-  applyShow, deriveIncident, FRESH_DAYS, search, sortSubjects, tally,
+  applyShow, coverageOf, deriveIncident, FRESH_DAYS, search, sortSubjects, tally,
   type LegTally, type Tallies,
 } from '../lib/overview';
 import { humaniseReason } from '../lib/status';
@@ -76,7 +77,7 @@ export default function Overview() {
         <EmptyState
           glyph="⬜"
           title="No subjects yet"
-          sub="The index is empty. Run yarn import to pull the roll-up and its linked reports out of Docmost into data/reports."
+          sub="The index is empty. Audit an app from its page, or arm the scheduler, and reports will appear under data/reports as markdown files."
         />
       </div>
     );
@@ -172,6 +173,7 @@ export default function Overview() {
                 <Th label="Subject" k="name" sort={sort} dir={dir} set={set} />
                 <Th label="Static" k="static" sort={sort} dir={dir} set={set} />
                 <Th label="Functional" k="functional" sort={sort} dir={dir} set={set} />
+                <Th label="Verified" k="coverage" sort={sort} dir={dir} set={set} align="right" />
                 <Th label="Risk" k="risk" sort={sort} dir={dir} set={set} align="right" />
                 <Th label="Last" k="age" sort={sort} dir={dir} set={set} align="right" />
                 <th aria-label="open" />
@@ -199,6 +201,9 @@ function Row({ s }: { s: SubjectState }) {
       </td>
       <td><StatusCell record={s.static} showNote={false} /></td>
       <td><StatusCell record={s.functional} /></td>
+      <td className="col-num">
+        <CoverageCell coverage={coverageOf(s)} />
+      </td>
       <td className="col-num">
         <span className="risk-val" data-zero={s.risk === 0 || never}>
           {never ? '—' : num(s.risk)}

@@ -471,3 +471,162 @@
   display: inline-block;
   vertical-align: 1px;
 }
+
+/* ── the manual trigger ─────────────────────────────────────────────────────
+   A dropdown whose menu is positioned rather than a native <select>, because the
+   two choices carry a reason each — "no bench needed", "no bench" — and an option
+   element cannot say why it is disabled. */
+.reassay {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reassay-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 232px;
+  padding: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+}
+
+.reassay-menu button {
+  padding: 8px 10px;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+}
+
+.reassay-menu button:hover:not(:disabled) { background: var(--bg-3); }
+
+.reassay-menu button:disabled {
+  color: var(--fg-3);
+  cursor: not-allowed;
+}
+
+.reassay-note {
+  font-size: 11.5px;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+
+.reassay-note--bad { color: var(--crit); }
+
+/* ── the protocol screen ────────────────────────────────────────────────────
+   A tab strip and a plain textarea. Deliberately not a rich editor: the file is
+   markdown that an operator may also edit on disk or in git, and anything that
+   rewrites the source on save would fight that. */
+.proto-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+
+.proto-tab {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg-1);
+  cursor: pointer;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.proto-tab:hover { background: var(--bg-3); }
+
+.proto-tab[aria-pressed='true'] {
+  color: var(--fg);
+  background: var(--bg-3);
+  border-color: var(--border-3);
+}
+
+.proto-editor {
+  width: 100%;
+  min-height: 62vh;
+  padding: 14px 16px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--fg);
+  tab-size: 2;
+  background: var(--bg-1);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.proto-editor:focus-visible { outline: 2px solid var(--focus); }
+
+/* ── coverage and requirements ──────────────────────────────────────────────
+   Coverage is deliberately NOT coloured by how good it looks: it is not the
+   verdict, and green would merge two questions that must stay apart. The only
+   thing that changes appearance is incompleteness. */
+.coverage { white-space: nowrap; }
+.coverage-of { color: var(--fg-2); }
+.coverage[data-incomplete] .coverage-gap { color: var(--unverified); }
+
+.reqs { display: flex; flex-direction: column; gap: 2px; }
+
+.req {
+  padding: 8px 10px;
+  border-left: 2px solid var(--border-2);
+  border-radius: 0 6px 6px 0;
+}
+
+.req:hover { background: var(--bg-2); }
+.req[data-verdict='fail'] { border-left-color: var(--crit); }
+.req[data-verdict='fail'][data-severity='major'] { border-left-color: var(--major); }
+.req[data-verdict='fail'][data-severity='minor'] { border-left-color: var(--minor); }
+.req[data-verdict='unverified'] { border-left-color: var(--unverified); }
+.req[data-verdict='pass'] { border-left-color: var(--ok-dim); }
+
+.req-head { display: flex; gap: 8px; align-items: baseline; }
+
+.req-verdict {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+}
+
+.req[data-verdict='fail'] .req-verdict { color: var(--crit); }
+.req[data-verdict='fail'][data-severity='major'] .req-verdict { color: var(--major); }
+.req[data-verdict='fail'][data-severity='minor'] .req-verdict { color: var(--minor); }
+.req[data-verdict='unverified'] .req-verdict { color: var(--unverified); }
+
+.req-id { font-size: 12px; color: var(--fg-1); }
+.req-text { margin-top: 2px; font-size: 12.5px; color: var(--fg); }
+.req-note { margin-top: 3px; font-size: 12px; line-height: 1.55; color: var(--fg-2); }
+
+.req-toggle {
+  align-self: flex-start;
+  padding: 6px 2px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-2);
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+
+.req-toggle:hover { color: var(--fg); }
+
+.req-mismatch { color: var(--major); }

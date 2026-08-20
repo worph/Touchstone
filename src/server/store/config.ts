@@ -30,8 +30,6 @@ export interface Standard {
   leg: 'static' | 'functional';
   /** `depth` to pass the assay agent. Static runs one leaf; `full` runs both. */
   depth: 'static' | 'full';
-  /** Docmost slugs the agent fetches the rubric from. Touchstone never copies it. */
-  source: { orchestrator?: string; protocol?: string };
   /** Anything else the file declares — bench selection policy, and whatever comes next. */
   [key: string]: unknown;
 }
@@ -62,13 +60,9 @@ export interface TouchstoneConfig {
   reportsRoot: string;
   stateDir: string;
   standardsDir: string;
+  /** The rubric, as local markdown Touchstone owns and edits. */
+  protocolsDir: string;
   /** Where the importer reads from. */
-  docmost: {
-    beaconUrl: string;
-    rollupSlug: string;
-    /** Raw pages are cached here so a re-import is offline and cheap. */
-    cacheDir: string;
-  };
   standards: {
     static: { name: string; version: number };
     functional: { name: string; version: number };
@@ -92,7 +86,34 @@ export interface TouchstoneConfig {
   runner: {
     enabled: boolean;
     depth: 'static' | 'full';
+    /** Minutes to wait before the single retry when the agent answers 409. n8n waits 10. */
+    busy_backoff_min: number;
+    /**
+     * Where the agent lives. The default is the address n8n posts to from inside the
+     * yunderalabs stack; anywhere else — a dev container, a laptop — has to say so, and
+     * reaching it through a Beacon aggregator means naming the namespaced tool too.
+     */
+    agent_url: string;
+    agent_tool: string;
+    /** `direct` as n8n calls it, or `beacon` to go through an aggregator's `call` tool. */
+    agent_via: 'direct' | 'beacon';
+    /**
+     * How the agent reaches *us* to record requirements as it works.
+     *
+     * This is the one place the dependency arrow points inward, so it is named rather than
+     * guessed: an agent that cannot reach it simply does not report incrementally, and the
+     * run falls back to the single JSON blob at the end.
+     */
+    callback_url: string;
   };
+  /**
+   * The browser sidecars the functional leg drives — row D6.
+   *
+   * Ours, not the shared box-wide one: that browser is busy with other work and an audit
+   * whose tab was stolen mid-install records the theft against the app. One entry per
+   * functional worker; the pool is bounded by the bench pool in practice.
+   */
+  browsers: { name: string; url: string; enabled?: boolean }[];
   benches: BenchEntry[];
   bench: {
     /** The pool API the roster is discovered from. Empty disables discovery. */
@@ -104,12 +125,14 @@ export interface TouchstoneConfig {
     probe_interval_min: number;
     probe_timeout_ms: number;
   };
-  importer: {
-    enabled: boolean;
-    interval_min: number;
-  };
   notify: {
     outlets: OutletEntry[];
+    /**
+     * The Beacon aggregator the outlets are reached through. It lived under `docmost:` until
+     * 2026-08-19, which was only ever an accident of what was built first — notifications and
+     * the wiki share nothing but a transport.
+     */
+    beacon_url: string;
     /** Contact address on the VAPID JWT. Push services reject a missing or bogus one. */
     push_subject: string;
   };
@@ -122,11 +145,7 @@ function defaults(dataDir: string): TouchstoneConfig {
     reportsRoot: path.join(dataDir, 'reports'),
     stateDir: path.join(dataDir, 'state'),
     standardsDir: path.join(dataDir, 'standards'),
-    docmost: {
-      beaconUrl: process.env.TOUCHSTONE_BEACON_URL ?? 'http://localhost:3000/mcp/',
-      rollupSlug: process.env.TOUCHSTONE_ROLLUP_SLUG ?? 'B5ZBicxRSn',
-      cacheDir: path.join(dataDir, 'cache', 'docmost'),
-    },
+    protocolsDir: path.join(dataDir, 'protocols'),
     standards: {
       static: { name: 'Static Review Protocol', version: 3 },
       functional: { name: 'Functional Review Protocol', version: 2 },
@@ -140,7 +159,18 @@ function defaults(dataDir: string): TouchstoneConfig {
       cooldown_min: 55,
       max_tries: 3,
     },
-    runner: { enabled: false, depth: 'full' },
+    runner: {
+      enabled: false,
+      depth: 'full',
+      busy_backoff_min: 10,
+      agent_url: process.env.TOUCHSTONE_AGENT_URL ?? 'http://beacon-backend:9300/mcp',
+      agent_tool: process.env.TOUCHSTONE_AGENT_TOOL ?? 'claude-code__query_claude',
+      agent_via: process.env.TOUCHSTONE_AGENT_VIA === 'beacon' ? 'beacon' : 'direct',
+      callback_url: process.env.TOUCHSTONE_CALLBACK_URL ?? 'http://touchstone:8080/api/v1/mcp',
+    },
+    browsers: process.env.TOUCHSTONE_BROWSER_URL
+      ? [{ name: 'browser-1', url: process.env.TOUCHSTONE_BROWSER_URL }]
+      : [{ name: 'browser-1', url: 'http://touchstone-browser:9746/mcp' }],
     benches: [],
     bench: {
       pool_url: process.env.TOUCHSTONE_POOL_URL ?? 'https://app.nasselle.com/demo/api/demos',
@@ -149,8 +179,11 @@ function defaults(dataDir: string): TouchstoneConfig {
       probe_interval_min: 5,
       probe_timeout_ms: 8000,
     },
-    importer: { enabled: true, interval_min: 15 },
-    notify: { outlets: [], push_subject: 'mailto:touchstone@yundera.local' },
+    notify: {
+      outlets: [],
+      beacon_url: process.env.TOUCHSTONE_BEACON_URL ?? 'http://localhost:3000/mcp/',
+      push_subject: 'mailto:touchstone@yundera.local',
+    },
   };
 }
 
@@ -192,7 +225,6 @@ export async function loadConfig(dataDir?: string): Promise<TouchstoneConfig> {
   cfg.reportsRoot = path.resolve(dir, cfg.reportsRoot);
   cfg.stateDir = path.resolve(dir, cfg.stateDir);
   cfg.standardsDir = path.resolve(dir, cfg.standardsDir);
-  cfg.docmost.cacheDir = path.resolve(dir, cfg.docmost.cacheDir);
   return cfg;
 }
 
@@ -200,7 +232,7 @@ export async function loadConfig(dataDir?: string): Promise<TouchstoneConfig> {
  * Load every `*.yaml` under the standards dir.
  *
  * A standard is a pointer and a version, not a copy of the rubric: the assay agent fetches
- * the protocol from Docmost at run time, and holding a second copy here would only be a
+ * the protocol from a wiki at run time, and holding a second copy here would only be a
  * second thing to drift. What Touchstone needs is the version, because every assay records
  * which version judged it (ARCHITECTURE.md principle 6).
  *
@@ -227,7 +259,6 @@ export async function loadStandards(standardsDir: string): Promise<Standard[]> {
       version: Number(parsed.version ?? 1),
       leg,
       depth: parsed.depth === 'full' ? 'full' : 'static',
-      source: isPlainObject(parsed.source) ? (parsed.source as Standard['source']) : {},
     });
   }
   return out;
@@ -267,6 +298,33 @@ scheduler:
 runner:
   enabled: false
   depth: full        # static | full
+  # The wait before the one retry when the agent answers 409. PR Review stays in n8n on the
+  # same endpoint, so a busy agent is routine and costs the app nothing either way.
+  busy_backoff_min: 10
+  # The agent endpoint. This default is the address n8n posts to from inside the yunderalabs
+  # stack. Anywhere else — a dev container, a laptop — has to point at a Beacon aggregator
+  # and name the namespaced tool:
+  #   agent_url: http://host.docker.internal:3000/mcp/
+  #   agent_tool: beacon-yunderalabs.claude-code__query_claude
+  agent_url: http://beacon-backend:9300/mcp
+  agent_tool: claude-code__query_claude
+  agent_via: direct   # direct | beacon
+  # Where the agent calls BACK to record each requirement as it settles it. The only place
+  # anything reaches inward, so it is named rather than guessed. An agent that cannot reach
+  # it just does not report incrementally; the run falls back to one JSON object at the end.
+  callback_url: http://touchstone:8080/api/v1/mcp
+
+# ── the browser ──────────────────────────────────────────────────────────────
+# The sidecars the functional leg drives. Touchstone's own, never the shared box-wide
+# \`browsermcp\`: that one is busy with other work, and an audit whose tab was stolen
+# mid-install records the theft against the app.
+#
+# The profile is EPHEMERAL by design — there is no volume in the compose file. A session
+# surviving from a previous assay makes an unprotected app look protected, which is a false
+# pass on the very check that catches auth bypass.
+browsers:
+  - name: browser-1
+    url: http://touchstone-browser:9746/mcp
 
 # ── benches ──────────────────────────────────────────────────────────────────
 # The demo instances a functional assay installs into. Leave this EMPTY: the pool is
@@ -292,13 +350,6 @@ bench:
   min_remaining_min: 60
   probe_interval_min: 5
   probe_timeout_ms: 8000
-
-# ── the transitional data feed ──────────────────────────────────────────────────────────
-# n8n still owns the loop and rewrites its Docmost roll-up every tick, so re-reading it is
-# how Touchstone stays current with ZERO changes to n8n. Turn this off once P3 is armed.
-importer:
-  enabled: true
-  interval_min: 15
 
 # ── notification ────────────────────────────────────────────────────────────────────────
 # Outlets go through the local Beacon aggregator. \`target\` is a Telegram chat id or a

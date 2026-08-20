@@ -99,6 +99,17 @@ Answers, in order: *is the loop running*, *what's broken*, *what do I fix first*
 
 ---
 
+#### The `Verified` column
+
+`14/16` — how much of the checklist actually got checked. It sits beside Risk and **is not a
+second verdict**: the gate is severity-based, so a subject can be 16/16 and non-compliant, or
+3/16 with nothing wrong yet. It is therefore rendered in the neutral text colour whatever the
+numbers say; the only thing that changes appearance is *incompleteness*, because an assay that
+could not check everything is the one state a reader must not skim past.
+
+Assays imported before 2026-08-19 show `—`. There is no honest way to backfill it — deriving it
+from the report prose is precisely the mistake the archive was cleaned of in P1.
+
 ### 2.2 Subject detail — one app
 
 ```
@@ -127,9 +138,31 @@ Answers, in order: *is the loop running*, *what's broken*, *what do I fix first*
 - **The blocked card names the reason and says `no try used`.** That sentence is the product.
 - **`try N · trigger`** on each card, because "why did this run" and "how many attempts has it had"
   are questions the wiki table could only answer in emoji.
-- `re-assay ▾` offers static / functional / both, and calls `POST /api/v1/assays`. Functional is
-  disabled with a tooltip when the pool is down, rather than silently queueing something that
-  cannot run.
+- `re-assay ▾` offers **static only** or **static + functional**, and calls `POST /api/v1/assays`.
+  The functional choice is disabled with the reason when no bench is leasable, rather than
+  silently queueing something that cannot run. (Two choices rather than three: n8n's `depth` has
+  only `static` and `full`, and a functional-only run is not a thing either system can do.)
+- **The button does not hold the request open.** An audit runs for five to ten minutes; a browser
+  request held that long is at the mercy of every proxy in front of it, and a socket closed at
+  minute four is indistinguishable from a failed audit. `POST /assays` answers `202`, the button
+  polls `GET /assays/current`, and it counts the minutes up rather than showing a spinner that
+  reads as hung. When the run finishes the page pulls the new report in without a reload.
+- While an audit is running the button counts requirements as well as minutes — `auditing…
+  7/16 · 3:20` — because the agent records each one as it settles it. That is the difference
+  between a wait and a black box, and it is why the reporting is incremental at all. When
+  something is already failing it says how many.
+- While an audit is running — anyone's — the button says which app has the agent instead of
+  failing on submit. Beside it, the last run for this subject in one clause: `last run:
+  non-compliant · risk 1`, or `the agent was busy — nothing was charged`, which is not a failure
+  and must not read as one.
+- **A `requirements` section above the report**, when the assay has one. Ordered by what a
+  reader is looking for rather than by id: failures first and worst tier first, then anything
+  that could not be checked, then the passes — which are folded behind a count, because a page
+  that opens on fourteen greens has buried its own point. Each row carries the canonical id,
+  the agent's own wording, and its note. An id the protocol does not list is shown and tagged
+  `unlisted`, which is how the protocol's list gets corrected rather than quietly diverging.
+- When the agent's declared risk and the sum of its items disagree, the header says so and
+  keeps both. Picking one would look more certain than we are.
 - No history strip and no version picker — nothing reads past assays
   ([ARCHITECTURE.md §4](ARCHITECTURE.md#reports-accumulate-nothing-reads-history)). Older files
   remain on disk for anyone who wants to `grep` them.

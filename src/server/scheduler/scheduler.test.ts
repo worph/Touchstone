@@ -110,7 +110,7 @@ describe('armed', () => {
 
   it('hands the job to the dispatcher when there is one', async () => {
     const jobs: Parameters<NonNullable<SchedulerOptions['dispatch']>>[0][] = [];
-    const s = make({ armed: true, dispatch: (job) => jobs.push(job) });
+    const s = make({ armed: true, dispatch: (job) => { jobs.push(job); } });
     await s.tick();
     expect(jobs).toEqual([{ subject: 'Alpha', depth: 'full', try_n: 1 }]);
   });
@@ -190,35 +190,6 @@ describe('recording a result', () => {
   });
 });
 
-describe('the cooldown anchor', () => {
-  /**
-   * The one input shadow mode cannot derive: the roll-up carries a date with no clock, so
-   * every imported assay reads as finished at midnight and a 55-minute cooldown is always
-   * already expired. The importer hands n8n's own timestamp over instead.
-   */
-  it('takes n8n s finish time from the importer', async () => {
-    const s = make();
-    s.noteExternalFinish(new Date(Date.now() - 10 * 60_000).toISOString());
-    const d = await s.tick();
-    expect(d.action).toBe('idle');
-    expect(d.reason).toContain('cooldown');
-  });
-
-  it('ignores a value that is not a timestamp', async () => {
-    const s = make();
-    s.noteExternalFinish('—');
-    expect((await s.tick()).action).toBe('audit');
-  });
-
-  it('prefers whichever finish is later', async () => {
-    const s = make({ armed: true });
-    await s.tick();
-    await s.record('Alpha', { kind: 'verdict' });
-    s.noteExternalFinish('2026-01-01T00:00:00Z');
-    expect((await s.tick()).reason).toContain('cooldown');
-  });
-});
-
 describe('freshness reads completed assays only', () => {
   it('treats a subject with a recent verdict as fresh', async () => {
     const s = make({
@@ -232,10 +203,11 @@ describe('freshness reads completed assays only', () => {
 });
 
 /**
- * Found by diffing against the live loop: Touchstone called Spliit stale and picked it
- * while n8n considered it fresh, because the roll-up's row said 2026-08-19 and the report
- * page it links to still said 2026-08-12. While n8n owns the loop its row is the
- * scheduling truth, even where its own page is behind.
+ * Freshness reads the report's own `finished_at` and nothing else.
+ *
+ * It used to prefer `rollup_last_run`, because while n8n owned the loop its wiki row was the
+ * scheduling truth even where its own report page was behind. There is no row any more —
+ * nothing here reads a wiki — so the file's own timestamp is the only answer.
  */
 describe('whose date counts as the last run', () => {
   function indexWith(meta: Record<string, unknown>): ReportIndex {
@@ -245,21 +217,18 @@ describe('whose date counts as the last run', () => {
     } as unknown as ReportIndex;
   }
 
-  it('prefers the roll-up row over the report page', async () => {
+  it('treats a recent finish as fresh', async () => {
     const s = make({
       registry: registryOf(['Alpha']),
-      index: indexWith({
-        finished_at: '2026-08-01T00:00:00Z',
-        rollup_last_run: new Date().toISOString().slice(0, 10),
-      }),
+      index: indexWith({ finished_at: new Date().toISOString() }),
     });
     expect((await s.tick()).action).toBe('idle');
   });
 
-  it('falls back to the page when the row says nothing', async () => {
+  it('treats an old one as stale, whatever a leftover roll-up field says', async () => {
     const s = make({
       registry: registryOf(['Alpha']),
-      index: indexWith({ finished_at: '2026-08-01T00:00:00Z' }),
+      index: indexWith({ finished_at: '2026-08-01T00:00:00Z', rollup_last_run: '2026-12-31' }),
     });
     expect((await s.tick()).action).toBe('audit');
   });

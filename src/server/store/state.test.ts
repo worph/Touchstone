@@ -92,3 +92,27 @@ describe('atomically rewritten json', () => {
     expect(await readJson(broken, 'fallback')).toBe('fallback');
   });
 });
+
+/**
+ * Found by a test that failed about one run in three, in a different file each time. The
+ * temp name carried only the pid, so two overlapping writes to the same file — a bench probe
+ * and the alert it raises, a tick and the result it records — shared one scratch path and the
+ * second lost its contents to an `ENOENT` rename.
+ */
+describe('two writes to one file at the same time', () => {
+  it('does not lose either of them', async () => {
+    const file = path.join(dir, 'race.json');
+    await Promise.all(
+      Array.from({ length: 25 }, (_, i) => writeJsonAtomic(file, { i })),
+    );
+    const back = await readJson<{ i: number }>(file, { i: -1 });
+    expect(back.i).toBeGreaterThanOrEqual(0);
+  });
+
+  it('leaves no scratch files behind', async () => {
+    const file = path.join(dir, 'clean.json');
+    await Promise.all(Array.from({ length: 10 }, (_, i) => writeJsonAtomic(file, { i })));
+    const left = (await fs.readdir(dir)).filter((f) => f.includes('.tmp-'));
+    expect(left).toEqual([]);
+  });
+});

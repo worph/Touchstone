@@ -48,3 +48,35 @@ services:
     # package.json changed.
     command: sh -c "yarn install --frozen-lockfile && yarn dev"
     restart: unless-stopped
+
+  # ── the browser, for the functional leg ─────────────────────────────────────
+  # Touchstone's own instance, not the shared box-wide `browsermcp`. That browser is busy
+  # with other work — n8n's PR Review drives it too — and an audit whose tab was stolen
+  # mid-install records the theft against the app. ARCHITECTURE.md §2.4 and §5.4.
+  #
+  # Copied from Newsdesk's stack with ONE deliberate divergence: **no profile volume**.
+  # Newsdesk keeps `/data/chrome-profile` because a warm signed-in session is the point
+  # there. Here it is unsafe: the functional protocol asks whether the app has an auth gate,
+  # and a session cookie surviving from a previous assay makes an unprotected app look
+  # protected — a false pass on the check that catches auth bypass.
+  browser:
+    # 1.1.5 is a floor, not a preference: the tab registry (/api/pages), `hover`, and the
+    # per-tab screencast all arrive in it.
+    image: ghcr.io/worph/browser-mcp:1.1.5
+    container_name: touchstone-browser
+    restart: unless-stopped
+    # Chrome crashes on the 64M default.
+    shm_size: "2gb"
+    environment:
+      VNC_RESOLUTION: "1440x900x24"
+      MCP_PORT: "9746"
+      # Reap Chrome between runs. Nothing is kept, so a cold start costs nothing but time.
+      IDLE_TTL_MS: "900000"
+      # Sweep tabs nobody owns. The runner closes its own on release, so anything still
+      # here after half an hour is a leak.
+      PAGE_COLLECTOR: "on"
+      PAGE_TTL_MS: "1800000"
+    ports:
+      # Published for local validation only. In the packaged stack nothing is exposed: this
+      # is an unauthenticated browser-control API.
+      - "9746:9746"

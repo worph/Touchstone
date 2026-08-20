@@ -12,7 +12,7 @@
 
 export interface McpOptions {
   url?: string;
-  /** Seconds. Docmost page fetches are slow enough that the default deserves to be generous. */
+  /** Seconds. Generous by default: an outlet on the far side of an aggregator can be slow. */
   timeout?: number;
 }
 

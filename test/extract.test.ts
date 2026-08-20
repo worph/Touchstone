@@ -8,36 +8,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { parseHeadline, parsePhases, parseRollup, shapeReport } from '../src/server/domain/extract.js';
+import { parseHeadline, parsePhases, shapeReport } from '../src/server/domain/extract.js';
 
-describe('the roll-up table', () => {
-  const md = `
-| # | App | Result | Risk | Last run | Report |
-| --- | --- | --- | --- | --- | --- |
-| 3 | Beacon | ⛔ non-compliant · Minor | 2 | 2026-07-31 | [report](https://docmost-yunderalabs.nsl.sh/s/general/p/9koVmWR622) |
-| 11 | ConvertX | ⚠️ errored · stuck after 3 tries | — | 2026-08-02 | — |
-| 69 | qBittorrent | ⚠️ errored · try 1 | — | 2026-08-04 | — |
-`;
-
-  it('reads verdict, severity, risk, date and slug', () => {
-    const rows = parseRollup(md);
-    expect(rows).toHaveLength(3);
-    expect(rows[0]).toMatchObject({
-      n: 3,
-      subject: 'Beacon',
-      kind: 'non-compliant',
-      severity: 'minor',
-      risk: 2,
-      lastRun: '2026-07-31',
-      slug: '9koVmWR622',
-    });
-  });
-
-  it('keeps a subject that has no report page, with no risk', () => {
-    const rows = parseRollup(md);
-    expect(rows[2]).toMatchObject({ subject: 'qBittorrent', kind: 'errored', risk: null, slug: null });
-  });
-});
 
 describe('the report headline', () => {
   it('reads the inline "Verdict: … risk_score N" form', () => {

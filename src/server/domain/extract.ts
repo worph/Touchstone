@@ -10,7 +10,6 @@
  *
  * Four parsers, in the order the importer uses them:
  *
- *   parseRollup    — the 69-row table, one row per subject
  *   shapeReport    — split a page into its static and functional sections
  *   parseHeadline  — the verdict line, plus the refs around it
  *   parsePhases    — the functional phase table, which says whether the leg ran at all
@@ -21,21 +20,6 @@
 
 import type { Severity } from '../../shared/types.js';
 
-// ── roll-up table ──────────────────────────────────────────────────────────────────────
-
-export type RollupKind = 'compliant' | 'non-compliant' | 'errored' | 'in-progress' | 'not-run';
-
-export interface RollupRow {
-  n: number;
-  subject: string;
-  kind: RollupKind;
-  severity: Severity;
-  /** `null` where the table shows `—`, i.e. not scored under the strict model. */
-  risk: number | null;
-  lastRun: string | null;
-  slug: string | null;
-  raw: string;
-}
 
 const SEVERITIES: Record<string, Severity> = {
   critical: 'critical',
@@ -44,40 +28,6 @@ const SEVERITIES: Record<string, Severity> = {
   none: 'none',
 };
 
-/** Parse the 69-row Results table out of the roll-up page. */
-export function parseRollup(md: string): RollupRow[] {
-  const rows: RollupRow[] = [];
-  for (const line of md.split('\n')) {
-    const m = /^\|\s*(\d+)\s*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|/.exec(line);
-    if (!m) continue;
-    const [, n, subjectCell, resultCell, riskCell, lastRunCell, reportCell] = m;
-    const subject = clean(subjectCell!);
-    const result = clean(resultCell!);
-    let kind: RollupKind = 'not-run';
-    if (/non-compliant/i.test(result)) kind = 'non-compliant';
-    else if (/\bcompliant\b/i.test(result)) kind = 'compliant';
-    else if (/errored/i.test(result)) kind = 'errored';
-    else if (/in progress/i.test(result)) kind = 'in-progress';
-
-    const sev = /\b(critical|major|minor)\b/i.exec(result);
-    const riskRaw = clean(riskCell!);
-    const risk = /^\d+$/.test(riskRaw) ? Number(riskRaw) : null;
-    const lastRun = /(\d{4}-\d{2}-\d{2})/.exec(lastRunCell!)?.[1] ?? null;
-    const slug = /\/p\/([A-Za-z0-9]+)\)/.exec(reportCell!)?.[1] ?? null;
-
-    rows.push({
-      n: Number(n),
-      subject,
-      kind,
-      severity: sev ? SEVERITIES[sev[1]!.toLowerCase()]! : 'none',
-      risk,
-      lastRun,
-      slug,
-      raw: result,
-    });
-  }
-  return rows;
-}
 
 // ── page structure ─────────────────────────────────────────────────────────────────────
 
