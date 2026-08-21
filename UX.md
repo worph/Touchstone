@@ -68,6 +68,11 @@ nothing hides behind a "more" sheet.
 Five destinations, plus subject detail reached by clicking. Everything else is a filtered view of
 one of these — resist adding a sixth.
 
+The **public board** (§2.6) is not one of them and is not in this nav. It is a separate frame at
+`/public`, reached from the sidebar footer rather than from the tab bar: it is addressed to app
+authors, not to the operator, and putting it in the nav would both crowd the phone's tabs and
+suggest it is a page of this app rather than a view published out of it.
+
 The fifth was **Automation**, added 2026-08-20, and it is the one page that is not a view of the
 archive: it is a view of the *driver*. That is why it did not fit inside Activity, which was the
 obvious place for it. Activity answers "what happened"; the loop's page answers "what is about to
@@ -457,6 +462,66 @@ that looks like the others but quietly means something else is worse than no ver
 
 ---
 
+### 2.6 The public board — `/public`, for the people being judged
+
+Every other page in this document is written for the operator. This one is written for the app
+author, and it is the only surface Touchstone has that is meant to leave the building: a
+read-only view of what each app currently carries, so the standard is something a developer can
+look up rather than something they hear about when a review fails.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ ▮≡ Touchstone │ app conformance                              │
+├──────────────────────────────────────────────────────────────┤
+│  3 SUBJECTS   STATIC ✓1 compliant ⛔2 failing  ▨0            │
+│               FUNCTIONAL ✓1 ⛔1 ▨1              34 TOTAL RISK │
+├──────────────────────────────────────────────────────────────┤
+│  SUBJECT       STATIC    FUNCTIONAL  VERIFIED  RISK   LAST    │
+│  FileBrowser   ▣ Major   ⛔ none       26/27     30   today  ›│
+│  Ntfy          ▣ Minor   ⬜ not run    16/16      4   today  ›│
+│  SegmentPlayer ✓ compl.  ✓ compl.     23/23      0   today  ›│
+├──────────────────────────────────────────────────────────────┤
+│  ✓ compliant  ⛔ failed  ▨ blocked — could not check  ⬜ not  │
+├──────────────────────────────────────────────────────────────┤
+│  Blocked is not failed. A hatched cell means the check could │
+│  not be made… Nothing on this page can be changed from it.   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+- **It is the Overview's table, not a summary of it.** Same rows, same cells, same tallies, out of
+  the same `SubjectTable` component and the same `hallmarks()` call. The claim the board makes to
+  an author is that they are reading the verdict the operator reads; two compositions would be two
+  opinions, and the published one would be the one nobody checks.
+- **No shell.** `/public/*` does not wear the operator chrome — no nav to pages that dispatch
+  runs, no alert badge, no run strip. The split is a layout route in `main.tsx` rather than a flag
+  on `Shell`, so a public page *cannot* render operator chrome: it is not in its tree.
+- **No actions, and no way to add one.** Nothing here posts. The page reaches exactly three
+  endpoints, all GET, all under `/api/v1/public/`, and that plugin refuses at boot to register a
+  write verb (`routes/public.ts`). "Read-only" is a check that fails the build, not a convention.
+- **What is deliberately absent**, beyond the buttons: the live-run overlay (`◴ running` is a fact
+  about the machine, not about the app, and it comes from an operator endpoint), the alert banner
+  and the blocked backlog (environment conditions — the operator's problem, noise to somebody
+  looking up one app), and the report source (the evidence is quoted into the fix brief instead).
+- **Filtering and sorting stay**, in the URL as on the Overview, because `/public?show=failing` is
+  a useful thing to send somebody. Filtering a view is not an action against the system.
+- **`blocked` gets the most explanation it gets anywhere.** For the operator it is a reminder; here
+  it is the first time most readers meet the word, and "we could not check" being mistaken for
+  "your app failed" is the single worst outcome this page can produce. Hence the legend inside the
+  panel *and* the sentence in the footer.
+
+#### 2.6.1 One app — `/public/s/<origin>~<Name>`
+
+The same three things a maintainer needs, in the order they want them: the hallmark per section
+with the standard version that judged it, the requirements the audit settled (failures first), and
+the **fix brief** — the audit's own findings, evidence and proposed remedies, fetched from
+`/public/subjects/:name/fix.md` rather than composed again in the browser.
+
+No history, no report source, no re-assay. An author cannot ask for a re-run from here, and that is
+the intent: the loop decides what is audited and when. A hallmark is what the subject carries now,
+which is what a hallmark *is*.
+
+---
+
 ## 3. Reports as files
 
 Docmost stops being storage. Layout inside the data dir:
@@ -531,4 +596,6 @@ These matter more than usual, because the system's normal condition includes "la
 - **No PR or gate surface.** That workflow stays in n8n.
 - **No editing of the standard in the UI.**
 - **No per-user accounts or roles.** AppShield already authenticated the visitor, and the trusted
-  gate makes that count. One shared authenticated view.
+  gate makes that count. One shared authenticated view — plus `/public` (§2.6), which is
+  unauthenticated by design and carries no control at all. There are two audiences, not two
+  permission levels: the boundary is a path prefix, not a role.

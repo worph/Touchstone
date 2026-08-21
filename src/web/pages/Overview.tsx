@@ -11,16 +11,16 @@ import { Link, useSearchParams } from 'react-router-dom';
 
 import { subjectName } from '@shared/subject';
 import type { Leg, SubjectState } from '@shared/types';
-import CoverageCell from '../components/CoverageCell';
 import ReassayButton from '../components/ReassayButton';
-import StatusCell, { StatusLegend } from '../components/StatusCell';
+import { StatusLegend } from '../components/StatusCell';
+import SubjectTable, { SubjectSummary } from '../components/SubjectTable';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getAlerts, getSubjects } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
-import { ageLabel, duration, num, plural } from '../lib/format';
+import { duration, num, plural } from '../lib/format';
 import {
-  applyShow, coverageOf, deriveBacklog, FRESH_DAYS, legState, search, sortSubjects, tally,
-  type BlockedBacklog, type LegTally, type LiveRun, type Tallies,
+  applyShow, deriveBacklog, FRESH_DAYS, search, sortSubjects, tally,
+  type BlockedBacklog, type LiveRun,
 } from '../lib/overview';
 import { useRunStatus } from '../data/runStatus';
 import { liveLegs, progressLabel } from '../lib/run';
@@ -130,7 +130,7 @@ export default function Overview() {
 
   return (
     <div className="page page--wide">
-      <Summary t={t} show={show} leg={leg} onPick={toggleShow} />
+      <SubjectSummary t={t} show={show} leg={leg} onPick={toggleShow} />
 
       {/*
         Two different facts, and only one of them is chrome-worthy.
@@ -218,164 +218,19 @@ export default function Overview() {
             }
           />
         ) : (
-          <div className="tbl-wrap">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <Th label="Subject" k="name" sort={sort} dir={dir} set={set} />
-                <Th label="Static" k="static" sort={sort} dir={dir} set={set} />
-                <Th label="Functional" k="functional" sort={sort} dir={dir} set={set} />
-                <Th label="Verified" k="coverage" sort={sort} dir={dir} set={set} align="right" />
-                <Th label="Risk" k="risk" sort={sort} dir={dir} set={set} align="right" />
-                <Th label="Last" k="age" sort={sort} dir={dir} set={set} align="right" />
-                <th aria-label="open" />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((s) => <Row key={s.name} s={s} live={live} showOrigin={showOrigin} />)}
-            </tbody>
-          </table>
-          </div>
+          <SubjectTable
+            rows={rows}
+            sort={sort}
+            dir={dir}
+            onSort={(k, d) => set({ sort: k, dir: d })}
+            href={(s) => `/s/${encodeURIComponent(s.name)}`}
+            live={live}
+            showOrigin={showOrigin}
+          />
         )}
         <StatusLegend />
       </div>
     </div>
-  );
-}
-
-function Row({ s, live, showOrigin }: { s: SubjectState; live: LiveRun | null; showOrigin: boolean }) {
-  const never = !s.static && !s.functional;
-  const running = live?.subject === s.name;
-  return (
-    <tr data-running={running || undefined}>
-      <td>
-        {/* Linked by key, rendered by label: `s.name` is `<origin>~<app>`, which is an
-            address, not something to show a person. */}
-        <Link className="row-link" to={`/s/${encodeURIComponent(s.name)}`}>
-          {s.label}
-        </Link>
-        {/* Only when there is more than one store. A column that always reads the same word
-            is furniture, and two stores may legitimately ship the same app name — at which
-            point the label alone stops identifying the row. */}
-        {showOrigin ? <span className="tag store-tag">{s.origin}</span> : null}
-      </td>
-      {/* The state comes from `legState`, not from the record, so a leg being audited right
-          now says so in the same cell that will hold its verdict in four minutes. */}
-      <td><StatusCell state={legState(s, 'static', live)} showNote={running} /></td>
-      <td><StatusCell state={legState(s, 'functional', live)} /></td>
-      <td className="col-num">
-        <CoverageCell coverage={coverageOf(s)} />
-      </td>
-      <td className="col-num">
-        <span className="risk-val" data-zero={s.risk === 0 || never}>
-          {never ? '—' : num(s.risk)}
-        </span>
-      </td>
-      <td className="col-num dim">{ageLabel(s.age_days)}</td>
-      <td className="col-chev">
-        <Link to={`/s/${encodeURIComponent(s.name)}`} aria-label={`Open ${s.label}`}>›</Link>
-      </td>
-    </tr>
-  );
-}
-
-function Th({
-  label, k, sort, dir, set, align,
-}: {
-  label: string;
-  k: SortKey;
-  sort: SortKey;
-  dir: 'asc' | 'desc';
-  set: (p: Record<string, string | null>) => void;
-  align?: 'right';
-}) {
-  const active = sort === k;
-  const nextDir = active && dir === 'desc' ? 'asc' : 'desc';
-  return (
-    <th
-      style={align === 'right' ? { textAlign: 'right' } : undefined}
-      aria-sort={active ? (dir === 'desc' ? 'descending' : 'ascending') : undefined}
-    >
-      <button type="button" onClick={() => set({ sort: k, dir: nextDir })}>
-        {label}
-        <span aria-hidden="true" style={{ opacity: active ? 1 : 0.25 }}>
-          {active && dir === 'asc' ? '▲' : '▼'}
-        </span>
-      </button>
-    </th>
-  );
-}
-
-function Summary({
-  t, show, leg, onPick,
-}: {
-  t: Tallies;
-  show: ShowFilter;
-  leg: 'any' | Leg;
-  onPick: (v: ShowFilter, l: 'any' | Leg) => void;
-}) {
-  const legRow = (name: string, key: Leg, v: LegTally) => (
-    <div className="summary-leg">
-      <span className="leg-name">{name}</span>
-      <Tally label="compliant" n={v.compliant} kind="ok" on={() => onPick('compliant', key)} active={show === 'compliant' && leg === key} />
-      <Tally label="failing" n={v.failing} kind="fail" on={() => onPick('failing', key)} active={show === 'failing' && leg === key} />
-      {v.blocked > 0 && (
-        <Tally label="blocked" n={v.blocked} kind="blocked" on={() => onPick('blocked', key)} active={show === 'blocked' && leg === key} />
-      )}
-      {v.running > 0 && (
-        <Tally label="running" n={v.running} kind="running" on={() => onPick('running', key)} active={show === 'running' && leg === key} />
-      )}
-      {v.errored > 0 && (
-        <Tally label="errored" n={v.errored} kind="errored" on={() => onPick('failing', key)} active={false} />
-      )}
-      <Tally label="not yet run" n={v.notRun} kind="none" on={() => onPick('not-run', key)} active={show === 'not-run' && leg === key} />
-    </div>
-  );
-
-  return (
-    <div className="panel summary">
-      <div className="summary-total">
-        <span className="n">{num(t.subjects)}</span>
-        <span className="section-title">subjects</span>
-      </div>
-      <div className="summary-legs">
-        {legRow('Static', 'static', t.static)}
-        {legRow('Functional', 'functional', t.functional)}
-      </div>
-      <div className="summary-risk">
-        <span className="n">{num(t.risk)}</span>
-        <span className="section-title">total risk</span>
-      </div>
-    </div>
-  );
-}
-
-function Tally({
-  label, n, kind, on, active,
-}: {
-  label: string;
-  n: number;
-  kind: string;
-  on: () => void;
-  active: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      className="summary-tally"
-      data-zero={n === 0}
-      aria-pressed={active}
-      onClick={on}
-      title={`Filter to subjects whose leg is ${label}`}
-    >
-      <span className="status" data-kind={kind} data-sev={kind === 'fail' ? 'critical' : 'none'}>
-        <span className="status-mark" aria-hidden="true">
-          {kind === 'ok' ? '✓' : kind === 'fail' ? 'C' : kind === 'running' ? '◴' : ''}
-        </span>
-      </span>
-      <span className="n">{num(n)}</span>
-      {label}
-    </button>
   );
 }
 

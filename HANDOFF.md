@@ -1266,6 +1266,68 @@ absorbing PR Review.
 
 ---
 
+## 5m. The public board — 2026-08-21
+
+**The ask:** a page listing every app and its compliance status, publishable on the website so app
+authors can see where they stand. Display only, its own path, always read-only.
+
+### The shape, and the three questions it turned on
+
+- **Standalone, not inside `Shell`.** The operator nav goes to pages that dispatch runs and edit
+  the rubric, and half of it would 401 behind the SSO sidecar anyway. `main.tsx` now has two
+  layout routes, `PublicFrame` and `Shell`, and `/public/*` lives under the first. A flag on
+  `Shell` would have been the smaller diff and the wrong one — a flag is something the next page
+  can forget to pass, and a public page that cannot render operator chrome because it is not in
+  its tree needs nobody to remember anything.
+- **It drills down.** `/public/s/<key>` gives an author the sections, the requirements the audit
+  settled and the fix brief. Publishing "your app is failing" with no way to learn why would have
+  been the worse half of the feature.
+- **Read-only is enforced server-side.** `/api/v1/public/*` is its own plugin with three GET
+  routes, and an `onRoute` hook that **throws at boot** on any other verb. A `POST /public/…` is
+  a failed start, not a review somebody has to catch.
+
+### What was written
+
+| File | What |
+| --- | --- |
+| `src/server/routes/public.ts` | the three endpoints and `assertReadOnly` |
+| `src/server/routes/public.test.ts` | 11 tests: the guard, and board-equals-operator-table |
+| `src/web/components/PublicFrame.tsx` | header, page, footer — no nav, no poller, nothing to press |
+| `src/web/pages/PublicBoard.tsx` | the board |
+| `src/web/pages/PublicSubject.tsx` | one app, with the fix brief inline |
+| `src/web/components/SubjectTable.tsx` | **extracted** from `Overview.tsx`, now shared by both |
+| `src/web/components/Mark.tsx` | extracted from `Shell.tsx`, now worn by both frames |
+
+`lib/overview.ts` gained `hasFixWork()`, which `SubjectDetail` had inline over a hard-coded
+`[static, functional]`; the shared version reads every section, so a third rubric needs no edit.
+
+### Two things it deliberately does not do
+
+- **No live-run overlay.** `◴ running` comes from `/assays/current`, an operator endpoint the
+  board must not touch, and it is a fact about the machine rather than about the app. A run in
+  flight simply shows the hallmark that still stands.
+- **No alert banner and no blocked backlog.** Both are environment conditions: the operator's
+  problem, and noise to an author looking up one app. What the board does carry is the *most*
+  explanation `blocked` gets anywhere in the UI — the legend inside the panel and a sentence in
+  the footer — because "we could not check" being read as "your app failed" is the worst thing
+  this page could produce.
+
+### Verified on the running stack
+
+`/public` and `/public/s/yundera~FileBrowser` render against the real three-app archive at desk
+and phone widths; DevTools' network panel shows the pages reaching **only** `/api/v1/public/*`.
+`POST`/`PUT`/`PATCH`/`DELETE` under the prefix all 404, and there is no public twin of
+`/reports/:subject/:file`. `yarn typecheck` clean, `yarn build` green, `yarn test` 467 passed
+(456 before) — the Overview refactor broke nothing.
+
+### Left for whoever packages this
+
+The compose stack of ARCHITECTURE §8 does not exist yet, so **nothing is actually exposed**. When
+it is written, publishing the board is excluding `/public` and `/api/v1/public/*` from the
+AppShield gate — see §8.1, which is where that reasoning now lives.
+
+---
+
 ## 6. Reference — facts read off the running system
 
 Cited so they can be re-checked when they drift. Read 2026-08-07.

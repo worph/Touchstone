@@ -23,7 +23,8 @@ declares), **alert** (a deduplicated environment condition), **origin** (an app 
 `{repo, ref, apps_path}` a subject comes from, labelled "Store" in the UI; **not** `store/`,
 which is the filesystem layer, and **not** `AssayStore`, which is the read interface the routes
 take), **trial** (a one-shot audit of an arbitrary ref, written under `data/trials/` and never
-read by the report index, so it cannot move a hallmark).
+read by the report index, so it cannot move a hallmark), **board** (the read-only public view of
+every subject's hallmark, at `/public`, addressed to app authors rather than to the operator).
 
 A subject's identity is `<origin>~<name>` — `yundera~FileBrowser`. The separator is `~` because
 it is unreserved in `encodeURIComponent` and therefore survives a URL untouched, which is what
@@ -136,6 +137,12 @@ because its data access was smeared through two 200-line n8n Code nodes.
   empty another's. `reachable()` means *the last fetch succeeded*, and the runner asks it before
   dispatching: auditing against a store we cannot read would error and burn the subject's try
   for an infra condition, which invariant 3 forbids.
+- **`routes/public.ts`** — `/public/subjects`, one subject, and its `fix.md`: the only prefix meant
+  to be readable by somebody who does not operate Touchstone, and therefore the only one that may
+  be excluded from the SSO sidecar (ARCHITECTURE §8.1). It is **read-only by construction** — an
+  `onRoute` hook throws at boot on any verb but GET/HEAD — and it composes nothing of its own:
+  `hallmarks()` and `buildFixReport()`, the same functions the operator routes call. There is no
+  public report-file endpoint, so it hands out no address it will not serve.
 - **`store/trials.ts` + `routes/trials.ts`** — trials. Input is validated at the route because
   `repo`/`ref` reach a prompt the agent runs `gh` against; the index over them is built per
   request with `cacheFile: null`, because `defaultCacheFile()` resolves to the *same* path for
@@ -156,8 +163,14 @@ because its data access was smeared through two 200-line n8n Code nodes.
   became of its own work.
   `prompt.md` is an asset — `build:api` copies it into `dist/`, so a new non-TS file there
   needs the same treatment.
-- **`src/web/`** — React + Vite SPA, six pages (Overview, Subject detail, Automation,
-  Activity, Administrator chat, Trials) plus Protocols. `src/web/data/client.ts` is the only thing that talks to the API,
+- **`src/web/`** — React + Vite SPA in **two frames**. The operator frame is `Shell` and six pages
+  (Overview, Subject detail, Automation, Activity, Administrator chat, Trials) plus Protocols; the
+  **public frame** is `PublicFrame` and two read-only pages under `/public` (the board and one
+  app), addressed to app authors rather than to the operator. `main.tsx` splits them with two
+  layout routes rather than a flag, so a public page cannot render operator chrome — it is not in
+  its tree. `components/SubjectTable.tsx` is shared by both tables on purpose: an author must be
+  reading the operator's verdicts, not a restyled copy of them.
+  `src/web/data/client.ts` is the only thing that talks to the API,
   and `data/runStatus.ts` is the **single poller** for the run in flight — the shell strip, the
   Overview's `◴ running` cells, Activity's card and the re-assay button all subscribe to it rather
   than polling `/assays/current` themselves. `@shared/*` aliases
@@ -197,6 +210,10 @@ because its data access was smeared through two 200-line n8n Code nodes.
    unreachable and push unconfigured.
 8. **There is no queue.** The backlog is re-derived from last-run on every tick, so it cannot drift.
 9. **Every assay records the standard version that judged it.**
+10. **`/public` is read-only, and not by convention.** Nothing under that prefix — route or page —
+    may write, and the check is at boot rather than at review time. It is the surface app authors
+    see, so it is also the one place where an accidental control would be reachable by somebody
+    with no account. Anything the board needs is a GET or it does not ship.
 
 ## Safety switches (both default off)
 

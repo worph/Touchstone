@@ -1225,3 +1225,73 @@
 
 .trial-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .trial-files .btn[data-active] { background: var(--bg-2); }
+
+/* ------------------------------------------------------------ the public board
+ * The chrome for `/public/*` — the read-only view an app author is sent to.
+ *
+ * A header, the page, a footer, and nothing else: no sidebar, no tab bar, no badge.
+ * Everything below the header reuses the operator styles verbatim (`.panel`, `.tbl`,
+ * `.status`, `.leg-card`), which is the same argument `SubjectTable` makes in code —
+ * an author must be looking at the same cells the operator looks at, not a restyled
+ * copy that could come to disagree about what `blocked` looks like.
+ *
+ * Every colour is a token. See `base.css`: the dark block below the palette redefines
+ * the same names and nothing here knows which theme is on.
+ */
+.pub {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.pub-head {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: calc(var(--safe-top) + 14px) 20px 14px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.pub-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--fg);
+}
+.pub-brand svg { align-self: center; display: block; }
+.pub-brand-name { font-weight: 650; letter-spacing: -0.01em; font-size: 15px; }
+/* The subtitle carries the whole "what am I looking at" job, since there is no nav to
+   infer it from. It hides on the narrowest phones, where the name alone has to do. */
+.pub-brand-sub {
+  color: var(--fg-2);
+  font-size: 12px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border-2);
+}
+@media (max-width: 400px) { .pub-brand-sub { display: none; } }
+
+.pub-main { flex: 1; min-width: 0; }
+
+/* The explanation of the vocabulary, at the bottom because it is reference rather than
+   news. `blocked is not failed` is the one thing a first-time reader must leave with, so
+   it is a sentence rather than a legend entry — the legend is above it in the panel. */
+.pub-foot {
+  border-top: 1px solid var(--border);
+  padding: 20px;
+  color: var(--fg-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.pub-foot p { max-width: 78ch; margin: 0 0 10px; }
+.pub-foot p:last-child { margin-bottom: 0; }
+.pub-foot strong { color: var(--fg-1); font-weight: 600; }
+
+@media (min-width: 860px) {
+  .pub-head { padding: 16px 28px; }
+  .pub-foot { padding: 24px 28px 48px; }
+}

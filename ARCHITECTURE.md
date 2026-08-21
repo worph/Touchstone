@@ -752,7 +752,7 @@ model's choosing", with the result read as data inside an audit prompt.
 
 Copied from Newsdesk's compose, which is a solved problem. Four services:
 
-- **`touchstone`** — AppShield sidecar terminating OIDC/Authelia SSO, the only public surface
+- **`touchstone`** — AppShield sidecar terminating OIDC/Authelia SSO, the only exposed surface
 - **`touchstone-backend`** — no Caddy labels, reachable only on the internal `pcs` network
 - **`touchstone-mcp`** — optional `beaconify` sidecar making the admin surface agent-callable
 - **`touchstone-browser-1…N`** — the browser pool, §5.4, nothing exposed
@@ -764,6 +764,29 @@ a **trusted-gate** env naming the sidecar so users are not asked for a second lo
 `pre-install-cmd` creating and chowning one data dir — so a backup of one path is the whole system.
 
 Shipped as an AppStore app, so Touchstone assays the store it lives in.
+
+### 8.1 The one prefix that may be excluded from SSO
+
+The whole process sits behind that sidecar, which is right for every page in UX.md §2.1–2.5: they
+start runs, arm the loop and edit the rubric. **`/public` and `/api/v1/public/*` are the exception**
+— the read-only conformance board an app author is sent to (UX.md §2.6). Publishing it means
+excluding that one prefix from the gate, which is a line of Caddy configuration rather than a
+judgement about forty handlers, and that is the entire reason the namespace exists.
+
+Two properties make the exclusion safe to write down:
+
+- **The prefix has no write route, and cannot grow one.** `routes/public.ts` registers an
+  `onRoute` hook that throws on anything but GET/HEAD. A `POST /public/…` is a boot failure, not a
+  code review that somebody has to catch.
+- **The pages under `/public` reach nothing else.** They are in a separate layout tree with their
+  own three client calls; a public page that quietly used the operator API would work in dev and
+  401 in production, which is the worst way to find out.
+
+What it publishes is what an app author is entitled to about their own app: the hallmark, the
+standard version that judged it, the requirements the audit settled, and the fix brief. It is not
+a second composition — `hallmarks()` and `buildFixReport()` are the same functions the operator
+pages read, because a published verdict that has drifted from the internal one is the failure mode
+a separate public surface invites.
 
 One thing to reconcile first: the running `newsdesk-browser` container is **not present in**
 `/DATA/AppData/newsdesk/docker-compose.yml`. Copy from the *running* stack, not the stale file.

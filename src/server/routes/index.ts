@@ -44,6 +44,7 @@ import assayRoutes from './assays.js';
 import chatRoutes from './chat.js';
 import mcpRoutes from './mcp.js';
 import protocolRoutes from './protocols.js';
+import publicRoutes from './public.js';
 import scheduleRoutes from './schedule.js';
 import trialRoutes from './trials.js';
 
@@ -100,6 +101,12 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     ...(options.ports ? { ports: options.ports } : {}),
   });
   await app.register(trialRoutes, options.trials ?? {});
+  /**
+   * The one prefix meant to be read by somebody who does not operate this app — see
+   * `routes/public.ts`. Registered from the same `store`, so the board and the operator
+   * table cannot disagree, and read-only by a boot-time check rather than by convention.
+   */
+  await app.register(publicRoutes, { store });
   await app.register(assayRoutes, {
     runner: options.runner,
     scheduler: options.scheduler,

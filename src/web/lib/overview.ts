@@ -174,6 +174,25 @@ export function coverageOf(s: SubjectState): Coverage | undefined {
   }));
 }
 
+/**
+ * Is there anything to brief anyone on?
+ *
+ * Not "is it non-compliant": an assay imported before the ledger existed has a verdict and no
+ * recorded requirements, and a fix report built from that is a page of headings with nothing
+ * under them. So the question is whether the audit wrote down something actionable — a failing
+ * requirement, or a phase that did not pass.
+ *
+ * Every section, not a named two: a rubric added tomorrow contributes its failures here without
+ * this function learning its name.
+ */
+export function hasFixWork(s: SubjectState): boolean {
+  return Object.values(s.sections ?? {}).some(
+    (rec) =>
+      (rec?.meta.requirements ?? []).some((r) => r.verdict === 'fail') ||
+      (rec?.meta.phases ?? []).some((p) => p.result === 'fail' || p.result === 'errored'),
+  );
+}
+
 /** `-1` for "no coverage at all", so unmeasured subjects sort apart from fully-verified ones. */
 function coverageRatio(s: SubjectState): number {
   const c = coverageOf(s);

@@ -21,6 +21,7 @@ import CoverageCell from '../components/CoverageCell';
 import RequirementList from '../components/RequirementList';
 import RunCard from '../components/RunCard';
 import { dateOnly, num, since, stamp } from '../lib/format';
+import { hasFixWork } from '../lib/overview';
 import { displayState, runningState } from '../lib/status';
 import { useRunStatus } from '../data/runStatus';
 import { liveLegs, progressLabel } from '../lib/run';
@@ -87,17 +88,11 @@ export default function SubjectDetail() {
   const never = !subject.static && !subject.functional;
 
   /**
-   * Is there anything to fix? Failing requirements, or a functional phase that did not pass.
-   *
-   * Not "is it non-compliant": an assay imported before the ledger existed has a verdict and
-   * no recorded requirements, and a fix report built from that would be a page of headings
-   * with nothing under them.
+   * Is there anything to fix? Shared with the public board, which asks the same question and
+   * must get the same answer — see `lib/overview.ts`. It reads every section rather than the
+   * two this page happens to name, so a third rubric needs no edit here.
    */
-  const fixable =
-    [subject.static, subject.functional].some((rec) =>
-      (rec?.meta.requirements ?? []).some((r) => r.verdict === 'fail'),
-    ) ||
-    (subject.functional?.meta.phases ?? []).some((p) => p.result === 'fail' || p.result === 'errored');
+  const fixable = hasFixWork(subject);
 
   /** The run in flight, when it is this subject's. See `lib/overview.ts` for why it is an overlay. */
   const running = status?.running?.subject === subject.name ? status.running : null;
