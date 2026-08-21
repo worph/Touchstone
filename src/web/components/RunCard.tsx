@@ -16,6 +16,7 @@
  * page, which is where the strip in the shell points.
  */
 
+import BrowserView from './BrowserView';
 import { subjectName } from '@shared/subject';
 import { Link } from 'react-router-dom';
 
@@ -197,6 +198,11 @@ export default function RunCard({
             looks wrong, and between the progress and the feed it split the two things that
             are actually moving. Hostnames, because the rest of a URL is noise — the whole of
             it is on the title. */}
+        {/* What it is looking at, and the bench it is looking at it on. Placed after the
+            requirement feed because that is the answer most of the time — this is for the
+            minutes where the feed stops moving and you want to know whether it is stuck. */}
+        <BrowserView benchHost={live.bench ?? null} />
+
         <div className="run-card__where">
           started <span className="num">{stamp(live.started_at)}</span>
           {live.bench ? (

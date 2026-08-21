@@ -7,6 +7,7 @@ import { fileURLToPath, URL } from 'node:url';
 import registerRoutes from './routes/index.js';
 import { buildIndex } from './store/index.js';
 import { logArchiveMigration, migrateArchiveLayout } from './store/migrate.js';
+import { splitSubjectKey } from '../shared/subject.js';
 import { TrialStore } from './store/trials.js';
 import { ensureConfigFile, loadConfig, resolveDataDir } from './store/config.js';
 import { AlertStore } from './services/alerts.js';
@@ -273,6 +274,16 @@ await app.register(registerRoutes, {
   ports,
   protocols,
   ledger,
+  browser: {
+    ...(cfg.browsers[0] ? { browserUrl: cfg.browsers[0].url } : {}),
+    // Only while a run is in flight; the panel narrows the tab list to that audit's own
+    // isolated context, so it answers "what is THIS audit looking at" rather than "what is
+    // on the box".
+    runningSubject: () => {
+      const live = runner.status().running;
+      return live ? splitSubjectKey(live.subject).name : null;
+    },
+  },
   trials: {
     runner,
     trials,
