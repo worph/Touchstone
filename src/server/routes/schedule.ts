@@ -14,6 +14,20 @@
 
 import { asSubjectKey } from '../../shared/subject.js';
 import { resolveSubjectKey } from '../domain/subjects.js';
+import { SUBJECT_KEY_SEP, subjectName } from '../../shared/subject.js';
+
+/**
+ * Replace any `<origin>~<name>` in a prose line with the bare app name.
+ *
+ * Only touches tokens that actually carry the separator, so a line with no subject in it — or
+ * with an app whose name happens to contain a tilde — comes back unchanged.
+ */
+function displayKeys(line: string): string {
+  return line.replace(
+    new RegExp(`[A-Za-z0-9._-]+${SUBJECT_KEY_SEP}[A-Za-z0-9._-]+`, 'g'),
+    (m) => subjectName(m),
+  );
+}
 import type { FastifyPluginAsync } from 'fastify';
 
 import type { ScheduleResponse } from '../../shared/schedule.js';
@@ -42,7 +56,13 @@ const routes: FastifyPluginAsync<ScheduleRoutesOptions> = async (app, options) =
       armed_default: snap?.armed_default ?? null,
       armed_source: snap?.armed_source ?? 'config',
       runner_enabled: options.runner ? options.runner.enabled : null,
-      last_tick: snap?.last_tick ?? null,
+      // `stateLine()` embeds the subject, and the subject is a key — `yundera~AIOStreams`.
+      // That is an address, not something to show a person, so it is split here at the wire
+      // rather than in `policy.ts`, whose whole value is being byte-diffable against the live
+      // n8n loop. Same reason the queue rows are rendered by their bare name.
+      last_tick: snap?.last_tick
+        ? { ...snap.last_tick, state: displayKeys(snap.last_tick.state) }
+        : null,
       next_tick_at: snap?.next_tick_at ?? null,
       last_finished_at: snap?.last_finished_at ?? null,
       cooldown_left_min: snap?.cooldown_left_min ?? 0,
