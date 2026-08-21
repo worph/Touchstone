@@ -1,11 +1,12 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
 
 import './styles/base.css';
 import './styles/components.css';
 import './styles/markdown.css';
 
+import PublicFrame from './components/PublicFrame';
 import Shell from './components/Shell';
 import { EmptyState } from './components/Ui';
 import Activity from './pages/Activity';
@@ -14,16 +15,32 @@ import Protocols from './pages/Protocols';
 import Trials from './pages/Trials';
 import AdminChat from './pages/AdminChat';
 import Overview from './pages/Overview';
+import PublicBoard from './pages/PublicBoard';
+import PublicSubject from './pages/PublicSubject';
 import SubjectDetail from './pages/SubjectDetail';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('#root is missing from index.html');
 
+/**
+ * Two frames, not one.
+ *
+ * `/public/*` is the read-only board an app author is sent to, and it deliberately does not
+ * wear the operator shell: no nav to pages that start runs, no alert badge, no poller. The
+ * split is a layout route rather than a flag on `Shell`, because a flag is something a future
+ * page can forget to pass and this must not be forgettable — a public page cannot render
+ * operator chrome if the operator chrome is not in its tree.
+ */
 createRoot(root).render(
   <StrictMode>
     <BrowserRouter>
-      <Shell>
-        <Routes>
+      <Routes>
+        <Route element={<PublicFrame><Outlet /></PublicFrame>}>
+          <Route path="/public" element={<PublicBoard />} />
+          <Route path="/public/s/:name" element={<PublicSubject />} />
+        </Route>
+
+        <Route element={<Shell><Outlet /></Shell>}>
           <Route path="/" element={<Overview />} />
           <Route path="/s/:name" element={<SubjectDetail />} />
           <Route path="/activity" element={<Activity />} />
@@ -45,8 +62,8 @@ createRoot(root).render(
               </div>
             }
           />
-        </Routes>
-      </Shell>
+        </Route>
+      </Routes>
     </BrowserRouter>
   </StrictMode>,
 );

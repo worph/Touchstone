@@ -279,6 +279,27 @@ export function getFixReport(name: string): Promise<string> {
   return getText(`/subjects/${encodeURIComponent(name)}/fix.md`);
 }
 
+// ── the public board ──────────────────────────────────────────────────
+// The three calls the read-only board makes, and the only three. Kept apart from the operator
+// calls above deliberately: `/public/*` is the one prefix that may be served without a login,
+// so the pages under `/public` must be provably unable to reach anything else. A public page
+// that quietly used `getSubjects()` would work in dev and 401 in production, which is the
+// worst way to find out.
+
+export function getPublicSubjects(): Promise<SubjectState[]> {
+  return get<SubjectState[]>('/public/subjects');
+}
+
+/** The row alone. No history and no run state — see `server/routes/public.ts`. */
+export function getPublicSubject(name: string): Promise<SubjectState> {
+  return get<SubjectState>(`/public/subjects/${encodeURIComponent(name)}`);
+}
+
+/** The same brief `getFixReport` serves, from the prefix an app author can actually reach. */
+export function getPublicFixReport(name: string): Promise<string> {
+  return getText(`/public/subjects/${encodeURIComponent(name)}/fix.md`);
+}
+
 // ── trials ───────────────────────────────────────────────────────────────────────────────
 // Auditing a ref without touching what a subject carries. See `shared/trials.ts` for why the
 // results live somewhere the archive does not look.
