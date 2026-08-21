@@ -43,6 +43,7 @@ import pushRoutes from './push.js';
 import assayRoutes from './assays.js';
 import chatRoutes from './chat.js';
 import mcpRoutes from './mcp.js';
+import adminMcpRoutes, { type AdminMcpOptions } from './mcp-admin.js';
 import protocolRoutes from './protocols.js';
 import publicRoutes from './public.js';
 import scheduleRoutes from './schedule.js';
@@ -66,6 +67,11 @@ export interface RoutesOptions {
   boardUrl?: string;
   /** The administrator chat. Absent means the page renders and says it is not wired. */
   chat?: ChatRoutesOptions;
+  /**
+   * The chat's tools, served over MCP. Absent or disabled registers nothing — see
+   * `routes/mcp-admin.ts` for why that is a real state rather than a 503.
+   */
+  adminMcp?: Omit<AdminMcpOptions, 'ctx' | 'events'>;
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
@@ -94,6 +100,16 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     runner: options.runner,
   });
   await app.register(mcpRoutes, { ledger: options.ledger });
+  /**
+   * The same registry the chat calls, over MCP. It takes the chat's own context rather than a
+   * second one assembled here: one definition of what an agent may ask this app, so the two
+   * cannot come to disagree about it.
+   */
+  await app.register(adminMcpRoutes, {
+    ...(options.adminMcp ?? {}),
+    ...(options.chat?.ctx ? { ctx: options.chat.ctx } : {}),
+    ...(options.events ? { events: options.events } : {}),
+  });
   await app.register(protocolRoutes, { protocols: options.protocols, events: options.events });
   await app.register(chatRoutes, {
     ...(options.chat ?? {}),

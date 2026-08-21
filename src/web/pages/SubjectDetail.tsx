@@ -78,7 +78,7 @@ export default function SubjectDetail() {
       <div className="page">
         <Notice tone="error" title={`Could not load ${name}`}>
           {error?.message ?? 'The subject is not in the index.'}{' '}
-          <Link to="/">Back to the overview</Link>.
+          <Link to="/overview">Back to the overview</Link>.
         </Notice>
       </div>
     );
@@ -110,7 +110,7 @@ export default function SubjectDetail() {
         <div className="subject-head">
           <div className="subject-head-top">
             <h1 className="subject-title">
-              <Link to="/" className="back-link" aria-label="Back to overview">‹</Link>
+              <Link to="/overview" className="back-link" aria-label="Back to overview">‹</Link>
               {subject.label}
             </h1>
             <div style={{ flex: 1 }} />

@@ -1,6 +1,11 @@
 /**
  * `POST /mcp` — the surface the audit agent calls back on while it works.
  *
+ * Not to be confused with its sibling `routes/mcp-admin.ts`, which is the *operator's* tools
+ * made agent-callable. This one is scoped to a single run and can be reached by whatever is
+ * holding that run's token; that one is scoped to an installation and is off by default. They
+ * share only the envelope, in `rpc.ts`.
+ *
  * Three tools, and the shape of the set is the design:
  *
  * | tool | what it does |
@@ -29,6 +34,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import type { RunLedger } from '../services/ledger.js';
+import { dispatchRpc, toolError, toolText, type JsonRpcRequest, type McpToolDef } from './rpc.js';
 
 export interface McpRoutesOptions {
   ledger?: RunLedger;
@@ -36,14 +42,7 @@ export interface McpRoutesOptions {
   token?: string;
 }
 
-interface JsonRpc {
-  jsonrpc?: string;
-  id?: unknown;
-  method?: string;
-  params?: { name?: string; arguments?: Record<string, unknown> };
-}
-
-const TOOLS = [
+const TOOLS: McpToolDef[] = [
   {
     name: 'list_requirements',
     description:
@@ -102,47 +101,24 @@ const TOOLS = [
 ];
 
 const routes: FastifyPluginAsync<McpRoutesOptions> = async (app, options) => {
-  app.post<{ Body?: JsonRpc }>('/mcp', async (req, reply) => {
+  app.post<{ Body?: JsonRpcRequest }>('/mcp', async (req, reply) => {
     if (options.token) {
       const header = String(req.headers.authorization ?? '');
       if (header !== `Bearer ${options.token}`) return reply.code(401).send({ error: 'unauthorized' });
     }
 
-    const body = req.body ?? {};
-    const id = body.id ?? null;
-    const ok = (result: unknown) => ({ jsonrpc: '2.0', id, result });
-    /** A tool-level failure is a *result* with `isError`, not a transport error — that is how
-     *  the agent gets told what to fix rather than seeing the call blow up. */
-    const toolError = (message: string) =>
-      ok({ isError: true, content: [{ type: 'text', text: message }] });
-    const text = (value: unknown) =>
-      ok({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] });
-
-    switch (body.method) {
-      case 'initialize':
-        return ok({
-          protocolVersion: '2024-11-05',
-          capabilities: { tools: {} },
-          serverInfo: { name: 'touchstone', version: '1' },
-        });
-
-      case 'notifications/initialized':
-        return reply.code(204).send();
-
-      case 'tools/list':
-        return ok({ tools: TOOLS });
-
-      case 'tools/call': {
+    const out = await dispatchRpc(req.body ?? {}, {
+      server: { name: 'touchstone', version: '1' },
+      tools: () => TOOLS,
+      call: async (name, args) => {
         const ledger = options.ledger;
         if (!ledger) return toolError('this installation has no run ledger');
-        const name = String(body.params?.name ?? '');
-        const args = body.params?.arguments ?? {};
         const token = String(args.run_token ?? '');
 
         if (name === 'list_requirements') {
           const found = ledger.planFor(token);
           if ('error' in found) return toolError(found.error);
-          return text({
+          return toolText({
             // Sections first: they are the shape of this run, and a run does not always have
             // the same ones — a section whose prerequisites were missing is not attempted and
             // does not appear here.
@@ -153,28 +129,31 @@ const routes: FastifyPluginAsync<McpRoutesOptions> = async (app, options) => {
         }
 
         if (name === 'record_requirement') {
-          const out = ledger.recordRequirement(token, args as never);
-          if (!out.ok) return toolError(out.error);
-          return text({
-            recorded: out.recorded.id,
-            section: out.recorded.section ?? null,
-            verdict: out.recorded.verdict,
-            unlisted: out.recorded.unlisted ?? false,
+          const result = ledger.recordRequirement(token, args as never);
+          if (!result.ok) return toolError(result.error);
+          return toolText({
+            recorded: result.recorded.id,
+            section: result.recorded.section ?? null,
+            verdict: result.recorded.verdict,
+            unlisted: result.recorded.unlisted ?? false,
           });
         }
 
         if (name === 'record_phase') {
-          const out = ledger.recordPhase(token, args as never);
-          if (!out.ok) return toolError(out.error);
-          return text({ recorded: out.recorded.phase, section: out.recorded.section ?? null, result: out.recorded.result });
+          const result = ledger.recordPhase(token, args as never);
+          if (!result.ok) return toolError(result.error);
+          return toolText({
+            recorded: result.recorded.phase,
+            section: result.recorded.section ?? null,
+            result: result.recorded.result,
+          });
         }
 
         return toolError(`no such tool: ${name}`);
-      }
+      },
+    });
 
-      default:
-        return { jsonrpc: '2.0', id, error: { code: -32601, message: `method not found: ${body.method}` } };
-    }
+    return out.body === undefined ? reply.code(out.code).send() : reply.code(out.code).send(out.body);
   });
 };
 

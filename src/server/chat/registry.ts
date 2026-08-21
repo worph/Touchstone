@@ -74,6 +74,16 @@ export interface ChatToolResult {
 export interface ChatTool {
   name: string;
   description: string;
+  /**
+   * True for the one tool that makes something happen rather than reporting what already did.
+   *
+   * The chat itself does not read this — a turn may call everything in the registry. It exists
+   * because the same registry is served over MCP (`routes/mcp-admin.ts`), where the caller is
+   * not necessarily the operator sitting in front of the app, and an installation that wants
+   * that surface to be answers-only needs the split to be a property of the tool rather than a
+   * list of names kept somewhere else and forgotten when a second write tool is added.
+   */
+  writes?: boolean;
   inputSchema: {
     type: 'object';
     properties: Record<string, unknown>;
@@ -291,6 +301,7 @@ export const CHAT_TOOLS: ChatTool[] = [
 
   {
     name: 'run_assay',
+    writes: true,
     description:
       'Start an audit of one app. It returns as soon as the audit has STARTED — a real audit takes minutes, far longer than this conversation will wait, so do not expect a verdict here and do not call this twice hoping for one. The operator is notified when it finishes. An audit covers every section of the protocol; a section that needs something unavailable — a demo instance, a browser — is not attempted and is recorded as blocked, which never counts against the app.',
     inputSchema: {

@@ -41,8 +41,10 @@ the UI is down.
 ## 2. Pages
 
 The chrome follows Newsdesk: a light page, and the whole nav down the left on a desk. Below 860px
-that column becomes a sticky header plus a bottom tab bar — five destinations fit as tabs, so
-nothing hides behind a "more" sheet.
+that column becomes a sticky header plus a bottom tab bar — four destinations fit as tabs, so
+nothing hides behind a "more" sheet. The administrator chat is not one of them: it is `/`, the
+page Touchstone opens on, and the brand — present in both the sidebar and the phone header — is
+the link back to it.
 
 ```
 ┌──────────────┬───────────────────────────────────────────────┐
@@ -55,7 +57,6 @@ nothing hides behind a "more" sheet.
 │ OPERATIONS   │                                               │
 │  Automation  │                                               │
 │  Activity  ● │                                               │
-│  Administrat…│                                               │
 │              │                                               │
 │ ┌──────────┐ │                                               │
 │ │◴ SegmentP│ │                                               │
@@ -95,7 +96,7 @@ background tab shows no strip, no page and no badge.
 
 ---
 
-### 2.1 Overview — the landing page
+### 2.1 Overview — the table
 
 Answers, in order: *is the loop running*, *what's broken*, *what do I fix first*.
 

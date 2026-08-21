@@ -41,15 +41,18 @@ createRoot(root).render(
         </Route>
 
         <Route element={<Shell><Outlet /></Shell>}>
-          <Route path="/" element={<Overview />} />
+          <Route path="/" element={<AdminChat />} />
+          <Route path="/overview" element={<Overview />} />
           <Route path="/s/:name" element={<SubjectDetail />} />
           <Route path="/activity" element={<Activity />} />
           <Route path="/automation" element={<Automation />} />
           <Route path="/protocol" element={<Protocols />} />
           <Route path="/trials" element={<Trials />} />
-          <Route path="/chat" element={<AdminChat />} />
-          <Route path="/subjects" element={<Navigate to="/" replace />} />
-          <Route path="/findings" element={<Navigate to="/" replace />} />
+          {/* Addresses that used to be somewhere else. `/chat` was the administrator's own
+              page before it became the front door; the other two predate the Overview. */}
+          <Route path="/chat" element={<Navigate to="/" replace />} />
+          <Route path="/subjects" element={<Navigate to="/overview" replace />} />
+          <Route path="/findings" element={<Navigate to="/overview" replace />} />
           <Route
             path="*"
             element={
@@ -57,7 +60,7 @@ createRoot(root).render(
                 <EmptyState
                   glyph="⌕"
                   title="No such page"
-                  sub="Touchstone has the overview, a subject, automation, activity and the administrator."
+                  sub="Touchstone has the administrator, the overview, a subject, automation and activity."
                 />
               </div>
             }

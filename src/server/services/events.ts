@@ -110,6 +110,7 @@ export const EVENT_CODES = {
   ASSAY_DEGRADED: { category: 'assay', label: 'a section could not be attempted' },
 
   CHAT_TOOL_FAILED: { category: 'chat', label: 'a tool call was refused' },
+  ADMIN_MCP_CALL: { category: 'chat', label: 'an operator tool was called over MCP' },
   CHAT_TURN_FAILED: { category: 'chat', label: 'the assistant could not finish' },
   ASSAY_REQUIREMENT_REVISED: { category: 'assay', label: 'requirement re-recorded' },
   ASSAY_REQUIREMENT_UNLISTED: { category: 'assay', label: 'requirement not in the protocol' },
@@ -212,6 +213,11 @@ interface EventDetails {
   /** One section could not be attempted; the rest of the run went ahead without it. */
   ASSAY_DEGRADED: { subject: string; reason: string; section: Section };
   CHAT_TOOL_FAILED: { tool: string; error: string };
+  /**
+   * `read_only` travels with the row because the answer to "why was that refused?" is usually
+   * the switch rather than the request, and the switch is settable per installation.
+   */
+  ADMIN_MCP_CALL: { tool: string; failed: boolean; read_only: boolean };
   CHAT_TURN_FAILED: { calls: number; error: string };
   ASSAY_REQUIREMENT_REVISED: { subject: string; id: string; from: string; to: string };
   ASSAY_REQUIREMENT_UNLISTED: { subject: string; id: string; section: string | undefined };

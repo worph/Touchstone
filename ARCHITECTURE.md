@@ -754,7 +754,15 @@ Copied from Newsdesk's compose, which is a solved problem. Four services:
 
 - **`touchstone`** — AppShield sidecar terminating OIDC/Authelia SSO, the only exposed surface
 - **`touchstone-backend`** — no Caddy labels, reachable only on the internal `pcs` network
-- **`touchstone-mcp`** — optional `beaconify` sidecar making the admin surface agent-callable
+- **`touchstone-mcp`** — a stock `beaconify` sidecar announcing the admin surface
+  (`/api/v1/mcp/admin`, `routes/mcp-admin.ts`) to this box's Beacon, so an agent can ask
+  Touchstone the same seven things the operator's chat asks it. Nothing is rebuilt for it: the
+  sidecar answers UDP discovery, fetches `tools/list` and proxies `/mcp` through. It points at
+  **`touchstone-backend`**, never at the `touchstone` sidecar, for the same reason the run
+  callback does — through the gate it would fetch a login page and register a server with no
+  tools. Both halves are switched: the surface is off unless `admin_mcp.enabled`, and the
+  AppStore compose turns it on because shipping the sidecar without it would announce an empty
+  server. §8.2 is the reasoning about what that opens.
 - **`touchstone-browser-1…N`** — the browser pool, §5.4, nothing exposed
 
 `name` == `container_name` == `hostname` == **`touchstone`** — all three are load-bearing, since
@@ -772,6 +780,30 @@ start runs, arm the loop and edit the rubric. **`/public` and `/api/v1/public/*`
 — the read-only conformance board an app author is sent to (UX.md §2.6). Publishing it means
 excluding that one prefix from the gate, which is a line of Caddy configuration rather than a
 judgement about forty handlers, and that is the entire reason the namespace exists.
+
+### 8.2 The admin surface, and what beaconifying it costs
+
+`routes/mcp-admin.ts` is the second thing that lives outside the gate, and unlike `/public` it
+is not read-only. It exists because the operator's own tools are more useful to an agent than
+to a person on a box where an agent is already doing the work — asking what the backlog is,
+reading a fix brief, starting the audit somebody just asked for in a chat somewhere else.
+
+What that costs is stated plainly rather than mitigated: **Beacon has no identity model.** Its
+own documentation says it trusts every announcement and authenticates nobody, so registering
+these tools there makes them callable by anything that can reach `:9300/mcp/` on this box. The
+answer is not to pretend otherwise but to bound what is reachable:
+
+- The surface is **off by default**, and disabled it registers no route — there is no address
+  to find, and no disabled-but-answering state to mistake for a working one.
+- The tools are **the chat's, not a second set**. Nothing there writes a verdict, mints a
+  section, or takes a repo and ref (§6.2, invariant 6). The worst call is `run_assay`, which
+  starts a run of a *configured* subject — and refuses while `runner.enabled` is false.
+- `admin_mcp.read_only` narrows it to the six that only report, refusing the seventh rather
+  than merely hiding it, and `admin_mcp.token` is a bearer the sidecar can inject
+  (`BEACONIFY_AUTH`) so nothing calling through Beacon ever holds it.
+- Every call leaves an `ADMIN_MCP_CALL` row, at `info` when the tool could act. An audit
+  nobody at the keyboard started is otherwise indistinguishable in the log from a scheduled
+  one.
 
 Two properties make the exclusion safe to write down:
 
