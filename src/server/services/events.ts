@@ -123,6 +123,7 @@ export const EVENT_CODES = {
 
   SERVER_STARTED: { category: 'system', label: 'Touchstone started' },
   CONFIG_SEEDED: { category: 'system', label: 'configuration written' },
+  PROTOCOL_SEEDED: { category: 'system', label: 'rubric written into the data directory' },
   LOG_TRIMMED: { category: 'system', label: 'log trimmed' },
 } as const satisfies Record<string, CodeSpec>;
 
@@ -187,6 +188,7 @@ interface EventDetails {
     conflicts: string[];
   };
   ARCHIVE_MIGRATION_FAILED: { error: string };
+  PROTOCOL_SEEDED: { files: string[]; dir: string };
   ASSAY_STARTED: {
     subject: string;
     /** The sections this run is attempting — those whose prerequisites were met. */
