@@ -307,7 +307,10 @@ export function resolveOrigins(raw: unknown): OriginEntry[] {
  * `defaults()`, so seeding is a no-op behaviourally — deleting the file leaves the app
  * running identically.
  */
-export const CONFIG_TEMPLATE = `# Touchstone configuration.
+export function configTemplate(cfg: TouchstoneConfig): string {
+  const origin = cfg.origins[0]!;
+  const browser = cfg.browsers[0];
+  return `# Touchstone configuration.
 #
 # Seeded on first boot. Every value below is the built-in default, so deleting this file
 # changes nothing — it exists so the settings that DO need you (bench credentials, notify
@@ -320,10 +323,10 @@ export const CONFIG_TEMPLATE = `# Touchstone configuration.
 # The \`yundera\` entry is special: every report written before this setting existed resolves
 # to it, so it is re-added automatically if you leave it out. Add stores, do not replace it.
 origins:
-  - id: yundera
-    repo: Yundera/AppStore
-    ref: main
-    apps_path: Apps
+  - id: ${origin.id}
+    repo: ${origin.repo}
+    ref: ${origin.ref}
+    apps_path: ${origin.apps_path}
 # Adding a second store needs no code change. Two stores may ship the same app name; they are
 # two subjects, two rows and two report folders.
 #   - id: acme
@@ -364,13 +367,13 @@ runner:
   # and name the namespaced tool:
   #   agent_url: http://host.docker.internal:3000/mcp/
   #   agent_tool: beacon-yunderalabs.claude-code__query_claude
-  agent_url: http://beacon-backend:9300/mcp
-  agent_tool: claude-code__query_claude
-  agent_via: direct   # direct | beacon
+  agent_url: ${cfg.runner.agent_url}
+  agent_tool: ${cfg.runner.agent_tool}
+  agent_via: ${cfg.runner.agent_via}   # direct | beacon
   # Where the agent calls BACK to record each requirement as it settles it. The only place
   # anything reaches inward, so it is named rather than guessed. An agent that cannot reach
   # it just does not report incrementally; the run falls back to one JSON object at the end.
-  callback_url: http://touchstone:8080/api/v1/mcp
+  callback_url: ${cfg.runner.callback_url}
 
 # ── the browser ──────────────────────────────────────────────────────────────
 # The sidecars the functional leg drives. Touchstone's own, never the shared box-wide
@@ -381,8 +384,8 @@ runner:
 # surviving from a previous assay makes an unprotected app look protected, which is a false
 # pass on the very check that catches auth bypass.
 browsers:
-  - name: browser-1
-    url: http://touchstone-browser:9746/mcp
+  - name: ${browser ? browser.name : 'browser-1'}
+    url: ${browser ? browser.url : 'http://touchstone-browser-1:9746/mcp'}
 
 # ── benches ──────────────────────────────────────────────────────────────────
 # The demo instances a functional assay installs into. Leave this EMPTY: the pool is
@@ -397,11 +400,11 @@ benches: []
 bench:
   # The pool API behind the management board — the machine-readable half of the source the
   # n8n agent is told to read. Empty disables discovery, leaving only \`benches\` above.
-  pool_url: https://app.nasselle.com/demo/api/demos
+  pool_url: ${cfg.bench.pool_url}
   # The same board a person opens. Linked from the UI, and its claim is shown beside our
   # own probe: it reported "Ready" for the whole of the 2026-08-05 outage, so Touchstone
   # displays the disagreement rather than trusting either source.
-  board_url: https://app.nasselle.com/demo/admin/manage
+  board_url: ${cfg.bench.board_url}
   # A functional assay may not claim a bench with less runway than this. n8n requires more
   # than an hour so the daily cleanup cannot wipe a run mid-audit — a full run includes an
   # uninstall-then-reinstall. Shorter than the assay is worse than no bench at all.
@@ -418,8 +421,9 @@ notify:
   #   - kind: telegram
   #     label: ops
   #     target: ""
-  push_subject: mailto:touchstone@yundera.local
+  push_subject: ${cfg.notify.push_subject}
 `;
+}
 
 /**
  * Write `data/config.yaml` if it is not there. Returns the path when it seeded one.
@@ -432,7 +436,14 @@ export async function ensureConfigFile(dataDir?: string): Promise<string | null>
   const file = path.join(dir, 'config.yaml');
   try {
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(file, CONFIG_TEMPLATE, { encoding: 'utf8', flag: 'wx' });
+    // Seeded from the **resolved** defaults, which is what makes the environment mean anything.
+    // This file is merged *over* the defaults on every later boot, so a template carrying
+    // literals silently shadowed every `TOUCHSTONE_*` variable the moment it was written: a
+    // container could set the agent, the browser and the callback and be overruled by its own
+    // seed file on first boot. Three of those were wrong on the first real deployment, and the
+    // callback one failed silently — runs completed while every incremental record went to a
+    // login page.
+    await fs.writeFile(file, configTemplate(defaults(dir)), { encoding: 'utf8', flag: 'wx' });
     return file;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return null;

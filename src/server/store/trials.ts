@@ -17,6 +17,7 @@
  * agent runs `gh` against, so they are validated here rather than trusted downstream.
  */
 
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import type { TrialRecord } from '../../shared/trials.js';
@@ -94,22 +95,68 @@ interface TrialsFile {
 const MAX_TRIALS = 100;
 
 /**
- * The list of trials — `state/trials.json`.
+ * The list of trials — `state/trials.json` — and the reports under `<trialsRoot>/<slug>/`.
  *
- * Small and mutable, like every other `state/` file, and equally disposable: losing it costs
- * the list, not the reports, which are on disk under their slugs and still render.
+ * The list is small, mutable and disposable like every other `state/` file. **The report
+ * directories are not**, so this class owns both: a row and its directory are created together
+ * and destroyed together. They were not, once — the row was capped at `MAX_TRIALS` and the
+ * directory was left behind, so past a hundred trials the oldest directories became orphaned:
+ * invisible in the UI, undeletable through it, and carried in every backup and uninstall
+ * archive for good. Trials are debris from reviewing a PR; debris that cannot be swept is worse
+ * than debris.
  */
 export class TrialStore {
   private readonly file: string;
   private trials: TrialRecord[] = [];
 
-  constructor(private readonly stateDir: string) {
+  constructor(
+    private readonly stateDir: string,
+    /** Where the report directories live. One per slug, deleted with its row. */
+    private readonly trialsRoot: string,
+  ) {
     this.file = path.join(stateDir, 'trials.json');
   }
 
   async load(): Promise<void> {
     const stored = await readJson<TrialsFile>(this.file, { trials: [] });
     if (Array.isArray(stored?.trials)) this.trials = stored.trials;
+  }
+
+  /**
+   * Delete one trial's reports. Never throws — a directory that is already gone, or that
+   * cannot be removed, must not stop the row being dropped.
+   */
+  private async removeFiles(slug: string): Promise<void> {
+    if (!isTrialSlug(slug)) return; // never rm a path this module did not mint
+    try {
+      await fs.rm(path.join(this.trialsRoot, slug), { recursive: true, force: true });
+    } catch (err) {
+      console.error(`could not remove trial reports for ${slug}`, err);
+    }
+  }
+
+  /**
+   * Remove report directories with no row — the orphans the old eviction left behind, plus
+   * anything a crash between `rm` and `persist` stranded. Called once at boot.
+   *
+   * Deliberately conservative: it only removes directories whose names are slugs this module
+   * would itself have minted, so an operator's own folder under `trials/` is never touched.
+   */
+  async sweepOrphans(): Promise<string[]> {
+    const known = new Set(this.trials.map((t) => t.slug));
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fs.readdir(this.trialsRoot, { withFileTypes: true });
+    } catch {
+      return []; // no trials directory yet is the normal state
+    }
+    const removed: string[] = [];
+    for (const e of entries) {
+      if (!e.isDirectory() || known.has(e.name) || !isTrialSlug(e.name)) continue;
+      await this.removeFiles(e.name);
+      removed.push(e.name);
+    }
+    return removed;
   }
 
   /** Newest first — a trial is looked at immediately after it is run, or not at all. */
@@ -122,7 +169,12 @@ export class TrialStore {
   }
 
   async add(record: TrialRecord): Promise<void> {
-    this.trials = [record, ...this.trials.filter((t) => t.slug !== record.slug)].slice(0, MAX_TRIALS);
+    const next = [record, ...this.trials.filter((t) => t.slug !== record.slug)];
+    // Whatever falls off the end loses its reports too. The cap is what makes trials debris
+    // rather than an archive, and a cap that only forgets the row is a disk leak wearing a
+    // retention policy's clothes.
+    for (const evicted of next.slice(MAX_TRIALS)) await this.removeFiles(evicted.slug);
+    this.trials = next.slice(0, MAX_TRIALS);
     await this.persist();
   }
 
@@ -138,6 +190,11 @@ export class TrialStore {
     const before = this.trials.length;
     this.trials = this.trials.filter((t) => t.slug !== slug);
     if (this.trials.length === before) return false;
+    // Files first: a crash between the two leaves an orphan `sweepOrphans` collects at the next
+    // boot, whereas dropping the row first and failing here leaves a directory nothing knows
+    // about. Delete is the whole trial, not just its row — a trial is about a branch, and when
+    // you are done with the branch you are done with the evidence.
+    await this.removeFiles(slug);
     await this.persist();
     return true;
   }

@@ -238,8 +238,9 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
     if (!isTrialSlug(slug)) return fail(reply, 400, 'invalid trial id');
     const removed = await options.trials?.remove(slug);
     if (!removed) return fail(reply, 404, `unknown trial: ${slug}`);
-    // The reports stay on disk. Deleting the row is a tidy-up of the list; removing an audit
-    // somebody may still be reading is a different and more destructive act.
+    // The reports go with the row. A trial is about a branch: when you are done with the
+    // branch you are done with the evidence, and a row-only delete left directories nothing
+    // could see or reach — carried in every backup and uninstall archive for good.
     return { deleted: slug };
   });
 };
