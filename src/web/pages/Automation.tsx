@@ -182,7 +182,9 @@ export default function Automation() {
           <Fact label="Backlog" value={`${backlog.length} of ${data.queue.length}`} />
           <Fact
             label="Next up"
-            value={next ? next.subject : running ? 'after the current one' : 'nothing due'}
+            value={
+              next ? subjectName(next.subject) : running ? 'after the current one' : 'nothing due'
+            }
           />
           <Fact
             label="Cooldown"

@@ -142,3 +142,23 @@ describe('POST /schedule/arm', () => {
     expect(res.statusCode).toBe(503);
   });
 });
+
+describe('what the page renders', () => {
+  it('shows the app name in the last-decision line, not the subject key', async () => {
+    // `stateLine()` embeds the subject, and the subject is `<origin>~<name>`. The Automation
+    // page puts that line in front of a person, so the key has to be split before it ships.
+    // Caught by screenshotting the page for the store listing, which is a reminder that a
+    // display leak type-checks perfectly.
+    const s = make();
+    await s.load();
+    await s.tick();
+
+    app = await serve(s);
+    const body = (await app.inject({ method: 'GET', url: '/schedule' })).json() as ScheduleResponse;
+
+    expect(body.last_tick?.state).toBeTruthy();
+    expect(body.last_tick?.state).not.toContain('~');
+    expect(body.last_tick?.state).toContain('Alpha');
+  });
+});
+
