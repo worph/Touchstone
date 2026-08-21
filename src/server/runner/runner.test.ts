@@ -99,9 +99,14 @@ function sse(text: string): string {
 let dir: string;
 let events: EventLog;
 
+/** The reports root for this run's temp data dir. */
+function reportsRoot(): string {
+  return path.join(dir, 'reports');
+}
+
 /** Where this subject's reports land — `reports/<origin>/<Subject>/`. */
 function subjectDir(): string {
-  return path.join(dir, 'reports', DEFAULT_ORIGIN, 'Tuwunel');
+  return path.join(reportsRoot(), DEFAULT_ORIGIN, 'Tuwunel');
 }
 
 /** Every report anywhere under the reports root, so "nothing was written" can be proved. */
@@ -545,5 +550,208 @@ describe('extracting the object from a real agent answer', () => {
 
   it('still refuses an answer with no object in it', () => {
     expect(classify('Everything looked fine to me.').ok).toBe(false);
+  });
+});
+
+/**
+ * The store a run is against.
+ *
+ * Until 2026-08-20 `buildPrompt`'s `repo` was a parameter no caller set and `subject_ref` was a
+ * defaulted constant, so a second origin would have listed its own apps and then audited them
+ * against `Yundera/AppStore@main` — filing a wrong verdict under the right name, with nothing
+ * said about it.
+ */
+describe('the store a subject came from', () => {
+  const ACME = { id: 'acme', repo: 'Acme/AppStore', ref: 'pr-812', apps_path: 'apps' };
+
+  it('reaches the prompt', async () => {
+    let sent = '';
+    await make({
+      origins: [ACME],
+      agent: {
+        fetchImpl: (async (_u: string, init: RequestInit) => {
+          sent = String(init.body);
+          return { ok: true, status: 200, text: async () => sse(agentJson()) };
+        }) as unknown as typeof fetch,
+      },
+    }).run({ subject: subjectKey('acme', 'Tuwunel'), try_n: 1 });
+
+    expect(sent).toContain('repo=Acme/AppStore ; ref=pr-812 ; apps_path=apps');
+    expect(sent).toContain('apps/Tuwunel at ref pr-812');
+  });
+
+  it('is written into every report it produces, not defaulted', async () => {
+    await make({ origins: [ACME] }).run({ subject: subjectKey('acme', 'Tuwunel'), try_n: 1 });
+
+    const dir = path.join(reportsRoot(), 'acme', 'Tuwunel');
+    const files = await fs.readdir(dir);
+    expect(files).toHaveLength(2);
+    for (const f of files) {
+      const body = await fs.readFile(path.join(dir, f), 'utf8');
+      expect(body).toContain("subject_ref: 'Acme/AppStore@pr-812:apps/Tuwunel'");
+      expect(body).toContain('origin: acme');
+      // The heading names the store too, matching the `title` the agent is asked to return.
+      expect(body).toContain('# Acme/AppStore — Tuwunel');
+    }
+  });
+
+  it('falls back to the Yundera store for an origin no longer configured', async () => {
+    // A store removed from config.yaml still has reports and can still be asked for by hand.
+    // Refusing to audit it would be a worse answer than auditing it where it came from.
+    await make({ origins: [] }).run({ subject: SUBJECT, try_n: 1 });
+
+    const files = await fs.readdir(subjectDir());
+    const body = await fs.readFile(path.join(subjectDir(), files[0]!), 'utf8');
+    expect(body).toContain("subject_ref: 'Yundera/AppStore@main:Apps/Tuwunel'");
+  });
+});
+
+/**
+ * A store that cannot be read.
+ *
+ * Invariant 3: no infra condition may consume a subject's retry budget or produce a verdict
+ * about the subject. A store outage is the newest member of that family, and the one most
+ * likely to be mistaken for an app fault — the run *would* fail, loudly, against a dead source.
+ */
+describe('a store that cannot be read', () => {
+  it('blocks rather than errors, so no try is burned', async () => {
+    const out = await make({
+      storeReachable: () => false,
+      storeFailure: () => 'HTTP 503',
+    }).run({ subject: SUBJECT, try_n: 1 });
+
+    expect(out.kind).toBe('blocked');
+    expect(out.kind === 'blocked' && out.reason).toContain('store_unreachable');
+    // `blocked` is what `scheduler/record.ts` reads to restore the subject untouched. An
+    // `error` here would burn a try, and three ticks of a GitHub outage would park the app.
+    expect(out.kind).not.toBe('error');
+  });
+
+  it('never reaches the agent, and writes nothing about the subject', async () => {
+    let called = 0;
+    const out = await make({
+      storeReachable: () => false,
+      agent: {
+        fetchImpl: (async () => {
+          called += 1;
+          return { ok: true, status: 200, text: async () => sse(agentJson()) };
+        }) as unknown as typeof fetch,
+      },
+    }).run({ subject: SUBJECT, try_n: 1 });
+
+    expect(out.kind).toBe('blocked');
+    expect(called).toBe(0);
+    // Nothing on disk either: a blocked-before-start run has established nothing, and a file
+    // saying so would be a statement about the subject where there is none to make.
+    expect(await reportFiles()).toEqual([]);
+  });
+
+  it('runs normally once the store is readable', async () => {
+    const out = await make({ storeReachable: () => true }).run({ subject: SUBJECT, try_n: 1 });
+    expect(out.kind).toBe('verdict');
+  });
+});
+
+/**
+ * Trials.
+ *
+ * The claim is that a trial is *the same run, written where the index does not look*. Every
+ * test here is about the second half — what a trial must NOT be able to touch — because the
+ * first half is already covered by every other test in this file.
+ */
+describe('a trial', () => {
+  const SLUG = 'Acme-AppStore@pr-812-2026-08-20T19-00-00Z';
+  const TRIAL = {
+    repo: 'Acme/AppStore',
+    ref: 'pr-812',
+    apps_path: 'Apps',
+  };
+
+  function trialJob(root: string) {
+    return {
+      subject: subjectKey(SLUG, 'Tuwunel'),
+      try_n: 1,
+      trial: { ...TRIAL, root },
+    };
+  }
+
+  it('writes under its own root and leaves the archive untouched', async () => {
+    const root = path.join(dir, 'trials', SLUG);
+    const out = await make().run(trialJob(root));
+
+    expect(out.kind).toBe('verdict');
+    // Its own tree, mirroring the archive's shape with the slug standing in for the origin.
+    const files = await fs.readdir(path.join(root, SLUG, 'Tuwunel'));
+    expect(files).toHaveLength(2);
+    // And nothing at all in the archive. This is the whole point: an unmerged branch has
+    // earned nothing, so it may not move a hallmark.
+    expect(await reportFiles()).toEqual([]);
+  });
+
+  it('never enters the report index', async () => {
+    // The index is what the scheduler derives freshness from, and what
+    // `registry.archived: () => store.subjects()` turns into schedulable subjects. A trial
+    // reaching it would both age a subject it says nothing about and add a slug to the backlog.
+    const upserted: unknown[] = [];
+    await make({
+      index: { upsert: (r: unknown) => upserted.push(r) } as never,
+    }).run(trialJob(path.join(dir, 'trials', SLUG)));
+
+    expect(upserted).toEqual([]);
+  });
+
+  it('records the functional section blocked, and says why in the report', async () => {
+    const root = path.join(dir, 'trials', SLUG);
+    await make().run(trialJob(root));
+
+    const d = path.join(root, SLUG, 'Tuwunel');
+    const fn = (await fs.readdir(d)).find((f) => f.endsWith('-functional.md'))!;
+    const body = await fs.readFile(path.join(d, fn), 'utf8');
+
+    expect(body).toContain('status: blocked');
+    expect(body).toContain('blocked_reason: store_not_installable');
+    // Never a verdict. `blocked` is a statement about the environment, and a trial that scored
+    // the app on an install of `main` would be attributing a result to the wrong code.
+    expect(body).toContain('verdict: null');
+    // The justification lives in the artefact, because that is where somebody asks.
+    expect(body).toContain('installs from its own');
+  });
+
+  it('is static-only even when a bench and a browser are available', async () => {
+    // Not "no bench today" — the bench pool is healthy in this run. A trial declines it,
+    // because a healthy bench would install the store's own branch, not the ref under trial.
+    const root = path.join(dir, 'trials', SLUG);
+    await make({ prober: proberOf(['https://demostaging1.example']) }).run(trialJob(root));
+
+    const d = path.join(root, SLUG, 'Tuwunel');
+    const staticFile = (await fs.readdir(d)).find((f) => f.endsWith('-static.md'))!;
+    const body = await fs.readFile(path.join(d, staticFile), 'utf8');
+    expect(body).toContain('status: done');
+    expect(body).not.toContain('bench_host:');
+  });
+
+  it('audits the ref it was given, not the configured store', async () => {
+    let sent = '';
+    await make({
+      origins: [{ id: 'yundera', repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' }],
+      agent: {
+        fetchImpl: (async (_u: string, init: RequestInit) => {
+          sent = String(init.body);
+          return { ok: true, status: 200, text: async () => sse(agentJson()) };
+        }) as unknown as typeof fetch,
+      },
+    }).run(trialJob(path.join(dir, 'trials', SLUG)));
+
+    expect(sent).toContain('repo=Acme/AppStore ; ref=pr-812');
+    expect(sent).not.toContain('repo=Yundera/AppStore');
+  });
+
+  it('is not gated on the configured store being reachable', async () => {
+    // A trial reads a repo of its own. Refusing it because the *archive's* store is down would
+    // be checking the wrong thing.
+    const out = await make({ storeReachable: () => false }).run(
+      trialJob(path.join(dir, 'trials', SLUG)),
+    );
+    expect(out.kind).toBe('verdict');
   });
 });

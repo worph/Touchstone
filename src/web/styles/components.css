@@ -260,6 +260,17 @@
   color: var(--fg-1);
 }
 
+/* The store a subject came from, beside its name. Only rendered when more than one store is
+   configured — see Overview's `showOrigin`. Quiet on purpose: it disambiguates a row, it is
+   not a status. */
+.store-tag {
+  margin-left: 7px;
+  font: 500 10px/1.5 var(--sans);
+  letter-spacing: 0.04em;
+  color: var(--fg-2);
+  vertical-align: 1px;
+}
+
 .legs { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1px; background: var(--border); border-top: 1px solid var(--border); }
 .leg-card { background: var(--bg-1); padding: 12px 18px; display: flex; flex-direction: column; gap: 7px; }
 .leg-card .leg-name { font: 600 10.5px/1 var(--sans); letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-2); }
@@ -1176,3 +1187,41 @@
   .auto-row .env-status,
   .auto-row .env-note { grid-column: 2; }
 }
+
+
+/* ── trials ────────────────────────────────────────────────────────────────────────────────
+   Auditing a ref before it is merged. Deliberately quieter than the Overview: a trial's
+   verdict is about code that is not in the store yet, and styling it like a hallmark would
+   invite it to be read as one. */
+
+.trial-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 14px 18px;
+}
+.trial-form label { display: flex; flex-direction: column; gap: 4px; min-width: 150px; flex: 1 1 150px; }
+.trial-form label > span {
+  font: 600 10.5px/1 var(--sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+}
+
+.trial-list { display: flex; flex-direction: column; gap: 1px; background: var(--border); }
+.trial-row { width: 100%; text-align: left; background: var(--bg-1); border: 0; cursor: pointer; }
+.trial-row[data-active] { background: var(--bg-2); }
+
+.trial-detail { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
+.trial-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.trial-ref { font: 12px/1.5 var(--mono); color: var(--fg-1); word-break: break-all; }
+.trial-table { width: 100%; }
+.trial-section { font: 600 11px/1.6 var(--sans); text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-2); }
+
+/* The reason the functional row is empty. It is not a fault, and a bare `blocked` beside a
+   real verdict reads as one. */
+.trial-why { margin-top: 5px; max-width: 62ch; font-size: 11.5px; line-height: 1.55; color: var(--fg-2); }
+
+.trial-files { display: flex; flex-wrap: wrap; gap: 6px; }
+.trial-files .btn[data-active] { background: var(--bg-2); }

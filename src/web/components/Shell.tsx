@@ -22,6 +22,10 @@ const NAV: { group: string; items: NavItem[] }[] = [
       // The rubric every verdict is measured against. It used to live in a wiki this
       // app only held a slug for; it is a local file now, and editable.
       { to: '/protocol', label: 'Protocol' },
+      // Auditing a ref before it is merged. Under Conformance rather than Operations because
+      // it answers the same question the Overview does — would this pass — about code that is
+      // not in the store yet.
+      { to: '/trials', label: 'Trials' },
     ],
   },
   {
@@ -218,6 +222,15 @@ const GLYPH: Record<string, ReactNode> = {
       <path d="M14 3v5h5" />
       <path d="M9 13h6" />
       <path d="M9 17h4" />
+    </>
+  ),
+  // a branch: a ref that is not in the store yet
+  '/trials': (
+    <>
+      <line x1="6" y1="3" x2="6" y2="15" />
+      <circle cx="18" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <path d="M18 9a9 9 0 0 1-9 9" />
     </>
   ),
   // a loop: the queue coming round again

@@ -81,6 +81,13 @@ export interface TouchstoneConfig {
   /** The app stores audited. Never empty — see `resolveOrigins`. */
   origins: OriginEntry[];
   reportsRoot: string;
+  /**
+   * Where trials are written — `<dataDir>/trials`.
+   *
+   * A sibling of `reports/`, never inside it: the report index scans `reports/**` and anything
+   * under it becomes a subject the scheduler can pick.
+   */
+  trialsRoot: string;
   stateDir: string;
   /** The rubric, as local markdown Touchstone owns and edits — and what versions itself. */
   protocolsDir: string;
@@ -160,6 +167,7 @@ function defaults(dataDir: string): TouchstoneConfig {
     dataDir,
     origins: [{ id: DEFAULT_ORIGIN, repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' }],
     reportsRoot: path.join(dataDir, 'reports'),
+    trialsRoot: path.join(dataDir, 'trials'),
     stateDir: path.join(dataDir, 'state'),
     protocolsDir: path.join(dataDir, 'protocols'),
     scheduler: {
@@ -234,9 +242,23 @@ export async function loadConfig(dataDir?: string): Promise<TouchstoneConfig> {
   const cfg = merge(base, parsed);
   // Paths in config.yaml may be relative to the data dir.
   cfg.reportsRoot = path.resolve(dir, cfg.reportsRoot);
+  cfg.trialsRoot = path.resolve(dir, cfg.trialsRoot);
   cfg.stateDir = path.resolve(dir, cfg.stateDir);
   cfg.origins = resolveOrigins(cfg.origins);
   return cfg;
+}
+
+/**
+ * `Yundera/AppStore@main:Apps/OpenClaw` — the one string that says exactly what was judged.
+ *
+ * `domain/fixreport.ts` already parses this back into its three parts, and the subject page
+ * prints it verbatim, so it has been the archive's record of provenance since before origins
+ * existed. It was *defaulted* until 2026-08-20 and is now *written*: with several stores, a
+ * report that does not name its own repo and ref cannot be checked against anything.
+ */
+export function subjectRefOf(origin: OriginEntry, subject: string): string {
+  const path = origin.apps_path.replace(/^\/+|\/+$/g, '');
+  return `${origin.repo}@${origin.ref}:${path}/${subject}`;
 }
 
 /**

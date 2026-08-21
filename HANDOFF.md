@@ -1165,6 +1165,107 @@ looking at before it is quoted at anyone.
 
 ---
 
+## 5l. Several stores, and trials — R10 steps 2–4, 2026-08-20
+
+Step 1 (§5j) made the store a configured value with one store configured. These three steps make
+that safe to use, make several stores actually work, and add trials.
+
+### Step 2 — the prompt knows which repo it is judging
+
+The gap step 1 left, and the reason step 2 was not optional: `buildPrompt`'s `repo` was a
+parameter no caller had ever set and `subject_ref` was a defaulted constant, so adding a second
+origin would have listed **acme's** apps from the contents API and then audited them against
+`Yundera/AppStore@main` — a wrong verdict filed under the right name, with nothing said about
+it. `repo`, `ref` and `apps_path` are now supplied per run, `subject_ref` is written rather than
+defaulted, and the report H1 names the store it audited.
+
+`prompt.test.ts` pins the safety argument: **supplying the default origin reproduces the n8n
+node's text byte for byte.** ARCHITECTURE §1.4's D1 cell was "byte-identical to the n8n node" and
+now says so with that condition attached.
+
+One thing deliberately *not* done: `data/protocols/static.md` still says asset URLs must point at
+`<repo>@main`, and on a branch that flags every asset URL. The prompt binds it — *"where the
+protocol says `<repo>@main`, read `<repo>@<ref>`"* — rather than editing the file, because that
+file **is** the standard and is what `standard_version` versions. Editing it changes what every
+future assay is judged by. Defer to the switch-off.
+
+### Step 3 — a second store cannot hurt the first
+
+`state/registry.json` is one bucket per origin (old flat shape still read as the default
+origin's). `Promise.allSettled` per store, each with its own catch keeping its own previous list.
+`REGISTRY_FAILED` and the new `REGISTRY_RECOVERED` name the store they are about, because "the
+registry is stale" is unactionable when there are two.
+
+**`reachable()` means the last fetch succeeded**, not "we have a list from some time". That is
+stricter than it first looks and it is deliberate: the agent fetches the app's files from the
+same place, so a run against a store we cannot read errors and burns the subject's try — an
+infra condition costing a subject's retry budget, which invariant 3 exists to forbid. The runner
+checks it before dispatching and returns `blocked` with reason `store_unreachable`, which
+restores the subject untouched. A transient blip delays an audit instead of parking an innocent
+app after three ticks.
+
+A store **removed** from config keeps its reports and stays reachable by URL, but drops out of
+`list()`. Otherwise `registry.ts`'s "anything already in the archive stays in the registry" rule
+would leave an unauditable subject as the permanent stalest row, starving everything behind it.
+
+The Overview's store badge renders only when more than one origin is configured — a column that
+always reads the same word is furniture — and it is derived from the rows rather than fetched.
+
+### Step 4 — trials
+
+`POST /trials {repo, ref, apps_path?, subject}` → the same runner, the same protocol, the same
+ledger, written to `data/trials/<slug>/`. The slug doubles as a **synthetic origin**, so
+`reportRelPathFor` is untouched and a trial's tree mirrors the archive's exactly — which is what
+makes the viewer and the frontmatter contract work on it for free.
+
+Four decisions worth not re-litigating:
+
+- **Single-subject.** A whole-store trial is N serialised jobs, which is a queue, and invariant 8
+  says there is no queue.
+- **The same `Runner` instance as audits.** It is single-flight process-wide and `ledger.live()`
+  assumes one open run; a second instance would also have falsified the browser lease comment in
+  `runner/index.ts`, whose safety rests on "there is one run at a time". The honest cost is a 409
+  in both directions.
+- **Its own `ReportIndex`, not a filter on the main one.** "A trial is never read by the report
+  index" then holds by construction — a different object the scheduler and registry were never
+  handed — rather than by a predicate somebody can forget.
+- **`TRIAL_*` event codes, not `ASSAY_*`.** A trial's subject is a slug, so an `ASSAY_FAILED`
+  carrying it would push a deep link to `/s/<slug>` that 404s and would read on Activity as a
+  failing audit of a real app. Trials notify nowhere: they are looked at immediately by whoever
+  is already reviewing the PR.
+
+**Static-only**, via one line: a trial seeds `missing.set('bench', 'store_not_installable')`
+before capability resolution, and the partition that already exists records the functional
+section blocked while the rest of the run proceeds. No new blocking code. The blocked report
+carries the whole justification in prose, because the artefact is where somebody asks.
+
+### The landmine step 1 recorded, now defused
+
+`defaultCacheFile(root)` is `dirname(root)/state/index.json` — **the same path** for
+`data/reports` and `data/trials`. Two indexes writing it would clobber each other and cross-serve
+records, so a trial's report could surface as a subject's. `routes/trials.ts` passes
+`cacheFile: null`, and `routes/trials.test.ts` asserts the collision exists so nobody "tidies up"
+by removing the explicit null.
+
+### State
+
+`yarn typecheck` clean, `yarn test` **456 passing across 33 files**, `yarn build` clean. Verified
+live: per-store registry state on disk and in `GET /schedule` (69 apps, one store, live), trial
+input validation refusing `../etc` and `../../etc/passwd`, unknown and malformed slugs 404ing.
+
+**Not verified live: a real trial end to end.** The runner is enabled and idle, but firing one
+consumes the shared Claude Code agent that `AppStore PR Review` also uses, and other sessions
+were working on the box. That is the one remaining check, and it belongs to whoever has the
+agent free: `POST /api/v1/trials {"repo":"Yundera/AppStore","ref":"<a branch>","subject":"Ntfy"}`,
+then confirm the static report lands under `data/trials/<slug>/`, the functional one is blocked
+with `store_not_installable`, and `data/reports/` and `state/schedule.json` are untouched.
+
+**Also not done:** nothing calls `POST /trials` yet. Wiring n8n's PR Review to it is a separate
+decision — see ARCHITECTURE §7, which records why the endpoint existing is not the same as
+absorbing PR Review.
+
+---
+
 ## 6. Reference — facts read off the running system
 
 Cited so they can be re-checked when they drift. Read 2026-08-07.

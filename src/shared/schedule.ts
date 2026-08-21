@@ -125,5 +125,24 @@ export interface ScheduleResponse {
   /** Every subject, backlog first in the order they would be worked. */
   queue: QueueRow[];
   subjects: Record<string, SubjectSchedule>;
-  registry: { count: number; live: boolean; fetched_at: string | null };
+  registry: {
+    count: number;
+    live: boolean;
+    fetched_at: string | null;
+    /**
+     * One row per configured store.
+     *
+     * Present so a failure names the store it hit. With one store the page says nothing extra;
+     * with two, "the registry is stale" is unactionable without knowing *which* registry.
+     */
+    origins?: {
+      id: string;
+      repo: string;
+      ref: string;
+      count: number;
+      live: boolean;
+      fetched_at?: string;
+      error?: string;
+    }[];
+  };
 }

@@ -33,6 +33,7 @@ import type { LastRun, RunLive, RunOutcome } from '../../shared/activity.js';
 import { assaysFromAgentReport, type AssaySection } from '../domain/assay.js';
 import type { ReportIndex } from '../store/index.js';
 import { recordFor, writeReport } from '../store/reports.js';
+import { subjectRefOf, type OriginEntry } from '../store/config.js';
 import type { BenchProber } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 import { sectionsOf, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
@@ -49,9 +50,21 @@ export interface RunnerJob {
    * Identity, `<origin>~<name>`. The runner splits it: the origin decides which store the
    * subject is fetched from and which folder its report lands in, and the bare name is what
    * the prompt and the report call the app.
+   *
+   * For a trial the origin half is the trial's slug, so the whole path machinery works
+   * unchanged and the reports land under `data/trials/<slug>/<Subject>/`.
    */
   subject: SubjectKey;
   try_n: number;
+  /**
+   * Present, this is a **trial**: the same run written where the report index does not look.
+   *
+   * It overrides the store's repo and ref, redirects the write root, and skips the index
+   * upsert. All three travel together — redirecting only the root would write into
+   * `data/trials` *and* upsert into the main index, at which point `server/index.ts`'s
+   * `archived: () => store.subjects()` would make every trial a schedulable subject.
+   */
+  trial?: { repo: string; ref: string; apps_path: string; root: string };
 }
 
 /** What the scheduler needs back. Mirrors `scheduler/record.ts`'s `Outcome`. */
@@ -73,6 +86,24 @@ export interface RunnerOptions {
   /** False means refuse every job and say so. The default, until reviewed. */
   enabled: boolean;
   reportsRoot: string;
+  /**
+   * The stores, by id — where a subject's repo, ref and apps path come from.
+   *
+   * Absent, or missing the job's origin, the runner falls back to the Yundera store's values,
+   * which is what every assay written before origins existed was judged against.
+   */
+  origins?: OriginEntry[];
+  /**
+   * Whether a store can be read right now — `SubjectRegistry.reachable`.
+   *
+   * Asked before anything is dispatched. A store we have never reached is an **infra**
+   * condition, and invariant 3 says an infra condition may not cost the subject a retry: a
+   * subject still in the backlog from a last-known list, audited against a dead source, would
+   * error, burn a try, and after three ticks park an app that has nothing wrong with it.
+   */
+  storeReachable?: (origin: string) => boolean;
+  /** Why not, for the blocked report. One clause, never an error object. */
+  storeFailure?: (origin: string) => string | undefined;
   events: EventLog;
   index?: ReportIndex;
   prober?: BenchProber;
@@ -172,10 +203,45 @@ export class Runner {
     return this.opts.now?.() ?? new Date();
   }
 
+  /**
+   * The store a subject belongs to.
+   *
+   * Falls back to the Yundera store rather than failing: a subject whose origin has been taken
+   * out of `config.yaml` still has reports and can still be asked for by hand, and refusing to
+   * audit it would be a worse answer than auditing it against the store it came from.
+   */
+  private originOf(id: string): OriginEntry {
+    return (
+      this.opts.origins?.find((o) => o.id === id) ??
+      { id, repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' }
+    );
+  }
+
   private async execute(job: RunnerJob): Promise<RunOutcome> {
     const events = this.opts.events;
     const startedAt = this.now().toISOString();
     const { origin, name: appName } = splitSubjectKey(job.subject);
+    const store = job.trial
+      ? { id: origin, repo: job.trial.repo, ref: job.trial.ref, apps_path: job.trial.apps_path }
+      : this.originOf(origin);
+    // A trial's reports go where the index does not look; an assay's go to the archive.
+    const reportsRoot = job.trial?.root ?? this.opts.reportsRoot;
+
+    // Before anything else, and before a try is spent: if the store this subject came from
+    // cannot be read, there is nothing to audit *against*. `blocked` restores the subject
+    // untouched — no try burned, no finish stamped — which is the whole distinction between
+    // "we could not look" and "the app is broken".
+    if (!job.trial && this.opts.storeReachable && !this.opts.storeReachable(origin)) {
+      const why = this.opts.storeFailure?.(origin);
+      events.log({
+        level: 'warn',
+        code: 'ASSAY_BLOCKED',
+        message: `The ${store.repo} store could not be read, so ${appName} was not audited`,
+        subject: job.subject,
+        detail: { subject: job.subject, reason: 'store_unreachable' },
+      });
+      return { kind: 'blocked', reason: why ? `store_unreachable: ${why}` : 'store_unreachable' };
+    }
 
     // ── what this run is made of ─────────────────────────────────────────────────────────
     // Read per run, not cached: an operator who edits the protocol expects the next audit to
@@ -206,7 +272,18 @@ export class Runner {
     let browserEndpoint: string | undefined;
     const missing = new Map<string, string>();
 
-    if (wanted.has('bench')) {
+    // A trial is static-only, and it falls out of the machinery that already exists rather
+    // than needing a branch of its own: declare the bench unavailable up front and the
+    // partition below records every section that wanted one as blocked, with this reason,
+    // while the rest of the run proceeds.
+    //
+    // The reason is not squeamishness. A bench installs from its own catalogue at
+    // `https://<DEMO>/store`, which serves whatever store that Maison box points at — `main`,
+    // not the ref under trial. A functional result would be about `main` while carrying the
+    // branch's name, which is worse than no result at all.
+    if (job.trial) missing.set('bench', 'store_not_installable');
+
+    if (wanted.has('bench') && !missing.has('bench')) {
       const leasable = this.opts.prober?.leasable() ?? [];
       if (leasable.length === 0) missing.set('bench', 'bench_unavailable');
       else benchHost = leasable[0]!.url;
@@ -283,6 +360,9 @@ export class Runner {
 
     const { prompt } = buildPrompt({
       app_name: appName,
+      repo: store.repo,
+      ref: store.ref,
+      apps_path: store.apps_path,
       protocols: {
         ...(plan.orchestrator ? { orchestrator: plan.orchestrator } : {}),
         sections: runSections.map((s) => ({
@@ -358,6 +438,7 @@ export class Runner {
     const assays = assaysFromAgentReport({
       subject: appName,
       origin,
+      subjectRef: subjectRefOf(store, appName),
       declared: outcome.report,
       // The sections that actually ran, and — recorded rather than dropped — the ones that
       // could not, so a run always produces one file per section and the store can say "not
@@ -373,12 +454,15 @@ export class Runner {
 
     const files: string[] = [];
     for (const assay of assays) {
-      const res = await writeReport(this.opts.reportsRoot, assay.meta, assay.body);
+      const res = await writeReport(reportsRoot, assay.meta, assay.body);
       files.push(res.rel);
       // `recordFor` rather than a second literal: how a record is derived from a file is one
       // definition, shared with `buildIndex`'s scan, so the in-memory record and the one a
       // restart would rebuild cannot drift apart.
-      this.opts.index?.upsert(recordFor(assay.meta, res.rel));
+      //
+      // A trial is deliberately not upserted. This one line is what keeps an unmerged branch
+      // from moving a hallmark, entering the backlog, or ageing a subject's freshness.
+      if (!job.trial) this.opts.index?.upsert(recordFor(assay.meta, res.rel));
     }
 
     const blocked = assays.find((a) => a.meta.status === 'blocked');

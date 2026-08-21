@@ -68,10 +68,12 @@ export function composeBody(
   provenance?: string,
   /** How to name the section in the heading. Defaults to the id. */
   sectionName?: string,
+  /** The store this subject came from. The heading names it, as the agent's `title` does. */
+  repo = 'Yundera/AppStore',
 ): string {
   const label = sectionName ?? section;
   const parts: string[] = [];
-  parts.push(`# Yundera/AppStore — ${subject} · ${label}\n`);
+  parts.push(`# ${repo} — ${subject} · ${label}\n`);
   parts.push(
     provenance ??
     (sourceUrl
@@ -149,7 +151,16 @@ export function blockedSectionAssay(input: {
       ? 'no browser sidecar was answering, so there was nothing to drive the install with'
       : reason === 'bench_unavailable'
         ? 'no demo instance was usable — the pool was unreachable, mid-cleanup, or too close to its daily wipe'
-        : `a prerequisite of this section was unavailable (${reason})`;
+        : reason === 'store_unreachable'
+          ? 'the store this app comes from could not be read, so there was nothing to audit against'
+          : reason === 'store_not_installable'
+            ? // The whole justification lives here rather than in a code comment, because the
+              // blocked report IS where somebody reading a trial result asks the question.
+              `this is a trial of ${repoOf(input.subjectRef)}, but a demo instance installs from its own ` +
+              'catalogue, which serves the store that instance is configured with rather than the ref ' +
+              'under trial — so a functional result would be about the store\'s own branch while ' +
+              "carrying this ref's name, which is worse than no result"
+            : `a prerequisite of this section was unavailable (${reason})`;
 
   return {
     meta: {
@@ -171,7 +182,7 @@ export function blockedSectionAssay(input: {
       produced_by: 'touchstone-runner',
     } as unknown as AssayMeta,
     body: [
-      `# Yundera/AppStore — ${subject} · ${section.name}`,
+      `# ${repoOf(input.subjectRef)} — ${subject} · ${section.name}`,
       '',
       `> Produced by Touchstone at ${input.finishedAt}.`,
       '',
@@ -220,6 +231,18 @@ export interface AgentAssayInput {
   subjectRef?: string;
   /** Which store the subject came from — decides the folder every report lands in. */
   origin?: string;
+}
+
+/**
+ * The repo half of a `repo@ref:path/subject` reference.
+ *
+ * The heading names the store the report is about, matching the `title` the agent is asked to
+ * return. Absent or malformed, it falls back to the store there was when every report came
+ * from one — which is what every assay in the archive says.
+ */
+function repoOf(subjectRef: string | undefined): string {
+  const at = (subjectRef ?? '').indexOf('@');
+  return at > 0 ? subjectRef!.slice(0, at) : 'Yundera/AppStore';
 }
 
 const TIERS: Record<string, Severity> = {
@@ -368,6 +391,7 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
         declared.report_markdown,
         provenance.replace('{leg}', section.id),
         section.name,
+        repoOf(input.subjectRef),
       ),
     });
   }

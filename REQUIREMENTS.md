@@ -32,8 +32,8 @@ surprise.
 | **R7** | A notification page in the shape of Newsdesk's | ◑ Activity, deep links and assistable failures done; two parts missing |
 | **R8** | A central LLM chat that administrates the app | ✅ built 2026-08-20, proved end to end |
 | **R9** | The audit hands the dev team something they can act on | ✅ built 2026-08-20 — the fix report |
-| **R10** | The app store is a configured value, and there may be several | ⬜ raised 2026-08-20 — §11 |
-| **R11** | A ref can be audited without moving the subject's hallmark — a *trial* | ⬜ raised 2026-08-20 — §12 |
+| **R10** | The app store is a configured value, and there may be several | ✅ built 2026-08-20 — §11 |
+| **R11** | A ref can be audited without moving the subject's hallmark — a *trial* | ✅ built 2026-08-20 — §12 |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -433,7 +433,7 @@ blocked by the switch-off.
 
 ---
 
-## 11. R10 — The app store is a configured value, and there may be several ⬜
+## 11. R10 — The app store is a configured value, and there may be several ✅
 
 > *"i would like some configuration to either be able to change store or support multiple github
 > store (or pass store as URL to protocol eg in case of PR we use custom store of the PR to test
@@ -475,7 +475,7 @@ the app's behaviour or appearance differs from before.
 
 ---
 
-## 12. R11 — A ref can be audited without moving the hallmark — a *trial* ⬜
+## 12. R11 — A ref can be audited without moving the hallmark — a *trial* ✅
 
 The PR half of the same request. A **trial** runs the same protocol through the same runner
 against an arbitrary `repo@ref`, and writes under `data/trials/<slug>/` — a tree the report index

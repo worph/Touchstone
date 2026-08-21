@@ -11,6 +11,7 @@ import { EmptyState } from './components/Ui';
 import Activity from './pages/Activity';
 import Automation from './pages/Automation';
 import Protocols from './pages/Protocols';
+import Trials from './pages/Trials';
 import AdminChat from './pages/AdminChat';
 import Overview from './pages/Overview';
 import SubjectDetail from './pages/SubjectDetail';
@@ -28,6 +29,7 @@ createRoot(root).render(
           <Route path="/activity" element={<Activity />} />
           <Route path="/automation" element={<Automation />} />
           <Route path="/protocol" element={<Protocols />} />
+          <Route path="/trials" element={<Trials />} />
           <Route path="/chat" element={<AdminChat />} />
           <Route path="/subjects" element={<Navigate to="/" replace />} />
           <Route path="/findings" element={<Navigate to="/" replace />} />

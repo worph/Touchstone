@@ -7,13 +7,14 @@ import { fileURLToPath, URL } from 'node:url';
 import registerRoutes from './routes/index.js';
 import { buildIndex } from './store/index.js';
 import { logArchiveMigration, migrateArchiveLayout } from './store/migrate.js';
+import { TrialStore } from './store/trials.js';
 import { ensureConfigFile, loadConfig, resolveDataDir } from './store/config.js';
 import { AlertStore } from './services/alerts.js';
 import { BenchProber } from './services/bench.js';
 import { EventLog } from './services/events.js';
 import { Notifier } from './services/notify.js';
 import { PushService } from './services/push.js';
-import { appsUrlFor, SubjectRegistry } from './store/registry.js';
+import { SubjectRegistry } from './store/registry.js';
 import { Scheduler } from './scheduler/index.js';
 import { Runner } from './runner/index.js';
 import { PortProber } from './services/ports.js';
@@ -105,15 +106,13 @@ await prober.load();
 // The driver. Ships dry-run: with `scheduler.armed: false` it decides and logs and claims
 // nothing, which is what lets its pick be diffed against the live n8n loop's before it is
 // ever allowed to drive.
-// One origin today. `cfg.origins[0]` is always the default one — `resolveOrigins` puts it
-// there — and a second store is R10 step 3, which turns this into one registry per origin.
-const origin = cfg.origins[0]!;
+// Every configured store. `cfg.origins[0]` is always the default one — `resolveOrigins` puts
+// it there — and each store's list is fetched and cached independently, so one store's GitHub
+// outage cannot empty another's.
 const registry = new SubjectRegistry({
   stateDir: cfg.stateDir,
   events,
-  origin: origin.id,
-  url: appsUrlFor(origin),
-  ...(origin.seed ? { seed: origin.seed } : {}),
+  origins: cfg.origins,
   archived: () => store.subjects(),
 });
 await registry.load();
@@ -163,6 +162,9 @@ const ledger = new RunLedger({ events });
 const runner = new Runner({
   enabled: cfg.runner.enabled,
   reportsRoot: cfg.reportsRoot,
+  origins: cfg.origins,
+  storeReachable: (id) => registry.reachable(id),
+  storeFailure: (id) => registry.failureOf(id),
   events,
   index: store,
   prober,
@@ -182,6 +184,16 @@ const runner = new Runner({
  * nothing new pointing out of the box. The tools it holds are thin wrappers over the API —
  * and none of them writes a verdict, for the reason `routes/mcp.ts` gives at length.
  */
+/**
+ * Trials — auditing a ref without touching what a subject carries.
+ *
+ * The store is separate and the index over it is built per request, so the scheduler and the
+ * subject registry are never handed it. That is what makes "a trial cannot move a hallmark"
+ * true by construction rather than by a rule somebody has to keep remembering.
+ */
+const trials = new TrialStore(cfg.stateDir);
+await trials.load();
+
 const chatThreads = new ChatThreads(cfg.stateDir);
 await chatThreads.load();
 
@@ -232,6 +244,14 @@ await app.register(registerRoutes, {
   ports,
   protocols,
   ledger,
+  trials: {
+    runner,
+    trials,
+    trialsRoot: cfg.trialsRoot,
+    events,
+    store,
+    known: () => registry.list(),
+  },
   boardUrl: cfg.bench.board_url,
   chat: {
     threads: chatThreads,

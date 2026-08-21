@@ -86,6 +86,16 @@ export const EVENT_CODES = {
   CLAIM_UNPARKED: { category: 'scheduler', label: 'subject released from parking' },
   REGISTRY_REFRESHED: { category: 'scheduler', label: 'registry changed' },
   REGISTRY_FAILED: { category: 'scheduler', label: 'registry unreadable' },
+  REGISTRY_RECOVERED: { category: 'scheduler', label: 'registry readable again' },
+
+  // ── trials ────────────────────────────────────────────────────────────────
+  // Their own codes, not the ASSAY_* ones. A trial's `subject` is a slug, so an
+  // `ASSAY_FAILED` carrying it would push a deep link to `/s/<slug>` that 404s, and would
+  // read on Activity as a failing audit of a real app. A failing trial is a fact about a
+  // branch somebody is reviewing.
+  TRIAL_STARTED: { category: 'assay', label: 'trial started' },
+  TRIAL_COMPLETED: { category: 'assay', label: 'trial finished' },
+  TRIAL_FAILED: { category: 'assay', label: 'trial failed' },
 
   // ── the archive ───────────────────────────────────────────────────────────
   ARCHIVE_MIGRATED: { category: 'system', label: 'report archive moved' },
@@ -157,8 +167,18 @@ interface EventDetails {
   CLAIM_RECLAIMED: { subject: string; try_n: number; outcome: 'retry' | 'parked' };
   CLAIM_PARKED: { subject: string; try_n: number; until_days: number };
   CLAIM_UNPARKED: { subject: string };
-  REGISTRY_REFRESHED: { count: number };
-  REGISTRY_FAILED: { error: string; live: boolean };
+  REGISTRY_REFRESHED: { count: number; origin?: string };
+  REGISTRY_RECOVERED: { count: number; origin?: string };
+  REGISTRY_FAILED: { error: string; live: boolean; origin?: string };
+  TRIAL_STARTED: { slug: string; repo: string; ref: string; subject: string };
+  TRIAL_COMPLETED: {
+    slug: string;
+    subject: string;
+    verdict: string | null;
+    risk: number;
+    files: number;
+  };
+  TRIAL_FAILED: { slug: string; subject: string; reason: string };
   ARCHIVE_MIGRATED: {
     origin: string;
     subjects: number;
