@@ -8,7 +8,8 @@
  * is empty, so an empty archive is already handled one layer down, where there is exactly
  * one copy of it.
  */
-import type { SubjectState, ReportResponse } from '@shared/types';
+import type { AssayRecord, SubjectState, ReportResponse } from '@shared/types';
+import type { TrialRecord, TrialRequest, TrialResponse } from '@shared/trials';
 import type {
   AlertsResponse,
   BenchesResponse,
@@ -276,6 +277,45 @@ export function getAssayStatus(): Promise<RunStatus> {
  */
 export function getFixReport(name: string): Promise<string> {
   return getText(`/subjects/${encodeURIComponent(name)}/fix.md`);
+}
+
+// ── trials ───────────────────────────────────────────────────────────────────────────────
+// Auditing a ref without touching what a subject carries. See `shared/trials.ts` for why the
+// results live somewhere the archive does not look.
+
+export function getTrials(): Promise<{ trials: TrialRecord[] }> {
+  return get<{ trials: TrialRecord[] }>('/trials');
+}
+
+export function getTrial(slug: string): Promise<TrialResponse & { history: AssayRecord[] }> {
+  return get<TrialResponse & { history: AssayRecord[] }>(`/trials/${encodeURIComponent(slug)}`);
+}
+
+/**
+ * Start a trial. Returns as soon as it is accepted, like `startAssay` and for the same reason.
+ */
+export function startTrial(body: TrialRequest): Promise<{ started: boolean; trial: TrialRecord }> {
+  return post<{ started: boolean; trial: TrialRecord }>('/trials', body);
+}
+
+/** Drops the row. The reports stay on disk — this is tidying a list, not deleting an audit. */
+export async function deleteTrial(slug: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/trials/${encodeURIComponent(slug)}`, {
+      method: 'DELETE',
+      headers: { accept: 'application/json' },
+    });
+  } catch {
+    throw new ApiError(0, 'The API is not reachable.');
+  }
+  if (!res.ok) throw new ApiError(res.status, `Could not delete the trial (${res.status}).`);
+}
+
+export function getTrialReport(slug: string, file: string): Promise<ReportResponse> {
+  return get<ReportResponse>(
+    `/trials/${encodeURIComponent(slug)}/reports/${encodeURIComponent(file)}`,
+  );
 }
 
 export function getPushStatus(): Promise<PushStatus> {

@@ -24,6 +24,7 @@ import { hallmarks, sortNewestFirst, subjectHallmark, subjectNames } from '../do
 import { renderMarkdown } from '../domain/markdown.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
+import type { TrialRoutesOptions } from './trials.js';
 import type { AlertStore } from '../services/alerts.js';
 import type { BenchProber } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
@@ -44,6 +45,7 @@ import chatRoutes from './chat.js';
 import mcpRoutes from './mcp.js';
 import protocolRoutes from './protocols.js';
 import scheduleRoutes from './schedule.js';
+import trialRoutes from './trials.js';
 
 export interface RoutesOptions {
   /** The index built at boot. Omitted in dev and in the route tests. */
@@ -58,6 +60,8 @@ export interface RoutesOptions {
   scheduler?: Scheduler;
   runner?: Runner;
   registry?: SubjectRegistry;
+  /** The trial surface. Absent, `/trials` answers 503 rather than 404 — it is a real feature. */
+  trials?: TrialRoutesOptions;
   boardUrl?: string;
   /** The administrator chat. Absent means the page renders and says it is not wired. */
   chat?: ChatRoutesOptions;
@@ -95,6 +99,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     ...(options.events ? { events: options.events } : {}),
     ...(options.ports ? { ports: options.ports } : {}),
   });
+  await app.register(trialRoutes, options.trials ?? {});
   await app.register(assayRoutes, {
     runner: options.runner,
     scheduler: options.scheduler,

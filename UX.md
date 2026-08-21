@@ -418,6 +418,45 @@ lowering `fresh_days`, not adding a mode — the pick stays the pure n8n port it
 
 ---
 
+### 2.5 Trials — would this branch pass?
+
+Every other screen answers *what does this app carry*. This one answers *what would it carry*,
+about code that is not in the store yet — a PR, a fork, a branch. That is why a trial's result is
+filed on its own and never touches a hallmark, and why the page has to keep saying so: a verdict
+that looks like the others but quietly means something else is worse than no verdict at all.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ TRIALS                                                       │
+│ Repository [Owner/AppStore ] Ref [pr-812 ] App [Widget ]     │
+│                                            [  Run trial  ]   │
+├──────────────────────────────────────────────────────────────┤
+│ ⓘ Compose-level checks only. Installing the app would use a  │
+│   demo instance's own catalogue, which serves the store it   │
+│   is configured with rather than the ref under trial.        │
+├──────────────────────────────────────────────────────────────┤
+│  Widget   Acme/AppStore@pr-812      non-compliant   20:14    │
+├──────────────────────────────────────────────────────────────┤
+│  SECTION      THIS REF            CURRENTLY                  │
+│  static       ⛔ non-compliant     ✅ compliant                │
+│  functional   ▨ blocked           ✅ compliant                │
+│               Not a fault — a demo instance installs from    │
+│               its own catalogue…                             │
+└──────────────────────────────────────────────────────────────┘
+```
+
+- **Two columns, and the right one never changes.** The comparison is the whole point: a verdict
+  on a branch means little until you know whether it is better or worse than the thing it would
+  replace. `Currently` is the subject's existing hallmark, unaffected by anything on this page.
+- **The blocked functional row carries its reason inline**, not a tooltip. A bare `▨ blocked`
+  beside a real verdict reads as a fault, and this one is a property of how apps are installed.
+- **A branch that adds a *new* app has nothing to compare against**, which is a normal PR. The
+  page says so rather than showing an empty column with no explanation.
+- **Quieter than the Overview, deliberately.** Styling a trial like a hallmark invites it to be
+  read as one.
+
+---
+
 ## 3. Reports as files
 
 Docmost stops being storage. Layout inside the data dir:

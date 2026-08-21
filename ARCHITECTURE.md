@@ -109,7 +109,7 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 
 | # | Capability | n8n | Touchstone |
 | --- | --- | --- | --- |
-| D1 | Prompt assembly from the protocol | `Build prompt` | ✅ `runner/prompt.ts`, byte-identical to the n8n node |
+| D1 | Prompt assembly from the protocol | `Build prompt` | ✅ `runner/prompt.ts`. Byte-identical to the n8n node **when given the default store** — `repo`, `ref` and `apps_path` became parameters on 2026-08-20 (R10), and `prompt.test.ts` pins the identity. The node's own `Yundera/AppStore`, `main` and `Apps` were wrong for every store but the first, and wrong silently |
 | D2 | Call the agent | `POST http://beacon-backend:9300/mcp` | ✅ `callAgent`, direct or through a Beacon aggregator |
 | D3 | Parse the agent response | `Extract LLM response` | ✅ `classify` — the four error classes reproduced branch for branch |
 | D4 | Agent-busy (409) detection | `Agent busy (retriable)?` | ✅ text-level and HTTP-level reach the same branch |
@@ -669,6 +669,9 @@ n8n, which §9 explains.
 | `GET` | `/api/v1/benches` | pool health, last probe |
 | `GET` | `/api/v1/events` | the log feed, filterable by level and category |
 | `GET` | `/api/v1/alerts` | open alerts for the Activity page |
+| `GET` | `/api/v1/trials` | the trials run so far, newest first |
+| `POST` | `/api/v1/trials` | audit a `repo@ref` without touching a hallmark — R11, §7 |
+| `GET` | `/api/v1/trials/:slug` | one trial, beside what the subject currently carries |
 | `POST` | `/api/v1/push/subscribe` | web-push subscription |
 
 ### 6.1 The subject registry
@@ -709,6 +712,39 @@ assay, Touchstone scopes that to the functional assay and lets the static assay 
 After phase 2, nothing in the conformance loop. `AppStore PR Review` and `AppStore release notes`
 keep their own triggers and are untouched. The hourly tick is **deleted** — it is scheduling
 policy, not a source.
+
+### Trials, and the line they do not cross — 2026-08-20
+
+`POST /trials` audits an arbitrary `repo@ref` and files the result under `data/trials/`, where
+the report index never looks (R11). It is **not** PR Review, and the distinction is the reason
+it survives the scope rule above: PR Review is an *orchestrator* — it decides when to run,
+applies GitHub labels, writes the PR comment and publishes. All of that stays in n8n. Touchstone
+offers the executor it could call, and **nothing calls it** until somebody deliberately wires
+n8n to. The endpoint simply exists.
+
+Two properties keep it from leaking into the conformance loop, both structural rather than
+rules to remember:
+
+- **A separate root and a separate index.** The scheduler and the subject registry are never
+  handed the trials index, so a trial cannot move a hallmark, cannot age a subject's freshness
+  and cannot become a schedulable subject via `archived: () => store.subjects()`.
+- **The same `Runner` instance.** It is single-flight process-wide and `RunLedger.live()`
+  assumes one open run, so a trial and an audit cannot collide — a trial asked for during an
+  audit gets a 409. A second runner would also have falsified the browser lease, whose safety
+  rests on "there is one run at a time".
+
+**Trials are static-only**, and that is a fact about how apps are installed rather than a
+shortcoming: a bench installs from its own catalogue, which serves whatever store that instance
+is configured with rather than the ref under trial. The functional section is recorded `blocked`
+with reason `store_not_installable`. It is still not a statement about the subject, so §2.3's
+rule holds — but it is a statement about the *trial's configuration* rather than about infra,
+which is the one place that wording strains. Repointing a bench's catalogue at a custom store
+URL is the follow-on that would lift it.
+
+**Nothing a model can call may choose the ref.** The chat's `run_assay` keeps its single
+property, constrained to a registry member. §6.2's reasoning about verdicts extends here:
+repo+ref is the one input that would turn "audit an app" into "run `gh` against a URL of the
+model's choosing", with the result read as data inside an audit prompt.
 
 ---
 

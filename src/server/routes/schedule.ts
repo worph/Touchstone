@@ -60,6 +60,7 @@ const routes: FastifyPluginAsync<ScheduleRoutesOptions> = async (app, options) =
         count: options.registry?.list().length ?? 0,
         live: options.registry?.isLive ?? false,
         fetched_at: options.registry?.lastFetchedAt ?? null,
+        origins: options.registry?.status() ?? [],
       },
     };
   };

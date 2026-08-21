@@ -17,7 +17,8 @@
 
 import path from 'node:path';
 
-import { DEFAULT_ORIGIN, subjectKey, type SubjectKey } from '../../shared/subject.js';
+import { DEFAULT_ORIGIN, splitSubjectKey, subjectKey, type SubjectKey } from '../../shared/subject.js';
+import type { OriginEntry } from './config.js';
 import { readJson, writeJsonAtomic } from './state.js';
 import type { EventLog } from '../services/events.js';
 
@@ -54,16 +55,36 @@ export const DEFAULT_APPS = [
   'WireGuardEasyHost', 'n8n', 'qBittorrent',
 ] as const;
 
-interface RegistryFile {
+/**
+ * `state/registry.json`.
+ *
+ * Was `{names, fetched_at}` when there was one store. Now one bucket per origin, because the
+ * failure that matters is **isolation**: one store's GitHub outage must not empty another's
+ * list. The old shape is still read, as the default origin's bucket — three lines, no separate
+ * migration, and a restart during an outage still knows every store it knew before.
+ */
+interface OriginState {
   names: string[];
   fetched_at?: string;
+  /** The last fetch failed. Reported per store, and what gates dispatching to it. */
+  failed?: string;
+}
+
+interface RegistryFile {
+  /** The pre-2026-08-20 shape: one flat list, the default origin's. */
+  names?: string[];
+  fetched_at?: string;
+  origins?: Record<string, OriginState>;
 }
 
 export interface SubjectRegistryOptions {
   stateDir: string;
   events?: EventLog;
+  /** Overrides the URL built from the origin. Tests only. */
   url?: string;
   fetchTimeoutMs?: number;
+  /** Every store to read. Order is render order. */
+  origins?: OriginEntry[];
   /**
    * Which store this registry reads. Subjects come back as `<origin>~<name>` keys.
    *
@@ -91,8 +112,8 @@ export interface SubjectRegistryOptions {
 export class SubjectRegistry {
   private readonly file: string;
   private readonly opts: SubjectRegistryOptions;
-  private names: string[] = [];
-  private fetchedAt?: string;
+  /** Per origin, so one store's outage cannot empty another's list. */
+  private state = new Map<string, OriginState>();
   private timer?: ReturnType<typeof setInterval>;
 
   constructor(opts: SubjectRegistryOptions) {
@@ -100,18 +121,62 @@ export class SubjectRegistry {
     this.file = path.join(opts.stateDir, 'registry.json');
   }
 
-  /** Restore the last good list, so a restart during a GitHub outage still knows the store. */
+  /** The stores this registry reads, in render order. */
+  get origins(): OriginEntry[] {
+    return this.opts.origins?.length
+      ? this.opts.origins
+      : [{ id: DEFAULT_ORIGIN, repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' }];
+  }
+
+  /** Restore the last good lists, so a restart during an outage still knows every store. */
   async load(): Promise<void> {
-    const stored = await readJson<RegistryFile>(this.file, { names: [] });
+    const stored = await readJson<RegistryFile>(this.file, {});
+    if (stored?.origins && typeof stored.origins === 'object') {
+      for (const [id, row] of Object.entries(stored.origins)) {
+        if (Array.isArray(row?.names)) this.state.set(id, { ...row, names: row.names });
+      }
+      return;
+    }
+    // The pre-2026-08-20 shape: one flat list, which was the default origin's.
     if (Array.isArray(stored?.names) && stored.names.length > 0) {
-      this.names = stored.names;
-      this.fetchedAt = stored.fetched_at;
+      this.state.set(DEFAULT_ORIGIN, { names: stored.names, fetched_at: stored.fetched_at });
     }
   }
 
-  /** Which store this registry reads. */
-  get origin(): string {
-    return this.opts.origin ?? DEFAULT_ORIGIN;
+  private seedFor(origin: OriginEntry): string[] {
+    if (origin.seed) return origin.seed;
+    // `DEFAULT_APPS` stays in code rather than in config: it is a copy of what n8n falls back
+    // to, and a difference in it is a difference in what the two systems audit. A *new* store
+    // cold-starting empty is honest — the dangerous case is the known store emptying.
+    return origin.id === DEFAULT_ORIGIN ? [...DEFAULT_APPS] : [];
+  }
+
+  /** The names one store currently offers: its live list, or its cold-start list. */
+  private namesFor(origin: OriginEntry): string[] {
+    const known = this.state.get(origin.id)?.names ?? [];
+    return known.length > 0 ? known : this.seedFor(origin);
+  }
+
+  /**
+   * Whether a store's list has ever been read live, as opposed to falling back.
+   *
+   * The runner asks this before dispatching: auditing a subject against a store we have never
+   * reached would error and burn the subject's retry budget for an infra condition, which is
+   * exactly what invariant 3 forbids.
+   */
+  reachable(id: string): boolean {
+    const row = this.state.get(id);
+    // The **last** fetch succeeded — not "we have a list from some time". A store whose latest
+    // read failed cannot be audited either: the agent fetches the app's files from the same
+    // place, so the run would error against a dead source and burn the subject's try. Blocking
+    // instead costs nothing (invariant 3 restores the subject untouched) and the next tick
+    // retries, so a transient blip delays an audit rather than parking an innocent app.
+    return Boolean(row && row.names.length > 0 && !row.failed);
+  }
+
+  /** Why a store is not reachable, in one clause a person reads. */
+  failureOf(id: string): string | undefined {
+    return this.state.get(id)?.failed;
   }
 
   /**
@@ -126,34 +191,87 @@ export class SubjectRegistry {
    * empty" and idle the loop forever on the one failure it is least able to notice.
    */
   list(): SubjectKey[] {
-    const origin = this.origin;
-    const fallback = this.opts.seed ?? (origin === DEFAULT_ORIGIN ? [...DEFAULT_APPS] : []);
-    const base = (this.names.length > 0 ? this.names : fallback).map((n) => subjectKey(origin, n));
-    const seen = new Set<string>(base);
-    const out = [...base];
-    for (const key of this.opts.archived?.() ?? []) {
-      if (!seen.has(key)) {
+    const seen = new Set<string>();
+    const out: SubjectKey[] = [];
+    for (const origin of this.origins) {
+      for (const name of this.namesFor(origin)) {
+        const key = subjectKey(origin.id, name);
+        if (seen.has(key)) continue;
         seen.add(key);
-        out.push(key as SubjectKey);
+        out.push(key);
       }
+    }
+    // Archived subjects are already keys and are passed through untouched — a subject belongs
+    // to whichever origin its own reports say it does.
+    //
+    // But only under a **configured** origin. A store removed from config.yaml still has
+    // reports and stays reachable by URL, and must not stay schedulable: it cannot be fetched
+    // or audited, so leaving it in the backlog would park it as the permanent stalest row and
+    // starve every app behind it.
+    const configured = new Set(this.origins.map((o) => o.id));
+    for (const key of this.opts.archived?.() ?? []) {
+      if (seen.has(key)) continue;
+      if (!configured.has(splitSubjectKey(key).origin)) continue;
+      seen.add(key);
+      out.push(key as SubjectKey);
     }
     return out;
   }
 
+  /** The newest fetch across all stores — what the Automation page dates the registry by. */
   get lastFetchedAt(): string | undefined {
-    return this.fetchedAt;
+    const stamps = [...this.state.values()]
+      .map((r) => r.fetched_at)
+      .filter((t): t is string => Boolean(t))
+      .sort();
+    return stamps[stamps.length - 1];
   }
 
-  /** Whether the live list has ever been read, as opposed to falling back. */
+  /**
+   * Whether **every** configured store has been read live.
+   *
+   * Deliberately not "any": this drives the "the built-in list stands" caption, and a caption
+   * saying the registry is live while one store is falling back to a cold-start list would be
+   * the more misleading of the two answers.
+   */
   get isLive(): boolean {
-    return this.names.length > 0;
+    return this.origins.every((o) => this.reachable(o.id));
   }
 
-  async refresh(): Promise<string[]> {
+  /** Per-store detail, for the Automation page and the alerts. */
+  status(): { id: string; repo: string; ref: string; count: number; live: boolean; fetched_at?: string; error?: string }[] {
+    return this.origins.map((o) => {
+      const row = this.state.get(o.id);
+      return {
+        id: o.id,
+        repo: o.repo,
+        ref: o.ref,
+        count: this.namesFor(o).length,
+        live: this.reachable(o.id),
+        ...(row?.fetched_at ? { fetched_at: row.fetched_at } : {}),
+        ...(row?.failed ? { error: row.failed } : {}),
+      };
+    });
+  }
+
+  /**
+   * Re-read every store. One store's failure is isolated to that store.
+   *
+   * `Promise.allSettled`, not `all`: a rejection in one must not skip the rest, and each
+   * origin's catch keeps its own previous list rather than emptying it.
+   */
+  async refresh(): Promise<SubjectKey[]> {
+    await Promise.allSettled(this.origins.map((o) => this.refreshOne(o)));
+    await this.persist();
+    return this.list();
+  }
+
+  private async refreshOne(origin: OriginEntry): Promise<void> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.opts.fetchTimeoutMs ?? 30_000);
+    const previous = this.state.get(origin.id);
     try {
-      const res = await fetch(this.opts.url ?? GITHUB_APPS_URL, {
+      const res = await fetch(this.opts.url ?? appsUrlFor(origin), {
         signal: controller.signal,
         headers: { 'user-agent': 'touchstone-registry', accept: 'application/vnd.github+json' },
       });
@@ -165,31 +283,41 @@ export class SubjectRegistry {
         .map((r) => r.name!);
       if (names.length === 0) throw new Error('no directories');
 
-      const changed = names.length !== this.names.length || names.some((n, i) => n !== this.names[i]);
-      this.names = names;
-      this.fetchedAt = new Date().toISOString();
-      await this.persist();
+      const before = previous?.names ?? [];
+      const changed = names.length !== before.length || names.some((n, i) => n !== before[i]);
+      this.state.set(origin.id, { names, fetched_at: new Date().toISOString() });
       if (changed) {
         this.opts.events?.log({
           level: 'info',
           code: 'REGISTRY_REFRESHED',
-          message: `The app registry changed — ${names.length} apps in the store`,
-          detail: { count: names.length },
+          message:
+            `The app registry changed — ${names.length} apps in ${origin.repo}` +
+            (origin.ref === 'main' ? '' : ` at ${origin.ref}`),
+          detail: { count: names.length, origin: origin.id },
         });
       }
-      return this.list();
+      if (previous?.failed) {
+        this.opts.events?.log({
+          level: 'info',
+          code: 'REGISTRY_RECOVERED',
+          message: `${origin.repo} is readable again — ${names.length} apps`,
+          detail: { count: names.length, origin: origin.id },
+        });
+      }
     } catch (err) {
       // Keeping the previous list is the point: a registry that empties on a failed fetch
       // would report "backlog empty" and idle, which looks exactly like success.
+      const error = err instanceof Error ? err.message : String(err);
+      const live = (previous?.names.length ?? 0) > 0;
+      this.state.set(origin.id, { names: previous?.names ?? [], ...(previous?.fetched_at ? { fetched_at: previous.fetched_at } : {}), failed: error });
       this.opts.events?.log({
         level: 'warn',
         code: 'REGISTRY_FAILED',
-        message: this.isLive
-          ? 'Could not re-read the app registry, so the last known list stands'
-          : 'Could not read the app registry, so the built-in list stands',
-        detail: { error: err instanceof Error ? err.message : String(err), live: this.isLive },
+        message: live
+          ? `Could not re-read ${origin.repo}, so the last known list stands`
+          : `Could not read ${origin.repo}, so nothing from that store can be audited`,
+        detail: { error, live, origin: origin.id },
       });
-      return this.list();
     } finally {
       clearTimeout(timer);
     }
@@ -210,7 +338,7 @@ export class SubjectRegistry {
 
   private async persist(): Promise<void> {
     try {
-      await writeJsonAtomic(this.file, { names: this.names, fetched_at: this.fetchedAt });
+      await writeJsonAtomic(this.file, { origins: Object.fromEntries(this.state) });
     } catch (err) {
       console.error('could not write registry.json', err);
     }

@@ -76,6 +76,18 @@ const ROUTES: Record<string, { beacon: boolean; push: boolean }> = {
   ASSAY_FAILED: { beacon: true, push: true },
   ASSAY_BLOCKED: { beacon: false, push: true },
   AGENT_UNAUTHENTICATED: { beacon: true, push: true },
+
+  /**
+   * Trials notify nowhere.
+   *
+   * The case that put `assay finished` on the push list was an operator who *asks* for a
+   * review and walks away, because an audit outlasts the page they asked from. A trial is
+   * looked at immediately or not at all — it is one step inside reviewing a PR somebody is
+   * already sitting in front of. It is still logged, so Activity has the whole story.
+   */
+  TRIAL_STARTED: { beacon: false, push: false },
+  TRIAL_COMPLETED: { beacon: false, push: false },
+  TRIAL_FAILED: { beacon: false, push: false },
 };
 
 export function routeFor(code: string): { beacon: boolean; push: boolean } {

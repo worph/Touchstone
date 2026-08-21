@@ -117,7 +117,7 @@ export function buildFixReport(input: FixReportInput): string | null {
   L.push(`# Fix ${input.subject}${repo ? ` — ${repo.repo}` : ''}`);
   L.push('');
   L.push(
-    `You are fixing one app in the Yundera AppStore so that it passes Touchstone's conformance audit. ` +
+    `You are fixing one app in ${repo ? `the ${repo.repo} app store` : 'the app store'} so that it passes Touchstone's conformance audit. ` +
       `Everything below was recorded by the audit itself; the evidence is quoted verbatim and is not a summary.`,
   );
   L.push('');

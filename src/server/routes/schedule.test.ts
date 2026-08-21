@@ -25,7 +25,13 @@ const index = {
   subjects: () => [],
 } as unknown as ReportIndex;
 
-const registry = { list: () => ['Alpha', 'Beta'], isLive: true } as unknown as SubjectRegistry;
+const registry = {
+  list: () => ['yundera~Alpha', 'yundera~Beta'],
+  isLive: true,
+  status: () => [
+    { id: 'yundera', repo: 'Yundera/AppStore', ref: 'main', count: 2, live: true },
+  ],
+} as unknown as SubjectRegistry;
 
 async function serve(scheduler?: Scheduler): Promise<FastifyInstance> {
   const instance = Fastify();
@@ -74,7 +80,8 @@ describe('GET /schedule', () => {
     const body = (await app.inject({ method: 'GET', url: '/schedule' })).json() as ScheduleResponse;
     expect(body.armed).toBe(false);
     expect(body.constants.cooldown_min).toBe(55);
-    expect(body.queue.map((r) => r.subject)).toEqual(['Alpha', 'Beta']);
+    // Keys, not bare names — the queue addresses subjects, and the page renders the app half.
+    expect(body.queue.map((r) => r.subject)).toEqual(['yundera~Alpha', 'yundera~Beta']);
     expect(body.queue[0]?.position).toBe(1);
   });
 

@@ -96,10 +96,12 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile` |
 | `protocols/*.md` | **the rubric itself**, the definition of the sections, and the version every assay records: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads. There is no separate `standards/` — a second file could only disagree with the rubric it versioned |
 | `reports/<origin>/<Subject>/<ISO>-<section>.md` | **the assay record IS the frontmatter of the report file**. The origin level is a namespace, not a uniqueness rule: two stores may both ship a `FileBrowser` |
+| `trials/<slug>/<Subject>/<ISO>-<section>.md` | a **trial** — the same run against an arbitrary ref, written where the report index never looks, so it cannot move a hallmark or enter the backlog. The slug doubles as a synthetic origin, so the path machinery is unchanged |
 | `state/*.json`, `events.jsonl` | small mutable runtime state and the append-only log |
 | `state/index.json` | cache only — deleting it must always be safe |
 
-`data/reports/`, `data/state/` and `data/config.yaml` are gitignored; `test/fixtures/` is committed.
+`data/reports/`, `data/trials/`, `data/state/` and `data/config.yaml` are gitignored;
+`test/fixtures/` is committed.
 
 **Rule: nothing outside `src/server/store/` touches the filesystem.** Routes, the scheduler and the
 runner get the index or a store object, never a path. The thing being replaced failed partly
@@ -130,6 +132,14 @@ because its data access was smeared through two 200-line n8n Code nodes.
   served as markdown by `GET /subjects/:name/fix.md`. It **quotes**: findings, severities,
   evidence and remedies all come out of the frontmatter, and where the agent proposed no remedy
   the report says so rather than inventing one.
+- **`store/registry.ts`** — one list per configured origin, so one store's GitHub outage cannot
+  empty another's. `reachable()` means *the last fetch succeeded*, and the runner asks it before
+  dispatching: auditing against a store we cannot read would error and burn the subject's try
+  for an infra condition, which invariant 3 forbids.
+- **`store/trials.ts` + `routes/trials.ts`** — trials. Input is validated at the route because
+  `repo`/`ref` reach a prompt the agent runs `gh` against; the index over them is built per
+  request with `cacheFile: null`, because `defaultCacheFile()` resolves to the *same* path for
+  `data/reports` and `data/trials`.
 - **`services/ports.ts`** — probes the two non-bench dependencies (agent, browser) by `tools/list`
   over MCP. `services/bench.ts` keeps its own prober because the bench pool is **discovered** from
   the pool API, not configured.
@@ -146,8 +156,8 @@ because its data access was smeared through two 200-line n8n Code nodes.
   became of its own work.
   `prompt.md` is an asset — `build:api` copies it into `dist/`, so a new non-TS file there
   needs the same treatment.
-- **`src/web/`** — React + Vite SPA, five pages (Overview, Subject detail, Automation,
-  Activity, Administrator chat) plus Protocols. `src/web/data/client.ts` is the only thing that talks to the API,
+- **`src/web/`** — React + Vite SPA, six pages (Overview, Subject detail, Automation,
+  Activity, Administrator chat, Trials) plus Protocols. `src/web/data/client.ts` is the only thing that talks to the API,
   and `data/runStatus.ts` is the **single poller** for the run in flight — the shell strip, the
   Overview's `◴ running` cells, Activity's card and the re-assay button all subscribe to it rather
   than polling `/assays/current` themselves. `@shared/*` aliases

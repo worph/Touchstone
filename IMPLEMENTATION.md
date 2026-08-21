@@ -115,12 +115,18 @@ scheduler and the runner get the index, never a path.
       OpenClaw/
         2026-08-05T09-14-22Z-static.md      ← frontmatter = the assay record
         2026-08-05T09-31-08Z-functional.md
+  trials/                    auditing a ref before it is merged — R11
+    Acme-AppStore@pr-812-…/  the slug doubles as a synthetic origin
+      Widget/
+        2026-08-20T19-00-00Z-static.md
   state/
     alerts.json              small, mutable
     events.jsonl             append-only
     benches.json             last probe result per bench
     browsers.json            last lease per browser
     index.json               CACHE ONLY — safe to delete at any time
+    trials.json              the list of trials; the reports under trials/ outlive it
+    registry.json            one app list per configured store
 ```
 
 Filenames use ISO-8601 with `:` replaced by `-`, so they sort lexically and are portable.

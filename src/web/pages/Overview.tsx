@@ -96,6 +96,11 @@ export default function Overview() {
     return sortSubjects(filtered, sort, dir);
   }, [subjects, q, show, leg, sort, dir, live]);
 
+  // Derived from the rows rather than fetched: the Overview already knows every subject's
+  // store, and a second request to learn a boolean it can count would be a request that can
+  // fail on its own.
+  const showOrigin = useMemo(() => new Set(subjects.map((s) => s.origin)).size > 1, [subjects]);
+
   if (loading) return <div className="page"><Loading what="subjects" /></div>;
   if (error) {
     return (
@@ -227,7 +232,7 @@ export default function Overview() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((s) => <Row key={s.name} s={s} live={live} />)}
+              {rows.map((s) => <Row key={s.name} s={s} live={live} showOrigin={showOrigin} />)}
             </tbody>
           </table>
           </div>
@@ -238,7 +243,7 @@ export default function Overview() {
   );
 }
 
-function Row({ s, live }: { s: SubjectState; live: LiveRun | null }) {
+function Row({ s, live, showOrigin }: { s: SubjectState; live: LiveRun | null; showOrigin: boolean }) {
   const never = !s.static && !s.functional;
   const running = live?.subject === s.name;
   return (
@@ -249,6 +254,10 @@ function Row({ s, live }: { s: SubjectState; live: LiveRun | null }) {
         <Link className="row-link" to={`/s/${encodeURIComponent(s.name)}`}>
           {s.label}
         </Link>
+        {/* Only when there is more than one store. A column that always reads the same word
+            is furniture, and two stores may legitimately ship the same app name — at which
+            point the label alone stops identifying the row. */}
+        {showOrigin ? <span className="tag store-tag">{s.origin}</span> : null}
       </td>
       {/* The state comes from `legState`, not from the record, so a leg being audited right
           now says so in the same cell that will hold its verdict in four minutes. */}
