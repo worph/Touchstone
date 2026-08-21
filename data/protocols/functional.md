@@ -1,7 +1,7 @@
 ---
 id: functional
 name: Functional Review Protocol
-version: 5
+version: 6
 kind: leaf
 
 # Where this section sits in a run, and what it cannot run without. `order` decides report
@@ -168,6 +168,21 @@ archive left over from an earlier run, a tile marked `unmanaged`, a System-grid 
 Stop and Uninstall — these are the platform, not the subject. A phase that cannot proceed
 because of one is `errored`, never `fail`.
 
+**The store the box serves is a cached copy, and it can be hours old.** Maison holds the store
+zip (`APPSTORE_URL`, `.../archive/refs/heads/<branch>.zip`) **in the running process** — there is
+no copy on disk — and re-reads it only on a refresh or a restart. A commit to the store is
+therefore *not* visible to an install until one of those happens, and demo instances restart
+once a day. **An audit that does not refresh is auditing whatever the box last cached**, which
+may be a different version of the app from the one it was asked to audit — while `gh` shows the
+auditor the current source. That divergence is silent, it looks exactly like a broken app, and
+it is the reason for the two checks that bracket Phase C below.
+
+*Recorded because it has already cost a day:* on 2026-08-20 a fix landed at 16:45 and two audits
+at 17:29 and 20:34 installed the pre-fix compose from cache. Both correctly observed a real
+reinstall failure, and both attributed it to an app whose source — which the agent could read,
+and which was fixed — did not contain the defect. The same cycle passed on both demo hosts the
+next morning, after the nightly restart.
+
 ## 3. Phase plan (identical for every app)
 
 **A — Session**
@@ -180,6 +195,12 @@ because of one is `errored`, never `fail`.
    Started** wizard at `admin-<DEMO>` means the box has never been set up: infra → `errored`.
 
 **C — Fresh install**
+
+**Before you install — refresh the store.** The box serves a cached copy (§2), so this is what
+makes the run be about the ref you were asked to audit rather than about whatever was current
+when the process last started. Refresh from the store UI's own control; if none is exposed,
+say so in the report and treat the compose check below as the thing standing in for it. This
+costs seconds and is not optional.
 
 3. Navigate to `https://<DEMO>/store`.
 4. `take_snapshot`, find the card whose heading `== APP`, click its **Install** pill. The search
@@ -200,6 +221,22 @@ because of one is `errored`, never `fail`.
 8. A failed install **stays visible** as a red `!` on the tile with the error in its tooltip; it
    does not vanish. Read that tooltip before concluding anything — it is the install's own
    diagnosis, and it is evidence.
+
+**After it installs — confirm you audited the ref you were asked to audit.** Open the tile's
+**Settings → Compose** and compare the `pre-install-cmd` and the service block against
+`Apps/<APP>/docker-compose.yml` at `REF` as `gh` returns it. They must match.
+
+- **They match** → carry on. This is the normal case and needs one line in the report.
+- **They differ** → **stop the audit.** The box is running a different version of the app from
+  the one under audit, so nothing after this point is evidence about `REF`. Return the JSON with
+  verdict `errored` and a summary naming both versions — this is §2's "never fail an app for a
+  Maison behaviour", in its most expensive form. Do **not** file a finding against the app, and
+  do **not** reason about why the source you read and the behaviour you saw disagree: that
+  disagreement *is* the finding, and its subject is the store, not the app.
+
+The second branch is the one that matters. An auditor who reads correct source and then watches
+it fail has two irreconcilable facts and every incentive to invent a mechanism that reconciles
+them. Checking here removes the incentive, because the real answer is available and cheap.
 
 **D — Discover the app URL**
 
@@ -251,8 +288,16 @@ nothing. The sequence is therefore:
     `AppData/`, and offers *Compress the archive to a `.zip`* — leave it **off**: a rename is
     instant, a zip is a full second copy and can take minutes. The tile shows the same single
     bar in red: **Remove**, then **Archive**.
-16. **Reinstall from that archive.** Back in the store, click **Install**, let the picker open,
-    and choose the newest row under **Restore from backup** (each row carries its date).
+16. **Reinstall from the archive your own uninstall just made** — not "the newest one".
+    Back in the store, click **Install** and let the picker open. The rows under **Restore from
+    backup** are labelled by **date only**, so two archives made on the same day are
+    indistinguishable there; `https://<DEMO>/settings/backups` lists the same archives **with
+    times** and is how you tell them apart. If a row you did not create is present, or you
+    cannot establish which row is yours, the phase is `errored` — restoring somebody else's
+    archive reinstalls *their* compose (an archive carries the whole app folder), which tests a
+    version you were never asked to audit and reports the result against this one.
+    §6's cleanup exists so this situation does not arise; when it does anyway, it is the
+    platform and the previous run, never the app.
     Choosing **Fresh install** here lands on a clean slate and tests nothing.
 17. Assert the state from step 14 survived.
 
@@ -320,6 +365,16 @@ one run's untidiness becomes another run's false result.
 
 ## Changelog — not part of the rubric
 
+- **v6 (2026-08-21)** — the store the box serves is a cached copy, and an audit that does not
+  account for that can audit a different version of the app than the one it was asked to (§2).
+  Phase C is now bracketed by a **store refresh** before and a **compose assertion** after: read
+  the installed compose back off the tile and compare it against the source at `REF`, and on a
+  mismatch return `errored` naming both versions rather than filing anything against the app.
+  Phase G.16 restores **the archive this run just created** rather than "the newest row" — the
+  picker labels archives by date alone, and restoring another run's archive reinstalls that
+  run's compose. Written after a fix landed at 16:45 on 2026-08-20 and two audits that same
+  evening tested the pre-fix compose from cache, correctly observed the failure it caused, and
+  attributed it to an app whose source no longer had the defect.
 - **v5 (2026-08-20)** — migration (G′) is stated as belonging to the PR path rather than to an
   audit, and its `n-a` now carries that reason instead of "no `PRIOR_VERSION` supplied". Dropped
   the `PRIOR_VERSION` input and its mention in cleanup: nothing here ever supplies one, and
