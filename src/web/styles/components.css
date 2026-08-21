@@ -1295,3 +1295,43 @@
   .pub-head { padding: 16px 28px; }
   .pub-foot { padding: 24px 28px 48px; }
 }
+
+/* ── watching the run ──────────────────────────────────────────────────────────────────────
+   The live browser panel on the run card. Collapsed by default: it is the answer for the
+   minutes when the requirement feed stops moving, not the thing you read first. */
+
+.bview { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+
+.bview-toggle {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: 600 10.5px/1.6 var(--sans);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+}
+.bview-toggle:hover { color: var(--fg-1); }
+
+.bview-meta { margin-top: 4px; font-size: 12px; color: var(--fg-1); }
+.bview-title { font-weight: 600; }
+
+/* Bordered so a blank frame reads as "the page is blank" rather than as a broken image. */
+.bview-still {
+  display: block;
+  margin-top: 8px;
+  inline-size: 100%;
+  max-inline-size: 720px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-2);
+}
+
+.bview-note {
+  margin-top: 6px;
+  max-inline-size: 68ch;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--fg-2);
+}

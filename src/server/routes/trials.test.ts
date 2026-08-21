@@ -47,6 +47,16 @@ async function serve(opts: Record<string, unknown>): Promise<FastifyInstance> {
 
 const BODY = { repo: 'Acme/AppStore', ref: 'pr-812', subject: 'Widget' };
 
+/** Wait for a condition, or fail with what it was still waiting on. */
+async function waitFor(cond: () => boolean, ms = 3000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (cond()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`condition still false after ${ms}ms`);
+}
+
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'touchstone-trials-'));
   events = new EventLog(dir);
@@ -57,7 +67,16 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await app?.close();
-  await fs.rm(dir, { recursive: true, force: true });
+  // Retry once: a run dispatched by a test can still be writing as this fires, and a teardown
+  // that fails the test it is tearing down hides whatever the test actually proved.
+  for (let i = 0; i < 3; i++) {
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
 });
 
 describe('POST /trials', () => {
@@ -73,8 +92,15 @@ describe('POST /trials', () => {
     const body = res.json() as { trial: { slug: string; ref: string } };
     expect(body.trial.ref).toBe('pr-812');
 
-    await new Promise((r) => setTimeout(r, 10));
+    // Poll rather than sleep. `POST /trials` answers 202 and dispatches the run without
+    // awaiting it, so a fixed wait is a race that only loses when the suite is busy — which is
+    // exactly when a flake is least welcome and hardest to read.
+    await waitFor(() => jobs.length === 1);
     expect(jobs).toHaveLength(1);
+    // And wait for the dispatch chain to *finish* writing. `POST /trials` returns before the
+    // run does, so without this the outcome lands in `trials.json` while `afterEach` is
+    // deleting the temp directory — an ENOTEMPTY that reads as a trials bug and is a test one.
+    await waitFor(() => trials.get(body.trial.slug)?.outcome !== undefined);
     const job = jobs[0] as { subject: string; trial: { repo: string; root: string } };
     // The slug is the synthetic origin, so the path machinery needs no special case.
     expect(job.subject).toBe(`${body.trial.slug}~Widget`);

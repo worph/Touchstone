@@ -339,6 +339,42 @@ export function getTrialReport(slug: string, file: string): Promise<ReportRespon
   );
 }
 
+// ── watching the run ─────────────────────────────────────────────────────────────────────
+// The browser sidecar publishes no port and does not announce itself, so these proxied paths
+// are the only way to see it — see `server/routes/browser.ts`.
+
+export interface BrowserPage {
+  pageId: string;
+  owner: string | null;
+  url: string;
+  title: string;
+  idleForMs?: number;
+}
+
+export interface BrowserPages {
+  pages: BrowserPage[];
+  /** The isolated context of the audit in flight, when there is one. */
+  context: string | null;
+  /** Whether the list was narrowed to that context, so the UI can say "all tabs" honestly. */
+  filtered: boolean;
+  live_prefix: string;
+  vnc_url: string;
+  /** Present when the sidecar could not be reached — a state, not an error. */
+  unreachable?: string;
+}
+
+export function getBrowserPages(all = false): Promise<BrowserPages> {
+  return get<BrowserPages>(`/browser/pages${all ? '?all=1' : ''}`);
+}
+
+/**
+ * A still of the whole browser. Cache-busted on purpose: the point is that it changes.
+ * Used where the per-tab screencast is unavailable (browser-mcp before 1.1.6).
+ */
+export function browserStillUrl(nonce: number): string {
+  return `${BASE}/browser/screenshot?t=${nonce}`;
+}
+
 export function getPushStatus(): Promise<PushStatus> {
   return get<PushStatus>('/push');
 }
