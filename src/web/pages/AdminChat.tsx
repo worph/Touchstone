@@ -1,13 +1,13 @@
 /**
  * The administrator chat.
  *
- * The other three pages answer "what is the state of the store". This one answers "do
- * something about it" — and, more usefully, "what should I do next", which is the question a
- * screen full of correct information cannot answer.
+ * The other pages answer "what is the state of the store". This one answers "do something
+ * about it" — and, more usefully, "what should I do next", which is the question a screen
+ * full of correct information cannot answer.
  *
- * It is deliberately not the front page. Overview is Touchstone's central table and the whole
- * app is named for it; a conversation is how you *act* on that table, not a replacement for
- * looking at it.
+ * It is the front page: the first question an operator has on opening Touchstone is almost
+ * never "show me the table", it is "what needs me". The Overview is one nav row away and the
+ * chat's own answers link into it, so nothing is buried — the order is just reversed.
  */
 
 import { useEffect, useRef, useState } from 'react';

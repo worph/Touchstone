@@ -9,17 +9,19 @@ import RunningStrip, { RunTitle } from './RunningStrip';
 const BADGE_MS = 30_000;
 
 /**
- * Five destinations: the three of UX.md §2, the administrator chat, and the loop's own page. The badge on Activity counts open alerts and unread
- * error rows — nothing else, deliberately.
+ * Four destinations. The administrator is not among them: it is the front page now, so the
+ * brand — the one piece of chrome on every screen, sidebar and phone header alike — is the
+ * link back to it, and a nav row pointing at `/` would be a second door to the same room.
+ * The badge on Activity counts open alerts and unread error rows — nothing else, deliberately.
  *
  * Grouped in the sidebar the way the app divides: the standard and what it is measured against on top, what the machine is
- * doing underneath. With only five there is nothing to hide behind a "more" sheet, so the phone gets all five as tabs.
+ * doing underneath. With only four there is nothing to hide behind a "more" sheet, so the phone gets all four as tabs.
  */
 const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Conformance',
     items: [
-      { to: '/', label: 'Overview', end: true },
+      { to: '/overview', label: 'Overview' },
       // The rubric every verdict is measured against. It used to live in a wiki this
       // app only held a slug for; it is a local file now, and editable.
       { to: '/protocol', label: 'Protocol' },
@@ -35,7 +37,6 @@ const NAV: { group: string; items: NavItem[] }[] = [
       // The loop that drives everything under it, above the log of what it did.
       { to: '/automation', label: 'Automation' },
       { to: '/activity', label: 'Activity', badge: true },
-      { to: '/chat', label: 'Administrator' },
     ],
   },
 ];
@@ -53,7 +54,9 @@ export default function Shell({ children }: { children: ReactNode }) {
       <RunTitle />
 
       <header className="mobile-head">
-        <NavLink to="/" className="brand">
+        {/* The brand is the way back to the administrator on the phone, where the tab bar
+            has no row for it. */}
+        <NavLink to="/" className="brand" title="Administrator">
           <Mark />
           Touchstone
         </NavLink>
@@ -63,7 +66,7 @@ export default function Shell({ children }: { children: ReactNode }) {
       </header>
 
       <nav className="sidebar" aria-label="Primary">
-        <NavLink to="/" className="brand" end>
+        <NavLink to="/" className="brand" title="Administrator" end>
           <Mark />
           Touchstone
         </NavLink>
@@ -190,7 +193,7 @@ function TabIcon({ to }: { to: string }) {
 
 const GLYPH: Record<string, ReactNode> = {
   // a checklist: the subject table
-  '/': (
+  '/overview': (
     <>
       <path d="M9 6h11" />
       <path d="M9 12h11" />
@@ -234,6 +237,4 @@ const GLYPH: Record<string, ReactNode> = {
       <path d="M4 21v-4h4" />
     </>
   ),
-  // a speech bubble: the chat
-  '/chat': <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.9 8.9 0 0 1-3.8-.9L3 20.5l1.5-4.4A8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4Z" />,
 };

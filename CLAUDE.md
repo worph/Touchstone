@@ -129,6 +129,17 @@ because its data access was smeared through two 200-line n8n Code nodes.
   requirement *as it settles it*, so a run that dies at requirement 12 of 16 keeps twelve results.
   It also resolves each record's **section** from the canonical list, which is what lets one
   agent response become one assay per section without parsing the prose for headings.
+- **`routes/mcp-admin.ts`** — the *same* seven tools, served as an MCP server at
+  `POST /api/v1/mcp/admin` so an agent can ask them: it renders `CHAT_TOOLS` into `tools/list`
+  and hands `tools/call` to the same handlers with the chat's own `ChatToolContext`. There is
+  no second definition of what an agent may ask this app, which is the point — a second one
+  would be a second thing to keep in step with invariant 6. **Off unless `admin_mcp.enabled`**,
+  and disabled it registers no route at all: it is meant to be beaconified into an aggregator
+  that authenticates nobody, so turning it on is a statement about the box. `read_only` drops
+  the one tool marked `writes` (`run_assay`) from the list *and* refuses it if asked for
+  anyway; `token` is a bearer a beaconify sidecar can inject. `routes/rpc.ts` is the MCP
+  envelope both surfaces share — `initialize`, `tools/list`, `tools/call`, and a `202` for the
+  notification, which is what a discovery client waits for.
 - **`domain/fixreport.ts`** — the audit composed into a brief for whoever has to fix the app,
   served as markdown by `GET /subjects/:name/fix.md`. It **quotes**: findings, severities,
   evidence and remedies all come out of the frontmatter, and where the agent proposed no remedy
@@ -154,9 +165,9 @@ because its data access was smeared through two 200-line n8n Code nodes.
   authoritative; alerts dedup an environment condition to one row; outlets and push are
   best-effort.
 - **`src/server/chat/`** — the administrator chat: a bounded turn loop (`loop.ts`, 8 calls and
-  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), six tools wrapping the
+  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), seven tools wrapping the
   API (`registry.ts`), and the agent call (`driver.ts`) reusing `postToAgent` from the runner.
-  Five of the six **read**, and four of those read what is *written down* — the archive, the fix
+  Six of the seven **read**, and four of those read what is *written down* — the archive, the fix
   brief, the log, the backlog — not the live process, which a `tsx watch` restart empties while
   the operator is still waiting for the run it started (HANDOFF §5k). A run started from a turn
   appends a `note` row back into that thread when it finishes, so the conversation knows what
@@ -164,7 +175,9 @@ because its data access was smeared through two 200-line n8n Code nodes.
   `prompt.md` is an asset — `build:api` copies it into `dist/`, so a new non-TS file there
   needs the same treatment.
 - **`src/web/`** — React + Vite SPA in **two frames**. The operator frame is `Shell` and six pages
-  (Overview, Subject detail, Automation, Activity, Administrator chat, Trials) plus Protocols; the
+  (Administrator chat at `/`, Overview at `/overview`, Subject detail, Automation, Activity,
+  Trials) plus Protocols — the chat is the front page and therefore has no nav row of its own,
+  the brand being the way back to it; `/chat` redirects to `/`. The
   **public frame** is `PublicFrame` and two read-only pages under `/public` (the board and one
   app), addressed to app authors rather than to the operator. `main.tsx` splits them with two
   layout routes rather than a flag, so a public page cannot render operator chrome — it is not in

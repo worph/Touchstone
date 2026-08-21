@@ -554,6 +554,10 @@ The endpoint is not beaconified yet, so the agent reaches it over HTTP rather th
 discovered MCP server. ARCHITECTURE §8 already plans a `touchstone-mcp` beaconify sidecar; that
 is where it belongs, and it is packaging rather than function.
 
+**2026-08-21:** the sidecar shipped, but in front of the *admin* surface rather than this one —
+see §5o. The run ledger stays plain HTTP on purpose: it is scoped to a token that dies with its
+run, so it has nothing to say to an aggregator and nothing to gain from being discovered.
+
 ---
 
 ## 5. Open items
@@ -1325,6 +1329,96 @@ and phone widths; DevTools' network panel shows the pages reaching **only** `/ap
 The compose stack of ARCHITECTURE §8 does not exist yet, so **nothing is actually exposed**. When
 it is written, publishing the board is excluding `/public` and `/api/v1/public/*` from the
 AppShield gate — see §8.1, which is where that reasoning now lives.
+
+---
+
+## 5n. The administrator became the front page — 2026-08-21
+
+Asked for directly: the administrator chat is what `/` serves, and its nav row is gone.
+
+- `main.tsx` — `/` is `AdminChat`, the Overview moved to `/overview`. `/chat` now `Navigate`s
+  to `/`, and `/subjects` and `/findings` (which already redirected) point at `/overview`, so
+  every address that ever worked still lands somewhere correct.
+- `Shell.tsx` — the `Administrator` item is out of `NAV`, which leaves four destinations and
+  therefore four phone tabs; the `'/'` tab glyph became `'/overview'` and the chat's speech
+  bubble is gone with the row it labelled. **The brand is the way back to the chat** — it is
+  `to="/"` in both the sidebar and the phone header already, so the front page is one tap from
+  everywhere without a tab spent on it.
+- `SubjectDetail.tsx` — both "back to the overview" links follow the Overview to `/overview`.
+
+Doc comments that asserted the old order were corrected rather than left to rot: `AdminChat`'s
+header said "It is deliberately not the front page", `Shell`'s said five destinations, UX.md §2
+said five tabs and called the Overview the landing page.
+
+`yarn typecheck` clean, `yarn test` 483 passed. Not rendered against a browser — the dev stack
+was not up, and nothing here is behaviour a test could not see.
+
+---
+
+## 5o. The operator tools became an MCP server — 2026-08-21
+
+Asked for directly: *"do we have an MCP associated with touchstone? and is it compatible with
+beacon?, ideally same scope as admin tool"*. The answer was one and a half no's — there was an
+MCP server (`routes/mcp.ts`), but it is the audit agent's run ledger, scoped to a run token and
+holding three tools that record requirements; and it was reachable only over plain HTTP,
+because nothing announced it to Beacon.
+
+### What landed
+
+- **`routes/rpc.ts`** — the MCP envelope, extracted from `mcp.ts` so both surfaces share one:
+  `initialize`, `tools/list`, `tools/call`, `ping`, a JSON-RPC error for an unknown *method*
+  and an `isError` **result** for an unknown *tool*. One behaviour changed on the way out: the
+  `notifications/initialized` answer is now **202 with no body**, not 204. Beaconify and
+  Beacon's own client both read 202 as accepted-no-content and try to parse anything else; a
+  204 is a body-less 2xx with no content type, which is exactly where a handshake stalls.
+- **`routes/mcp-admin.ts`** — `POST /api/v1/mcp/admin`, serving **`CHAT_TOOLS` unchanged** with
+  the chat's own `ChatToolContext`. Not a copy of the chat's scope: the same array. Seven
+  tools, six that report and `run_assay`.
+- **`ChatTool.writes`** — one flag, set on `run_assay` alone. The chat ignores it; it exists so
+  `read_only` is a property of the tool rather than a list of names that goes stale the day a
+  second write tool is added.
+- **`admin_mcp` in `config.yaml`** (`enabled` / `token` / `read_only`), each with a
+  `TOUCHSTONE_ADMIN_MCP*` environment default, and the seeded template explains the switch
+  rather than just setting it.
+- **`ADMIN_MCP_CALL`** on the log — `info` when the tool could act, `debug` when it only read.
+  The boot row carries `admin_mcp: on | read-only | off`, because "how did an audit start that
+  nobody asked for at the keyboard?" is a question the log should be able to answer.
+- **The AppStore entry** — `Apps/Touchstone/docker-compose.yml` in `AppStoreLab` gains a stock
+  `touchstone-mcp` beaconify sidecar on `pcs`, pointed at
+  `http://touchstone-backend:8080/api/v1/mcp/admin`, and the backend gains
+  `TOUCHSTONE_ADMIN_MCP: "on"`. Both halves or neither: a sidecar in front of a disabled route
+  announces a server with no tools.
+
+### The three decisions worth not re-litigating
+
+1. **Off by default, and disabled means unregistered.** Beacon authenticates nobody by its own
+   documentation, so this is a decision about the box. A disabled-but-answering route would be
+   a thing to mistake for a working one; a 404 is unambiguous.
+2. **The same registry, not a second one.** Two definitions of what an agent may ask Touchstone
+   is two things to keep in step with invariant 6, and the weaker one would be the one somebody
+   had connected.
+3. **`read_only` refuses, it does not merely hide.** A tool absent from `tools/list` and served
+   on request is a surface that lies about itself.
+
+### Verified
+
+`yarn typecheck` clean, `yarn test` 494 passed (11 new). Beyond the unit tests, the real boot
+path was exercised — `TOUCHSTONE_ADMIN_MCP=on` with a token, against a fresh data dir: 401
+without the bearer, `initialize` naming `touchstone-admin`, **202** on the notification,
+`tools/list` returning the seven, and `get_status` answering out of a live process. The seeded
+`config.yaml` carries the block. `docker compose config` parses the store entry.
+
+### Left undone, deliberately
+
+- **The image tag.** The compose was bumped to `ghcr.io/worph/touchstone:1.1.0`, which does not
+  exist until `v1.1.0` is pushed — that is the release procedure `docker-publish.yml` describes
+  (tag, then bump), and the store entry must not be committed ahead of the tag.
+- **Not tried against a live Beacon.** The handshake was verified end to end against the real
+  server, and beaconify's fetcher was read rather than run. Discovery itself — UDP announce on
+  `pcs`, the server appearing in `/api/servers` — is a deploy-time check.
+- **No UI for the switch.** It is a config value like `runner.enabled`, not an Automation-page
+  control. Arming from a browser is for the loop, which acts on its own; this only decides who
+  may ask.
 
 ---
 

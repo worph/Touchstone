@@ -148,6 +148,20 @@ export interface TouchstoneConfig {
     probe_interval_min: number;
     probe_timeout_ms: number;
   };
+  /**
+   * The operator's tools, served over MCP at `/api/v1/mcp/admin` — `routes/mcp-admin.ts`.
+   *
+   * Off, and off is the honest default: it is meant to sit behind a beaconify sidecar and be
+   * aggregated by a Beacon that has no identity model, so enabling it is a statement about
+   * the box rather than about Touchstone. Disabled, the route is not registered at all.
+   */
+  admin_mcp: {
+    enabled: boolean;
+    /** Bearer, checked when set. Beaconify can inject it with `BEACONIFY_AUTH`. */
+    token: string;
+    /** Serve only the tools that report. `run_assay` is the one this drops. */
+    read_only: boolean;
+  };
   notify: {
     outlets: OutletEntry[];
     /**
@@ -197,6 +211,12 @@ function defaults(dataDir: string): TouchstoneConfig {
       min_remaining_min: 60,
       probe_interval_min: 5,
       probe_timeout_ms: 8000,
+    },
+    admin_mcp: {
+      // `on`, `1`, `true` — anything else, including absent, is off.
+      enabled: /^(on|1|true|yes)$/i.test(process.env.TOUCHSTONE_ADMIN_MCP ?? ''),
+      token: process.env.TOUCHSTONE_ADMIN_MCP_TOKEN ?? '',
+      read_only: /^(on|1|true|yes)$/i.test(process.env.TOUCHSTONE_ADMIN_MCP_READ_ONLY ?? ''),
     },
     notify: {
       outlets: [],
@@ -411,6 +431,26 @@ bench:
   min_remaining_min: 60
   probe_interval_min: 5
   probe_timeout_ms: 8000
+
+# ── the operator tools, over MCP ────────────────────────────────────────────────────────
+# Touchstone's own administration — the same tools the chat on the front page uses — served
+# at /api/v1/mcp/admin so an agent can ask them. Seven tools: six read what is written down
+# (the archive, a fix brief, the log, the backlog, the schedule), and run_assay starts an
+# audit. None of them can write a verdict; that is invariant 6 and it does not move.
+#
+# Off by default, and off is the point. This is meant to be announced to a Beacon aggregator,
+# and Beacon trusts every announcement and authenticates nobody — so anything that can reach
+# it can call what is registered there. Everything else Touchstone serves is behind the SSO
+# sidecar.
+# Disabled, the route is not registered at all: there is no address to find.
+admin_mcp:
+  enabled: ${cfg.admin_mcp.enabled}
+  # A bearer, checked on every call when set. A beaconify sidecar can inject it
+  # (BEACONIFY_AUTH) so the caller never holds it.
+  token: "${cfg.admin_mcp.token}"
+  # Serve only the tools that report. Drops run_assay — and refuses it if asked for anyway,
+  # since a hidden tool is not an absent one.
+  read_only: ${cfg.admin_mcp.read_only}
 
 # ── notification ────────────────────────────────────────────────────────────────────────
 # Outlets go through the local Beacon aggregator. \`target\` is a Telegram chat id or a

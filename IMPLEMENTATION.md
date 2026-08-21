@@ -359,6 +359,9 @@ TOUCHSTONE_TRUSTED_GATE=touchstone
 TOUCHSTONE_API_TOKEN=...
 TOUCHSTONE_BEACON_URL=http://beacon-backend:9300/mcp
 TOUCHSTONE_MCP_TOKEN=...
+TOUCHSTONE_ADMIN_MCP=on              # serve the operator tools as MCP; off unless set
+TOUCHSTONE_ADMIN_MCP_TOKEN=...       # bearer for that surface, checked when set
+TOUCHSTONE_ADMIN_MCP_READ_ONLY=on    # drop run_assay from it
 TZ
 ```
 
@@ -380,7 +383,7 @@ Copy the Newsdesk compose and change the names. Four services, per
 ```
 touchstone            AppShield sidecar, the only public surface, Caddy labels here
 touchstone-backend    no labels, pcs only, user 1000:1000, one data volume
-touchstone-mcp        beaconify sidecar (optional) — admin surface for agents
+touchstone-mcp        beaconify sidecar — announces /api/v1/mcp/admin to this box's Beacon
 touchstone-browser-1  browser-mcp:1.1.5, no ports, no profile volume
 touchstone-browser-2  …one per functional worker
 ```

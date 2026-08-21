@@ -282,6 +282,15 @@ await app.register(registerRoutes, {
     known: () => registry.list(),
   },
   boardUrl: cfg.bench.board_url,
+  /**
+   * The chat's tools over MCP, for an agent rather than for a person. Off unless the operator
+   * said otherwise; it takes the `chat.ctx` below rather than a context of its own.
+   */
+  adminMcp: {
+    enabled: cfg.admin_mcp.enabled,
+    ...(cfg.admin_mcp.token ? { token: cfg.admin_mcp.token } : {}),
+    readOnly: cfg.admin_mcp.read_only,
+  },
   chat: {
     threads: chatThreads,
     ...(chatPrompt ? { template: chatPrompt } : {}),
@@ -407,6 +416,10 @@ events.log({
     assays: store.all().length,
     benches: cfg.benches.length,
     outlets: cfg.notify.outlets.length,
+    // On the boot row because it is a surface, not a setting: an operator wondering how an
+    // audit they did not start got started should be able to see, from the log alone, that
+    // something outside the browser could ask for one.
+    admin_mcp: cfg.admin_mcp.enabled ? (cfg.admin_mcp.read_only ? 'read-only' : 'on') : 'off',
   },
 });
 
