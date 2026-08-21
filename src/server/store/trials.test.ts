@@ -6,9 +6,13 @@
  * so the tests here are mostly about what must be refused.
  */
 
-import { describe, expect, it } from 'vitest';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { isTrialSlug, TrialInputError, trialSlug, validateTrial } from './trials.js';
+import type { TrialRecord } from '../../shared/trials.js';
+import { isTrialSlug, TrialInputError, trialSlug, TrialStore, validateTrial } from './trials.js';
 
 const OK = { repo: 'Acme/AppStore', ref: 'pr-812', subject: 'Widget' };
 
@@ -85,5 +89,99 @@ describe('trialSlug', () => {
     for (const bad of ['../etc', 'a/b', 'yundera~FileBrowser', 'no-at-sign', '']) {
       expect(isTrialSlug(bad)).toBe(false);
     }
+  });
+});
+
+/**
+ * Retention: a trial's row and its report directory live and die together.
+ *
+ * They did not, once. `MAX_TRIALS` capped the row and left the directory, so past a hundred
+ * trials the oldest directories became orphaned — invisible in the UI, undeletable through it,
+ * and carried in every backup and uninstall archive for good.
+ */
+describe('trial retention', () => {
+  let dir: string;
+  let root: string;
+  let store: TrialStore;
+
+  const rec = (slug: string, at: string): TrialRecord => ({
+    slug,
+    repo: 'Acme/AppStore',
+    ref: 'pr-1',
+    apps_path: 'Apps',
+    subject: 'Widget',
+    started_at: at,
+  });
+
+  /** A trial's reports, as the runner would have written them. */
+  async function reportsFor(slug: string): Promise<void> {
+    const d = path.join(root, slug, 'Widget');
+    await fs.mkdir(d, { recursive: true });
+    await fs.writeFile(path.join(d, '2026-08-21T00-00-00Z-static.md'), '---\nsubject: Widget\n---\n', 'utf8');
+  }
+
+  const exists = async (slug: string): Promise<boolean> =>
+    fs.access(path.join(root, slug)).then(() => true, () => false);
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'touchstone-trial-retention-'));
+    root = path.join(dir, 'trials');
+    await fs.mkdir(root, { recursive: true });
+    store = new TrialStore(dir, root);
+    await store.load();
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('deletes the reports when the row is deleted', async () => {
+    await store.add(rec('A@one', '2026-08-21T09:00:00.000Z'));
+    await reportsFor('A@one');
+    expect(await exists('A@one')).toBe(true);
+
+    expect(await store.remove('A@one')).toBe(true);
+    expect(await exists('A@one')).toBe(false);
+  });
+
+  it('deletes the reports of a row that falls off the end of the cap', async () => {
+    // 101 trials: the oldest is evicted, and its directory must go with it.
+    for (let i = 0; i <= 100; i++) {
+      const slug = `A@r${i}`;
+      await store.add(rec(slug, `2026-08-21T09:${String(i).padStart(2, '0')}:00.000Z`));
+      await reportsFor(slug);
+    }
+
+    expect(store.list()).toHaveLength(100);
+    expect(store.get('A@r0')).toBeUndefined();
+    // The whole point: the row went and so did the bytes.
+    expect(await exists('A@r0')).toBe(false);
+    expect(await exists('A@r100')).toBe(true);
+  });
+
+  it('sweeps directories that have no row', async () => {
+    await store.add(rec('A@keep', '2026-08-21T09:00:00.000Z'));
+    await reportsFor('A@keep');
+    await reportsFor('A@orphan'); // no row — what the old eviction left behind
+
+    const swept = await store.sweepOrphans();
+
+    expect(swept).toEqual(['A@orphan']);
+    expect(await exists('A@orphan')).toBe(false);
+    expect(await exists('A@keep')).toBe(true);
+  });
+
+  it('never removes a directory it did not mint', async () => {
+    // An operator's own folder under trials/ is not a slug and must survive the sweep.
+    await fs.mkdir(path.join(root, 'my-notes'), { recursive: true });
+    const swept = await store.sweepOrphans();
+    expect(swept).toEqual([]);
+    expect(await exists('my-notes')).toBe(true);
+  });
+
+  it('sweeps nothing, quietly, when there is no trials directory', async () => {
+    const bare = new TrialStore(dir, path.join(dir, 'absent'));
+    await bare.load();
+    expect(await bare.sweepOrphans()).toEqual([]);
   });
 });

@@ -198,8 +198,19 @@ const runner = new Runner({
  * subject registry are never handed it. That is what makes "a trial cannot move a hallmark"
  * true by construction rather than by a rule somebody has to keep remembering.
  */
-const trials = new TrialStore(cfg.stateDir);
+const trials = new TrialStore(cfg.stateDir, cfg.trialsRoot);
 await trials.load();
+// Report directories with no row — the orphans a crash between the two writes can strand,
+// and the ones the old row-only eviction left behind before trials owned their own files.
+const sweptTrials = await trials.sweepOrphans();
+if (sweptTrials.length > 0) {
+  events.log({
+    level: 'info',
+    code: 'TRIAL_SWEPT',
+    message: `Removed ${sweptTrials.length} trial report folder(s) with no record`,
+    detail: { slugs: sweptTrials },
+  });
+}
 
 const chatThreads = new ChatThreads(cfg.stateDir);
 await chatThreads.load();

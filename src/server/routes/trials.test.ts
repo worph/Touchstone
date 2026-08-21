@@ -51,7 +51,7 @@ beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'touchstone-trials-'));
   events = new EventLog(dir);
   await events.load();
-  trials = new TrialStore(dir);
+  trials = new TrialStore(dir, path.join(dir, 'trials'));
   await trials.load();
 });
 
