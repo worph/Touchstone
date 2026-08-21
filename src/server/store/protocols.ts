@@ -23,6 +23,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 
+import { REPO_ROOT } from './config.js';
+
 export interface ProtocolMeta {
   /**
    * The protocol id, and — for a leaf — **the section id**: the value that lands in an
@@ -176,6 +178,74 @@ export function sectionsOf(protocols: readonly Protocol[]): ProtocolSection[] {
       body: p.body,
     }))
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+}
+
+/**
+ * Where the shipped copies of the rubric live in a built image.
+ *
+ * `data/protocols/*.md` are committed to the repo, which is enough in development and is
+ * exactly wrong in a container: the data dir is a volume, it starts empty, and an empty
+ * protocol directory means `sectionsOf()` returns nothing, every run blocks `no_protocol`
+ * and the Protocols page renders empty. So the image carries its own copy outside the volume
+ * and seeds it on first boot, the same move `ensureConfigFile` makes for `config.yaml`.
+ *
+ * `REPO_ROOT` resolves to `/app` in the image and to the repo in development, where this
+ * directory does not exist and seeding is therefore a no-op — `data/protocols/` is already
+ * populated by the checkout.
+ */
+export const PROTOCOL_SEED_DIR =
+  process.env.TOUCHSTONE_PROTOCOL_SEED_DIR ?? path.join(REPO_ROOT, 'seed', 'protocols');
+
+export interface SeedResult {
+  /** Files written. Empty when the directory already had them, which is the steady state. */
+  seeded: string[];
+  failed?: string;
+}
+
+/**
+ * Copy the shipped rubric into `dir` for any leaf that is not already there.
+ *
+ * **Never overwrites.** The protocol is editable in the app and versions itself on save, so an
+ * operator's edit outranks the image's copy — a redeploy that silently reverted the rubric
+ * would also silently change what every subsequent assay is judged against. A file that exists
+ * is left exactly as it is, whatever its version.
+ */
+export async function ensureProtocolFiles(
+  dir: string,
+  seedDir: string = PROTOCOL_SEED_DIR,
+): Promise<SeedResult> {
+  const out: SeedResult = { seeded: [] };
+  let names: string[];
+  try {
+    names = (await fs.readdir(seedDir)).filter((n) => n.endsWith('.md')).sort();
+  } catch (err) {
+    // No seed directory is the normal development case: the checkout already has the files.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return out;
+    out.failed = err instanceof Error ? err.message : String(err);
+    return out;
+  }
+
+  try {
+    await fs.mkdir(dir, { recursive: true });
+    for (const name of names) {
+      const target = path.join(dir, name);
+      try {
+        // `wx` is the whole guarantee: exclusive create, so two boots racing cannot both
+        // write, and an existing file is never touched.
+        await fs.writeFile(target, await fs.readFile(path.join(seedDir, name), 'utf8'), {
+          encoding: 'utf8',
+          flag: 'wx',
+        });
+        out.seeded.push(name);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      }
+    }
+  } catch (err) {
+    // A read-only data dir is a real deployment; the app still runs on whatever is there.
+    out.failed = err instanceof Error ? err.message : String(err);
+  }
+  return out;
 }
 
 export class ProtocolStore {

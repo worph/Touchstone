@@ -1,0 +1,22 @@
+# The build needs src/, the manifests and the tsconfigs. Everything else is either large,
+# machine-specific, or — in `data/`'s case — the operator's, and belongs in the volume rather
+# than baked into an image.
+node_modules
+dist
+.git
+.github
+
+# Runtime data. `data/protocols/` is the exception: the image ships it as a seed, so it is
+# un-ignored below. Reports, trials, state and config are the operator's and must never be
+# baked in — a redeploy carrying somebody else's archive would be a very confusing bug.
+data/*
+!data/protocols/
+data/reports
+data/trials
+data/state
+data/config.yaml
+
+test
+docker-compose.dev.yml
+*.log
+.DS_Store

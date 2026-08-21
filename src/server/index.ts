@@ -18,7 +18,7 @@ import { SubjectRegistry } from './store/registry.js';
 import { Scheduler } from './scheduler/index.js';
 import { Runner } from './runner/index.js';
 import { PortProber } from './services/ports.js';
-import { ProtocolStore } from './store/protocols.js';
+import { ensureProtocolFiles, ProtocolStore } from './store/protocols.js';
 import { RunLedger } from './services/ledger.js';
 import { outcomeClause, type RunOutcome } from '../shared/activity.js';
 import { subjectName } from '../shared/subject.js';
@@ -41,6 +41,13 @@ try {
   app.log.warn({ err }, 'could not seed config.yaml; running on defaults');
 }
 const cfg = await loadConfig(dataDir);
+
+// The rubric has to be *on disk in the data dir*, not merely in the image: it is editable in
+// the app, it versions itself on save, and every assay records the version that judged it. In a
+// container the data dir is an empty volume on first boot, and an empty protocol directory
+// means every run blocks `no_protocol`. Seeding never overwrites — an operator's edit outranks
+// the image's copy, or a redeploy would quietly change the standard.
+const seededProtocols = await ensureProtocolFiles(cfg.protocolsDir);
 
 // Reports moved under a store folder when the store became a configured value:
 // `reports/<Subject>/` → `reports/<origin>/<Subject>/`. This runs before the index, or the
@@ -231,6 +238,17 @@ const scheduler = new Scheduler({
 });
 await scheduler.load();
 
+/**
+ * Liveness, for the container healthcheck and nothing else.
+ *
+ * Outside `/api/v1` and deliberately trivial: it answers whether the process is up, not
+ * whether the environment is well — the agent, the browser and the bench pool all being
+ * unreachable is a legitimate running state (invariant 7, the app must stay diagnosable with
+ * every outbound port broken), and a healthcheck that failed on it would have Docker restart
+ * a process that is working correctly and reporting the outage.
+ */
+app.get('/healthz', async () => ({ ok: true, subjects: store.subjects().length }));
+
 await app.register(registerRoutes, {
   prefix: '/api/v1',
   store,
@@ -352,6 +370,21 @@ if (seededConfig) {
     code: 'CONFIG_SEEDED',
     message: 'A starter configuration file was written into the data directory',
   });
+}
+
+if (seededProtocols.seeded.length > 0) {
+  events.log({
+    level: 'info',
+    code: 'PROTOCOL_SEEDED',
+    message: `The rubric was written into the data directory — ${seededProtocols.seeded.join(', ')}`,
+    detail: { files: seededProtocols.seeded, dir: cfg.protocolsDir },
+  });
+}
+if (seededProtocols.failed) {
+  // Not fatal: whatever is already on disk still loads, and a read-only data dir is a real
+  // deployment. But a *first* boot that lands here has no rubric at all, which the Protocols
+  // page and the first blocked run will both say.
+  app.log.warn({ err: seededProtocols.failed }, 'could not seed the rubric into the data dir');
 }
 
 events.log({
