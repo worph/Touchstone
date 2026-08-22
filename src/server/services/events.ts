@@ -109,6 +109,13 @@ export const EVENT_CODES = {
   ASSAY_FAILED: { category: 'assay', label: 'audit failed' },
   ASSAY_BLOCKED: { category: 'assay', label: 'audit could not start' },
   ASSAY_DEGRADED: { category: 'assay', label: 'a section could not be attempted' },
+  /**
+   * A section with a script executor produced no reading — the script broke, or it ran and
+   * said it could not reach what it reads. Its own code rather than `ASSAY_FAILED`, because
+   * neither case is a statement about the app and neither costs the run: the other sections
+   * carry on and the subject keeps its place.
+   */
+  EXECUTOR_FAILED: { category: 'assay', label: 'a scripted check produced no reading' },
 
   CHAT_TOOL_FAILED: { category: 'chat', label: 'a tool call was refused' },
   ADMIN_MCP_CALL: { category: 'chat', label: 'an operator tool was called over MCP' },
@@ -212,6 +219,14 @@ interface EventDetails {
   };
   ASSAY_FAILED: { subject: string; error: string; raw: string };
   ASSAY_BLOCKED: { subject: string; reason: string };
+  EXECUTOR_FAILED: {
+    subject: string;
+    section: Section;
+    /** The file named by the protocol, or `<none>` when it named one we would not run. */
+    executor: string;
+    reason: string;
+    detail: string;
+  };
   /** One section could not be attempted; the rest of the run went ahead without it. */
   ASSAY_DEGRADED: { subject: string; reason: string; section: Section };
   CHAT_TOOL_FAILED: { tool: string; error: string };

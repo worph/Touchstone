@@ -8,6 +8,7 @@ import type { BenchProber } from '../services/bench.js';
 import { classify, extractText } from './agent.js';
 import { DEFAULT_ORIGIN, subjectKey } from '../../shared/subject.js';
 import { Runner, type RunnerOptions } from './index.js';
+import { ProtocolStore } from '../store/protocols.js';
 
 /** The app under test, as the runner now addresses it: `<origin>~<name>`. */
 const SUBJECT = subjectKey(DEFAULT_ORIGIN, 'Tuwunel');
@@ -781,5 +782,130 @@ describe('a trial', () => {
       trialJob(path.join(dir, 'trials', SLUG)),
     );
     expect(out.kind).toBe('verdict');
+  });
+});
+
+/**
+ * The second executor. A section whose protocol names a `*.sh` is performed by that file
+ * instead of by the agent — the seam that lets a deterministic check ship as two files on
+ * the volume rather than as a release.
+ */
+describe('scripted sections', () => {
+  /** A real protocol directory, because the point of the feature is a real file on disk. */
+  async function withScript(body: string, extra = 'scores: false\n'): Promise<ProtocolStore> {
+    const pdir = path.join(dir, 'protocols');
+    await fs.mkdir(pdir, { recursive: true });
+    await fs.writeFile(
+      path.join(pdir, 'static.md'),
+      '---\nid: static\nname: Static Review Protocol\nversion: 1\nkind: leaf\norder: 1\n' +
+        'report_headings: ["^tech\\\\s*&\\\\s*documentation"]\n---\n\nthe static rubric\n',
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(pdir, 'currency.md'),
+      '---\nid: currency\nname: Image Currency\nversion: 4\nkind: leaf\norder: 3\n' +
+        `executor: currency.sh\n${extra}policy:\n  stale_days: 180\n---\n\nthe currency policy\n`,
+      'utf8',
+    );
+    await fs.writeFile(path.join(pdir, 'currency.sh'), body, { encoding: 'utf8', mode: 0o755 });
+    return new ProtocolStore(pdir);
+  }
+
+  const readingFile = async (): Promise<string> => {
+    const files = await reportFiles();
+    const found = files.find((f) => f.endsWith('-currency.md'));
+    expect(found, 'a currency assay should have been written').toBeTruthy();
+    return fs.readFile(found!, 'utf8');
+  };
+
+  it('runs the script, writes its own assay, and leaves the agent to the rubric', async () => {
+    const protocols = await withScript(
+      `#!/bin/sh\ncat > "$(dirname "$0")/../seen.json"\necho '{"status":"done","badge":"2 behind · 400d","badge_state":"bad","summary":"Two images are behind.","columns":[{"key":"image","label":"Image"}],"rows":[{"image":"caddy","state":"stale"}]}'\n`,
+    );
+    const out = await make({ protocols: protocols as never }).run({ subject: SUBJECT, try_n: 1 });
+    expect(out.kind).toBe('verdict');
+
+    const text = await readingFile();
+    expect(text).toContain('section: currency');
+    expect(text).toContain('badge: 2 behind · 400d');
+    expect(text).toContain('executor: currency.sh');
+    expect(text).toMatch(/executor_sha256: [0-9a-f]{64}/);
+    expect(text).toContain('scores: false');
+    // It measures: no verdict, and nothing added to the subject's risk.
+    expect(text).toContain('verdict: null');
+    expect(text).toContain('risk_score: 0');
+    expect(text).toContain('| caddy |');
+
+    // The headline still belongs to the rubric's first section, not to the reading.
+    expect(out.kind === 'verdict' && out.verdict).toBe('non-compliant');
+    expect(out.kind === 'verdict' && out.risk).toBe(113);
+  });
+
+  /** Everything the check needs arrives on stdin — nothing is interpolated into a command. */
+  it('hands the subject and the protocol policy over on stdin', async () => {
+    const protocols = await withScript(
+      `#!/bin/sh\ncat > "${path.join(dir, 'stdin.json')}"\necho '{"status":"done","badge":"current","badge_state":"ok"}'\n`,
+    );
+    await make({ protocols: protocols as never }).run({ subject: SUBJECT, try_n: 1 });
+    const seen = JSON.parse(await fs.readFile(path.join(dir, 'stdin.json'), 'utf8'));
+    expect(seen.subject).toBe('Tuwunel');
+    expect(seen.section).toBe('currency');
+    expect(seen.repo).toBe('Yundera/AppStore');
+    expect(seen.policy).toEqual({ stale_days: 180 });
+  });
+
+  /**
+   * Invariant 4, one layer out. A registry that would not answer says nothing about the app,
+   * and the rest of the run is unaffected.
+   */
+  it('records a script that could not look as blocked, and finishes the run anyway', async () => {
+    const protocols = await withScript(
+      `#!/bin/sh\ncat > /dev/null\necho '{"status":"blocked","reason":"docker hub answered 429"}'\n`,
+    );
+    const out = await make({ protocols: protocols as never }).run({ subject: SUBJECT, try_n: 1 });
+    expect(out.kind).toBe('verdict');
+    const text = await readingFile();
+    expect(text).toContain('status: blocked');
+    expect(text).toContain('executor_blocked');
+    expect(text).toContain('429');
+    expect(events.query({ limit: 50 }).some((e) => e.code === 'EXECUTOR_FAILED')).toBe(true);
+  });
+
+  it('records a broken executor as blocked rather than failing the audit', async () => {
+    const protocols = await withScript('#!/bin/sh\ncat > /dev/null\necho "jq: not found" >&2\nexit 127\n');
+    const out = await make({ protocols: protocols as never }).run({ subject: SUBJECT, try_n: 1 });
+    expect(out.kind).toBe('verdict');
+    expect(await readingFile()).toContain('executor_exit');
+  });
+
+  /** A protocol naming something we will not spawn must say so, never quietly ask the agent. */
+  it('blocks a section whose executor is not a plain sibling script', async () => {
+    const pdir = path.join(dir, 'protocols');
+    await withScript('#!/bin/sh\necho "{}"\n');
+    await fs.writeFile(
+      path.join(pdir, 'currency.md'),
+      '---\nid: currency\nname: Image Currency\nversion: 4\nkind: leaf\norder: 3\n' +
+        'executor: ../../bin/evil.sh\nscores: false\n---\n\npolicy\n',
+      'utf8',
+    );
+    const out = await make({ protocols: new ProtocolStore(pdir) as never }).run({ subject: SUBJECT, try_n: 1 });
+    expect(out.kind).toBe('verdict');
+    const text = await readingFile();
+    expect(text).toContain('status: blocked');
+    expect(text).toContain('executor_spawn');
+    expect(text).toContain('is not a name this app will run');
+  });
+
+  it('runs a protocol of scripted sections alone, without calling the agent at all', async () => {
+    const pdir = path.join(dir, 'protocols');
+    await withScript(`#!/bin/sh\ncat > /dev/null\necho '{"status":"done","badge":"current","badge_state":"ok"}'\n`);
+    await fs.rm(path.join(pdir, 'static.md'));
+    const runner = make({ protocols: new ProtocolStore(pdir) as never }, [
+      // Any agent call here would consume this and fail the assertion below.
+      sse('{"not":"json the runner can use"}'),
+    ]);
+    const out = await runner.run({ subject: SUBJECT, try_n: 1 });
+    expect(out.kind).toBe('verdict');
+    expect(await readingFile()).toContain('badge: current');
   });
 });

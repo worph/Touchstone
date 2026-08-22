@@ -20,6 +20,7 @@
 import type { AssayMeta, RecordedPhase, RecordedRequirement, Section, Severity } from '../../shared/types.js';
 import { SEVERITY_RANK } from '../../shared/types.js';
 import { PHASE_LABEL } from '../../shared/activity.js';
+import { renderRows } from './scripted.js';
 
 export interface FixReportSection {
   meta: AssayMeta;
@@ -132,6 +133,16 @@ export function buildFixReport(input: FixReportInput): string | null {
   }
   for (const leg of legs) {
     const m = leg.meta;
+    if (m.scores === false) {
+      // A section that measures has no verdict to report and never had one. Printing
+      // `no verdict · top severity none · risk 0` would read as a section that failed to
+      // produce one, which is the opposite of what happened.
+      L.push(
+        `- **${cap(m.section)}** — ${m.status === 'blocked' ? 'not measured' : `measured: ${String(m.badge ?? 'see below')}`}` +
+          ` · ${m.standard} v${m.standard_version} · read ${m.finished_at}`,
+      );
+      continue;
+    }
     L.push(
       `- **${cap(m.section)}** — ${m.status === 'blocked' ? 'blocked' : (m.verdict ?? 'no verdict')}` +
         `${m.status === 'blocked' ? '' : ` · top severity ${m.top_severity} · risk ${m.risk_score}`}` +
@@ -232,6 +243,35 @@ export function buildFixReport(input: FixReportInput): string | null {
   // ── the ground that must not move ─────────────────────────────────────────────────────
   const passing = legs.flatMap((l) => (l.meta.requirements ?? []).filter((r) => r.verdict === 'pass'));
   const unverified = legs.flatMap((l) => (l.meta.requirements ?? []).filter((r) => r.verdict === 'unverified'));
+  // ── readings ───────────────────────────────────────────────────────────────────────────
+  // A section that measures rather than judges — `currency` and whatever follows it. It is
+  // kept out of "What must change" on purpose: an image being behind is not a failed
+  // requirement, it did not enter the gate, and mixing it into a numbered findings list
+  // would put "bump nginx" beside an auth bypass as if a reviewer should weigh them the
+  // same. It is here because it is the most immediately actionable thing in the document,
+  // and because the brief only ever quotes what was recorded — these numbers were measured,
+  // not proposed.
+  const readings = legs.filter((l) => l.meta.scores === false && l.meta.status === 'done');
+  for (const reading of readings) {
+    const state = reading.meta.badge_state;
+    if (state !== 'warn' && state !== 'bad') continue;
+    L.push(`## ${String(reading.meta.standard ?? reading.meta.section)} — worth doing, not blocking`);
+    L.push('');
+    if (reading.meta.summary) L.push(String(reading.meta.summary));
+    L.push('');
+    const table = renderRows({ ...(reading.meta.columns ? { columns: reading.meta.columns } : {}), ...(reading.meta.rows ? { rows: reading.meta.rows } : {}) });
+    if (table) {
+      L.push(table);
+      L.push('');
+    }
+    L.push(
+      'No requirement failed because of this and the verdict above does not depend on it. ' +
+        'It is measured, not judged: what an image is behind by is a fact about its upstream, ' +
+        'and the dates are when a newer release first appeared.',
+    );
+    L.push('');
+  }
+
   if (passing.length > 0) {
     L.push(`## Already passing — do not regress (${passing.length})`);
     L.push('');

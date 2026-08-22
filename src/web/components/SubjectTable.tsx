@@ -15,6 +15,8 @@ import { Link } from 'react-router-dom';
 import type { Leg, SubjectState } from '@shared/types';
 import CoverageCell from './CoverageCell';
 import StatusCell from './StatusCell';
+import { ReadingBadge } from './Reading';
+import { readingOf, readingSections } from '../lib/reading';
 import { coverageOf, legState, type LegTally, type LiveRun, type Tallies } from '../lib/overview';
 import { ageLabel, num } from '../lib/format';
 import type { ShowFilter, SortKey } from '../types';
@@ -35,6 +37,9 @@ export interface SubjectTableProps {
 export default function SubjectTable({
   rows, sort, dir, onSort, href, live = null, showOrigin,
 }: SubjectTableProps) {
+  // Derived from what is in the archive rather than passed in: a section that measures gets
+  // a column the moment one of its assays exists, and nothing here has to be told its name.
+  const notices = readingSections(rows);
   return (
     <div className="tbl-wrap">
       <table className="tbl">
@@ -43,6 +48,9 @@ export default function SubjectTable({
             <Th label="Subject" k="name" sort={sort} dir={dir} onSort={onSort} />
             <Th label="Static" k="static" sort={sort} dir={dir} onSort={onSort} />
             <Th label="Functional" k="functional" sort={sort} dir={dir} onSort={onSort} />
+            {notices.map((id) => (
+              <Th key={id} label={label(id)} k={`notice:${id}`} sort={sort} dir={dir} onSort={onSort} />
+            ))}
             <Th label="Verified" k="coverage" sort={sort} dir={dir} onSort={onSort} align="right" />
             <Th label="Risk" k="risk" sort={sort} dir={dir} onSort={onSort} align="right" />
             <Th label="Last" k="age" sort={sort} dir={dir} onSort={onSort} align="right" />
@@ -51,7 +59,7 @@ export default function SubjectTable({
         </thead>
         <tbody>
           {rows.map((s) => (
-            <Row key={s.name} s={s} live={live} showOrigin={showOrigin} href={href} />
+            <Row key={s.name} s={s} live={live} showOrigin={showOrigin} href={href} notices={notices} />
           ))}
         </tbody>
       </table>
@@ -59,13 +67,19 @@ export default function SubjectTable({
   );
 }
 
+/** `currency` → `Currency`. The section id is the only name a reading column has. */
+function label(id: string): string {
+  return id.charAt(0).toUpperCase() + id.slice(1).replace(/[-_]/g, ' ');
+}
+
 function Row({
-  s, live, showOrigin, href,
+  s, live, showOrigin, href, notices,
 }: {
   s: SubjectState;
   live: LiveRun | null;
   showOrigin: boolean;
   href: (s: SubjectState) => string;
+  notices: string[];
 }) {
   const never = !s.static && !s.functional;
   const running = live?.subject === s.name;
@@ -86,6 +100,9 @@ function Row({
           now says so in the same cell that will hold its verdict in four minutes. */}
       <td><StatusCell state={legState(s, 'static', live)} showNote={running} /></td>
       <td><StatusCell state={legState(s, 'functional', live)} /></td>
+      {notices.map((id) => (
+        <td key={id}><ReadingBadge reading={readingOf(s, id)} /></td>
+      ))}
       <td className="col-num">
         <CoverageCell coverage={coverageOf(s)} />
       </td>

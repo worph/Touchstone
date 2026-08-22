@@ -45,4 +45,11 @@ export type ShowFilter =
   | 'stale'
   | 'running';
 
-export type SortKey = 'risk' | 'coverage' | 'name' | 'age' | 'static' | 'functional';
+/**
+ * `notice:<section>` sorts by a reading column — one exists per section in the archive that
+ * measures rather than judges, so the key cannot be a closed list without a code change every
+ * time a scripted check is added.
+ */
+export type SortKey =
+  | 'risk' | 'coverage' | 'name' | 'age' | 'static' | 'functional'
+  | `notice:${string}`;

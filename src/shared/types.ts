@@ -127,6 +127,38 @@ export interface AssayMeta {
   subject_ref?: string;
   commit?: string;
   images?: string[];
+  /**
+   * Who performed this assay, when it was not the agent — the `*.sh` the protocol named, and
+   * the hash of what that file contained at the time.
+   *
+   * The hash is the procedure's version. The rubric bumps `standard_version` on every save,
+   * but a script beside it is edited on the volume and has no number of its own; without this
+   * an operator could change what a check does and leave nothing in the archive to say that
+   * two readings were produced by two different procedures.
+   */
+  executor?: string;
+  executor_sha256?: string;
+  /**
+   * **False when this section measures rather than judges.** Absent means it counts, which is
+   * every assay written before scripted sections existed.
+   *
+   * A non-scoring assay is invisible to the hallmark: its risk is not summed and its finish
+   * time does not age the subject. See `domain/hallmark.ts`.
+   */
+  scores?: boolean;
+  /**
+   * What a scripted section measured, in the shape it asked to be drawn in.
+   *
+   * Deliberately opaque to everything in `src/`: `badge` is a dozen characters for a table
+   * cell, `rows` are whatever the check found and `columns` is how it wants them laid out.
+   * Touchstone renders them; it does not interpret them, which is what lets a new check ship
+   * as two files on the volume rather than as a release.
+   */
+  badge?: string;
+  badge_state?: 'ok' | 'warn' | 'bad' | 'unknown';
+  summary?: string;
+  columns?: { key: string; label?: string; align?: 'left' | 'right'; kind?: 'since' }[];
+  rows?: Record<string, string | number | boolean | null>[];
   started_at: string;
   finished_at: string;
   /** Present from 2026-08-19; absent on every assay imported before the runner existed. */

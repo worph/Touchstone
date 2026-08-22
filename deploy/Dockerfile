@@ -15,6 +15,12 @@
 #
 # Debian rather than Alpine: no native dependencies (the AppStore requires amd64 *and* arm64,
 # which is why there is no SQLite here), but glibc keeps the build boring.
+#
+# 3. **A section may be performed by a script**, not only by the agent — `executor: x.sh` in a
+#    protocol file. Those live beside the rubric on the volume so they can be changed without a
+#    rebuild, which is the whole point; what they need to *run* cannot follow them there, so
+#    `curl` and `jq` are installed below. Both are small, both are on amd64 and arm64, and
+#    neither is a native dependency of the Node build.
 
 FROM node:22-bookworm-slim AS build
 
@@ -44,12 +50,22 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
+# What a `*.sh` executor needs. `ca-certificates` is not optional: without it every registry
+# lookup fails TLS verification and every currency reading records `blocked`, which is honest
+# and useless.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl jq \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/dist         ./dist
 
-# The shipped rubric, outside the volume. `PROTOCOL_SEED_DIR` resolves to `<REPO_ROOT>/seed/
-# protocols`, and REPO_ROOT is `/app` here because the code runs from `/app/dist/server/`.
+# The shipped rubric *and its executors*, outside the volume. `PROTOCOL_SEED_DIR` resolves to
+# `<REPO_ROOT>/seed/protocols`, and REPO_ROOT is `/app` here because the code runs from
+# `/app/dist/server/`. `ensureProtocolFiles` copies both `.md` and `.sh` in on first boot and
+# never overwrites either: an operator's edit outranks the image's copy, for the procedure for
+# exactly the same reason it does for the policy.
 COPY data/protocols/ ./seed/protocols/
 
 # `pcs` runs apps as 1000:1000 and the compose sets `user: 1000:1000`; node:22 already has a

@@ -181,9 +181,21 @@ plan.** There are **four sanctioned exceptions**, each asked for by the operator
 | 2 | The notification system built to Newsdesk's shape, PWA identity and error assistant included | §5.5 |
 | 3 | Touchstone's own embedded browser sidecar, rather than the shared box-wide one | §5.4 |
 | 4 | Docmost is exited entirely — reports are local files, nothing published, nothing read back | §5.6 |
+| 5 | **Image currency** — how far behind its upstream each service is, and for how long | REQUIREMENTS §14 |
 
-Exceptions 2–4 were confirmed on 2026-08-19. Nothing else is added without the same explicit
-decision.
+Exceptions 2–4 were confirmed on 2026-08-19; exception 5 on 2026-08-22. Nothing else is added
+without the same explicit decision.
+
+**Exception 5 widened one thing worth naming here**, because it changes what a *section* is. A
+protocol leaf now declares **who performs it** — `executor: agent` (the default, and every leaf
+that existed before) or the name of a `*.sh` file beside it. The record shape is unchanged, so
+nothing downstream knows the difference; what changed is that a deterministic check no longer
+costs an agent call, and ships as two files on the data volume rather than as a release. A
+section may also declare `scores: false`, which makes it **invisible to the hallmark** — its risk
+is not summed and its finish time does not age the subject. That flag is what keeps *"this image
+is 400 days old"* from being read as *"this app is non-compliant"*: the app has not changed, the
+world has. See REQUIREMENTS §14 for the argument and for the four rules that keep a script
+directory from being a remote shell.
 
 ---
 
