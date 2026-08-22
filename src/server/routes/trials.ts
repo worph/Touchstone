@@ -29,7 +29,7 @@ import { promises as fs } from 'node:fs';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 
 import { asSubjectKey, subjectKey } from '../../shared/subject.js';
-import type { TrialComparison } from '../../shared/trials.js';
+import type { TrialCell, TrialComparison } from '../../shared/trials.js';
 import { renderMarkdown } from '../domain/markdown.js';
 import { latestDone } from '../domain/hallmark.js';
 import type { Runner } from '../runner/index.js';
@@ -44,6 +44,7 @@ import {
   type TrialRunDeps,
 } from '../services/trialrun.js';
 import type { OriginEntry } from '../store/config.js';
+import { sectionsOf, type ProtocolStore } from '../store/protocols.js';
 import type { UploadStore } from '../store/uploads.js';
 
 export interface TrialRoutesOptions {
@@ -60,6 +61,13 @@ export interface TrialRoutesOptions {
   uploads?: UploadStore;
   /** The configured stores, so a trial is judged against the right CONTRIBUTING.md. */
   origins?: OriginEntry[];
+  /**
+   * The protocol's own section order, so the comparison reads in the order every other screen
+   * reads. Absent, the sections fall out of a directory listing, which is alphabetical and put
+   * `functional` above `static` — the reverse of the Overview's two columns, on the one page
+   * whose whole job is being compared against them.
+   */
+  protocols?: ProtocolStore;
   /** Touchstone's external address, so a trial can hand a bench the store it audited. */
   publicBaseUrl?: string;
   /** Injected in tests so a trial can be started without reaching GitHub. */
@@ -170,14 +178,33 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
     // verdict on a branch means little until you know whether it is better or worse than the
     // thing it would replace.
     const current = trial.compare_to ? (options.store?.forSubject(asSubjectKey(trial.compare_to)) ?? []) : [];
-    const sections = [...new Set([...index.sections(), ...current.map((r) => r.meta.section)])];
-    const shape = (rec: (typeof mine)[number] | null) =>
+    const seen = [...new Set([...index.sections(), ...current.map((r) => r.meta.section)])];
+    // The protocol's `order`, and only as a *sort key* — a section it has never heard of still
+    // appears, after the ones it declares. Dropping one would hide an assay the runner wrote,
+    // which is the failure invariant 6 names: a section the gate does not read is where a
+    // Critical hides.
+    const declared = sectionsOf(await (options.protocols?.list() ?? Promise.resolve([])));
+    const rank = new Map(declared.map((d) => [d.id, d.order]));
+    const sections = seen.sort((a, b) => {
+      const ra = rank.get(a) ?? Number.MAX_SAFE_INTEGER;
+      const rb = rank.get(b) ?? Number.MAX_SAFE_INTEGER;
+      return ra === rb ? a.localeCompare(b) : ra - rb;
+    });
+    // The whole of `AssayMeta` the status vocabulary reads, not a summary of it. `blocked_reason`
+    // especially: `domain/assay.ts` writes a different sentence for each of the four ways a
+    // section can block, and a cell that cannot see which one applies can only ever offer one
+    // of them. It offered the `store_url_unconfigured` advice for an empty bench pool.
+    const shape = (rec: (typeof mine)[number] | null): TrialCell | null =>
       rec
         ? {
             status: rec.meta.status,
             verdict: rec.meta.verdict ?? null,
             top_severity: rec.meta.top_severity,
             risk_score: Number(rec.meta.risk_score) || 0,
+            blocked_reason: rec.meta.blocked_reason ?? null,
+            standard: rec.meta.standard,
+            standard_version: rec.meta.standard_version,
+            started_at: rec.meta.started_at,
           }
         : null;
 

@@ -1725,6 +1725,89 @@ the bytes round-trip intact.
 
 ---
 
+## 5r. The Trials page joined the rest of the app — 2026-08-22
+
+A UI pass over `/trials` after 5q, prompted by the page looking like a different application
+from the Overview. It turned out to be carrying a correctness bug as well, and the two had the
+same fix.
+
+### The bug 5q left behind
+
+`Trials.tsx` decided whether to print the "set `trials.public_base_url`" explanation with:
+
+```ts
+row.trial?.status === 'blocked' && row.trial.verdict === null && row.section !== 'static'
+```
+
+That predicate was safe while the functional section was blocked for exactly one reason, always.
+5q made a trial a *full* audit, so all four of `domain/assay.ts`'s blocked reasons became
+reachable — `bench_unavailable`, `browser_unavailable`, `store_unreachable`,
+`store_url_unconfigured` — each with its own sentence. The prose under the predicate was updated
+to the config one; the predicate was not. **An empty bench pool or a dead browser sidecar told
+the operator to go set a config key that was already correct.** Given §7's sidecar-orphaning
+gotcha, that is a wrong answer you hit routinely rather than a theoretical one.
+
+The page could not have done better: `routes/trials.ts`'s `shape()` built a four-field cell and
+dropped `blocked_reason`, which `AssayMeta` carries.
+
+### What shipped
+
+- **`TrialCell`** (`shared/trials.ts`) replaces the inline four-field type: the same facts
+  `AssayMeta` carries, with the same unions rather than bare strings, plus `blocked_reason`,
+  `standard`, `standard_version`, `started_at`. `shape()` fills them.
+- **`displayFacts(m)`** split out of `displayState(rec)` in `web/lib/status.ts`. Same derivation,
+  now reachable from something that is not an `AssayRecord`. `displayState` is a two-line wrapper.
+- **`StatusCell` in all six verdict positions** on the page, replacing `.tag`. The comparison's
+  third column *quotes a hallmark*, so it now renders identically to the Overview cell it quotes.
+  `.trial-why` survives, keyed on `blocked_reason === 'store_url_unconfigured'` alone.
+- **The list is a `.panel` + `.tbl`**, four columns, `StatusCell` for the result. It was
+  `.env-row` — the *infrastructure health* idiom from Activity and Automation, whose first grid
+  track is a fixed 190px. 5q put a 60-character branch archive URL in it, and it overlapped the
+  status beside it.
+- **Section order comes from the protocol.** `routes/trials.ts` now takes `protocols` and sorts
+  the comparison by `sectionsOf().order`. It fell out of a directory listing before, which is
+  alphabetical, which put `functional` above `static` — the reverse of the Overview's two
+  columns, on the one page whose job is being compared against them. A section the protocol has
+  never heard of still appears, after the declared ones.
+- **`since(t.finished_at)`** for the detail's timestamp. It was `ageLabel(0)`, which is the
+  constant `'today'`: every finished trial had read "finished today" since the page shipped.
+- `page--wide`, a glyph on the empty state, `.trial-form-wide`'s `!important` replaced by a
+  specificity fix, and the stale "auditing a ref" CSS comment rewritten.
+
+### The decision worth keeping
+
+`components.css` justified the old private vocabulary: *"styling it like a hallmark would invite
+it to be read as one."* Right about framing, wrong about notation — and 5q removed the half of
+it that had teeth. A trial used to be a *partial* (static only, functional permanently blocked);
+it is now a full audit of the exact bytes a bench installs, so a degraded rendering says
+something false about it. What keeps a trial from being mistaken for a hallmark is the page
+header, the `Currently` column and the absence of a summary strip — words and structure. Not a
+downgraded cell, and never a second way of drawing `blocked`.
+
+### Verified
+
+- `yarn typecheck`, `yarn build`, and **571 tests across 41 files** green.
+- Two new tests: `routes/trials.test.ts` asserts a comparison cell reports `bench_unavailable`
+  and *not* `store_url_unconfigured`; `web/lib/status.test.ts` (new file) pins `displayFacts`
+  across all four blocked reasons, the blocked-vs-failed separation, and the two things a trial
+  cell can legitimately not supply.
+- Rendered in the dev stack at 1440px, 420px and in dark mode, against seeded trials covering
+  verdict / compliant / blocked / running. No horizontal page scroll at 420px
+  (`body.scrollWidth === clientWidth === 500`). The seed data was removed afterwards;
+  `data/trials/` and `state/trials.json` are back to not existing.
+
+### Left undone
+
+- **`✓ none`** appears in a `Currently` cell whenever an assay is `non-compliant` with
+  `top_severity: none` — a green check reading "none" beside a failing verdict. Pre-existing and
+  shared: it is visible on the public board today. Not touched here, because the fix belongs in
+  `displayState`'s `non-compliant` branch and would move every table in the app.
+- **No upload UI.** Uploads stay MCP-only, per the page's own doc comment.
+- **No sorting** on the trial list. Newest-first is the only order a trial list has ever wanted;
+  the `Th` component is there if that stops being true.
+
+---
+
 ## 6. Reference — facts read off the running system
 
 Cited so they can be re-checked when they drift. Read 2026-08-07.

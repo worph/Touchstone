@@ -43,6 +43,8 @@
  * internet and Touchstone cannot infer its own external address from an internal request.
  */
 
+import type { AssayStatus, Severity, Verdict } from './types.js';
+
 /** One recorded trial. The reports themselves live under `data/trials/<slug>/`. */
 export interface TrialRecord {
   /** Filesystem- and URL-safe, and the synthetic origin its reports are filed under. */
@@ -120,12 +122,39 @@ export interface TrialRequest {
   apps_path?: string;
 }
 
-/** One section's result, beside what the subject currently carries. */
+/**
+ * One section's result, in the terms the status vocabulary is derived from.
+ *
+ * Deliberately the *same* facts `AssayMeta` carries rather than a summary of them, and typed
+ * with the same unions rather than bare strings. A trial cell and an Overview cell are then
+ * drawn by one function from one input, which is the only way the "Currently" column can be
+ * trusted: it quotes a hallmark, so it has to render identically to the place that hallmark
+ * is normally read.
+ *
+ * `blocked_reason` is the load-bearing addition. Since 2026-08-22 a section can block for four
+ * different reasons -- a missing `trials.public_base_url`, an empty bench pool, a dead browser
+ * sidecar, an unreadable store -- and `domain/assay.ts` writes a different sentence for each.
+ * Dropping the reason here left the page guessing, and it guessed the same one every time.
+ */
+export interface TrialCell {
+  status: AssayStatus;
+  verdict: Verdict | null;
+  top_severity: Severity;
+  risk_score: number;
+  /** Why infra prevented it. Only meaningful when `status` is `blocked`. */
+  blocked_reason?: string | null;
+  /** Invariant 9's record, and what the `compliant` hint cites. */
+  standard?: string;
+  standard_version?: number;
+  started_at?: string;
+}
+
+/** One section's result, beside what the subject carries today. */
 export interface TrialComparison {
   section: string;
-  trial: { status: string; verdict: string | null; top_severity: string; risk_score: number } | null;
+  trial: TrialCell | null;
   /** The subject's current hallmark for this section, or null if it has none. */
-  current: { status: string; verdict: string | null; top_severity: string; risk_score: number } | null;
+  current: TrialCell | null;
 }
 
 export interface TrialResponse {
