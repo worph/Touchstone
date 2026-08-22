@@ -8,11 +8,14 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { zipSync } from 'fflate';
+import { unzipSync as unzipSyncFor, zipSync } from 'fflate';
 
 import {
+  extractApp,
   fetchStoreZip,
+  MAX_APP_BYTES,
   MAX_STORE_BYTES,
+  packAppStore,
   readAppFromZip,
   storeUrlAllowed,
   TrialStoreError,
@@ -114,8 +117,13 @@ describe('fetchStoreZip', () => {
     await expect(fetchStoreZip(GH, { fetchImpl, maxBytes: 8 })).rejects.toThrow(/limit is 8/);
   });
 
-  it('has a cap at all', () => {
-    expect(MAX_STORE_BYTES).toBeGreaterThan(0);
+  it('caps the source archive generously enough for a real store', () => {
+    // Found the hard way, live on 2026-08-22: `Yundera/AppStore@main` is 96 MB, because a
+    // store is fifty apps' worth of icons and screenshots. A 32 MB cap felt prudent and
+    // refused every real store there is.
+    expect(MAX_STORE_BYTES).toBeGreaterThan(96 * 1024 * 1024);
+    // And the app kept out of it is capped far tighter, because that one is held per trial.
+    expect(MAX_APP_BYTES).toBeLessThan(MAX_STORE_BYTES);
   });
 
   it('reports a failed fetch as a fetch failure rather than an empty store', async () => {
@@ -174,5 +182,53 @@ describe('readAppFromZip', () => {
     expect(() => readAppFromZip(Buffer.from('<html>404</html>'), 'Apps', 'Widget')).toThrow(
       TrialStoreError,
     );
+  });
+});
+
+/**
+ * The store a trial actually serves: **one app**, not the archive it came out of.
+ *
+ * A real store is 96 MB and fifty apps, forty-nine of which the trial says nothing about.
+ * Serving the original would be gigabytes across a hundred trials, and would hand the bench a
+ * catalogue to pick the wrong entry out of.
+ */
+describe('packAppStore', () => {
+  it('repacks one app in the shape an upload session produces', () => {
+    const big = zipOf({
+      'AppStore-main/Apps/Widget/docker-compose.yml': 'services: {}\n',
+      'AppStore-main/Apps/Widget/icon.png': 'PNG',
+      'AppStore-main/Apps/Other/docker-compose.yml': 'not this one\n',
+      'AppStore-main/Apps/Other/screenshot.png': 'BIG'.repeat(1000),
+      'AppStore-main/README.md': 'ignored\n',
+    });
+
+    const packed = packAppStore(extractApp(big, 'Apps', 'Widget'), 'Widget', 'sluggy');
+    const names = Object.keys(unzipSyncFor(packed)).sort();
+
+    expect(names).toEqual([
+      'AppStore-trial-sluggy/Apps/Widget/docker-compose.yml',
+      'AppStore-trial-sluggy/Apps/Widget/icon.png',
+    ]);
+    // One top-level directory, which is what Maison's own default store looks like.
+    expect(new Set(names.map((n) => n.split('/')[0])).size).toBe(1);
+    // And it is smaller than what it came from, which is the whole point.
+    expect(packed.byteLength).toBeLessThan(big.byteLength);
+  });
+
+  it('round-trips: what is packed reads back as what was audited', () => {
+    const big = zipOf({ 'AppStore-main/Apps/Widget/docker-compose.yml': 'services: {a: 1}\n' });
+    const packed = packAppStore(extractApp(big, 'Apps', 'Widget'), 'Widget', 'sluggy');
+
+    // The bench installs `packed`; the prompt describes what `extractApp` found. This asserts
+    // they are the same thing, which is the property the whole design rests on.
+    expect(readAppFromZip(packed, 'Apps', 'Widget')).toEqual(readAppFromZip(big, 'Apps', 'Widget'));
+  });
+
+  it('refuses an "app" too big to be one', () => {
+    const huge = zipOf({
+      'AppStore-main/Apps/Widget/docker-compose.yml': 'services: {}\n',
+      'AppStore-main/Apps/Widget/blob.bin': 'x'.repeat(MAX_APP_BYTES + 1),
+    });
+    expect(() => extractApp(huge, 'Apps', 'Widget')).toThrow(/not an app directory/);
   });
 });

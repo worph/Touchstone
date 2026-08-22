@@ -130,7 +130,7 @@ function TrialDetail({ slug, onGone }: { slug: string; onGone: () => void }) {
         <thead>
           <tr>
             <th>Section</th>
-            <th>This ref</th>
+            <th>This store</th>
             <th>Currently</th>
           </tr>
         </thead>

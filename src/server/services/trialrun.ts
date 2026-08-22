@@ -36,9 +36,11 @@ import { buildIndex, type ReportIndex } from '../store/index.js';
 import type { UploadStore } from '../store/uploads.js';
 import type { OriginEntry } from '../store/config.js';
 import {
+  extractApp,
   fetchStoreZip,
-  readAppFromZip,
+  packAppStore,
   saveStoreZip,
+  sourceOf,
   TrialStoreError,
   type TrialSource,
 } from './trialstore.js';
@@ -63,7 +65,13 @@ export interface TrialSpec {
   upload_id?: string;
   /** The app's own files, read out of the archive and inlined into the prompt. */
   source: TrialSource;
-  /** The archive itself. Saved into the trial's directory and re-served from there. */
+  /**
+   * A store holding **only this app**, saved into the trial's directory and re-served.
+   *
+   * Never the archive it was extracted from. A real store is 96 MB and fifty apps, and the
+   * trial says nothing about the other forty-nine — copying it per trial would be gigabytes,
+   * and it would hand the bench a catalogue to pick the wrong entry out of.
+   */
   zip: Buffer;
   /** The unguessable name this trial's copy is served under. */
   store_token: string;
@@ -188,9 +196,14 @@ export async function buildSpec(
     appsPath = input.apps_path;
   }
 
+  // The app comes out of the archive once, and everything downstream is built from *those*
+  // bytes: the prompt's view of the files, and the store the bench installs. They cannot
+  // disagree, because there is only one copy.
   let source: TrialSource;
+  let files: Map<string, Uint8Array>;
   try {
-    source = readAppFromZip(zip, appsPath, subject);
+    files = extractApp(zip, appsPath, subject);
+    source = sourceOf(files, appsPath, subject);
   } catch (err) {
     if (err instanceof TrialStoreError) return { ok: false, code: 400, error: err.message };
     throw err;
@@ -202,18 +215,19 @@ export async function buildSpec(
   const match = resolveSubjectKey(subject, deps.known?.() ?? []);
   const compareTo = match.kind === 'ok' ? match.key : undefined;
 
+  const slug = trialSlug(subject, at);
   return {
     ok: true,
     ...(compareTo ? { compare_to: compareTo } : {}),
     spec: {
-      slug: trialSlug(subject, at),
+      slug,
       subject,
       apps_path: appsPath,
       repo: rubricRepo(deps, compareTo),
       source_url: sourceUrl,
       ...(uploadId ? { upload_id: uploadId } : {}),
       source,
-      zip,
+      zip: packAppStore(files, subject, slug),
       store_token: randomBytes(24).toString('base64url'),
     },
   };

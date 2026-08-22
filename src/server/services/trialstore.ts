@@ -27,7 +27,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { unzipSync } from 'fflate';
+import { unzipSync, zipSync } from 'fflate';
 
 /** Hosts a store archive may be fetched from. GitHub serves an archive for any ref. */
 const ALLOWED_HOSTS = new Set(['github.com', 'www.github.com', 'codeload.github.com']);
@@ -35,8 +35,24 @@ const ALLOWED_HOSTS = new Set(['github.com', 'www.github.com', 'codeload.github.
 /** How many hops. GitHub bounces `github.com/.../archive` to `codeload`, so one is not enough. */
 const MAX_REDIRECTS = 4;
 
-/** Refused past this. A store is an app directory, not a disk image. */
-export const MAX_STORE_BYTES = 32 * 1024 * 1024;
+/**
+ * Refused past this — the **source** archive, which is a whole app store.
+ *
+ * Generous on purpose: `Yundera/AppStore@main` is **96 MB**, because a store is fifty apps' worth
+ * of icons and screenshots. A cap tight enough to feel prudent simply refuses every real store —
+ * 32 MB did, live on 2026-08-22, which is how this number was found. Only the compressed archive is held whole; the entries
+ * are decompressed through a filter, so peak memory is this plus one app rather than this plus
+ * fifty.
+ */
+export const MAX_STORE_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Refused past this — the **app** inside it, which is what is kept and re-served.
+ *
+ * One app is a compose, a rationale and a handful of images. Anything past this is not an app
+ * directory, and it would be copied into the trial's own folder and held for a hundred trials.
+ */
+export const MAX_APP_BYTES = 16 * 1024 * 1024;
 
 export class TrialStoreError extends Error {}
 
@@ -119,35 +135,53 @@ export async function fetchStoreZip(
 }
 
 /**
- * Read one app's directory out of a store archive.
+ * Pull one app's directory out of a store archive.
  *
  * A GitHub archive wraps everything in a single `<repo>-<ref>/` directory, and `UploadStore`
  * reproduces that shape deliberately so the two are indistinguishable here. An archive with
  * `<apps_path>/` at the root is accepted too — it costs one line and is what somebody hand-
  * rolling a store will produce on the first try.
+ *
+ * **Decompressed through a filter**, not wholesale. A real store is fifty apps and 96 MB of
+ * mostly images; inflating all of it to read one compose would be several hundred megabytes of
+ * peak for a few kilobytes of answer, inside a container with a 1 GB limit.
  */
-export function readAppFromZip(zip: Buffer, appsPath: string, subject: string): TrialSource {
+export function extractApp(
+  zip: Buffer,
+  appsPath: string,
+  subject: string,
+): Map<string, Uint8Array> {
+  // A wrapper is one segment: `<top>/Apps/<App>/…`, so the match must start after it and the
+  // part before it must contain no slash of its own.
+  const wrapped = `/${appsPath}/${subject}/`;
+  const bare = `${appsPath}/${subject}/`;
+  const relOf = (name: string): string | null => {
+    if (name.endsWith('/')) return null;
+    const at = name.indexOf(wrapped);
+    if (at > 0 && !name.slice(0, at).includes('/')) return name.slice(at + wrapped.length);
+    if (name.startsWith(bare)) return name.slice(bare.length);
+    return null;
+  };
+
   let entries: Record<string, Uint8Array>;
   try {
-    entries = unzipSync(new Uint8Array(zip));
+    entries = unzipSync(new Uint8Array(zip), { filter: (f) => relOf(f.name) !== null });
   } catch (err) {
     throw new TrialStoreError(`that store is not a readable zip: ${(err as Error).message}`);
   }
 
-  const names = Object.keys(entries).filter((n) => !n.endsWith('/'));
-  // Both layouts, tried in the order they actually occur.
-  const wrapped = `/${appsPath}/${subject}/`;
-  const bare = `${appsPath}/${subject}/`;
   const found = new Map<string, Uint8Array>();
-  for (const name of names) {
-    const at = name.indexOf(wrapped);
-    // A wrapper is one segment: `<top>/Apps/<App>/…`, so the match must start after it and the
-    // part before it must contain no slash of its own.
-    if (at > 0 && !name.slice(0, at).includes('/')) {
-      found.set(name.slice(at + wrapped.length), entries[name]!);
-    } else if (name.startsWith(bare)) {
-      found.set(name.slice(bare.length), entries[name]!);
+  let total = 0;
+  for (const [name, bytes] of Object.entries(entries)) {
+    const rel = relOf(name);
+    if (rel === null || rel === '') continue;
+    total += bytes.byteLength;
+    if (total > MAX_APP_BYTES) {
+      throw new TrialStoreError(
+        `${appsPath}/${subject}/ is over ${MAX_APP_BYTES} bytes — that is not an app directory`,
+      );
     }
+    found.set(rel, bytes);
   }
 
   if (found.size === 0) {
@@ -155,9 +189,13 @@ export function readAppFromZip(zip: Buffer, appsPath: string, subject: string): 
       `that store has no ${appsPath}/${subject}/ directory — check the app name and apps_path`,
     );
   }
+  return found;
+}
 
+/** What the prompt needs to say about the app, read off the files themselves. */
+export function sourceOf(files: Map<string, Uint8Array>, appsPath: string, subject: string): TrialSource {
   const text = (rel: string): string | null => {
-    const bytes = found.get(rel);
+    const bytes = files.get(rel);
     return bytes ? Buffer.from(bytes).toString('utf8') : null;
   };
   const compose = text('docker-compose.yml') ?? text('docker-compose.yaml');
@@ -166,16 +204,38 @@ export function readAppFromZip(zip: Buffer, appsPath: string, subject: string): 
   // that an app has no compose file — a fact about the archive, dressed as a finding about the
   // app, and recorded where a finding about the app goes.
   if (!compose) {
-    throw new TrialStoreError(
-      `${appsPath}/${subject}/ in that store has no docker-compose.yml`,
-    );
+    throw new TrialStoreError(`${appsPath}/${subject}/ in that store has no docker-compose.yml`);
   }
-
   return {
-    files: [...found.keys()].sort((a, b) => a.localeCompare(b)),
+    files: [...files.keys()].sort((a, b) => a.localeCompare(b)),
     compose,
     rationale: text('rationale.md'),
   };
+}
+
+/**
+ * Repack one app as a store of its own, in GitHub's archive shape.
+ *
+ * **The trial serves this, never the archive it came from.** A real store is 96 MB and fifty
+ * apps, forty-nine of which this trial says nothing about; copying all of it into the trial's
+ * directory would be gigabytes across a hundred trials, and would hand the bench a catalogue to
+ * pick the wrong entry out of. A one-app store is a few hundred kilobytes and can only install
+ * the thing under trial.
+ *
+ * The shape is `UploadStore.zipStore`'s, which is Maison's own default store shape — one
+ * wrapping directory, then `Apps/<App>/`. That is what makes an upload trial and a URL trial
+ * literally the same bytes-layout by the time either reaches a bench.
+ */
+export function packAppStore(files: Map<string, Uint8Array>, subject: string, label: string): Buffer {
+  const root = `AppStore-trial-${label}`;
+  const entries: Record<string, Uint8Array> = {};
+  for (const [rel, bytes] of files) entries[`${root}/Apps/${subject}/${rel}`] = bytes;
+  return Buffer.from(zipSync(entries));
+}
+
+/** Extract and read in one step — the shape the tests and the old callers want. */
+export function readAppFromZip(zip: Buffer, appsPath: string, subject: string): TrialSource {
+  return sourceOf(extractApp(zip, appsPath, subject), appsPath, subject);
 }
 
 /** Write the trial's own copy of the archive, creating its directory. */

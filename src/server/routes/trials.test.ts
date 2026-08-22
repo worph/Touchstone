@@ -14,6 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { zipSync } from 'fflate';
 
+import { readAppFromZip } from '../services/trialstore.js';
+
 import { EventLog } from '../services/events.js';
 import { defaultCacheFile } from '../store/index.js';
 import { TrialStore } from '../store/trials.js';
@@ -50,11 +52,20 @@ async function serve(opts: Record<string, unknown>): Promise<FastifyInstance> {
 const STORE_URL = 'https://github.com/Acme/AppStore/archive/refs/heads/pr-812.zip';
 const BODY = { store_url: STORE_URL, subject: 'Widget' };
 
-/** A store zip in GitHub's shape — one wrapper directory, then `Apps/<App>/`. */
+/**
+ * A store zip in GitHub's shape — one wrapper directory, then `Apps/<App>/`.
+ *
+ * **Two apps**, because a real store has fifty and the thing being asserted downstream is that
+ * a trial keeps and serves only the one it audited. A single-app fixture would pass that test
+ * by accident.
+ */
 function storeZip(app = 'Widget'): Buffer {
+  const enc = new TextEncoder();
   return Buffer.from(
     zipSync({
-      [`AppStore-pr-812/Apps/${app}/docker-compose.yml`]: new TextEncoder().encode('services: {}\n'),
+      [`AppStore-pr-812/Apps/${app}/docker-compose.yml`]: enc.encode('services: {}\n'),
+      'AppStore-pr-812/Apps/Bystander/docker-compose.yml': enc.encode('services: {}\n'),
+      'AppStore-pr-812/Apps/Bystander/screenshot.png': enc.encode('not this app '.repeat(400)),
     }),
   );
 }
@@ -237,9 +248,13 @@ describe('GET /trialstore/:token.zip', () => {
     expect(res.headers['x-content-type-options']).toBe('nosniff');
     expect(res.headers['cache-control']).toBe('no-store');
 
-    // Byte-for-byte what was fetched. Anything else and the compose assertion in
-    // `functional.md` would be checking two different things against each other.
-    expect(Buffer.from(res.rawPayload).equals(storeZip())).toBe(true);
+    // NOT the archive that was fetched — a real store is fifty apps and 96 MB, and the trial
+    // says nothing about the other forty-nine. What is served is the one app, repacked, and it
+    // must read back as exactly what the audit was told it was judging. Anything else and the
+    // compose assertion in `functional.md` would be checking two different things.
+    const served = readAppFromZip(Buffer.from(res.rawPayload), 'Apps', 'Widget');
+    expect(served).toEqual(readAppFromZip(storeZip(), 'Apps', 'Widget'));
+    expect(res.rawPayload.length).toBeLessThanOrEqual(storeZip().byteLength);
   });
 
   it('404s an unknown token, a wrong shape, and a trial whose store has been swept', async () => {
