@@ -1642,29 +1642,86 @@ somebody has to supply this installation's external address.
 5. **Uploads survived** as a URL producer rather than being deleted — the no-commit fix loop from
    §5p is the reason they exist and it is unchanged from the caller's side.
 
+### The live run, and the bug it found
+
+Deployed to **yunderalabs** and run end to end, 2026-08-22. **The first attempt refused itself**,
+which is the most useful thing that happened:
+
+```
+400 {"error":"that store is 96042281 bytes and the limit is 33554432"}
+```
+
+`Yundera/AppStore@main` is **96 MB** — a store is fifty apps' worth of icons and screenshots. The
+32 MB cap felt prudent and refused every real store there is. Worse, it exposed a design error the
+tests could not: **re-serving the fetched archive would have copied 96 MB per trial**, ~9.6 GB at
+the hundred-trial cap, and handed the bench a fifty-app catalogue to pick the wrong entry out of.
+
+The fix is `packAppStore`: extract the one app (decompressed through an `unzipSync` **filter**, so
+peak memory is the compressed archive plus one app rather than plus fifty) and repack it in
+GitHub's shape — which is exactly what `UploadStore.zipStore` already produced, so the two paths
+converged rather than diverging. Two caps now, for two different things: `MAX_STORE_BYTES` 256 MB
+on the transient source, `MAX_APP_BYTES` 16 MB on what is kept.
+
+**Measured: 1.0 MB on disk per trial, from a 96 MB source.**
+
 ### Verified
 
-`yarn typecheck` clean, `yarn test` **562 passed** (up from 533; 22 new in
-`services/trialstore.test.ts`, the rest reshaped). `yarn build` clean.
+`yarn typecheck` clean, `yarn test` **565 passed** (up from 533), `yarn build` clean.
 
-**Not verified against a live bench.** No trial has been run end to end since the change — this
-box has no `public_base_url`, so a functional trial cannot be exercised here at all. The tests
-cover the pipeline, the allowlist and the serving route; they do not cover Maison actually
-installing from a `github.com` archive that Touchstone re-served, which is the one claim that
-needs a real run.
+Live on yunderalabs, image `1.2.0-rc5`, trial
+`SegmentPlayer@af90a361-2026-08-22T13-38-29-513Z` — `SegmentPlayer` from
+`https://github.com/Yundera/AppStore/archive/refs/heads/main.zip`, 13:38:29 → 13:54:09 (**15m40s**):
+
+- **`sections: ["static","functional"]`, `blocked: []`.** Before this change a ref trial was
+  `blocked: [{functional, store_not_installable}]` unconditionally. This is the whole point.
+- **The store is fetchable from the public internet**: `200`, `application/zip`,
+  `content-disposition: attachment`, `cache-control: no-store`, 1002016 bytes, through Cloudflare
+  and Caddy and *past the SSO gate* — `ALLOWED_PATHS` already carried `api/v1/trialstore`.
+  Contains exactly `Apps/SegmentPlayer/{docker-compose.yml,icon.png,rationale.md,screenshot-1.png,thumbnail.png}`
+  under one wrapper directory.
+- **`functional: compliant`, 8 of 8 phases passed.** Phase C's own note: *"~50s from Install click
+  to a healthy tile with Open; **installed Store compose matches the audited source**, Effective
+  compose retains both services' networks."* That clause is the v6 assertion, and it confirms the
+  bench ran the bytes we extracted and re-served rather than the catalogue's copy.
+- Phase D found the app at `segment-demostaging1.inojob.com`; E8/E10 clean (28/28 requests 200,
+  zero console errors); Phase G persistence through a real uninstall-and-restore.
+- **Cleanup held.** The bench was left with only `App Store` on it, checked by hand afterwards.
+- `standard_version` recorded `Static v7` / `Functional v6` side by side — the box's own protocol
+  files, not the image's, exactly as §5p documented.
+
+**The static section diverged from the hallmark and it is not this change's doing.** The trial
+says `non-compliant` risk 1 where the archive says `compliant`: one Minor on `cpu-shares`, the
+agent judging that `SegmentPlayer` inverts the CONTRIBUTING CPU-share tiers (AppShield sidecar at
+50, FFmpeg backend at 70, where the guideline and both cited reference deployments put the
+public-facing proxy higher). That is a judgement about the compose we correctly extracted — the
+same run-to-run variance §5p already recorded — and is worth raising against the app on its own
+merits. It is **not** evidence of a false positive from the repack: the functional section proved
+the bytes round-trip intact.
+
+### Cost of the deploy, recorded honestly
+
+- **`gh` is not installed in the claude-code container and there are no git push credentials**, so
+  CI could not be triggered. The image was built **on yunderalabs itself** from a source tarball
+  and tagged `1.2.0-rc5` locally. It is **not in ghcr**. Publishing it properly still needs a push
+  and a `workflow_dispatch` with `tag=1.2.0-rc5`, which is the user's to run.
+- **The restart cost one assay its functional section.** The scheduler is armed on that box and
+  ticked before the browser probe settled — the documented gotcha — so `yundera~ClaudeCodeRoot`
+  recorded `functional: blocked / browser_unavailable` at 13:24. `POST /benches/probe` clears it,
+  and it was cleared before the trial. Worth doing *first* next time.
+- `docker-compose.yml.bak-pre-rc4` on the box is the rollback: restore it and
+  `docker compose up -d touchstone-backend` returns to `1.2.0-rc3`.
 
 ### Left undone
 
-- **`public_base_url` is unset**, so trials on this box are still static-only in practice. One
-  line, but it needs the deployment's real external address.
-- **A live full trial from a GitHub archive URL.** The upload path was proven end to end on
-  2026-08-22 (§5p); the fetch-from-GitHub half has only been proven against a stub.
-- **No SHA pinning.** A branch archive URL is accepted as given. Our own re-serving makes
-  Maison's cache a non-issue, so this is now only about the trial *record* naming a branch rather
-  than the commit it actually audited.
-- **`ALLOWED_PATHS` for the SSO sidecar** still needs `/api/v1/trialstore/` exempted when the
-  production stack is built (ARCHITECTURE §8.1) — unchanged from §5p, but the path now serves
-  every trial rather than only upload ones.
+- **Not published to ghcr, not committed upstream.** The commit exists locally only.
+- **No SHA pinning.** A branch archive URL is accepted as given. Our own re-serving makes Maison's
+  cache a non-issue, so this is only about the trial *record* naming a branch rather than the
+  commit it actually audited. The live trial's `source_url` says `…/heads/main.zip`, which will
+  mean something different next week.
+- **A stale `running` trial row** from 11:23 (`upload@ac2f223b6c6a`) predates this work — a trial
+  killed by a restart leaves a row nothing ever finishes. Not new, but now visible on the page.
+- **Old trial rows have no `source_url`.** The UI falls back to `upload <id>`, which reads fine;
+  nothing migrates them and nothing needs to.
 
 ---
 
