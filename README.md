@@ -111,6 +111,64 @@ findings-as-rows, the Findings page, history and regression detection. Those hav
 Both n8n workflows keep running unchanged until phase 1, and their data is imported rather than
 discarded.
 
+## Testing a build before it is tagged
+
+The AppStore entry pins an exact version — `ghcr.io/worph/touchstone:1.1.0`, never `latest`, because
+a store app that floats would change under an operator between two identical installs. That image
+only exists once a `v*` tag is pushed and `docker-publish.yml` has built it, so the normal release
+order is **tag, then bump the store entry**.
+
+That order is wrong when the point is to *look at* the build first. Pushing a tag to see whether a
+feature works publishes an image to a public registry and burns a version number on the answer
+being "no". To try a build on a real box without tagging anything, ship the image over SSH instead:
+
+```bash
+# 1. Build for the box's architecture. `docker build` produces a SINGLE arch — fine for one
+#    machine, never for the store, which requires amd64 *and* arm64 (hence the buildx/QEMU
+#    steps in the workflow). Check with `ssh <box> uname -m`.
+docker build -f deploy/Dockerfile -t ghcr.io/worph/touchstone:1.1.0-rc1 .
+
+# 2. Send it. There is no registry in the middle, so this is a stream, not an scp of a file:
+#    ~450 MB uncompressed, roughly 95 MB over the wire.
+docker save ghcr.io/worph/touchstone:1.1.0-rc1 | gzip -1 | \
+  ssh admin@<box> 'gunzip | docker load'
+
+# 3. On the box: keep a copy you can put back, then point the compose at the loaded tag.
+ssh admin@<box>
+C=/DATA/AppData/casaos/apps/touchstone/docker-compose.yml
+sudo cp "$C" "$C.bak-pre-rc1"
+sudo sed -i 's|touchstone:1\.1\.0|touchstone:1.1.0-rc1|' "$C"
+
+# 4. Bring it up — and supply PUID/PGID/TZ yourself. See the warning below; without them
+#    `user: $PUID:$PGID` expands to `:` and the container starts as the wrong user or not
+#    at all. 1000:1000 is the PCS user; confirm with `docker inspect touchstone-backend
+#    --format '{{.Config.User}} {{range .Config.Env}}{{println .}}{{end}}' | grep -E '^TZ='`.
+sudo env PUID=1000 PGID=1000 TZ=Europe/Berlin docker compose -f "$C" up -d
+```
+
+Five things to know about a box in this state:
+
+- **⚠️ `$PUID`, `$PGID` and `$TZ` are not in any file Compose reads.** CasaOS substitutes them
+  when *it* deploys an app, and `/DATA/AppData/casaos/.env` does not carry them — so a bare
+  `docker compose up -d` run by hand silently resolves them to the empty string. Read the values
+  off the running container before you touch anything, and pass them with `env` as above. This is
+  the one step that fails quietly rather than loudly.
+
+- **Do not run `docker compose pull` on it.** The `-rc` tag exists only in that box's local image
+  store, so a pull fails to resolve it and can leave the stack half-updated. Use
+  `up -d <service>` — Compose does not pull an image it already has.
+- **Use a tag that cannot collide with a release.** `-rc1` and friends are never produced by
+  `docker-publish.yml`, so nothing later overwrites what you are looking at, and nobody mistakes
+  the box for running a shipped version. Never test under `latest`.
+- **CasaOS owns that file.** Reinstalling or updating the app from the store rewrites it, which is
+  also the clean way back: restore the released tag and `up -d` again.
+- **Nothing about this reaches the store.** `Apps/Touchstone/docker-compose.yml` in AppStoreLab
+  keeps pointing at the released version throughout; the `-rc` tag lives on one box and is
+  deliberately not installable anywhere else.
+
+When the build is approved, the normal order resumes — push `vX.Y.Z`, let CI build the multi-arch
+image, then bump the store entry.
+
 ## Prior art in the house
 
 Touchstone follows **Newsdesk**: a packaged app that owns the domain — data model, state, agent
