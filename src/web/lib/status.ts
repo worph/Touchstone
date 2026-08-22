@@ -5,7 +5,7 @@
  * `not yet run` are three different unknowns, and none of them is a failure.
  * Nothing outside this module decides what an assay looks like.
  */
-import type { AssayRecord, Severity } from '@shared/types';
+import type { AssayMeta, AssayRecord, Severity } from '@shared/types';
 import { SEVERITY_RANK } from '@shared/types';
 import type { DisplayState } from '../types';
 
@@ -67,14 +67,39 @@ export function runningState(startedAt: string, note?: string, now = Date.now())
 }
 
 /**
+ * The facts a status cell is derived from.
+ *
+ * `displayState` used to take an `AssayRecord`, which meant only something read out of the
+ * archive could be drawn in the vocabulary. A trial's cell is the same five facts arriving by
+ * a different route, and it was drawn by hand as a `.tag` instead — so `blocked` on the Trials
+ * page looked nothing like `blocked` on the Overview, and the "Currently" column disagreed
+ * with the very hallmark it was quoting.
+ *
+ * The optional half is optional because a caller may not have it, not because it is decorative:
+ * absent, the hint says less and nothing else changes.
+ */
+export type StatusFacts = Pick<AssayMeta, 'status' | 'verdict' | 'top_severity' | 'risk_score'> &
+  Partial<Pick<AssayMeta, 'blocked_reason' | 'standard' | 'standard_version' | 'started_at'>>;
+
+/**
  * @param rec  the latest assay for one section, or null if it was never assayed
  * @param now  injected so the `running · 4m` label is testable
  */
 export function displayState(rec: AssayRecord | null | undefined, now = Date.now()): DisplayState {
   if (!rec) return NOT_RUN;
-  const m = rec.meta;
+  return displayFacts(rec.meta, now);
+}
 
-  if (m.status === 'running') return runningState(m.started_at, undefined, now);
+/**
+ * The same derivation, from the facts alone.
+ *
+ * @param m    status, verdict and severity — from a report's frontmatter or from a trial cell
+ * @param now  injected so the `running · 4m` label is testable
+ */
+export function displayFacts(m: StatusFacts | null | undefined, now = Date.now()): DisplayState {
+  if (!m) return NOT_RUN;
+
+  if (m.status === 'running') return runningState(m.started_at ?? '', undefined, now);
 
   if (m.status === 'blocked') {
     const reason = humaniseReason(m.blocked_reason);
@@ -97,7 +122,9 @@ export function displayState(rec: AssayRecord | null | undefined, now = Date.now
         severity: 'none',
         label: 'compliant',
         mark: '✓',
-        hint: `Assayed under ${m.standard} v${m.standard_version} and clean.`,
+        hint: m.standard
+          ? `Assayed under ${m.standard} v${m.standard_version} and clean.`
+          : 'Assayed and clean.',
       };
     case 'non-compliant':
       return {

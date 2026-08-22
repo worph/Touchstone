@@ -221,6 +221,79 @@ describe('GET and DELETE /trials/:slug', () => {
     const after = (await app.inject({ method: 'GET', url: '/trials' })).json() as { trials: { slug: string }[] };
     expect(after.trials.map((t) => t.slug)).toEqual(['A@two']);
   });
+
+  /**
+   * A comparison cell carries **which** condition blocked it, not merely that one did.
+   *
+   * This shape used to be four fields wide — status, verdict, severity, risk — and the page
+   * that reads it therefore had one sentence to offer for four different reasons. It printed
+   * the `store_url_unconfigured` advice ("set `trials.public_base_url`") for an empty bench
+   * pool and a dead browser sidecar alike, which is a correct-sounding answer to a question
+   * nobody asked. Since 2026-08-22 a trial is a full audit, so all four reasons are reachable
+   * and the distinction is load-bearing rather than theoretical.
+   */
+  it('says which condition blocked a section, not merely that one did', async () => {
+    const { runner } = runnerOf();
+    const trialsRoot = path.join(dir, 'trials');
+    app = await serve({ runner, trials, trialsRoot, events, fetchImpl: fetchOf() });
+
+    await trials.add({
+      slug: 'A@blocked',
+      repo: 'A/B',
+      source_url: 'https://github.com/A/B/archive/main.zip',
+      apps_path: 'Apps',
+      subject: 'Widget',
+      started_at: '2026-08-22T09:00:00.000Z',
+    });
+
+    // The slug is the synthetic origin, so a trial's tree is `<root>/<slug>/<slug>/<Subject>/`.
+    const reports = path.join(trialsRoot, 'A@blocked', 'A@blocked', 'Widget');
+    await fs.mkdir(reports, { recursive: true });
+    await fs.writeFile(
+      path.join(reports, '2026-08-22T09-00-00Z-functional.md'),
+      [
+        '---',
+        'subject: Widget',
+        // The origin is read from the frontmatter, and for a trial it is the slug — that is
+        // the whole of "the slug doubles as a synthetic origin".
+        "origin: 'A@blocked'",
+        'section: functional',
+        'standard: Functional Review Protocol',
+        'standard_version: 6',
+        'status: blocked',
+        'verdict: null',
+        'top_severity: none',
+        'risk_score: 0',
+        'blocked_reason: bench_unavailable',
+        "started_at: '2026-08-22T09:00:00Z'",
+        "finished_at: '2026-08-22T09:05:00Z'",
+        'findings: []',
+        '---',
+        '',
+        'No demo instance was free.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const res = await app.inject({ method: 'GET', url: '/trials/A@blocked' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      comparison: {
+        section: string;
+        trial: { status: string; blocked_reason?: string | null; standard_version?: number } | null;
+      }[];
+    };
+
+    const functional = body.comparison.find((c) => c.section === 'functional');
+    expect(functional?.trial?.status).toBe('blocked');
+    // The point of the test: `bench_unavailable`, and not the one reason the page used to
+    // assume — a cell that cannot tell them apart gives the operator the wrong instruction.
+    expect(functional?.trial?.blocked_reason).toBe('bench_unavailable');
+    expect(functional?.trial?.blocked_reason).not.toBe('store_url_unconfigured');
+    // Invariant 9 travels with it, so a cell can cite the standard that judged it.
+    expect(functional?.trial?.standard_version).toBe(6);
+  });
 });
 
 /**

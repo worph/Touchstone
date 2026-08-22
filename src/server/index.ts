@@ -312,6 +312,7 @@ await app.register(registerRoutes, {
     known: () => registry.list(),
     uploads,
     origins: cfg.origins,
+    protocols,
     publicBaseUrl: cfg.trials.public_base_url,
   },
   uploads: { uploads, maxFileBytes: cfg.uploads.max_file_bytes, events },

@@ -4,8 +4,7 @@
  * The question this page exists for is asked *before* a merge, about code that is not in the
  * store yet. Every other screen in the app is about what a subject carries; this one is about
  * what it would carry. That distinction is why a trial's result lives somewhere the archive
- * does not look, and the page has to keep saying so — a verdict that looks like the others but
- * quietly means something else is worse than no verdict.
+ * does not look, and the page has to keep saying so.
  *
  * **One input, matching the API.** A trial names a store zip and an app inside it — a GitHub
  * branch archive is one, and an upload session (MCP only, for the no-commit fix loop) produces
@@ -20,12 +19,30 @@
  *   no external address configured, and the row says so rather than showing a bare `blocked`.
  * - **Nothing here moves a hallmark.** The comparison column is the subject's *current*
  *   verdict, unchanged and unaffected by anything on this page.
+ *
+ * ## Why this page draws its cells the way the Overview does
+ *
+ * It used to draw them as `.tag` chips — the metadata pill that means `commit a1b2c3` or
+ * `needs a bench` everywhere else in the app. Two things were wrong with that.
+ *
+ * The first is that the **"Currently" column quotes a hallmark**. Rendering it in a notation
+ * the archive never uses is the failure `SubjectTable` exists to prevent, one file further
+ * along: two ways of drawing `blocked` are two things that eventually disagree about what
+ * `blocked` means. The second is that a chip has one channel — text — where `StatusCell` has
+ * four, and the distinction it protects (checked-and-failed versus could-not-check) is exactly
+ * the one a trial reader is making.
+ *
+ * The framing stays distinct instead, which is where it belongs and where it works: the header
+ * says a trial moves nothing, the third column is labelled `Currently`, and there is no summary
+ * strip — a population to triage is what a hallmark board is, and a trial is not one.
  */
 
 import { useCallback, useMemo, useState } from 'react';
 
 import type { TrialComparison, TrialRecord } from '@shared/trials';
+import type { Severity, Verdict } from '@shared/types';
 import { subjectName } from '@shared/subject';
+import StatusCell, { StatusLegend } from '../components/StatusCell';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import MarkdownView from '../components/MarkdownView';
 import {
@@ -36,33 +53,32 @@ import {
   startTrial,
 } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
-import { ageLabel, num } from '../lib/format';
+import { since } from '../lib/format';
+import { displayFacts, type StatusFacts } from '../lib/status';
 
-function severityOf(v: { top_severity?: string } | null): string {
-  return v?.top_severity && v.top_severity !== 'none' ? v.top_severity : '';
-}
+/**
+ * The one blocked reason that is a question for the operator rather than a passing condition.
+ *
+ * `domain/assay.ts` writes a distinct sentence for each of the four ways a section can block.
+ * Three of them — no bench free, no browser answering, the store unreadable — say themselves in
+ * the cell's own note and clear on their own. This one never clears: it is a setting nobody has
+ * filled in, so it earns the sentence under the row.
+ *
+ * It is keyed on the reason rather than on "a non-static section is blocked", which is what it
+ * used to be. That predicate was true of all four, so a dead browser sidecar was told to go set
+ * a config key that was already correct.
+ */
+const STORE_URL_UNCONFIGURED = 'store_url_unconfigured';
 
 /** One section, the trial's result beside what the subject carries today. */
 function ComparisonRow({ row }: { row: TrialComparison }) {
-  const blockedForStore =
-    row.trial?.status === 'blocked' && row.trial.verdict === null && row.section !== 'static';
+  const unconfigured = row.trial?.status === 'blocked' && row.trial.blocked_reason === STORE_URL_UNCONFIGURED;
   return (
     <tr>
       <td className="trial-section">{row.section}</td>
       <td>
-        {row.trial ? (
-          <>
-            <span className="tag" data-sev={severityOf(row.trial) || undefined}>
-              {row.trial.status === 'done' ? row.trial.verdict : row.trial.status}
-            </span>
-            {row.trial.status === 'done' && row.trial.risk_score > 0 ? (
-              <span className="dim"> · risk {num(row.trial.risk_score)}</span>
-            ) : null}
-          </>
-        ) : (
-          <span className="dim">not run</span>
-        )}
-        {blockedForStore ? (
+        <StatusCell state={displayFacts(row.trial)} />
+        {unconfigured ? (
           <div className="trial-why">
             Not a fault, and not a limit of trials. A demo instance fetches the store over the
             public internet, and this Touchstone has no external address configured — set{' '}
@@ -71,18 +87,7 @@ function ComparisonRow({ row }: { row: TrialComparison }) {
         ) : null}
       </td>
       <td>
-        {row.current ? (
-          <>
-            <span className="tag" data-sev={severityOf(row.current) || undefined}>
-              {row.current.verdict ?? row.current.status}
-            </span>
-            {row.current.risk_score > 0 ? (
-              <span className="dim"> · risk {num(row.current.risk_score)}</span>
-            ) : null}
-          </>
-        ) : (
-          <span className="dim">—</span>
-        )}
+        {row.current ? <StatusCell state={displayFacts(row.current)} /> : <span className="dim">—</span>}
       </td>
     </tr>
   );
@@ -107,10 +112,11 @@ function TrialDetail({ slug, onGone }: { slug: string; onGone: () => void }) {
       <div className="trial-head">
         <div>
           <div className="trial-ref">
-            {t.apps_path}/{t.subject} <span className="dim">from {t.source_url}</span>
+            {t.apps_path}/{t.subject}{' '}
+            <span className="dim">from {t.upload_id ? `upload ${t.upload_id}` : t.source_url}</span>
           </div>
           <div className="dim">
-            {t.finished_at ? `finished ${ageLabel(0)}` : 'running'}
+            {t.finished_at ? `finished ${since(t.finished_at)} ago` : 'running'}
             {t.compare_to ? ` · compared against ${subjectName(t.compare_to)}` : ' · new app, nothing to compare'}
           </div>
         </div>
@@ -126,20 +132,28 @@ function TrialDetail({ slug, onGone }: { slug: string; onGone: () => void }) {
 
       {t.error ? <Notice tone="warn" title="This trial did not complete">{t.error}</Notice> : null}
 
-      <table className="table trial-table">
-        <thead>
-          <tr>
-            <th>Section</th>
-            <th>This store</th>
-            <th>Currently</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.comparison.map((row) => (
-            <ComparisonRow key={row.section} row={row} />
-          ))}
-        </tbody>
-      </table>
+      {/* The legend belongs here rather than under the list: this is the table where the
+          vocabulary does real work, because `blocked` and a failing verdict sit one column
+          apart and mean opposite things about the app. */}
+      <div className="panel">
+        <div className="tbl-wrap">
+          <table className="tbl trial-table">
+            <thead>
+              <tr>
+                <th>Section</th>
+                <th>This store</th>
+                <th>Currently</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.comparison.map((row) => (
+                <ComparisonRow key={row.section} row={row} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <StatusLegend />
+      </div>
 
       <div className="trial-files">
         {data.history.map((rec) => (
@@ -158,6 +172,40 @@ function TrialDetail({ slug, onGone }: { slug: string; onGone: () => void }) {
       {report.data ? <MarkdownView html={report.data.html} raw={report.data.raw} /> : null}
     </div>
   );
+}
+
+/**
+ * A trial's own outcome, in the terms a status cell reads.
+ *
+ * `TrialRecord` records the run rather than one section — `outcome` is how the *job* ended, and
+ * `verdict` is the composed answer when it ended with one. Mapping it here rather than adding a
+ * sixth kind to the vocabulary keeps invariant 6's shape: nothing outside `lib/status.ts`
+ * decides what a state looks like, it only says which state a thing is in.
+ */
+function outcomeFacts(t: TrialRecord): StatusFacts {
+  if (!t.finished_at) {
+    return { status: 'running', verdict: null, top_severity: 'none', risk_score: 0, started_at: t.started_at };
+  }
+  if (t.outcome === 'blocked' || t.outcome === 'agent_busy') {
+    return {
+      status: 'blocked',
+      verdict: null,
+      top_severity: 'none',
+      risk_score: 0,
+      // `agent_busy` names itself; a plain block does not, and the reason lives per-section on
+      // the detail rather than on the record, so the list says `blocked` and stops there.
+      ...(t.outcome === 'agent_busy' ? { blocked_reason: 'agent_busy' } : {}),
+    };
+  }
+  if (t.outcome === 'error') {
+    return { status: 'done', verdict: 'errored', top_severity: 'none', risk_score: 0 };
+  }
+  return {
+    status: 'done',
+    verdict: (t.verdict ?? null) as Verdict | null,
+    top_severity: (t.top_severity ?? 'none') as Severity,
+    risk_score: t.risk_score ?? 0,
+  };
 }
 
 export default function Trials() {
@@ -186,7 +234,7 @@ export default function Trials() {
   }, [storeUrl, subject]);
 
   return (
-    <div className="page">
+    <div className="page page--wide">
       <div className="page-head">
         <h1>Trials</h1>
         <p className="page-sub">
@@ -225,29 +273,45 @@ export default function Trials() {
       {list.loading ? <Loading what="trials" /> : null}
       {!list.loading && trials.length === 0 ? (
         <EmptyState
+          glyph="⌸"
           title="No trials yet"
           sub="Name a store zip and an app above to audit it before it is merged."
         />
       ) : null}
 
       {trials.length > 0 ? (
-        <div className="trial-list">
-          {trials.map((t: TrialRecord) => (
-            <button
-              key={t.slug}
-              className="env-row trial-row"
-              data-active={selected === t.slug || undefined}
-              onClick={() => setSelected(t.slug)}
-            >
-              <span className="env-name">
-                {t.subject} <span className="dim">{t.upload_id ? `upload ${t.upload_id}` : t.source_url}</span>
-              </span>
-              <span className="env-status">
-                {t.outcome === 'verdict' ? t.verdict : (t.outcome ?? 'running')}
-              </span>
-              <span className="env-note dim">{t.started_at.slice(0, 16).replace('T', ' ')}</span>
-            </button>
-          ))}
+        <div className="panel">
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>App</th>
+                  <th>Store</th>
+                  <th>Result</th>
+                  <th style={{ textAlign: 'right' }}>Started</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trials.map((t: TrialRecord) => (
+                  <tr key={t.slug} data-active={selected === t.slug || undefined}>
+                    <td>
+                      {/* A button rather than a link: a trial is selected into the panel below
+                          rather than navigated to, and a row that only responds to a mouse is
+                          a row half the readers cannot open. */}
+                      <button className="row-link" type="button" onClick={() => setSelected(t.slug)}>
+                        {t.subject}
+                      </button>
+                    </td>
+                    <td className="trial-src dim" title={t.upload_id ? `upload ${t.upload_id}` : t.source_url}>
+                      {t.upload_id ? `upload ${t.upload_id}` : t.source_url}
+                    </td>
+                    <td><StatusCell state={displayFacts(outcomeFacts(t))} /></td>
+                    <td className="col-num dim">{since(t.started_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : null}
 

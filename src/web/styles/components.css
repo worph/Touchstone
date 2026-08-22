@@ -1190,9 +1190,19 @@
 
 
 /* ── trials ────────────────────────────────────────────────────────────────────────────────
-   Auditing a ref before it is merged. Deliberately quieter than the Overview: a trial's
-   verdict is about code that is not in the store yet, and styling it like a hallmark would
-   invite it to be read as one. */
+   Auditing a candidate store before it is merged.
+
+   The table, the panel and the status cells are the Overview's, verbatim, and that is the
+   whole of the styling here. It used to be a private vocabulary — `.tag` chips for verdicts,
+   `.env-row` for the list — on the argument that a trial's verdict is about code that is not
+   in the store yet, and styling it like a hallmark would invite it to be read as one.
+
+   The argument was right about framing and wrong about notation. Since 2026-08-22 a trial is
+   a *full* audit of the exact bytes a bench installs, so a second-class rendering says
+   something false about it; and the comparison's third column quotes a real hallmark, which
+   has to look like one. What keeps a trial from being mistaken for a hallmark is the header,
+   the `Currently` column and the absence of a summary strip — words and structure, not a
+   downgraded cell. See the head of `pages/Trials.tsx`. */
 
 .trial-form {
   display: flex;
@@ -1201,10 +1211,13 @@
   gap: 12px;
   padding: 14px 18px;
 }
-.trial-form label { display: flex; flex-direction: column; gap: 4px; min-width: 150px; flex: 1 1 150px; }
+/* The app name is a word, not a URL: it takes a fixed share and lets the button sit beside it
+   rather than being pushed to the far edge of a 900px row. */
+.trial-form label { display: flex; flex-direction: column; gap: 4px; min-width: 150px; flex: 0 1 220px; }
 /* A store URL is a GitHub archive link — long enough that a 150px share of the row truncates
-   it to uselessness, so it takes the whole line and the app name sits under it. */
-.trial-form-wide { flex: 1 1 100% !important; }
+   it to uselessness, so it takes the whole line and the app name sits under it. Qualified by
+   `label` to outrank the rule above on specificity rather than with `!important`. */
+.trial-form label.trial-form-wide { flex: 1 1 100%; }
 .trial-form label > span {
   font: 600 10.5px/1 var(--sans);
   letter-spacing: 0.09em;
@@ -1212,9 +1225,36 @@
   color: var(--fg-2);
 }
 
-.trial-list { display: flex; flex-direction: column; gap: 1px; background: var(--border); }
-.trial-row { width: 100%; text-align: left; background: var(--bg-1); border: 0; cursor: pointer; }
-.trial-row[data-active] { background: var(--bg-2); }
+/* The store a trial came from is the one cell that is routinely longer than its column — a
+   branch archive URL runs past 60 characters. It gets the leftover width and truncates, with
+   the whole of it on the row's `title`. The list used to be `.env-row`, whose first track is
+   a fixed 190px, and the URL simply overlapped the status beside it. */
+.trial-src {
+  max-width: 0;
+  width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* Which trial the detail below is showing. `:hover` already tints a row, so the selected one
+   is marked on its left edge as well — the two must not be tellable apart only by shade. */
+.tbl tbody tr[data-active] td { background: var(--bg-2); }
+.tbl tbody tr[data-active] td:first-child { box-shadow: inset 2px 0 0 var(--link); }
+
+/* `.row-link` is written for an anchor; the trial list selects rather than navigates, so the
+   same affordance has to sit on a button without bringing the UA's button chrome with it. */
+button.row-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 550;
+  text-align: left;
+}
 
 .trial-detail { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
 .trial-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
