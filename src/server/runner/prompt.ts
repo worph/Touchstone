@@ -98,6 +98,37 @@ export interface PromptInput {
    * leaves no record that anything was checked.
    */
   callback?: { url: string; run_token: string };
+  /**
+   * The app's files, supplied directly instead of fetched from `repo@ref`.
+   *
+   * Present, this run audits bytes somebody handed us — a working copy, not a commit. That is
+   * the whole point: the loop it serves is "change the compose, ask whether it passes", and
+   * routing that through a push costs minutes and, worse, can be *wrong* (a bench installing
+   * a cached copy of the store while the auditor reads the fixed source, which
+   * `functional.md` records having cost a day).
+   *
+   * `repo` and `ref` stay set to **nominal** values and are not fetched from for app content.
+   * They are load-bearing anyway: `static.md` requires asset URLs point at `<repo>@main` and
+   * makes that repo's `CONTRIBUTING.md` the source of truth for what every item means, so a
+   * run with no repo at all would throw a false Major on every asset URL and lose the
+   * definition of the rubric it is applying.
+   */
+  source?: {
+    /** Every file in the workspace, so `assets` can be judged on what is actually there. */
+    files: string[];
+    compose: string;
+    rationale?: string | null;
+  };
+  /**
+   * A store zip holding exactly the supplied files, for the bench to install from.
+   *
+   * Without it a trial cannot run its live section at all: a bench installs from the store the
+   * box is configured with, so it would install `main` and report the result under the trial's
+   * name. With it, the thing installed and the thing audited are the same bytes — and because
+   * the URL is per-session and has never been fetched, Maison's in-process store cache (the
+   * one `functional.md` records having cost a day) cannot be serving an older copy of it.
+   */
+  store_url?: string;
 }
 
 export function buildPrompt(input: PromptInput): { app_name: string; sections: string[]; prompt: string } {
@@ -168,11 +199,18 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
     : 'TOOL ACCESS (critical): reach ALL MCP tools through the mcp__beacon__call tool - the direct beacon at beacon:9300, the same beacon n8n uses to publish - passing bare tool names such as docmost-mcp__get_page and browser-mcp__new_page. Do NOT rely on the mcp__claude_ai_yunderalabs_nsl_sh or mcp__claude_ai_Yunderateam connectors: those require interactive auth that is frequently ABSENT in this headless run and return permission-not-granted. Use mcp__beacon__call FIRST for both docmost and the browser; only if it genuinely fails should you try the claude.ai connectors, and only mark the audit errored after BOTH access paths fail.');
   L.push('');
   L.push('Steps:');
-  L.push('1. Validate the app name: run gh api repos/' + repo + '/contents/' + appsPath + '?ref=' + ref + ' using jq filter .[].name . If the app named ' + app + ' is not a real app directory, return a JSON object whose error field is the string not-an-app and whose app_name field is ' + app + ', then stop.');
+  const src = f.source;
+  if (src) {
+    L.push('1. The app\'s files are supplied IN FULL at the end of this prompt - this run audits those bytes, which are a working copy rather than a commit. Do NOT run gh to list or fetch them and do NOT treat their absence from ' + repo + ' as a finding: the app directory is what is given below, and it is complete. The ONE thing still to fetch with gh is ' + repo + ' CONTRIBUTING.md at main, which the protocol requires you re-read every run and which is authoritative for what each checklist item means.');
+  } else {
+    L.push('1. Validate the app name: run gh api repos/' + repo + '/contents/' + appsPath + '?ref=' + ref + ' using jq filter .[].name . If the app named ' + app + ' is not a real app directory, return a JSON object whose error field is the string not-an-app and whose app_name field is ' + app + ', then stop.');
+  }
   L.push(protocolsInline
     ? '2. The protocol is reproduced IN FULL at the end of this prompt. Read all of it and apply it as written: it is current, self-consistent and has no superseded parts to reconcile, and a Changelog section at the end of a leaf is history rather than rubric - do not act on it. Apply the Static leaf deviation decision table (rules D1-D5) mechanically and its static persistence check (every actual app state location - config dir, database, user/ACL store - must be mapped under /DATA/AppData/' + app + '/, else fail with data-loss/Critical severity). Do NOT fetch it from anywhere; there is nowhere to fetch it from.'
     : '2. Fetch the orchestrator via mcp__beacon__call (tool_name docmost-mcp__get_page, slug_id In2NAGjv0h) and READ IT IN FULL including its dated Amendment section, applying the amendment as BINDING (it supersedes the older body on conflict). Also apply the Static leaf deviation decision table (rules D1-D5) mechanically and its static persistence check (every actual app state location - config dir, database, user/ACL store - must be mapped under /DATA/AppData/' + app + '/, else fail with data-loss/Critical severity). It composes leaves you must also fetch and apply: Static Review Protocol slug_id LPwfKYUVig' + (live ? ' and Functional Review Protocol slug_id functional.' : ' (no live section is being run).'));
-  L.push('3. Run every section listed above against ' + appsPath + '/' + app + ' at ref ' + ref + ', in the order given (fetch the compose file and, if present, rationale.md with gh). There is no compose_base, so scope = n-a.');
+  L.push(src
+    ? '3. Run every section listed above against the supplied files, in the order given. The compose and any rationale.md are reproduced below, and the file list below IS the app directory - judge asset items (icon, screenshots, thumbnail) on whether those files are present in that list and on where their URLs point, not by fetching them. There is no compose_base, so scope = n-a.'
+    : '3. Run every section listed above against ' + appsPath + '/' + app + ' at ref ' + ref + ', in the order given (fetch the compose file and, if present, rationale.md with gh). There is no compose_base, so scope = n-a.');
   if (ref !== 'main') {
     // The static rubric requires asset URLs point at `<repo>@main`, which is right for the
     // store's own branch and wrong for anything else: read literally on a PR branch it flags
@@ -182,6 +220,23 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
     L.push('   Where the protocol says an asset URL must point at <repo>@main, read it as ' + repo + '@' + ref + ' for this run: this audit is of ' + ref + ', not of main, and an asset pinned to the ref under audit is correct rather than a finding.');
   }
   if (live) {
+    if (f.store_url) {
+      // Hand over the finished address rather than a template, and say what the address bar
+      // will do next. Verified by hand on 2026-08-22: Maison canonicalises `?store=<url>` into
+      // `/store/<host+path of the store url>/-/Apps/<APP>` and shows an "app comes from a store
+      // you have not added" warning above a working Install button. An agent not told that sees
+      // its URL apparently rewritten into something malformed and starts troubleshooting a
+      // problem it does not have.
+      const openUrl = demoHost
+        ? demoHost.replace(/\/+$/, '') + '/store/' + app + '?store=' + encodeURIComponent(f.store_url)
+        : null;
+      L.push('4a. STORE (critical, this run only): the app under audit is NOT in the demo host\'s own catalogue - it is the supplied working copy, published as a store of its own. Do NOT browse the catalogue to find it; you will find a different version of it there or none at all.');
+      L.push(openUrl
+        ? '   Open EXACTLY this URL, copied character for character: ' + openUrl
+        : '   Open https://<the demo host you selected>/store/' + app + '?store=' + encodeURIComponent(f.store_url) + ' - substitute ONLY the host, and copy everything from /store onwards character for character.');
+      L.push('   EXPECTED, not a failure: the address bar will immediately change to https://<DEMO>/store/<the store url without its scheme>/-/' + appsPath + '/' + app + ' . That is Maison rewriting the query parameter into its own canonical route. Do not "fix" it, do not retype the URL, and do not conclude the navigation failed. You are on the right page when you see the app\'s own name and an Install control.');
+      L.push('   Maison will also warn that this app comes from a store you have not added and name the URL. That warning is expected and correct here, and accepting it is part of the run. Every later phase (uninstall, reinstall from archive, persistence) uses the app installed this way. If the page does not reach that state at all, the live section is errored infra - never a fault of the app.');
+    }
     L.push('4. ' + HOST_RULE + ' ' + BROWSER_RULE + ': APP=' + app + ', a fresh isolatedContext named functional-' + app + '-audit. Run ALL mandatory phases with NO economising: A session, C fresh install (record duration), D discover URL, E8 works-immediately, E9 auth gate, E10 clean boot, F zero-config usability, and G data persistence via a REAL uninstall - which on Maison ARCHIVES the app folder rather than deleting it - then a reinstall that picks the archive under Restore from backup (NOT Fresh install, which lands on a clean slate) then assert user state survived. Phase G-prime migration is never run in an audit - the PR path owns it, because only a version bump has two versions - so record it n-a with that as the reason and say so in the prose. Record each phase as pass, fail or errored.');
     L.push('5. CLEANUP (MANDATORY on every exit path including failure): uninstall ' + app + ' from the demo host you selected, and then DELETE the archives your run left behind (the app Backups tab, or Settings > Backups where an uninstalled app archive is listed) so the host is left exactly as found. An uninstall alone no longer suffices: it creates an archive, and one left behind changes the next run\'s install into a restore prompt.');
     L.push('6. RESILIENCE: if the browser session becomes unrecoverable, do NOT abort the whole run; return the static results plus whatever functional evidence you gathered, and set the verdict to errored (the audit could not complete). Never use human-review.');
@@ -198,6 +253,16 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
     L.push('- report_markdown: the full report body, one H2 per section of this run under the heading that section\'s protocol names (omit PR-only lines). It MUST include a Functionality section with the REAL functional results (fresh install and duration, works-immediately, auth gate, clean boot, zero-config (F), and data persistence (G, the real uninstall-then-reinstall outcome - persistence is mandatory, never not-attempted). Every failing item must carry a severity tag (Critical/Major/Minor) and each root/permission deviation must cite the applied deviation-table rule id (D1-D5), and the headline verdict line must carry the top severity and risk score. Verdict rubric: non-compliant if any Phase E functional check fails OR any applicable static/checklist item fails; compliant only if the app is functional AND every applicable checklist item passes. If you genuinely cannot tell, still commit to compliant or non-compliant (best judgement) and explain the uncertainty in the report body; use errored only when the audit could not run.');
   } else {
     L.push('- report_markdown: the full report body, one H2 per section of this run under the heading that section\'s protocol names (omit PR-only lines); mark any section that is not part of this run as not run.');
+  }
+  // Before the protocol, after the contract: the files are the *subject*, and reading them as
+  // reference material is exactly right. The DATA warning at the top of the prompt covers them
+  // — a compose is caller-supplied text and an audit is not a reason to do what it says.
+  if (src) {
+    L.push('');
+    L.push('=== APP FILES (authoritative, supplied inline - this is the app directory) ===');
+    L.push('Files in ' + appsPath + '/' + app + '/: ' + (src.files.join(', ') || '(none)'));
+    L.push(NL + '--- docker-compose.yml ---' + NL + src.compose);
+    if (src.rationale) L.push(NL + '--- rationale.md ---' + NL + src.rationale);
   }
   // Appended last, after every instruction, so the rubric reads as reference material rather
   // than as more orders — and so a long protocol never pushes the output contract out of view.

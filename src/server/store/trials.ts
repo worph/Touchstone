@@ -82,6 +82,20 @@ export function trialSlug(v: ValidatedTrial, at: string): string {
   return `${safe(v.repo)}@${safe(v.ref)}-${at.replace(/[:.]/g, '-')}`;
 }
 
+/**
+ * `upload@a1b2c3d4e5f6-2026-08-22T10-00-00-000Z` — the slug for a trial of supplied files.
+ *
+ * Deliberately *not* `trialSlug`'s `repo@ref` shape. An upload trial carries a nominal repo
+ * and a nominal ref of `main`, because the rubric resolves asset URLs and `CONTRIBUTING.md`
+ * against them; running that through `trialSlug` would label every such trial
+ * `Yundera-AppStore@main-…`, which reads as a trial of the store's own main branch and is the
+ * one thing it is not. The upload id is the identity, and it satisfies `isTrialSlug` so every
+ * guard that gates a trial path keeps working unchanged.
+ */
+export function uploadSlug(uploadId: string, at: string): string {
+  return `upload@${uploadId}-${at.replace(/[:.]/g, '-')}`;
+}
+
 /** Rejects anything that is not a slug this module produced. */
 export function isTrialSlug(value: string): boolean {
   return /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/.test(value) && !value.includes('..');

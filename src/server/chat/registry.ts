@@ -9,14 +9,21 @@
  * Every one is a thin wrapper over something the API already does; the chat is a way of
  * reaching the app by conversation, not a second implementation of it.
  *
- * **Five of the six read, and only one acts.** The chat began with three tools, two of which
+ * **Nine of the twelve read, and three act.** The chat began with three tools, two of which
  * described the *live process* — `runner.status()`, the ledger — and that was the wrong half
  * of the app to know about. An audit takes minutes, a turn takes seconds, and `tsx watch`
  * restarts the process on any edit; so by the time the operator asked what came of a run,
  * the only thing the chat could see was gone, and it answered "nothing yet" over an archive
- * holding ten assays. `get_subject`, `get_fix_brief`, `list_activity` and `get_schedule`
- * read what is written down instead — the report frontmatter, the log, the backlog — which
- * is durable, is what the pages show, and is what the question was actually about.
+ * holding ten assays. `get_board`, `get_subject`, `get_report`, `get_fix_brief`,
+ * `list_activity` and `get_schedule` read what is written down instead — the report
+ * frontmatter and body, the log, the backlog — which is durable, is what the pages show, and
+ * is what the question was actually about.
+ *
+ * They are also four depths of the same question, which the descriptions have to keep
+ * distinct or the model picks by luck: `get_board` is every app at a glance, `get_subject`
+ * one app's hallmark, `get_fix_brief` its findings composed for whoever must fix them, and
+ * `get_report` the audit file verbatim — the only one carrying the evidence behind a
+ * requirement that *passed*.
  *
  * **There is no tool that writes a verdict, and there will not be one** — the same rule that
  * governs `routes/mcp.ts`. The moment a model can post an outcome, the protocol's gate stops
@@ -26,10 +33,10 @@
  */
 
 import { outcomeClause, type EventLevel, type EventRecord } from '../../shared/activity.js';
-import { asSubjectKey, subjectName, type SubjectKey } from '../../shared/subject.js';
-import type { AssayRecord, Section } from '../../shared/types.js';
+import { asSubjectKey, subjectName, subjectOrigin, type SubjectKey } from '../../shared/subject.js';
+import type { AssayRecord, Section, SubjectState } from '../../shared/types.js';
 import { buildFixReport } from '../domain/fixreport.js';
-import { LEGS, subjectHallmark, subjectNames, type LegState } from '../domain/hallmark.js';
+import { hallmarks, LEGS, subjectHallmark, subjectNames, type LegState } from '../domain/hallmark.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import type { Runner } from '../runner/index.js';
@@ -40,6 +47,13 @@ import type { AlertStore } from '../services/alerts.js';
 import type { EventLog } from '../services/events.js';
 import type { PortProber } from '../services/ports.js';
 import type { BenchProber } from '../services/bench.js';
+import {
+  dispatchTrial,
+  specFromUpload,
+  trialIndex,
+  trialsReady,
+  type TrialRunDeps,
+} from '../services/trialrun.js';
 import { coverageOf } from '../services/ledger.js';
 
 export interface ChatToolContext {
@@ -63,6 +77,16 @@ export interface ChatToolContext {
   threadId?: string;
   /** How a started run is actually dispatched — the same path `POST /assays` takes. */
   startAssay?: (job: { subject: SubjectKey }, opts?: { threadId?: string }) => void;
+  /**
+   * Everything a trial needs — the same bundle `routes/trials.ts` assembles for `POST /trials`.
+   *
+   * One bundle rather than four fields, because starting a trial is one operation with one set
+   * of preconditions, and a tool that could hold three of the four would have to invent an
+   * answer for the fourth.
+   */
+  trials?: TrialRunDeps;
+  /** The store repo an origin came from, so a trial can inherit it instead of being told. */
+  originRepo?: (origin: string) => string | undefined;
 }
 
 export interface ChatToolResult {
@@ -212,6 +236,34 @@ function describeSection(id: Section, state: LegState): string[] {
   return lines;
 }
 
+/** Every section a subject has a slot for, the two the Overview names first. */
+function sectionIds(state: SubjectState): Section[] {
+  return Array.from(new Set<Section>([...LEGS, ...(Object.keys(state.sections) as Section[])]));
+}
+
+/**
+ * One subject as one line, for the board.
+ *
+ * `describeSection` is the long form and runs to five lines a section; sixty of those is a
+ * table nobody reads, which is the thing this tool exists to avoid. What it must **not** trade
+ * away is invariant 4: a blocked section is spelled as infra here exactly as it is there, so a
+ * model scanning the board cannot read `functional blocked` as a second failure of the app.
+ */
+function boardRow(state: SubjectState): string {
+  const cells = sectionIds(state).map((id) => {
+    const record = state.sections[id];
+    if (!record) return `${id} never assayed`;
+    const meta = record.meta;
+    if (meta.status === 'blocked') {
+      return `${id} blocked (infra: ${meta.blocked_reason ?? 'unrecorded'})`;
+    }
+    if (meta.status === 'running') return `${id} running`;
+    return `${id} ${meta.verdict ?? 'no verdict'}/${meta.top_severity}`;
+  });
+  const age = state.age_days === null ? 'never assayed' : `${state.age_days}d old`;
+  return `${state.label} (${state.origin}) · risk ${state.risk} · ${cells.join(' · ')} · ${age}`;
+}
+
 function describeEvent(event: EventRecord): string {
   return (
     `${event.at} ${event.level} ${event.code}` +
@@ -238,6 +290,32 @@ export const CHAT_TOOLS: ChatTool[] = [
       const hits = needle ? all.filter((s) => s.toLowerCase().includes(needle)) : all;
       if (hits.length === 0) return failed(`No subject matches "${input.contains}". There are ${all.length} in total.`);
       return ok(hits.join('\n'));
+    },
+  },
+
+  {
+    name: 'get_board',
+    description:
+      'Every app and the verdict it currently carries, worst first — one call instead of one per app. Use it to answer "what is failing", "what is worst" or "what has never been audited"; `list_subjects` gives names with no verdicts, and asking `get_subject` sixty times to find the bad ones is the thing this replaces. Each row is a summary: `get_subject` is the detail, `get_fix_brief` the findings, `get_report` the audit itself. A section shown as blocked was prevented by infrastructure and says nothing about that app.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async (_input, ctx) => {
+      const store = ctx.store;
+      if (!store) return failed('There is no archive wired up, so there is nothing to show.');
+
+      // The same composition the Overview and the public board read. A second one here would
+      // be a second answer to "what does this app carry", which is the failure a separate
+      // surface invites — `routes/public.ts` refuses it for the same reason.
+      const rows = hallmarks(store.all());
+      if (rows.length === 0) {
+        return failed('Nothing has been audited yet, so the board is empty. list_subjects has the names.');
+      }
+
+      const audited = rows.filter((row) => row.age_days !== null);
+      const lines = [
+        `${rows.length} app(s), worst risk first — ${audited.length} audited, ${rows.length - audited.length} never.`,
+        ...rows.map(boardRow),
+      ];
+      return ok(lines.join('\n'));
     },
   },
 
@@ -427,6 +505,239 @@ export const CHAT_TOOLS: ChatTool[] = [
         );
       }
       return ok(markdown);
+    },
+  },
+
+  {
+    name: 'get_report',
+    description:
+      'The audit itself, verbatim — the report file as it sits on disk, frontmatter and all. This is the only tool that carries the evidence behind requirements that **passed**: `get_fix_brief` quotes the failures and lists the passes as bare ids, and the file says why each one passed. Pass `trial` to read a trial\'s own report rather than the archive, which is how you find out *why* a change you just trialled still fails something. Call it when the summary is not enough — checking whether a requirement was judged on the evidence you expect, or reading the prose observations, which live nowhere else. Long: a report runs to hundreds of lines, so prefer `get_subject` or `get_fix_brief` unless you need the whole record.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        subject: { type: 'string', description: 'The app name, exactly as list_subjects gives it.' },
+        section: {
+          type: 'string',
+          description:
+            'Which section — static or functional. Defaults to whichever was assayed most recently.',
+        },
+        trial: {
+          type: 'string',
+          description:
+            'Read a trial\'s own report instead of the archive — the id get_trial gives. Then `subject` is not needed.',
+        },
+      },
+      required: [],
+    },
+    handler: async (input, ctx) => {
+      const wantedTrial = String(input.trial ?? '').trim();
+
+      /**
+       * Two archives, and only one of them is *the* archive.
+       *
+       * A trial's reports live where the report index never looks — that is the whole point of
+       * a trial — so reading one means opening its own tree. Without this branch the loop
+       * breaks exactly where it matters: you can see *that* your change still fails something
+       * and not *why*, which sends you back to the filesystem the tools exist to replace.
+       */
+      let store: AssayStore;
+      let key: SubjectKey;
+      let records: readonly AssayRecord[];
+
+      if (wantedTrial) {
+        const deps = ctx.trials;
+        const row = deps?.trials?.get(wantedTrial);
+        if (!deps?.trialsRoot || !row) return failed(`There is no trial called "${wantedTrial}".`);
+        const index = await trialIndex(deps.trialsRoot, row.slug);
+        store = index;
+        records = index.all();
+        key = asSubjectKey(`${row.slug}~${row.subject}`);
+      } else {
+        const found = locate(ctx, String(input.subject ?? ''));
+        if ('text' in found) return found;
+        if (!ctx.store) return failed('There is no archive wired up, so no report can be read.');
+        store = ctx.store;
+        records = found.records;
+        key = found.key;
+      }
+
+      const { state } = subjectHallmark(key, records);
+      const wanted = String(input.section ?? '').trim().toLowerCase();
+      const present = sectionIds(state).filter((id) => state.sections[id]);
+
+      if (present.length === 0) {
+        return failed(
+          `There is no assay of ${state.label} to read. get_subject says what it does and does not have.`,
+        );
+      }
+
+      let record: AssayRecord | null | undefined;
+      if (wanted) {
+        record = present.includes(wanted as Section) ? state.sections[wanted as Section] : undefined;
+        if (!record) {
+          return failed(
+            `${state.label} has no ${wanted} report. It has: ${present.join(', ')}.`,
+          );
+        }
+      } else {
+        // Most recently settled wins. `finished_at` is absent on a run that never ended, so
+        // fall back to when it started rather than dropping the row.
+        const stamp = (rec: AssayRecord) => rec.meta.finished_at ?? rec.meta.started_at ?? '';
+        record = present
+          .map((id) => state.sections[id]!)
+          .reduce((newest, rec) => (stamp(rec) > stamp(newest) ? rec : newest));
+      }
+
+      const stored = await store.read(record.path);
+      // The index holds frontmatter; the body is read per request. A record whose file has
+      // gone is a real state (a hand-deleted archive), and saying so beats an empty answer.
+      if (!stored) return failed(`The report file is missing from disk: ${record.path}`);
+
+      return ok(stored.raw ?? stored.body);
+    },
+  },
+
+  {
+    name: 'open_trial',
+    writes: true,
+    description:
+      'Open a place to put an app\'s files so they can be audited **without committing anything**. Returns an upload url and a token; PUT each file to `<upload_url>/<name>` (at minimum `docker-compose.yml`), then call `run_trial`. This is the loop to use when you are fixing an app: change the file, trial it, read the result, change it again — no branch, no push, and nothing that could be served from a stale cache. The session expires on its own. It audits the bytes you send and nothing else, but it still judges them as the named app in its store, so asset URLs and the store\'s CONTRIBUTING.md are read the way a real audit reads them.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        subject: { type: 'string', description: 'The app these files are, exactly as list_subjects gives it.' },
+        repo: {
+          type: 'string',
+          description:
+            'The store repo to judge them as, owner/name. Defaults to the one the app already belongs to; supply it only for an app no store has yet.',
+        },
+      },
+      required: ['subject'],
+    },
+    handler: async (input, ctx) => {
+      const uploads = ctx.trials?.uploads;
+      if (!uploads) return failed('This installation has no upload sessions configured.');
+
+      const found = locate(ctx, String(input.subject ?? ''));
+      if ('text' in found) return found;
+      const name = subjectName(found.key);
+
+      // Nominal, and the rubric leans on it: `static.md` requires asset URLs point at
+      // `<repo>@main` and reads that repo's CONTRIBUTING.md as the definition of every item.
+      // Nothing is fetched from it for the app's own content.
+      const repo = String(input.repo ?? '').trim() || ctx.originRepo?.(subjectOrigin(found.key)) || '';
+      if (!repo) {
+        return failed(
+          `No store repo is configured for ${name}, so there is nothing to judge its assets and checklist against. Pass repo as owner/name.`,
+        );
+      }
+
+      const session = await uploads.create({ subject: name, repo });
+      return ok(
+        [
+          `Upload session ${session.id} is open for ${name}, judged as ${repo}@main.`,
+          `PUT each file to /api/v1/uploads/${session.token}/<path> — docker-compose.yml at least, plus rationale.md and any assets the app ships.`,
+          `GET /api/v1/uploads/${session.token} lists what has arrived.`,
+          `Then call run_trial with upload ${session.id}. The session lapses at ${session.expires_at}.`,
+        ].join('\n'),
+      );
+    },
+  },
+
+  {
+    name: 'run_trial',
+    writes: true,
+    description:
+      'Audit the files in an upload session. Returns as soon as the audit has STARTED — it takes minutes, far longer than this conversation will wait, so do not expect a verdict here and do not call it twice hoping for one; call `get_trial` afterwards. The result is written where the report index never looks, so **a trial can never move what an app currently carries** and never enters the backlog. Only the static sections run: judging whether an app installs needs a demo instance serving these files, which a trial has no way to arrange, and that section is recorded blocked rather than guessed at.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        upload: { type: 'string', description: 'The session id open_trial returned.' },
+      },
+      required: ['upload'],
+    },
+    handler: async (input, ctx) => {
+      const deps = ctx.trials;
+      if (!deps) return failed('This installation has no trials configured.');
+
+      const blocked = trialsReady(deps);
+      if (blocked) {
+        // One agent, one run — invariant 8 says there is no queue, so this is a fact to act
+        // on rather than a request to hold. Naming what is running is what makes it
+        // actionable: "wait" and "something is stuck" are different answers.
+        const running = deps.runner?.status().running;
+        return failed(
+          blocked.code === 409 && running
+            ? `${blocked.error} — ${running.subject} has been running since ${running.started_at}. Trials wait for it; try again when it finishes.`
+            : blocked.error,
+        );
+      }
+
+      const at = new Date().toISOString();
+      const built = await specFromUpload(deps.uploads, String(input.upload ?? '').trim(), at, deps.publicBaseUrl);
+      if (!built.ok) return failed(built.error);
+
+      const record = await dispatchTrial(deps, built.spec, at);
+      return ok(
+        `Trial ${record.slug} has started on the files in session ${record.upload_id} — ${record.subject}, judged as ${record.repo}@main. It takes minutes. Call get_trial with that id for the result.`,
+      );
+    },
+  },
+
+  {
+    name: 'get_trial',
+    description:
+      'What a trial found — the verdict on the files that were audited, section by section, and which requirements failed. Call it after `run_trial`; with no id it reads the most recent trial. This is a fact about the files that were submitted and **not** about what the app currently carries in the store: `get_subject` is the app\'s own hallmark, and a trial never changes it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        trial: { type: 'string', description: 'The trial id. Defaults to the most recent.' },
+      },
+    },
+    handler: async (input, ctx) => {
+      const deps = ctx.trials;
+      const store = deps?.trials;
+      if (!store || !deps?.trialsRoot) return failed('This installation has no trials configured.');
+
+      const wanted = String(input.trial ?? '').trim();
+      const record = wanted ? store.get(wanted) : store.list()[0];
+      if (!record) {
+        return failed(wanted ? `There is no trial called "${wanted}".` : 'No trial has been run yet.');
+      }
+
+      const what =
+        record.kind === 'upload'
+          ? `uploaded files (session ${record.upload_id})`
+          : `${record.repo}@${record.ref}`;
+      const lines = [`Trial ${record.slug} — ${record.subject} from ${what}, started ${record.started_at}.`];
+
+      if (!record.finished_at) {
+        lines.push('It has not finished. A trial takes minutes; ask again shortly.');
+        return ok(lines.join('\n'));
+      }
+      if (record.outcome !== 'verdict') {
+        lines.push(
+          `It did not complete — ${record.error ?? record.outcome}. That is a fact about this run, not about the files.`,
+        );
+        return ok(lines.join('\n'));
+      }
+
+      lines.push(`Finished ${record.finished_at}: ${record.verdict}, risk ${record.risk_score ?? 0}.`);
+
+      // The trial's own reports, from its own tree. Never the archive — that is the whole
+      // point of writing them somewhere the index is not handed.
+      const index = await trialIndex(deps.trialsRoot, record.slug);
+      const key = asSubjectKey(`${record.slug}~${record.subject}`);
+      const { legs } = subjectHallmark(key, index.all());
+      const ids = Object.keys(legs).filter((id) => legs[id]?.current);
+      for (const id of ids) lines.push(...describeSection(id, legs[id]!));
+
+      if (record.compare_to) {
+        lines.push(
+          `What ${record.subject} currently carries is a separate question — get_subject answers it. This trial did not change it.`,
+        );
+      }
+      return ok(lines.join('\n'));
     },
   },
 

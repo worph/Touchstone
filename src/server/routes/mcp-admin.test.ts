@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_ORIGIN, subjectKey } from '../../shared/subject.js';
 import { fixtureStore } from '../domain/fixtures.js';
+import { CHAT_TOOLS } from '../chat/registry.js';
 import routes from './index.js';
 import type { AdminMcpOptions } from './mcp-admin.js';
 
@@ -115,6 +116,8 @@ describe('the scope', () => {
         'get_status',
         'get_subject',
         'get_fix_brief',
+        'get_report',
+        'get_board',
         'list_activity',
         'get_schedule',
         'run_assay',
@@ -143,21 +146,44 @@ describe('the scope', () => {
 });
 
 describe('read_only', () => {
-  it('hides the tool that acts', async () => {
+  /**
+   * Every tool that acts, not a list of names kept here and forgotten. The registry marks its
+   * own write tools, and this reads that mark — so a tool added with `writes: true` is covered
+   * the day it lands, and one added *without* it shows up here as a failure rather than as a
+   * surface an operator believed was answers-only.
+   */
+  const writers = CHAT_TOOLS.filter((tool) => tool.writes).map((tool) => tool.name);
+
+  it('knows which tools act, and there is more than one', () => {
+    expect(writers).toEqual(expect.arrayContaining(['run_assay', 'open_trial', 'run_trial']));
+  });
+
+  it('hides every tool that acts', async () => {
     const instance = await serve({ enabled: true, readOnly: true });
     const res = await rpc(instance, { jsonrpc: '2.0', id: 1, method: 'tools/list' });
     const names = (res.json() as { result: { tools: { name: string }[] } }).result.tools.map(
       (tool) => tool.name,
     );
-    expect(names).not.toContain('run_assay');
+    for (const writer of writers) expect(names).not.toContain(writer);
     expect(names).toContain('list_subjects');
   });
 
-  it('refuses it when it is asked for anyway — hidden is not absent', async () => {
+  it('refuses them when asked for anyway — hidden is not absent', async () => {
     const instance = await serve({ enabled: true, readOnly: true });
-    const res = await rpc(instance, call('run_assay', { subject: 'FileBrowser' }));
-    expect(result(res.body).isError).toBe(true);
-    expect(result(res.body).text).toMatch(/no such tool/);
+    for (const writer of writers) {
+      const res = await rpc(instance, call(writer, { subject: 'FileBrowser' }));
+      expect(result(res.body).isError, `${writer} was served`).toBe(true);
+      expect(result(res.body).text).toMatch(/no such tool/);
+    }
+  });
+
+  it('still serves the reads that were added beside them', async () => {
+    const instance = await serve({ enabled: true, readOnly: true });
+    const res = await rpc(instance, { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    const names = (res.json() as { result: { tools: { name: string }[] } }).result.tools.map(
+      (tool) => tool.name,
+    );
+    expect(names).toEqual(expect.arrayContaining(['get_report', 'get_board', 'get_trial']));
   });
 });
 

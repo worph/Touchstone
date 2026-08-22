@@ -20,16 +20,14 @@
  */
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
-import path from 'node:path';
 
 import { asSubjectKey, subjectKey } from '../../shared/subject.js';
-import type { TrialComparison, TrialRecord } from '../../shared/trials.js';
+import type { TrialComparison } from '../../shared/trials.js';
 import { renderMarkdown } from '../domain/markdown.js';
 import { latestDone } from '../domain/hallmark.js';
-import { resolveSubjectKey } from '../domain/subjects.js';
 import type { Runner } from '../runner/index.js';
 import type { EventLog } from '../services/events.js';
-import { buildIndex, type ReportIndex } from '../store/index.js';
+import type { ReportIndex } from '../store/index.js';
 import {
   isTrialSlug,
   TrialInputError,
@@ -37,6 +35,15 @@ import {
   TrialStore,
   validateTrial,
 } from '../store/trials.js';
+import {
+  dispatchTrial,
+  specFromUpload,
+  trialIndex,
+  trialsReady,
+  type TrialRunDeps,
+  type TrialSpec,
+} from '../services/trialrun.js';
+import type { UploadStore } from '../store/uploads.js';
 
 export interface TrialRoutesOptions {
   runner?: Runner;
@@ -48,129 +55,71 @@ export interface TrialRoutesOptions {
   store?: ReportIndex;
   /** Every subject key the loop knows, for resolving what the trial is about. */
   known?: () => string[];
+  /** Upload sessions, so a trial can audit files instead of a ref. */
+  uploads?: UploadStore;
+  /** Touchstone's external address, so a trial can hand a bench a store to install from. */
+  publicBaseUrl?: string;
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
   return reply.code(code).send({ error });
 }
 
-/**
- * A trial's reports, read on demand.
- *
- * Built per request rather than held, because trials are rare and a warm index of debris is not
- * worth a cache. **`cacheFile: null` is load-bearing**: `defaultCacheFile()` derives
- * `<dirname(root)>/state/index.json`, which for `data/trials` is the *same file* the archive's
- * index uses. Two indexes writing it would clobber each other and cross-serve records.
- */
-function trialIndex(root: string): Promise<ReportIndex> {
-  return buildIndex(root, { cacheFile: null });
-}
-
 const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
-  const rootOf = (slug: string) => path.join(options.trialsRoot ?? '', slug);
+  /** The one place the trial services are assembled, so both verbs see the same wiring. */
+  const trialDeps = (): TrialRunDeps => ({
+    runner: options.runner,
+    trials: options.trials,
+    uploads: options.uploads,
+    trialsRoot: options.trialsRoot,
+    events: options.events,
+    known: options.known,
+    publicBaseUrl: options.publicBaseUrl,
+    onError: (err, slug) => app.log.error({ err, slug }, 'trial failed'),
+  });
 
   app.get('/trials', async () => ({ trials: options.trials?.list() ?? [] }));
 
   app.post<{ Body?: Record<string, unknown> }>('/trials', async (req, reply) => {
-    const trials = options.trials;
-    const runner = options.runner;
-    if (!trials || !options.trialsRoot) return fail(reply, 503, 'trials are not configured');
-    if (!runner) return fail(reply, 503, 'no runner configured');
-    if (!runner.enabled) {
-      return fail(reply, 409, 'the runner is disabled — set runner.enabled in config.yaml');
-    }
-    if (runner.busy) {
-      // One agent, one run. Saying which kind is running is the difference between "wait" and
-      // "something is stuck".
-      const running = runner.status().running;
-      return reply.code(409).send({ error: 'a run is already in progress', running });
+    const deps = trialDeps();
+    const blocked = trialsReady(deps);
+    if (blocked) {
+      // One agent, one run. Naming what is running is the difference between "wait" and
+      // "something is stuck", so the busy case carries it.
+      const running = options.runner?.status().running;
+      return blocked.code === 409 && running
+        ? reply.code(409).send({ error: blocked.error, running })
+        : fail(reply, blocked.code, blocked.error);
     }
 
-    let input;
-    try {
-      // These reach a prompt the agent runs `gh` against, so they are checked here rather than
-      // trusted: this is the one place a caller chooses what repository gets read.
-      input = validateTrial(req.body ?? {});
-    } catch (err) {
-      if (err instanceof TrialInputError) return fail(reply, 400, err.message);
-      throw err;
-    }
-
+    const body = req.body ?? {};
     const startedAt = new Date().toISOString();
-    const slug = trialSlug(input, startedAt);
 
-    // What this trial is *about*, when the app also exists in a configured store — so the
-    // result can be put beside what that subject currently carries. A branch adding a new app
-    // has no counterpart, which is a normal PR and not an error.
-    const match = resolveSubjectKey(input.subject, options.known?.() ?? []);
+    /**
+     * Two ways to say what to audit, and only one of them names a repository.
+     *
+     * `{ upload }` audits the bytes in a session — no ref, nothing fetched, nothing that could
+     * be stale. `{ repo, ref }` is the original: reviewing a branch that exists.
+     */
+    let spec: TrialSpec;
+    const wanted = String(body.upload ?? '').trim();
+    if (wanted) {
+      const built = await specFromUpload(options.uploads, wanted, startedAt, options.publicBaseUrl);
+      if (!built.ok) return fail(reply, built.code, built.error);
+      spec = built.spec;
+    } else {
+      try {
+        // These reach a prompt the agent runs `gh` against, so they are checked here rather
+        // than trusted: this is the one place a caller chooses what repository gets read.
+        const input = validateTrial(body);
+        spec = { ...input, slug: trialSlug(input, startedAt) };
+      } catch (err) {
+        if (err instanceof TrialInputError) return fail(reply, 400, err.message);
+        throw err;
+      }
+    }
 
-    const record: TrialRecord = {
-      slug,
-      repo: input.repo,
-      ref: input.ref,
-      apps_path: input.apps_path,
-      subject: input.subject,
-      ...(match.kind === 'ok' ? { compare_to: match.key } : {}),
-      started_at: startedAt,
-    };
-    await trials.add(record);
-
-    options.events?.log({
-      level: 'info',
-      code: 'TRIAL_STARTED',
-      message: `Trialling ${input.subject} from ${input.repo}@${input.ref}`,
-      detail: { slug, repo: input.repo, ref: input.ref, subject: input.subject },
-    });
-
-    // Fire and report, exactly as `POST /assays` does: a real audit takes minutes and a socket
-    // held that long is at the mercy of every proxy in between.
-    void runner
-      .run({
-        // The slug is the synthetic origin, so the report path machinery is untouched.
-        subject: subjectKey(slug, input.subject),
-        try_n: 1,
-        trial: { repo: input.repo, ref: input.ref, apps_path: input.apps_path, root: rootOf(slug) },
-      })
-      .then(async (outcome) => {
-        const finished = new Date().toISOString();
-        if (outcome.kind === 'verdict') {
-          await trials.update(slug, {
-            finished_at: finished,
-            outcome: 'verdict',
-            verdict: outcome.verdict,
-            risk_score: outcome.risk,
-            files: outcome.files,
-          });
-          options.events?.log({
-            level: 'info',
-            code: 'TRIAL_COMPLETED',
-            message: `Trial of ${input.subject} at ${input.ref} — ${outcome.verdict}`,
-            detail: {
-              slug,
-              subject: input.subject,
-              verdict: outcome.verdict,
-              risk: outcome.risk,
-              files: outcome.files.length,
-            },
-          });
-          return;
-        }
-        const reason =
-          outcome.kind === 'agent_busy'
-            ? 'the agent was busy'
-            : outcome.kind === 'blocked'
-              ? outcome.reason
-              : outcome.reason;
-        await trials.update(slug, { finished_at: finished, outcome: outcome.kind, error: reason });
-        options.events?.log({
-          level: 'warn',
-          code: 'TRIAL_FAILED',
-          message: `Trial of ${input.subject} at ${input.ref} did not complete — ${reason}`,
-          detail: { slug, subject: input.subject, reason },
-        });
-      })
-      .catch((err) => app.log.error({ err, slug }, 'trial failed'));
-
+    const record = await dispatchTrial(deps, spec, startedAt);
     return reply.code(202).send({ started: true, trial: record });
   });
 
@@ -180,7 +129,7 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
     const trial = options.trials?.get(slug);
     if (!trial) return fail(reply, 404, `unknown trial: ${slug}`);
 
-    const index = await trialIndex(rootOf(slug));
+    const index = await trialIndex(options.trialsRoot ?? '', slug);
     const key = subjectKey(slug, trial.subject);
     const mine = index.forSubject(key);
 
@@ -219,7 +168,7 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
       const trial = options.trials?.get(slug);
       if (!trial) return fail(reply, 404, `unknown trial: ${slug}`);
 
-      const index = await trialIndex(rootOf(slug));
+      const index = await trialIndex(options.trialsRoot ?? '', slug);
       const record = index.all().find((r) => r.file === file);
       if (!record) return fail(reply, 404, `unknown report: ${file}`);
       const stored = await index.read(record.path);

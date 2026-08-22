@@ -25,6 +25,7 @@ import { renderMarkdown } from '../domain/markdown.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import type { TrialRoutesOptions } from './trials.js';
+import type { UploadRoutesOptions } from './uploads.js';
 import type { BrowserRoutesOptions } from './browser.js';
 import type { AlertStore } from '../services/alerts.js';
 import type { BenchProber } from '../services/bench.js';
@@ -50,6 +51,7 @@ import publicRoutes from './public.js';
 import browserRoutes, { registerBrowserProxy } from './browser.js';
 import scheduleRoutes from './schedule.js';
 import trialRoutes from './trials.js';
+import uploadRoutes from './uploads.js';
 
 export interface RoutesOptions {
   /** The index built at boot. Omitted in dev and in the route tests. */
@@ -66,6 +68,14 @@ export interface RoutesOptions {
   registry?: SubjectRegistry;
   /** The trial surface. Absent, `/trials` answers 503 rather than 404 — it is a real feature. */
   trials?: TrialRoutesOptions;
+  /**
+   * Where a trial's files are written when there is no ref to fetch them from.
+   *
+   * Absent, the routes are not registered at all rather than answering 503: unlike `/trials`,
+   * an installation with no upload store has nothing to explain — there is no session to
+   * write into and no token that could name one.
+   */
+  uploads?: UploadRoutesOptions;
   /** The browser sidecar, so a running audit can be watched. See `routes/browser.ts`. */
   browser?: BrowserRoutesOptions;
   boardUrl?: string;
@@ -121,6 +131,9 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     ...(options.ports ? { ports: options.ports } : {}),
   });
   await app.register(trialRoutes, options.trials ?? {});
+  // Its own plugin, and that matters: it swaps the content-type parsers for a
+  // buffer-everything one, which must not reach the JSON API around it.
+  await app.register(uploadRoutes, options.uploads ?? {});
   await app.register(browserRoutes, options.browser ?? {});
   // The proxies last: their upstream is fixed at registration, and they are skipped entirely
   // when no sidecar is configured.

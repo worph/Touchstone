@@ -88,6 +88,14 @@ export interface TouchstoneConfig {
    * under it becomes a subject the scheduler can pick.
    */
   trialsRoot: string;
+  /**
+   * Where an upload session's files are written — `<dataDir>/uploads`.
+   *
+   * A sibling of `trials/` rather than a child, for the same reason `trials/` is a sibling of
+   * `reports/`: a trial's own directory is scanned as a report tree, so a workspace of app
+   * source underneath one would be read as assay files that failed to parse.
+   */
+  uploadsRoot: string;
   stateDir: string;
   /** The rubric, as local markdown Touchstone owns and edits — and what versions itself. */
   protocolsDir: string;
@@ -162,6 +170,35 @@ export interface TouchstoneConfig {
     /** Serve only the tools that report. `run_assay` is the one this drops. */
     read_only: boolean;
   };
+  /**
+   * Upload sessions — the files a trial audits when there is no ref to fetch them from.
+   *
+   * The caps are the whole of the local risk assessment. What an upload can *do* was settled
+   * elsewhere (a bench is a shared, publicly reachable demo instance with published
+   * credentials, so an uploaded compose grants nothing an anonymous visitor lacked); what it
+   * costs is bytes on Touchstone's own disk, on the box that is also running the audits.
+   */
+  /**
+   * Trials, and the one thing a trial cannot work out for itself.
+   *
+   * A demo bench installs from a store zip it fetches **over the public internet**, so for the
+   * functional section of a trial to run at all, Touchstone has to know its own external
+   * address. It cannot infer one: the request that starts a trial arrives on the internal
+   * network under a service name no bench can resolve. Empty means trials stay static-only,
+   * which is what they were before this existed and is a correct, self-explaining state.
+   */
+  trials: {
+    /** e.g. `https://touchstone-yunderalabs.nsl.sh`. No trailing slash. */
+    public_base_url: string;
+  };
+  uploads: {
+    /** Refused past this, per file. */
+    max_file_bytes: number;
+    /** Refused past this, summed over one session. */
+    max_total_bytes: number;
+    /** How long a session stays writable, and how long its files survive. */
+    ttl_min: number;
+  };
   notify: {
     outlets: OutletEntry[];
     /**
@@ -182,6 +219,7 @@ function defaults(dataDir: string): TouchstoneConfig {
     origins: [{ id: DEFAULT_ORIGIN, repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' }],
     reportsRoot: path.join(dataDir, 'reports'),
     trialsRoot: path.join(dataDir, 'trials'),
+    uploadsRoot: path.join(dataDir, 'uploads'),
     stateDir: path.join(dataDir, 'state'),
     protocolsDir: path.join(dataDir, 'protocols'),
     scheduler: {
@@ -217,6 +255,14 @@ function defaults(dataDir: string): TouchstoneConfig {
       enabled: /^(on|1|true|yes)$/i.test(process.env.TOUCHSTONE_ADMIN_MCP ?? ''),
       token: process.env.TOUCHSTONE_ADMIN_MCP_TOKEN ?? '',
       read_only: /^(on|1|true|yes)$/i.test(process.env.TOUCHSTONE_ADMIN_MCP_READ_ONLY ?? ''),
+    },
+    trials: {
+      public_base_url: (process.env.TOUCHSTONE_PUBLIC_BASE_URL ?? '').replace(/\/+$/, ''),
+    },
+    uploads: {
+      max_file_bytes: 2 * 1024 * 1024,
+      max_total_bytes: 8 * 1024 * 1024,
+      ttl_min: 120,
     },
     notify: {
       outlets: [],
@@ -263,6 +309,7 @@ export async function loadConfig(dataDir?: string): Promise<TouchstoneConfig> {
   // Paths in config.yaml may be relative to the data dir.
   cfg.reportsRoot = path.resolve(dir, cfg.reportsRoot);
   cfg.trialsRoot = path.resolve(dir, cfg.trialsRoot);
+  cfg.uploadsRoot = path.resolve(dir, cfg.uploadsRoot);
   cfg.stateDir = path.resolve(dir, cfg.stateDir);
   cfg.origins = resolveOrigins(cfg.origins);
   return cfg;
@@ -451,6 +498,25 @@ admin_mcp:
   # Serve only the tools that report. Drops run_assay — and refuses it if asked for anyway,
   # since a hidden tool is not an absent one.
   read_only: ${cfg.admin_mcp.read_only}
+
+# ── trials ──────────────────────────────────────────────────────────────────────────────
+# Touchstone's own address, as a demo bench on the public internet would reach it — e.g.
+# https://touchstone-<your domain>. Needed only so the functional section of a trial can hand
+# a bench a store to install from; Touchstone cannot infer it, because the request that starts
+# a trial arrives on the internal network. Left empty, trials run their static sections and
+# record the rest blocked, which is what they did before this setting existed.
+trials:
+  public_base_url: "${cfg.trials.public_base_url}"
+
+# ── upload sessions ─────────────────────────────────────────────────────────────────────
+# The files a trial audits when there is no ref to fetch them from. A session is opened by
+# open_trial, written to with PUT /api/v1/uploads/<token>/<path>, and expires on its own.
+# These caps are about disk on this box, not about what an upload may contain.
+uploads:
+  max_file_bytes: ${cfg.uploads.max_file_bytes}
+  max_total_bytes: ${cfg.uploads.max_total_bytes}
+  # A session stays writable this long, and its files are swept once it lapses.
+  ttl_min: ${cfg.uploads.ttl_min}
 
 # ── notification ────────────────────────────────────────────────────────────────────────
 # Outlets go through the local Beacon aggregator. \`target\` is a Telegram chat id or a
