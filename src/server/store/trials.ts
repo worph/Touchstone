@@ -13,20 +13,18 @@
  *    `<slug>/<Subject>/<ISO>-<section>.md`, so a trial's tree mirrors the archive's exactly —
  *    the viewer, the renderer and the frontmatter contract all work on it untouched.
  *
- * `repo`, `ref` and `apps_path` arrive in an HTTP body and are interpolated into a prompt the
- * agent runs `gh` against, so they are validated here rather than trusted downstream.
+ * `store_url`, `subject` and `apps_path` arrive in an HTTP body. The URL is the one input this
+ * process itself dereferences, so it is validated here and again against a host allowlist in
+ * `services/trialstore.ts` before anything fetches it.
  */
 
 import { promises as fs } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 
 import type { TrialRecord } from '../../shared/trials.js';
 import { readJson, writeJsonAtomic } from './state.js';
 
-/** `owner/name`. GitHub's own charset, and nothing that could leave the path. */
-const REPO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
-/** A branch, tag or SHA. Slashes are legal in refs (`release/1.2`); `..` never is. */
-const REF_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,254}$/;
 /** One or more safe path segments. */
 const PATH_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
 /** An app directory name. */
@@ -35,8 +33,7 @@ const SUBJECT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 export class TrialInputError extends Error {}
 
 export interface ValidatedTrial {
-  repo: string;
-  ref: string;
+  store_url: string;
   apps_path: string;
   subject: string;
 }
@@ -44,56 +41,57 @@ export interface ValidatedTrial {
 /**
  * Check what arrived on the wire.
  *
+ * The URL is checked for *shape* only — that it parses and is `https:`. **Whether it may be
+ * fetched is a separate question**, answered by the allowlist in `services/trialstore.ts`,
+ * because this process dereferences it: a caller who can name a URL Touchstone will GET can
+ * otherwise reach anything on the internal network. Two checks in two places because they are
+ * two different questions, and collapsing them would make the second easy to lose.
+ *
  * Rejecting `..` twice — once by the character class, once explicitly — is deliberate: the
- * first is easy to widen by accident when somebody adds a legal character to a ref.
+ * first is easy to widen by accident when somebody adds a legal character.
  */
 export function validateTrial(input: {
-  repo?: unknown;
-  ref?: unknown;
+  store_url?: unknown;
   apps_path?: unknown;
   subject?: unknown;
 }): ValidatedTrial {
-  const repo = String(input.repo ?? '').trim();
-  const ref = String(input.ref ?? '').trim();
+  const storeUrl = String(input.store_url ?? '').trim();
   const appsPath = String(input.apps_path ?? 'Apps').trim().replace(/^\/+|\/+$/g, '') || 'Apps';
   const subject = String(input.subject ?? '').trim();
 
-  if (!REPO_RE.test(repo)) throw new TrialInputError('repo must be owner/name');
-  if (!REF_RE.test(ref) || ref.includes('..')) throw new TrialInputError('ref is not a valid git ref');
+  let parsed: URL;
+  try {
+    parsed = new URL(storeUrl);
+  } catch {
+    throw new TrialInputError('store_url must be an absolute URL to a store zip');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new TrialInputError('store_url must be https');
+  }
   if (!PATH_RE.test(appsPath) || appsPath.includes('..')) {
-    throw new TrialInputError('apps_path must be a plain path inside the repo');
+    throw new TrialInputError('apps_path must be a plain path inside the store');
   }
   if (!SUBJECT_RE.test(subject)) throw new TrialInputError('subject must be an app directory name');
 
-  return { repo, ref, apps_path: appsPath, subject };
+  return { store_url: parsed.toString(), apps_path: appsPath, subject };
 }
 
 /**
- * `Acme-AppStore@pr-812-2026-08-20T19-00-00Z`.
+ * `FileBrowser@a1b2c3d4-2026-08-22T19-00-00-000Z`.
  *
  * Doubles as the synthetic origin id, so it must contain neither `/` (it is one path segment
- * and one URL segment) nor `~` (that separates an origin from a subject). The timestamp is
- * what makes re-running the same ref a second trial rather than an overwrite — two runs of one
- * branch are two results, and which one is current is a question about *this* PR, not about a
- * subject, so nothing here needs the archive's "latest wins" rule.
- */
-export function trialSlug(v: ValidatedTrial, at: string): string {
-  const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
-  return `${safe(v.repo)}@${safe(v.ref)}-${at.replace(/[:.]/g, '-')}`;
-}
-
-/**
- * `upload@a1b2c3d4e5f6-2026-08-22T10-00-00-000Z` — the slug for a trial of supplied files.
+ * and one URL segment) nor `~` (that separates an origin from a subject). The random half is
+ * what makes two trials of the same app at the same instant two results rather than one
+ * overwriting the other, and the timestamp is what makes the list readable in run order.
  *
- * Deliberately *not* `trialSlug`'s `repo@ref` shape. An upload trial carries a nominal repo
- * and a nominal ref of `main`, because the rubric resolves asset URLs and `CONTRIBUTING.md`
- * against them; running that through `trialSlug` would label every such trial
- * `Yundera-AppStore@main-…`, which reads as a trial of the store's own main branch and is the
- * one thing it is not. The upload id is the identity, and it satisfies `isTrialSlug` so every
- * guard that gates a trial path keeps working unchanged.
+ * It deliberately does **not** name where the archive came from. It used to — `repo@ref` for
+ * one kind of trial and `upload@id` for the other — and that was the discriminator leaking
+ * into the identity: two shapes of slug for what is now one shape of trial. The source is
+ * recorded in `source_url`, which is where a fact about provenance belongs.
  */
-export function uploadSlug(uploadId: string, at: string): string {
-  return `upload@${uploadId}-${at.replace(/[:.]/g, '-')}`;
+export function trialSlug(subject: string, at: string): string {
+  const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return `${safe(subject) || 'trial'}@${randomBytes(4).toString('hex')}-${at.replace(/[:.]/g, '-')}`;
 }
 
 /** Rejects anything that is not a slug this module produced. */
@@ -180,6 +178,28 @@ export class TrialStore {
 
   get(slug: string): TrialRecord | undefined {
     return this.trials.find((t) => t.slug === slug);
+  }
+
+  /**
+   * The trial a store token names — how `GET /trialstore/:token.zip` finds what to serve.
+   *
+   * An unknown token and a lapsed trial are the same answer to whoever should not be holding
+   * it, exactly as `UploadStore.byToken` treats an expired session.
+   */
+  byStoreToken(token: string): TrialRecord | undefined {
+    if (!token) return undefined;
+    return this.trials.find((t) => t.store_token === token);
+  }
+
+  /**
+   * Where a trial's own copy of the archive lives.
+   *
+   * Inside the trial's directory on purpose, unlike `data/uploads/`: the report index only ever
+   * picks up `*.md`, so a zip here is invisible to it, and `removeFiles` already deletes the
+   * whole directory — so the store dies with the trial with no second thing to remember.
+   */
+  storeZipPath(slug: string): string {
+    return path.join(this.trialsRoot, slug, 'store.zip');
   }
 
   async add(record: TrialRecord): Promise<void> {

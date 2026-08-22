@@ -733,24 +733,49 @@ rules to remember:
   audit gets a 409. A second runner would also have falsified the browser lease, whose safety
   rests on "there is one run at a time".
 
-**A trial is static-only unless it can serve its own subject**, and that is a fact about how
-apps are installed rather than a shortcoming: a bench installs from its own catalogue, which
-serves whatever store that instance is configured with rather than the thing under trial. The
-functional section is then recorded `blocked` with reason `store_not_installable`. It is still
-not a statement about the subject, so §2.3's rule holds — but it is a statement about the
-*trial's configuration* rather than about infra, which is the one place that wording strains.
+**A trial takes one input: a store zip and an app inside it.** Until 2026-08-22 it took two —
+a `repo@ref` the static section fetched with `gh`, and an upload session whose bytes were
+inlined — each with its own spec builder, slug, prompt branch and a `kind` discriminator. The
+collapse was not only tidiness. **A store zip is both halves of an audit at once**: the files
+the static section reads *and* the bytes the bench installs. A ref trial read its bytes from a
+place the bench never installed from, which is exactly the disagreement `functional.md` v6 had
+to add a hand-written compose assertion to catch. With one archive there is nothing left to
+disagree.
 
-Since 2026-08-22 the condition is real rather than permanent, which was always the named
-follow-on. Maison takes its store as a parameter (`?store=<zip url>`), so a trial that can
-publish its subject as a store hands the bench one and the objection dissolves — the thing
-installed and the thing audited become the same bytes. An **upload** trial can, its files
-already being on this disk; it needs `config.trials.public_base_url`, because the bench fetches
-over the public internet. A **ref** trial still cannot, and still blocks.
+Whatever names the store stops mattering past the route. A GitHub branch or tag archive is one;
+an upload session — files PUT in, no commit, no push — is another, and it produces a zip in
+GitHub's own shape so the two are indistinguishable downstream.
 
-**Nothing a model can call may choose the ref.** The chat's `run_assay` keeps its single
-property, constrained to a registry member. §6.2's reasoning about verdicts extends here:
-repo+ref is the one input that would turn "audit an app" into "run `gh` against a URL of the
-model's choosing", with the result read as data inside an audit prompt.
+**Every trial serves its own copy**, saved into its directory and re-served at an unguessable
+per-trial URL, rather than the bench being pointed at wherever the caller got it. Maison holds
+the store zip *in the running process* and re-reads it only on a refresh or a restart, which
+cost a day on 2026-08-20 — two audits installed a pre-fix compose from cache and blamed an app
+whose source was already fixed. A URL minted per trial has never been fetched, so there is
+nothing cached to serve. Pointing the bench straight at a branch archive would have brought that
+failure back in a narrower form: a branch's URL is stable across pushes.
+
+So `store_not_installable` is gone, and with it the one place §2.3's wording strained. A trial is
+a **full audit**, gated by the same bench and browser probes as any other run. The single
+exception is `trials.public_base_url` being unset — Touchstone cannot serve a store it has no
+external address for — and that records `store_url_unconfigured`, which is a fact about this
+box's configuration and names the setting that fixes it.
+
+**The URL is the one input this process dereferences**, which is a different risk from anything
+else here and is handled where it arises (`services/trialstore.ts`): a host allowlist of GitHub
+archives plus our own address, re-checked at every redirect hop, and a byte cap enforced on what
+arrived rather than on what `content-length` claimed. `run_trial` is reachable from an admin MCP
+that authenticates nobody, so without that allowlist "audit this store" would be a general
+request-forgery primitive pointed at whatever else this box can reach. §6.2 is about what an
+agent may *assert*; this is the same instinct applied to what an agent may make the server
+*reach*.
+
+**Nothing a model can call may choose what an assay audits.** The chat's `run_assay` keeps its
+single property, constrained to a registry member. §6.2's reasoning about verdicts extends here:
+naming the source is the one input that would turn "audit an app" into "read a URL of the
+model's choosing", with the result read as data inside an audit prompt. A *trial* does let a
+model name a store — that is what a trial is for — which is why it is walled off three ways: the
+result is written where the index never looks, the URL must clear the allowlist above, and the
+verdict still cannot move a hallmark.
 
 ---
 

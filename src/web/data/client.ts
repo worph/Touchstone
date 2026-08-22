@@ -319,7 +319,7 @@ export function startTrial(body: TrialRequest): Promise<{ started: boolean; tria
   return post<{ started: boolean; trial: TrialRecord }>('/trials', body);
 }
 
-/** Drops the row. The reports stay on disk — this is tidying a list, not deleting an audit. */
+/** Drops the row, its reports and its store zip — a trial and its evidence have one lifetime. */
 export async function deleteTrial(slug: string): Promise<void> {
   let res: Response;
   try {

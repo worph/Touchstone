@@ -424,40 +424,46 @@ lowering `fresh_days`, not adding a mode — the pick stays the pure n8n port it
 
 ---
 
-### 2.5 Trials — would this branch pass?
+### 2.5 Trials — would this store pass?
 
 Every other screen answers *what does this app carry*. This one answers *what would it carry*,
-about code that is not in the store yet — a PR, a fork, a branch. That is why a trial's result is
-filed on its own and never touches a hallmark, and why the page has to keep saying so: a verdict
-that looks like the others but quietly means something else is worse than no verdict at all.
+about code that is not in the store yet — a PR, a fork, a working copy. That is why a trial's
+result is filed on its own and never touches a hallmark, and why the page has to keep saying so:
+a verdict that looks like the others but quietly means something else is worse than no verdict at
+all.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ TRIALS                                                       │
-│ Repository [Owner/AppStore ] Ref [pr-812 ] App [Widget ]     │
-│                                            [  Run trial  ]   │
+│ Store zip                                                    │
+│ [https://github.com/Owner/AppStore/archive/…/pr-812.zip    ] │
+│ App [Widget ]                              [  Run trial  ]   │
 ├──────────────────────────────────────────────────────────────┤
-│ ⓘ Compose-level checks only. Installing the app would use a  │
-│   demo instance's own catalogue, which serves the store it   │
-│   is configured with rather than the ref under trial.        │
+│  Widget   from …/pr-812.zip         non-compliant   20:14    │
 ├──────────────────────────────────────────────────────────────┤
-│  Widget   Acme/AppStore@pr-812      non-compliant   20:14    │
-├──────────────────────────────────────────────────────────────┤
-│  SECTION      THIS REF            CURRENTLY                  │
+│  SECTION      THIS STORE          CURRENTLY                  │
 │  static       ⛔ non-compliant     ✅ compliant                │
-│  functional   ▨ blocked           ✅ compliant                │
-│               Not a fault — a demo instance installs from    │
-│               its own catalogue…                             │
+│  functional   ⛔ non-compliant     ✅ compliant                │
 └──────────────────────────────────────────────────────────────┘
 ```
 
+- **One input, matching the API.** A store zip and an app inside it. The form does not ask for a
+  repository: whose `CONTRIBUTING.md` the app is judged against is a property of the store it
+  belongs to, resolved from the configured origins, not something to retype per trial.
+- **A trial is a full audit.** Both sections run — Touchstone serves the exact archive it audited
+  and the bench installs that. The functional row is a real verdict, not a permanent `blocked`.
 - **Two columns, and the right one never changes.** The comparison is the whole point: a verdict
   on a branch means little until you know whether it is better or worse than the thing it would
   replace. `Currently` is the subject's existing hallmark, unaffected by anything on this page.
-- **The blocked functional row carries its reason inline**, not a tooltip. A bare `▨ blocked`
-  beside a real verdict reads as a fault, and this one is a property of how apps are installed.
+- **The one degraded state names its own remedy.** With `trials.public_base_url` unset there is
+  no address a bench could fetch the store from, so the functional row is `blocked` and carries
+  the setting inline rather than a tooltip. A bare `▨ blocked` beside a real verdict reads as a
+  fault, and this one is a fact about this box's configuration.
 - **A branch that adds a *new* app has nothing to compare against**, which is a normal PR. The
   page says so rather than showing an empty column with no explanation.
+- **Uploads are not on this page.** The no-commit fix loop (`open_trial` → PUT files →
+  `run_trial`) is MCP-only, because its caller is an agent fixing an app rather than an operator
+  reviewing one. It produces a store zip like any other and lands in the same list.
 - **Quieter than the Overview, deliberately.** Styling a trial like a hallmark invites it to be
   read as one.
 

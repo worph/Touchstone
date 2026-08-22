@@ -1588,6 +1588,86 @@ the first try.
 
 ---
 
+## 5q. One trial, and a full one — 2026-08-22
+
+§5p left two shapes of trial — a `repo@ref` and an upload session — each with its own spec
+builder, slug, prompt branch and a `kind` discriminator, and only the second could run the
+functional section. The operator asked for one that "takes a url/app and runs the entire process
+on it", and for the rest to go.
+
+### What shipped
+
+**One input: `POST /trials { store_url, subject, apps_path? }`.** An upload session is now a way
+of *producing* a store zip (`{ upload }`) rather than a second kind of trial; past `buildSpec`
+the two are indistinguishable. `services/trialstore.ts` fetches and extracts, `buildSpec` +
+`dispatchTrial` in `services/trialrun.ts` are the whole pipeline.
+
+**Every trial serves its own copy.** The archive is saved to `data/trials/<slug>/store.zip` and
+re-served at `/api/v1/trialstore/<store_token>.zip`. `GET /trialstore/:file` moved from
+`routes/uploads.ts` to `routes/trials.ts` with it. The zip lives *inside* the trial's directory
+on purpose — the index only picks up `*.md`, so it is invisible to it and `removeFiles` already
+deletes the whole directory, giving the store and the trial one lifetime rather than two.
+
+**`store_not_installable` is gone**, replaced by `store_url_unconfigured`, which means exactly
+one thing: `trials.public_base_url` is unset. That is now the only reason a trial is not a full
+audit, and the blocked report names the setting.
+
+**`data/config.yaml` gained `trials:` and `uploads:`.** They were missing entirely — the file
+predates both, and `ensureConfigFile` only seeds on first boot, so an existing config never gains
+new blocks. This was the actual reason upload trials were still static-only on this box: the
+Phase B machinery worked and had nothing to serve from. **`public_base_url` is still `""`** —
+somebody has to supply this installation's external address.
+
+### Decisions worth keeping
+
+1. **A store zip is both halves of an audit**, which is why one input is *more correct* rather
+   than only leaner. It is the files the static section reads and the bytes the bench installs.
+   A ref trial read its bytes from a place the bench never installed from — exactly the
+   disagreement `functional.md` v6 added a hand-written compose assertion to catch.
+2. **Serve our own copy, never the caller's URL.** A branch archive's URL is stable across
+   pushes, so pointing a bench at it would reintroduce the 2026-08-20 cache incident in a
+   narrower form. A per-trial token has never been fetched by anything.
+3. **`repo` became a rubric anchor resolved from config**, not an input. `static.md` judges asset
+   URLs against `<repo>@main` and reads that repo's `CONTRIBUTING.md`; whose contribution rules
+   apply is a property of the store, not of the branch under trial. One fewer input *and* the
+   more correct reading. `ref` is `main` unconditionally and is no longer a field.
+4. **The allowlist is not optional.** This is the first place Touchstone dereferences a
+   caller-chosen URL, and `run_trial` is reachable from an admin MCP that authenticates nobody.
+   Three independent guards in `services/trialstore.ts`: host allowlist (GitHub archives + our
+   own address, with no way to configure "any"), re-check at **every redirect hop** (an allowed
+   host answering 302 elsewhere is the hole a one-time check leaves), and a byte cap enforced on
+   what arrived rather than on what `content-length` claimed. §13's argument that a bench is
+   shared and publicly reachable covers the *content* of a trial; it says nothing about the
+   *reach* of a fetch.
+5. **Uploads survived** as a URL producer rather than being deleted — the no-commit fix loop from
+   §5p is the reason they exist and it is unchanged from the caller's side.
+
+### Verified
+
+`yarn typecheck` clean, `yarn test` **562 passed** (up from 533; 22 new in
+`services/trialstore.test.ts`, the rest reshaped). `yarn build` clean.
+
+**Not verified against a live bench.** No trial has been run end to end since the change — this
+box has no `public_base_url`, so a functional trial cannot be exercised here at all. The tests
+cover the pipeline, the allowlist and the serving route; they do not cover Maison actually
+installing from a `github.com` archive that Touchstone re-served, which is the one claim that
+needs a real run.
+
+### Left undone
+
+- **`public_base_url` is unset**, so trials on this box are still static-only in practice. One
+  line, but it needs the deployment's real external address.
+- **A live full trial from a GitHub archive URL.** The upload path was proven end to end on
+  2026-08-22 (§5p); the fetch-from-GitHub half has only been proven against a stub.
+- **No SHA pinning.** A branch archive URL is accepted as given. Our own re-serving makes
+  Maison's cache a non-issue, so this is now only about the trial *record* naming a branch rather
+  than the commit it actually audited.
+- **`ALLOWED_PATHS` for the SSO sidecar** still needs `/api/v1/trialstore/` exempted when the
+  production stack is built (ARCHITECTURE §8.1) — unchanged from §5p, but the path now serves
+  every trial rather than only upload ones.
+
+---
+
 ## 6. Reference — facts read off the running system
 
 Cited so they can be re-checked when they drift. Read 2026-08-07.

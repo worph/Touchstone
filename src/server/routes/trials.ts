@@ -1,10 +1,15 @@
 /**
- * `/trials` — audit a ref without touching what a subject carries.
+ * `/trials` — audit a candidate store without touching what a subject carries.
  *
- * The whole surface exists so the PR question can be asked: *would this branch pass?* The
- * answer is a real audit, produced by the same runner reading the same protocol, written
- * somewhere the report index does not look — so asking cannot move a hallmark, cannot enter the
- * backlog and cannot cost a subject a retry.
+ * The whole surface exists so the PR question can be asked: *would this pass?* The answer is a
+ * real audit, produced by the same runner reading the same protocol, written somewhere the
+ * report index does not look — so asking cannot move a hallmark, cannot enter the backlog and
+ * cannot cost a subject a retry.
+ *
+ * **One input.** A trial names a store zip and an app inside it. An upload session is a way of
+ * *producing* that zip rather than a second kind of trial, so past `buildSpec` there is one
+ * record, one slug and one pipeline. See `services/trialrun.ts` for why that collapse also
+ * fixed a correctness problem rather than only a tidiness one.
  *
  * Three deliberate constraints:
  *
@@ -19,6 +24,8 @@
  *   rather than a rule to remember.
  */
 
+import { promises as fs } from 'node:fs';
+
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 
 import { asSubjectKey, subjectKey } from '../../shared/subject.js';
@@ -28,21 +35,15 @@ import { latestDone } from '../domain/hallmark.js';
 import type { Runner } from '../runner/index.js';
 import type { EventLog } from '../services/events.js';
 import type { ReportIndex } from '../store/index.js';
+import { isTrialSlug, TrialStore } from '../store/trials.js';
 import {
-  isTrialSlug,
-  TrialInputError,
-  trialSlug,
-  TrialStore,
-  validateTrial,
-} from '../store/trials.js';
-import {
+  buildSpec,
   dispatchTrial,
-  specFromUpload,
   trialIndex,
   trialsReady,
   type TrialRunDeps,
-  type TrialSpec,
 } from '../services/trialrun.js';
+import type { OriginEntry } from '../store/config.js';
 import type { UploadStore } from '../store/uploads.js';
 
 export interface TrialRoutesOptions {
@@ -55,10 +56,14 @@ export interface TrialRoutesOptions {
   store?: ReportIndex;
   /** Every subject key the loop knows, for resolving what the trial is about. */
   known?: () => string[];
-  /** Upload sessions, so a trial can audit files instead of a ref. */
+  /** Upload sessions — one of the two ways a caller can name a store zip. */
   uploads?: UploadStore;
-  /** Touchstone's external address, so a trial can hand a bench a store to install from. */
+  /** The configured stores, so a trial is judged against the right CONTRIBUTING.md. */
+  origins?: OriginEntry[];
+  /** Touchstone's external address, so a trial can hand a bench the store it audited. */
   publicBaseUrl?: string;
+  /** Injected in tests so a trial can be started without reaching GitHub. */
+  fetchImpl?: typeof fetch;
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
@@ -74,7 +79,9 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
     trialsRoot: options.trialsRoot,
     events: options.events,
     known: options.known,
+    origins: options.origins,
     publicBaseUrl: options.publicBaseUrl,
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     onError: (err, slug) => app.log.error({ err, slug }, 'trial failed'),
   });
 
@@ -96,31 +103,57 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
     const startedAt = new Date().toISOString();
 
     /**
-     * Two ways to say what to audit, and only one of them names a repository.
+     * Two ways to name a store, and one pipeline past this point.
      *
-     * `{ upload }` audits the bytes in a session — no ref, nothing fetched, nothing that could
-     * be stale. `{ repo, ref }` is the original: reviewing a branch that exists.
+     * `{ upload }` zips the bytes in a session; `{ store_url }` fetches an archive through the
+     * host allowlist. Either way the result is one zip, and the app is read out of that zip —
+     * so the bytes the static section judges are the bytes the bench installs.
      */
-    let spec: TrialSpec;
-    const wanted = String(body.upload ?? '').trim();
-    if (wanted) {
-      const built = await specFromUpload(options.uploads, wanted, startedAt, options.publicBaseUrl);
-      if (!built.ok) return fail(reply, built.code, built.error);
-      spec = built.spec;
-    } else {
-      try {
-        // These reach a prompt the agent runs `gh` against, so they are checked here rather
-        // than trusted: this is the one place a caller chooses what repository gets read.
-        const input = validateTrial(body);
-        spec = { ...input, slug: trialSlug(input, startedAt) };
-      } catch (err) {
-        if (err instanceof TrialInputError) return fail(reply, 400, err.message);
-        throw err;
-      }
+    const built = await buildSpec(deps, body, startedAt);
+    if (!built.ok) return fail(reply, built.code, built.error);
+
+    const record = await dispatchTrial(deps, built.spec, startedAt, built.compare_to);
+    return reply.code(202).send({ started: true, trial: record });
+  });
+
+  /**
+   * A trial's own copy of the store, for a demo bench to install from.
+   *
+   * **This is the one address here meant to be fetched from outside the box**, because the
+   * thing fetching it is a demo instance on the public internet with no credentials of ours.
+   * The token in the path is the whole guard, and it is minted per trial — which is also what
+   * makes Maison's in-process store cache harmless: it has never seen this URL.
+   *
+   * Deliberately *not* under `/public`. That prefix is the board an app author is sent to and
+   * it "hands out no address it will not serve"; putting caller-supplied bytes in its namespace
+   * would muddy exactly the property that makes publishing it safe. This lives under `/api/v1`
+   * with everything else and is exempted from the SSO gate by name.
+   *
+   * The three headers are not decoration. Touchstone's origin also serves the operator UI, so
+   * bytes somebody uploaded must never be sniffed into HTML and rendered there; and a store zip
+   * that got cached would reintroduce the staleness this whole design exists to remove.
+   */
+  app.get<{ Params: { file: string } }>('/trialstore/:file', async (request, reply) => {
+    const named = /^([A-Za-z0-9_-]+)\.zip$/.exec(request.params.file);
+    if (!named) return fail(reply, 404, 'no such trial store');
+    const found = options.trials?.byStoreToken(named[1]!);
+    if (!found || !options.trials) return fail(reply, 404, 'no such trial store');
+
+    let zip: Buffer;
+    try {
+      zip = await fs.readFile(options.trials.storeZipPath(found.slug));
+    } catch {
+      // The row outliving its bytes means the trial was swept mid-run. A 404 is the honest
+      // answer: the bench's install will fail and the section is recorded errored infra.
+      return fail(reply, 404, 'no such trial store');
     }
 
-    const record = await dispatchTrial(deps, spec, startedAt);
-    return reply.code(202).send({ started: true, trial: record });
+    return reply
+      .type('application/zip')
+      .header('content-disposition', `attachment; filename="${found.subject}-trial.zip"`)
+      .header('x-content-type-options', 'nosniff')
+      .header('cache-control', 'no-store')
+      .send(zip);
   });
 
   app.get<{ Params: { slug: string } }>('/trials/:slug', async (request, reply) => {

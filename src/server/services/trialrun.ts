@@ -1,40 +1,72 @@
 /**
  * Starting a trial — the part `POST /trials` and the chat's `run_trial` tool both need.
  *
- * It lives here rather than in the route because there are now two callers, and a second
+ * It lives here rather than in the route because there are two callers, and a second
  * implementation of "what happens when a trial starts" is a second place for the record, the
  * log line and the dispatch to drift apart. That is the same reasoning that keeps the admin MCP
  * surface serving the chat's own registry instead of a parallel one.
  *
- * Two steps, deliberately separate. `specFromUpload` turns a session id into something
- * auditable and is where an empty or lapsed session is refused; `dispatchTrial` writes the row,
- * logs, and fires the run without waiting for it. The split is what lets the route answer 400
- * or 404 with a status code while the tool answers the same refusals as a sentence.
+ * ## One pipeline, because a store zip is both halves of an audit
+ *
+ * A trial used to come in two shapes — a `repo@ref` the static section fetched with `gh`, and
+ * an upload session whose bytes were inlined — with a spec builder, a slug, a prompt branch and
+ * a `kind` field each. The two are now one: **whatever the caller names, it resolves to a store
+ * zip**, and a store zip is simultaneously the files the static section reads and the bytes the
+ * bench installs. That is not merely tidier. A ref trial used to read its bytes from a place
+ * the bench never installed from, which is precisely the disagreement `functional.md` v6 had to
+ * add a hand-written compose assertion to catch.
+ *
+ * Two steps, deliberately separate. `buildSpec` resolves and fetches, and is where a bad URL,
+ * an empty session or an app that is not in the archive is refused; `dispatchTrial` writes the
+ * row, saves the store, logs, and fires the run without waiting for it. The split is what lets
+ * the route answer 400 or 404 with a status code while the tool answers the same refusals as a
+ * sentence.
  */
 
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 
 import { subjectKey } from '../../shared/subject.js';
 import type { TrialRecord } from '../../shared/trials.js';
 import { resolveSubjectKey } from '../domain/subjects.js';
 import type { Runner } from '../runner/index.js';
 import type { EventLog } from './events.js';
-import { uploadSlug, type TrialStore } from '../store/trials.js';
+import { TrialInputError, trialSlug, validateTrial, type TrialStore } from '../store/trials.js';
 import { buildIndex, type ReportIndex } from '../store/index.js';
 import type { UploadStore } from '../store/uploads.js';
+import type { OriginEntry } from '../store/config.js';
+import {
+  fetchStoreZip,
+  readAppFromZip,
+  saveStoreZip,
+  TrialStoreError,
+  type TrialSource,
+} from './trialstore.js';
 
 /** What to audit, once it no longer matters how the caller said it. */
 export interface TrialSpec {
-  repo: string;
-  ref: string;
-  apps_path: string;
-  subject: string;
   slug: string;
-  /** Present for an upload trial: the app's own bytes, and the session they came from. */
-  source?: { files: string[]; compose: string; rationale?: string | null };
+  subject: string;
+  apps_path: string;
+  /**
+   * The **rubric anchor** — never a place a byte came from.
+   *
+   * `data/protocols/static.md` resolves the `assets` item against `<repo>@main` and reads that
+   * repo's `CONTRIBUTING.md` as the definition of every checklist item, so a run carrying no
+   * repo would throw a false Major on every asset URL and apply a rubric whose terms it could
+   * not look up. Resolved from the configured origins rather than supplied by the caller,
+   * because contribution rules belong to the store, not to the branch under trial.
+   */
+  repo: string;
+  /** Where the archive came from, for the record. `upload:<id>` when there was no remote one. */
+  source_url: string;
   upload_id?: string;
-  /** Where a bench can fetch these files as a store. Absent, the functional section blocks. */
-  store_url?: string;
+  /** The app's own files, read out of the archive and inlined into the prompt. */
+  source: TrialSource;
+  /** The archive itself. Saved into the trial's directory and re-served from there. */
+  zip: Buffer;
+  /** The unguessable name this trial's copy is served under. */
+  store_token: string;
 }
 
 export interface TrialRunDeps {
@@ -45,14 +77,18 @@ export interface TrialRunDeps {
   events?: EventLog;
   /** Every subject key the loop knows, for resolving what the trial is about. */
   known?: () => string[];
+  /** The configured stores, so a trial can be judged against the right CONTRIBUTING.md. */
+  origins?: OriginEntry[];
   /**
    * Touchstone's own address as a demo bench would reach it, from `config.trials`.
    *
-   * Empty is a supported state, not a misconfiguration: without it a trial cannot hand a bench
-   * a store, so the functional section records `store_not_installable` exactly as it did
-   * before uploads existed.
+   * Empty is a supported state, not a misconfiguration — but it is the *only* thing now
+   * standing between a trial and a full audit. Without it a trial cannot serve the archive it
+   * fetched, so the functional section records `store_url_unconfigured` and says so.
    */
   publicBaseUrl?: string;
+  /** Injected in tests so a trial can be started without reaching GitHub. */
+  fetchImpl?: typeof fetch;
   onError?: (err: unknown, slug: string) => void;
 }
 
@@ -72,66 +108,119 @@ export function trialsReady(deps: TrialRunDeps): Refusal | null {
 }
 
 /**
- * Turn an upload session into something auditable.
+ * Which store's rules this app is judged by.
  *
- * `repo` and `ref` come out **nominal** and that is not a formality. `data/protocols/static.md`
- * resolves the `assets` item against `<repo>@main` and reads that repo's `CONTRIBUTING.md` as
- * the definition of every checklist item, so a run carrying neither would throw a false Major
- * on every asset URL and apply a rubric whose terms it could not look up. `main` specifically,
- * because `runner/prompt.ts` rebinds the asset rule to the ref under audit whenever the ref is
- * anything else — correct for a PR branch, wrong for files that were never on a branch at all.
+ * The origin the subject already belongs to, when it belongs to one — so a trial of an app in a
+ * second store is judged against *that* store's `CONTRIBUTING.md` rather than Yundera's. A
+ * branch adding an app no store has yet falls back to the first configured origin, which is the
+ * only answer available and the right one in the single-store case that is every case today.
  */
-export async function specFromUpload(
-  uploads: UploadStore | undefined,
-  uploadId: string,
+function rubricRepo(deps: TrialRunDeps, compareTo: string | undefined): string {
+  const origins = deps.origins ?? [];
+  const originId = compareTo?.split('~')[0];
+  const found = originId ? origins.find((o) => o.id === originId) : undefined;
+  return found?.repo ?? origins[0]?.repo ?? 'Yundera/AppStore';
+}
+
+/**
+ * Turn whatever the caller said into one auditable store.
+ *
+ * `{ upload }` zips the bytes in a session — nothing fetched, nothing that could be stale.
+ * `{ store_url }` fetches an archive, through the allowlist in `services/trialstore.ts`. Past
+ * this function the two are indistinguishable, which is the entire point.
+ */
+export async function buildSpec(
+  deps: TrialRunDeps,
+  body: Record<string, unknown>,
   at: string,
-  publicBaseUrl?: string,
-): Promise<{ ok: true; spec: TrialSpec } | Refusal> {
-  if (!uploads) return { ok: false, code: 503, error: 'upload sessions are not configured' };
+): Promise<{ ok: true; spec: TrialSpec; compare_to?: string } | Refusal> {
+  const wantedUpload = String(body.upload ?? '').trim();
 
-  const session = uploads.get(uploadId);
-  if (!session || uploads.expired(session)) {
-    return { ok: false, code: 404, error: `no such upload session: ${uploadId}` };
+  let zip: Buffer;
+  let sourceUrl: string;
+  let subject: string;
+  let appsPath: string;
+  let uploadId: string | undefined;
+
+  if (wantedUpload) {
+    if (!deps.uploads) return { ok: false, code: 503, error: 'upload sessions are not configured' };
+    const session = deps.uploads.get(wantedUpload);
+    if (!session || deps.uploads.expired(session)) {
+      return { ok: false, code: 404, error: `no such upload session: ${wantedUpload}` };
+    }
+    // Checked before zipping, so an empty session gets the answer it deserves. The generic
+    // "no such directory in that archive" `readAppFromZip` would otherwise give is true but
+    // useless here: the caller's mistake is not naming the wrong app, it is not having
+    // uploaded anything yet.
+    if (!(await deps.uploads.readText(session, 'docker-compose.yml'))) {
+      return {
+        ok: false,
+        code: 400,
+        error: 'that session has no docker-compose.yml — upload one before running the trial',
+      };
+    }
+    zip = await deps.uploads.zipStore(session);
+    sourceUrl = `upload:${session.id}`;
+    subject = session.subject;
+    // An upload session builds its zip in `Apps/<subject>/` unconditionally, so this is not a
+    // caller's claim about the archive — it is a fact about how we just built it.
+    appsPath = 'Apps';
+    uploadId = session.id;
+  } else {
+    let input;
+    try {
+      input = validateTrial(body);
+    } catch (err) {
+      if (err instanceof TrialInputError) return { ok: false, code: 400, error: err.message };
+      throw err;
+    }
+    try {
+      zip = await fetchStoreZip(input.store_url, {
+        publicBaseUrl: deps.publicBaseUrl,
+        ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+      });
+    } catch (err) {
+      if (err instanceof TrialStoreError) return { ok: false, code: 400, error: err.message };
+      return { ok: false, code: 502, error: `could not fetch the store: ${(err as Error).message}` };
+    }
+    sourceUrl = input.store_url;
+    subject = input.subject;
+    appsPath = input.apps_path;
   }
 
-  const compose = await uploads.readText(session, 'docker-compose.yml');
-  // The one failure worth catching before the run rather than during it: with no compose there
-  // is nothing for the static rubric to read, and the audit would spend its minutes concluding
-  // that an app has no compose file — a fact about the upload, dressed as a finding about the
-  // app, and recorded where a finding about the app goes.
-  if (!compose) {
-    return {
-      ok: false,
-      code: 400,
-      error: 'that session has no docker-compose.yml — upload one before running the trial',
-    };
+  let source: TrialSource;
+  try {
+    source = readAppFromZip(zip, appsPath, subject);
+  } catch (err) {
+    if (err instanceof TrialStoreError) return { ok: false, code: 400, error: err.message };
+    throw err;
   }
+
+  // What this trial is *about*, when the app also exists in a configured store — so the result
+  // can be put beside what that subject currently carries, and so the rubric anchor is that
+  // store's. A branch adding a new app has no counterpart, which is a normal PR and not an error.
+  const match = resolveSubjectKey(subject, deps.known?.() ?? []);
+  const compareTo = match.kind === 'ok' ? match.key : undefined;
 
   return {
     ok: true,
+    ...(compareTo ? { compare_to: compareTo } : {}),
     spec: {
-      repo: session.repo,
-      ref: 'main',
-      apps_path: 'Apps',
-      subject: session.subject,
-      slug: uploadSlug(session.id, at),
-      upload_id: session.id,
-      // The bench fetches this from the public internet, so it is built from the configured
-      // external address rather than from anything about the incoming request.
-      ...(publicBaseUrl
-        ? { store_url: `${publicBaseUrl.replace(/\/+$/, '')}/api/v1/trialstore/${session.token}.zip` }
-        : {}),
-      source: {
-        files: (await uploads.manifest(session)).map((f) => f.path),
-        compose,
-        rationale: await uploads.readText(session, 'rationale.md'),
-      },
+      slug: trialSlug(subject, at),
+      subject,
+      apps_path: appsPath,
+      repo: rubricRepo(deps, compareTo),
+      source_url: sourceUrl,
+      ...(uploadId ? { upload_id: uploadId } : {}),
+      source,
+      zip,
+      store_token: randomBytes(24).toString('base64url'),
     },
   };
 }
 
 /**
- * Write the row, log it, and fire the run without waiting for it.
+ * Save the store, write the row, log it, and fire the run without waiting for it.
  *
  * Fire-and-report, exactly as `POST /assays` does: a real audit takes minutes and a socket held
  * open that long is at the mercy of every proxy in between. The caller gets the record back
@@ -141,6 +230,7 @@ export async function dispatchTrial(
   deps: TrialRunDeps,
   spec: TrialSpec,
   startedAt: string,
+  compareTo?: string,
 ): Promise<TrialRecord> {
   // `trialsReady` is the precondition, and both callers check it — but "both callers check it"
   // is the kind of contract that holds until there are three. Asserting it here means a third
@@ -151,20 +241,30 @@ export async function dispatchTrial(
   }
   const root = path.join(trialsRoot, spec.slug);
 
-  // What this trial is *about*, when the app also exists in a configured store — so the result
-  // can be put beside what that subject currently carries. A branch adding a new app has no
-  // counterpart, which is a normal PR and not an error.
-  const match = resolveSubjectKey(spec.subject, deps.known?.() ?? []);
+  // The trial's own copy, inside its own directory — so it is deleted with the trial and there
+  // is no second lifetime to keep in step. Saved *before* the row exists, because a row whose
+  // store is missing would advertise a URL that 404s at the bench.
+  await saveStoreZip(trials.storeZipPath(spec.slug), spec.zip);
+
+  /**
+   * The address the bench fetches. Minted per trial, so Maison's in-process store cache — the
+   * one `functional.md` records having cost a day on 2026-08-20 — has never seen it and cannot
+   * serve an older copy. Pointing the bench at the caller's own URL would have reintroduced
+   * exactly that: a branch archive's URL is stable across pushes.
+   */
+  const benchStoreUrl = deps.publicBaseUrl
+    ? `${deps.publicBaseUrl.replace(/\/+$/, '')}/api/v1/trialstore/${spec.store_token}.zip`
+    : undefined;
 
   const record: TrialRecord = {
     slug: spec.slug,
-    kind: spec.upload_id ? 'upload' : 'ref',
+    source_url: spec.source_url,
     ...(spec.upload_id ? { upload_id: spec.upload_id } : {}),
     repo: spec.repo,
-    ref: spec.ref,
     apps_path: spec.apps_path,
     subject: spec.subject,
-    ...(match.kind === 'ok' ? { compare_to: match.key } : {}),
+    ...(compareTo ? { compare_to: compareTo } : {}),
+    store_token: spec.store_token,
     started_at: startedAt,
   };
   await trials.add(record);
@@ -172,15 +272,10 @@ export async function dispatchTrial(
   deps.events?.log({
     level: 'info',
     code: 'TRIAL_STARTED',
-    message: spec.upload_id
-      ? `Trialling ${spec.subject} from uploaded files (session ${spec.upload_id})`
-      : `Trialling ${spec.subject} from ${spec.repo}@${spec.ref}`,
-    detail: { slug: spec.slug, repo: spec.repo, ref: spec.ref, subject: spec.subject },
+    message: `Trialling ${spec.subject} from ${spec.source_url}`,
+    detail: { slug: spec.slug, source: spec.source_url, subject: spec.subject },
   });
   if (spec.upload_id) await deps.uploads?.setTrial(spec.upload_id, spec.slug);
-
-  /** How this trial is named in the log. "at main" would be a lie about supplied files. */
-  const what = spec.upload_id ? 'uploaded files' : spec.ref;
 
   void runner
     .run({
@@ -189,11 +284,10 @@ export async function dispatchTrial(
       try_n: 1,
       trial: {
         repo: spec.repo,
-        ref: spec.ref,
         apps_path: spec.apps_path,
         root,
-        ...(spec.source ? { source: spec.source } : {}),
-        ...(spec.store_url ? { store_url: spec.store_url } : {}),
+        source: spec.source,
+        ...(benchStoreUrl ? { store_url: benchStoreUrl } : {}),
       },
     })
     .then(async (outcome) => {
@@ -209,7 +303,7 @@ export async function dispatchTrial(
         deps.events?.log({
           level: 'info',
           code: 'TRIAL_COMPLETED',
-          message: `Trial of ${spec.subject} at ${what} — ${outcome.verdict}`,
+          message: `Trial of ${spec.subject} — ${outcome.verdict}`,
           detail: {
             slug: spec.slug,
             subject: spec.subject,
@@ -225,7 +319,7 @@ export async function dispatchTrial(
       deps.events?.log({
         level: 'warn',
         code: 'TRIAL_FAILED',
-        message: `Trial of ${spec.subject} at ${what} did not complete — ${reason}`,
+        message: `Trial of ${spec.subject} did not complete — ${reason}`,
         detail: { slug: spec.slug, subject: spec.subject, reason },
       });
     })

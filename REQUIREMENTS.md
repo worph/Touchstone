@@ -489,8 +489,9 @@ functional result would be about `main` while carrying the PR's name. The functi
 therefore recorded `blocked` with reason `store_not_installable`, which is invariant 4's exact
 shape.
 
-**That follow-on landed 2026-08-22 — see §13.** Maison takes its store as a parameter, so a trial
-that can publish its subject as a store hands the bench one and the two become the same bytes.
+**That is finished as of 2026-08-22 — see §13 and §14.** Maison takes its store as a parameter, so
+a trial publishes the archive it audited and hands the bench that. A trial is now a full audit,
+static and functional both.
 
 **Nothing a model can call may choose the ref.** The chat's `run_assay` keeps its single property,
 constrained to a member of the registry. Invariant 6 says nothing an agent can call may write a
@@ -573,3 +574,44 @@ pool recovers a minute later. Per-section eligibility does not exist, and the 20
 rework deliberately did not add it: a per-section backlog turns `policy.ts` from a diffable port
 of n8n's `Pick next target` into a pick that cannot be shadow-compared (ARCHITECTURE §5.1). Worth building before the scheduler is armed; harmless while audits are
 hand-run.
+
+## 14. One trial, and a full one — 2026-08-22
+
+§13 left two shapes of trial: a `repo@ref` and an upload session. Each had its own spec builder,
+slug, prompt branch and a `kind` discriminator, and only the second could run the functional
+section. Both are now **one input — a store zip and an app inside it** — and every trial runs
+the whole protocol.
+
+**Why one input is also more correct, not only leaner.** A store zip is both halves of an audit
+at once: the files the static section reads *and* the bytes the bench installs. A ref trial read
+its bytes from a place the bench never installed from, which is precisely the disagreement
+`functional.md` v6 had to add a hand-written compose assertion to catch. With one archive there
+is nothing left to disagree. Whatever names the store — a GitHub branch archive, an upload
+session — stops mattering past `buildSpec`.
+
+**Every trial serves its own copy** rather than the bench being pointed at the caller's URL. The
+2026-08-20 cache incident is then impossible by construction rather than mitigated: the URL is
+minted per trial and has never been fetched. Pointing a bench at a branch archive would have
+brought that failure back in a narrower form, since a branch's URL is stable across pushes.
+
+**`store_not_installable` is gone.** A trial is gated by the same bench and browser probes as any
+other run. The one exception is `trials.public_base_url` being unset — Touchstone cannot serve a
+store it has no external address for — recorded as `store_url_unconfigured`, which names the
+setting that fixes it rather than describing a limitation of trials.
+
+**What is new, and what it cost.** Touchstone now dereferences a URL a caller chose, which
+nothing here did before. `run_trial` is reachable from an admin MCP that authenticates nobody, so
+without a guard "audit this store" would be a request-forgery primitive pointed at whatever else
+this box can reach. `services/trialstore.ts` holds all three parts of the answer: a host
+allowlist (GitHub archives plus our own address, with no way to configure "any"), a re-check at
+every redirect hop, and a byte cap enforced on what arrived rather than on what `content-length`
+claimed. The operator's judgement from §13 — that a bench is shared, publicly reachable and uses
+published credentials, so an uploaded compose grants nothing an anonymous visitor lacked — covers
+the *content* of a trial. It does not cover the *reach* of a fetch, which is why that is
+engineering rather than an argument.
+
+**Rubric anchor, not byte source.** `repo` survives because `static.md` judges asset URLs against
+`<repo>@main` and reads that repo's `CONTRIBUTING.md` as the definition of every item. It is now
+resolved from the configured origins rather than supplied by the caller: whose contribution rules
+apply is a property of the store, not of the branch under trial — which is both one fewer input
+and the more correct reading.
