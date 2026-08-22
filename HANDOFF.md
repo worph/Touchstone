@@ -1808,6 +1808,70 @@ downgraded cell, and never a second way of drawing `blocked`.
 
 ---
 
+## 5s. Image currency, and a second kind of executor — 2026-08-22
+
+R12, and the fifth sanctioned exception to the parity rule. The design argument and the numbers
+are in [REQUIREMENTS §14](REQUIREMENTS.md); this is what landed and what is left.
+
+### What shipped
+
+- **A protocol leaf can declare who performs it.** `executor: <name>.sh` (default `agent`),
+  `scores: false` (measures rather than judges), `policy: {…}` (the knobs the executor reads,
+  versioned with the rubric). Three fields in `store/protocols.ts`, which stays the only place
+  frontmatter is interpreted.
+- **`runner/exec.ts`** — spawn, stdin, one JSON object back. Own process group, timeout, stdout
+  cap, minimal environment, and an allowlist parser that drops every key not in the contract, so
+  a check cannot write `verdict` into the archive.
+- **`domain/scripted.ts`** — one run, one assay. Records `executor` + `executor_sha256`; no
+  verdict for a non-scoring section; `blocked` for both kinds of failure to look.
+- **`runner/index.ts`** — the second partition. Scripts run before the agent, a protocol of
+  scripts alone never calls the agent at all, and `publish()` is now shared by both paths.
+- **`domain/hallmark.ts`** — a `scores: false` record is invisible: no risk, no ageing.
+- **`data/protocols/currency.{md,sh}`** — the policy and the procedure. Docker Hub, GHCR
+  (`lscr.io` included) and Quay; three tag grammars; `unknown` and `floating` are first-class.
+- **Web** — `lib/reading.ts` and `components/Reading.tsx`: a generic badge column on both tables
+  and a panel on both subject pages, driven by `scores: false` in the archive rather than by any
+  section name. `kind: 'since'` renders a stored date as a live age.
+- **`fix.md`** — a *worth doing, not blocking* block, kept out of the numbered findings.
+- **Image** — `curl`, `jq`, `ca-certificates`; `.sh` seeded like `.md`, never overwritten.
+
+### Verified
+
+- 616 → 633 tests, all green. New: `runner/exec.test.ts`, `domain/scripted.test.ts`,
+  `web/lib/reading.test.ts`, `test/currency.test.ts` (the real script, offline fixtures), plus
+  executor-safety cases in `store/protocols.test.ts` and hallmark-exclusion cases.
+- **The whole Yundera store swept once with the shipped executor** — 71 apps, 42 behind, 18
+  current, 9 unknown, 2 blocked (`CasaOS` and `OpenClaw` are in the registry but no longer in
+  `Apps/`). 1–6 s per app.
+- End to end against a running API on a copy of the archive: the assay file, `GET /subjects`,
+  `GET /public/subjects`, the report viewer and `fix.md` all carry the reading.
+
+### Two bugs the live sweep found, both in the extraction
+
+- `image:` was attributed to the wrong service. `environment:` sits at the same indent as a
+  service key in some composes, so the awk read it as one. Fixed by learning the service indent
+  from the first key under `services:` rather than assuming two spaces.
+- GHCR's tag list is unordered and paginated, so one page of it is the *wrong* end. It now walks
+  the `Link: rel="next"` chain, and when the chain outlives `max_pages` it reports `unknown`
+  rather than `current` — finding a newer tag survives truncation, finding none does not.
+
+### Left undone
+
+- **Not rendered in a browser.** The claude-code container's ports are invisible to the Windows
+  host (the documented dev-stack gotcha), so the UI was verified by typecheck, build, and unit
+  tests over `lib/reading.ts` rather than by eye. Bring up `docker-compose.dev.yml` and look at
+  the Overview before believing the column is pretty.
+- **No cadence.** Deliberate — the operator's call, and `stale_since` being absolute makes it
+  cost nothing. The frontmatter field is unimplemented; the seam is one field away.
+- **The fix-brief button is still gated on findings.** An app that is compliant but 400 days
+  behind grows no `fix report` button; the reading is on its page instead. 42 of 71 apps are
+  behind, so flipping that gate would put the button on most of the store, and that is a
+  decision rather than an oversight.
+- **`compare_majors: false` is a policy guess.** It is right for `postgres:16`; it means an app
+  sitting on an abandoned major line reads `current`. The `latest` column shows the newest tag
+  in the same line only, so nothing on screen says "there is a 3.x now".
+
+
 ## 6. Reference — facts read off the running system
 
 Cited so they can be re-checked when they drift. Read 2026-08-07.

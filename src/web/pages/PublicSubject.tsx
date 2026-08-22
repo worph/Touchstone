@@ -24,6 +24,8 @@ import { Link, useParams } from 'react-router-dom';
 
 import type { AssayRecord, Section } from '@shared/types';
 import CoverageCell from '../components/CoverageCell';
+import { ReadingPanel } from '../components/Reading';
+import { isReading, readingOf, readingSections } from '../lib/reading';
 import RequirementList from '../components/RequirementList';
 import StatusCell from '../components/StatusCell';
 import { EmptyState, Loading, Notice } from '../components/Ui';
@@ -52,7 +54,9 @@ export default function PublicSubject() {
     );
   }
 
-  const sections = Object.keys(subject.sections ?? {});
+  // Verdict cards for the sections that judge; a panel below for each one that measures.
+  const sections = Object.keys(subject.sections ?? {}).filter((id) => !isReading(subject.sections?.[id]));
+  const readings = readingSections([subject]);
   const refs = Object.values(subject.sections ?? {}).find(Boolean)?.meta;
   const never = sections.every((id) => !subject.sections?.[id]);
   const fixable = hasFixWork(subject);
@@ -102,6 +106,12 @@ export default function PublicSubject() {
           ))}
         </div>
       </div>
+
+      {/* An author's most actionable page item: a version number to bump needs no argument. */}
+      {readings.map((id) => {
+        const reading = readingOf(subject, id);
+        return reading ? <div style={{ marginTop: 14 }} key={id}><ReadingPanel reading={reading} /></div> : null;
+      })}
 
       {never ? (
         <div className="panel" style={{ marginTop: 14 }}>

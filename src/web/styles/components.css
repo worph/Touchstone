@@ -1378,3 +1378,57 @@ button.row-link {
   line-height: 1.55;
   color: var(--fg-2);
 }
+
+/* ── readings ──────────────────────────────────────────────────────────────
+   A section that measures rather than judges. Deliberately quieter than a
+   `.status` cell: `2 behind · 400d` is a fact about the world, and an app that
+   is merely out of date must not read at a glance like one that failed the
+   gate. Hence no solid fills and no glyph — a tint, a rule, and the words.
+
+   `unknown` is drawn as its own thing rather than as a pale success. Half the
+   value of a currency check is destroyed by a cell that reads "fine" when it
+   means "we could not look". Every state keeps a visible text difference, so
+   the meaning survives greyscale and every colour-vision deficiency. */
+.reading {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--fg-1);
+  background: var(--bg-2);
+}
+.reading[data-state="ok"]      { color: var(--ok);     background: var(--ok-dim);     border-color: var(--ok); }
+.reading[data-state="warn"]    { color: var(--minor);  background: var(--minor-dim);  border-color: var(--minor); }
+.reading[data-state="bad"]     { color: var(--major);  background: var(--major-dim);  border-color: var(--major); font-weight: 600; }
+.reading[data-state="unknown"] {
+  color: var(--unknown);
+  background: var(--unknown-dim);
+  border-color: var(--border-2);
+  border-style: dashed;
+}
+
+.reading-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.reading-head .section-title { margin-right: auto; }
+.reading-summary {
+  margin: 0 0 10px;
+  color: var(--fg-1);
+  font-size: 13px;
+}
+
+/* The row's own state tints its left edge only: forty cells of colour would make
+   the two rows that matter no easier to find than the rest. */
+.tbl--reading td { font-size: 12px; }
+.tbl--reading tbody tr[data-state="behind"] td:first-child { box-shadow: inset 2px 0 0 var(--minor); }
+.tbl--reading tbody tr[data-state="stale"]  td:first-child { box-shadow: inset 2px 0 0 var(--major); }
+.tbl--reading tbody tr[data-state="current"] td:first-child { box-shadow: inset 2px 0 0 var(--ok); }

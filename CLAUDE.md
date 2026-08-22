@@ -25,7 +25,10 @@ which is the filesystem layer, and **not** `AssayStore`, which is the read inter
 take), **trial** (a one-shot audit of **one store zip and one app inside it** — a GitHub branch
 archive, or files uploaded straight into a session — written under `data/trials/` and never read
 by the report index, so it cannot move a hallmark), **board** (the read-only public view of
-every subject's hallmark, at `/public`, addressed to app authors rather than to the operator).
+every subject's hallmark, at `/public`, addressed to app authors rather than to the operator),
+**executor** (who performs a section — `agent`, or a `*.sh` beside the protocol that declared it),
+**reading** (what a section that *measures* produces rather than judging: `scores: false` in its
+frontmatter, a badge and a table, invisible to the hallmark — `currency` is the first).
 
 A subject's identity is `<origin>~<name>` — `yundera~FileBrowser`. The separator is `~` because
 it is unreserved in `encodeURIComponent` and therefore survives a URL untouched, which is what
@@ -96,6 +99,7 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | Path | What |
 | --- | --- |
 | `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile` |
+| `protocols/*.sh` | **the procedure**, for a leaf whose `executor:` names one. A sibling of the rubric that declares it, on the volume, so a threshold or a registry URL is an edit rather than a rebuild. **No route can write one** — `save()` writes `${id}.md`, which is what keeps invariant 6 from widening into "a model cannot post code" |
 | `protocols/*.md` | **the rubric itself**, the definition of the sections, and the version every assay records: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads. There is no separate `standards/` — a second file could only disagree with the rubric it versioned |
 | `reports/<origin>/<Subject>/<ISO>-<section>.md` | **the assay record IS the frontmatter of the report file**. The origin level is a namespace, not a uniqueness rule: two stores may both ship a `FileBrowser` |
 | `trials/<slug>/<Subject>/<ISO>-<section>.md` | a **trial** — the same run against a store zip, written where the report index never looks, so it cannot move a hallmark or enter the backlog. The slug doubles as a synthetic origin, so the path machinery is unchanged |
@@ -174,6 +178,16 @@ because its data access was smeared through two 200-line n8n Code nodes.
   `content-length` claimed. Widening that allowlist turns "audit this store" into a request
   forgery primitive, because `run_trial` is reachable from an admin MCP that authenticates
   nobody.
+- **`runner/exec.ts` + `domain/scripted.ts`** — the second executor. A leaf declaring
+  `executor: currency.sh` is performed by that file: input on **stdin** (never argv — subject
+  names come from a GitHub directory listing), one JSON object back on stdout, and the same
+  `{meta, body}` the agent path produces. `exec.ts` is the contract and the sandbox (timeout, its
+  own process group, stdout cap, a minimal environment); `scripted.ts` composes the assay and
+  enforces the two rules that matter — **a script never declares a verdict** (it records
+  requirements and Touchstone computes the gate) and **a failure to look is `blocked`**, whether
+  the script said so or died saying nothing. It knows a section produced rows and a badge; it does
+  not know what an image is, which is what lets the next deterministic check be two files on the
+  volume. `data/protocols/currency.{md,sh}` is the first one — REQUIREMENTS §14.
 - **`services/ports.ts`** — probes the two non-bench dependencies (agent, browser) by `tools/list`
   over MCP. `services/bench.ts` keeps its own prober because the bench pool is **discovered** from
   the pool API, not configured.
@@ -248,6 +262,17 @@ because its data access was smeared through two 200-line n8n Code nodes.
     may write, and the check is at boot rather than at review time. It is the surface app authors
     see, so it is also the one place where an accidental control would be reachable by somebody
     with no account. Anything the board needs is a GET or it does not ship.
+11. **An executor is a `*.sh` beside the protocol that names it, and nothing else.** No path, no
+    inline script, no interpreter choice, and — the load-bearing half — **no route may write
+    one**. `PUT /protocols/:id` writes `${id}.md`, so the admin MCP that authenticates nobody
+    cannot put code on disk however it edits a rubric. An executor that fails the name check is
+    recorded `blocked`, never downgraded to the agent: a typo in one character would otherwise
+    turn a deterministic check into a model guessing at the same question, and the archive would
+    look identical.
+12. **`scores: false` means invisible to the hallmark — both halves.** Not summed into risk, and
+    not allowed to set `age_days`. The second is the subtle one: a currency reading takes six
+    seconds and rides every audit, so if it could stamp freshness then every app would read as
+    recently *audited* the moment it was *measured*.
 
 ## Safety switches (both default off)
 

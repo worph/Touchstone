@@ -122,6 +122,13 @@ export function subjectHallmark(
     current[id] = state.current;
     const done = state.hallmark;
     if (!done) continue;
+    // A section that measures rather than judges is invisible here, and both halves matter.
+    // Summing its risk would re-rank the Overview by something that is not non-compliance;
+    // letting it set `newestDone` would be worse — a cheap six-second reading would stamp the
+    // subject as freshly *audited*, and the age column is what an operator reads to know how
+    // stale a verdict is. `scores: false` is written by the executor onto the record, so this
+    // needs nothing but the frontmatter it already has.
+    if (done.meta.scores === false) continue;
     risk += Number(done.meta.risk_score) || 0;
     const t = assayTime(done.meta);
     if (newestDone === null || t > newestDone) newestDone = t;

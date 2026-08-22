@@ -151,6 +151,31 @@ Answers, in order: *is the loop running*, *what's broken*, *what do I fix first*
 
 ---
 
+#### The reading columns — `Currency`, and whatever follows it
+
+A **reading** is a section that measures rather than judges (`scores: false`), and it gets a
+column of its own between the verdict cells and `Verified`:
+
+```
+  SUBJECT               STATIC          FUNCTIONAL       CURRENCY          RISK   LAST
+  ────────────────────────────────────────────────────────────────────────────────────
+  Caddy                 ⛔ Major        ▨ blocked        ( 1 behind · 400d )   21   5d
+  Radarr                ✅ compliant    ✅ compliant     ( current )            0   7d
+  Immich                ✅ compliant    ▨ blocked        ( unknown )            0   3d
+```
+
+- **It is drawn quieter than a verdict, on purpose.** No solid fill and no glyph — a pill, a
+  tint and the words. An app that is merely out of date must not read at a glance like one that
+  failed the gate, because that is the conflation `scores: false` exists to prevent.
+- **`unknown` is its own state**, dashed rather than pale-green. Half the value of a currency
+  check is destroyed by a cell that reads *fine* when it means *we could not look* — the same
+  rule as `blocked`, one layer out.
+- **The column exists because the archive has one**, not because anything in the web knows the
+  word "currency". `readingSections()` finds every section whose latest record carries
+  `scores: false`; a second scripted check gets a column the day its first assay lands.
+- **Sorting is `bad → warn → unknown → ok`.** `unknown` sits above `ok` and below `warn`: it is
+  not good news, and it must not outrank a measurement that actually found something.
+
 #### The `Verified` column
 
 `14/16` — how much of the checklist actually got checked. It sits beside Risk and **is not a
@@ -226,6 +251,13 @@ from the report prose is precisely the mistake the archive was cleaned of in P1.
   - The button is absent unless something is actually failing, and gated on *recorded findings*
     rather than on the verdict: an assay imported before the ledger has a verdict and no
     requirements, and the report built from it would be headings with nothing underneath.
+- **A reading panel per measuring section**, above the report: the badge, how long ago it was
+  read, one line of summary, and the table the executor asked for. For `currency` that is one row
+  per service — image, pinned tag, latest, how many releases behind, and **how long it has been
+  behind**, which is computed on every render from the absolute date in the record rather than
+  read out of it. That is the whole reason the check needs no schedule: the reading is taken when
+  the app is audited, and the number on screen stays true in between. A blocked reading renders
+  its reason and no table, exactly as a blocked assay does.
 - **A `requirements` section above the report**, when the assay has one. Ordered by what a
   reader is looking for rather than by id: failures first and worst tier first, then anything
   that could not be checked, then the passes — which are folded behind a count, because a page

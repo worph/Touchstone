@@ -28,22 +28,25 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { splitSubjectKey, type SubjectKey } from '../../shared/subject.js';
-import type { Section } from '../../shared/types.js';
+import type { AssayMeta, Section } from '../../shared/types.js';
 import type { LastRun, RunLive, RunOutcome } from '../../shared/activity.js';
-import { assaysFromAgentReport, type AssaySection } from '../domain/assay.js';
+import { assaysFromAgentReport, blockedSectionAssay, type AssaySection } from '../domain/assay.js';
+import { assayFromScript } from '../domain/scripted.js';
 import type { ReportIndex } from '../store/index.js';
 import { recordFor, writeReport } from '../store/reports.js';
 import { subjectRefOf, type OriginEntry } from '../store/config.js';
 import type { BenchProber } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
-import { sectionsOf, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
+import { sectionsOf, type ExecutorRef, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
 import { coverageOf, type CanonicalRequirement, type RunLedger, type RunState } from '../services/ledger.js';
 import type { EventLog } from '../services/events.js';
 import { callAgent, type AgentOptions, type AgentOutcome } from './agent.js';
+import { runScript, type ScriptRun } from './exec.js';
 import { buildPrompt } from './prompt.js';
 
 export { buildPrompt } from './prompt.js';
 export { callAgent, classify, extractText, type AgentReport } from './agent.js';
+export { runScript, parseOutput, type ScriptOutput, type ScriptRun } from './exec.js';
 
 export interface RunnerJob {
   /**
@@ -117,6 +120,14 @@ export interface RunnerOptions {
   dumpDir?: string;
   /** False means refuse every job and say so. The default, until reviewed. */
   enabled: boolean;
+  /**
+   * How long a section's script may take before it is stopped.
+   *
+   * The runner is single-flight, so a script that hangs does not fail one section — it parks
+   * the entire loop behind itself. Generous, because a check with fifty images to resolve is
+   * doing fifty round-trips, and still bounded.
+   */
+  scriptTimeoutMs?: number;
   reportsRoot: string;
   /**
    * The stores, by id — where a subject's repo, ref and apps path come from.
@@ -363,9 +374,54 @@ export class Runner {
       return { kind: 'blocked', reason: skipped[0]?.reason ?? 'no_section_runnable' };
     }
 
+    // ── who performs each section ────────────────────────────────────────────────────────
+    // The second partition, and the reason it is here rather than inside the prompt builder:
+    // a scripted section must not reach the agent at all. It is not a rubric, there is nothing
+    // for a model to read, and asking one to do arithmetic it is bad at — over a tag list that
+    // would crowd the real audit out of the context — is the thing this seam exists to avoid.
+    const agentSections = runSections.filter((s) => s.executor.kind === 'agent');
+    const scriptSections = runSections.filter((s) => s.executor.kind !== 'agent');
+    const subjectRef = subjectRefOf(store, appName);
+
+    // Scripts run first, because they take seconds where the agent takes minutes and the run's
+    // own state is simpler while nothing is in flight.
+    //
+    // They are **not** kept when the agent call then fails: a busy agent must restore the
+    // subject exactly as it was (invariant 3), and writing a report file on that path would
+    // make "nothing happened" observably untrue. The cost is one wasted reading on an agent
+    // outage, which is seconds, against a retry minutes later that takes it again.
+    const scriptAssays = await this.runScripts(scriptSections, {
+      subject: job.subject,
+      appName,
+      ...(origin ? { origin } : {}),
+      store,
+      subjectRef,
+      startedAt,
+      ...(job.trial?.source?.compose ? { compose: job.trial.source.compose } : {}),
+    });
+
+    // Nothing for the agent to do. A protocol of scripted sections only is a legitimate
+    // configuration — and without this the run would build a prompt with an empty rubric and
+    // ask the agent to audit nothing.
+    if (agentSections.length === 0) {
+      const finishedAt = this.now().toISOString();
+      const blockedAssays = skipped.map(({ section, reason }) =>
+        blockedSectionAssay({
+          subject: appName,
+          ...(origin ? { origin } : {}),
+          section: this.assaySection(section),
+          reason,
+          startedAt,
+          finishedAt,
+          subjectRef,
+        }),
+      );
+      return this.publish(job, [...scriptAssays, ...blockedAssays], reportsRoot, events);
+    }
+
     // The ticket. Minted per dispatch, dead when the run ends — see `services/ledger.ts` for
     // why this is not a shared secret.
-    const canonical = runSections.flatMap((section) =>
+    const canonical = agentSections.flatMap((section) =>
       section.requirements
         .filter((r) => r?.id && r?.text)
         .map((r) => ({
@@ -381,7 +437,7 @@ export class Runner {
       this.opts.ledger && this.opts.callbackUrl
         ? this.opts.ledger.open({
             subject: job.subject,
-            sections: runSections.map((s) => ({
+            sections: agentSections.map((s) => ({
               id: s.id,
               name: s.name,
               phases: s.phases.map((p) => p.id),
@@ -400,7 +456,7 @@ export class Runner {
       ...(job.trial?.store_url ? { store_url: job.trial.store_url } : {}),
       protocols: {
         ...(plan.orchestrator ? { orchestrator: plan.orchestrator } : {}),
-        sections: runSections.map((s) => ({
+        sections: agentSections.map((s) => ({
           id: s.id,
           name: s.name,
           body: s.body,
@@ -478,7 +534,7 @@ export class Runner {
       // The sections that actually ran, and — recorded rather than dropped — the ones that
       // could not, so a run always produces one file per section and the store can say "not
       // checked" instead of nothing.
-      sections: runSections.map((s) => this.assaySection(s)),
+      sections: agentSections.map((s) => this.assaySection(s)),
       blocked: skipped.map(({ section, reason }) => ({ section: this.assaySection(section), reason })),
       startedAt,
       finishedAt,
@@ -487,6 +543,23 @@ export class Runner {
       ...(flagged ? { requirements: flagged.requirements, phases: flagged.phases } : {}),
     });
 
+    return this.publish(job, [...assays, ...scriptAssays], reportsRoot, events);
+  }
+
+  /**
+   * Write one run's assays, index them, log the completion and answer the scheduler.
+   *
+   * Shared by the agent path and the scripts-only path so there is one definition of what
+   * finishing means. The headline comes from `assays[0]`, which is the first section in
+   * protocol order — a scripted, non-scoring section carries `verdict: null`, so a run made
+   * entirely of measurements answers `none` rather than inventing a verdict.
+   */
+  private async publish(
+    job: RunnerJob,
+    assays: { meta: AssayMeta; body: string }[],
+    reportsRoot: string,
+    events: EventLog,
+  ): Promise<RunOutcome> {
     const files: string[] = [];
     for (const assay of assays) {
       const res = await writeReport(reportsRoot, assay.meta, assay.body);
@@ -501,6 +574,7 @@ export class Runner {
     }
 
     const blocked = assays.find((a) => a.meta.status === 'blocked');
+    const headline = assays[0]?.meta;
     events.log({
       level: 'info',
       code: 'ASSAY_COMPLETED',
@@ -510,8 +584,8 @@ export class Runner {
       subject: job.subject,
       detail: {
         subject: job.subject,
-        verdict: String(assays[0]!.meta.verdict ?? 'none'),
-        risk: assays[0]!.meta.risk_score,
+        verdict: String(headline?.verdict ?? 'none'),
+        risk: headline?.risk_score ?? 0,
         sections: assays.map((a) => a.meta.section),
         blocked: blocked ? String(blocked.meta.blocked_reason ?? 'unknown') : null,
       },
@@ -519,8 +593,8 @@ export class Runner {
 
     return {
       kind: 'verdict',
-      verdict: String(assays[0]!.meta.verdict ?? 'none'),
-      risk: assays[0]!.meta.risk_score,
+      verdict: String(headline?.verdict ?? 'none'),
+      risk: headline?.risk_score ?? 0,
       files,
     };
   }
@@ -532,6 +606,100 @@ export class Runner {
    * any app is wrong and no amount of retrying will help — somebody has to log the agent in.
    * It still costs a try, as n8n charges it, but it opens the alert that says where to look.
    */
+  /**
+   * Perform the sections whose executor is a script, one assay each.
+   *
+   * Everything a check needs arrives on **stdin**; nothing is interpolated into a command
+   * line, because subject names come out of a GitHub directory listing and a directory called
+   * `; rm -rf ~` is something a stranger can open a pull request for.
+   *
+   * `compose` is passed when we already hold the app's own bytes — an upload trial does. When
+   * we do not, the coordinates are passed instead and the script fetches for itself, which is
+   * what keeps Touchstone from needing to know how any particular store serves a file.
+   *
+   * A failure here never propagates: the section records blocked, the run carries on, and the
+   * subject keeps its place. A check that could take the audit down with it would be a worse
+   * deal than not having the check.
+   */
+  private async runScripts(
+    sections: ProtocolSection[],
+    ctx: {
+      subject: SubjectKey;
+      appName: string;
+      origin?: string;
+      store: OriginEntry;
+      subjectRef: string;
+      startedAt: string;
+      compose?: string;
+    },
+  ): Promise<{ meta: AssayMeta; body: string }[]> {
+    const out: { meta: AssayMeta; body: string }[] = [];
+    for (const section of sections) {
+      const started = this.now().toISOString();
+      const file = section.executor.kind === 'script' ? section.executor.file : null;
+      // An executor we would not run is recorded, not ignored. Downgrading it to the agent
+      // would answer the same question by guesswork and look identical in the archive.
+      const ref: ExecutorRef | null = file ? await this.opts.protocols?.executor(file) ?? null : null;
+
+      const run: ScriptRun = ref
+        ? await runScript({
+            path: ref.path,
+            input: {
+              subject: ctx.appName,
+              origin: ctx.origin ?? null,
+              section: section.id,
+              subject_ref: ctx.subjectRef,
+              repo: ctx.store.repo,
+              ref: ctx.store.ref,
+              apps_path: ctx.store.apps_path,
+              compose: ctx.compose ?? null,
+              policy: section.policy,
+            },
+            ...(this.opts.scriptTimeoutMs ? { timeoutMs: this.opts.scriptTimeoutMs } : {}),
+          })
+        : {
+            ok: false,
+            reason: 'spawn',
+            detail:
+              section.executor.kind === 'invalid'
+                ? `\`${section.executor.raw}\` is not a name this app will run — an executor is a \`*.sh\` beside the protocol, with no path`
+                : `no such file in the protocol directory`,
+            stderr: '',
+            ms: 0,
+          };
+
+      const assay = assayFromScript({
+        subject: ctx.appName,
+        ...(ctx.origin ? { origin: ctx.origin } : {}),
+        section: this.assaySection(section),
+        executor: ref ?? { file: file ?? '<none>', path: '', sha256: '' },
+        run,
+        scores: section.scores,
+        startedAt: started,
+        finishedAt: this.now().toISOString(),
+        subjectRef: ctx.subjectRef,
+      });
+
+      if (assay.meta.status === 'blocked') {
+        this.opts.events.log({
+          level: 'warn',
+          code: 'EXECUTOR_FAILED',
+          message: 'A scripted check produced no reading, so its section is recorded blocked',
+          subject: ctx.subject,
+          detail: {
+            subject: ctx.subject,
+            section: section.id,
+            executor: file ?? '<none>',
+            reason: String(assay.meta.blocked_reason ?? 'unknown'),
+            detail: String(assay.meta.blocked_detail ?? '').slice(0, 400),
+          },
+        });
+      }
+      out.push(assay);
+    }
+    return out;
+  }
+
   /**
    * The protocol, read fresh: the orchestrator's text and the sections it composes.
    *

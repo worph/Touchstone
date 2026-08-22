@@ -4,6 +4,7 @@ import { SEVERITY_RANK } from '@shared/types';
 import type { Coverage } from '@shared/types';
 import type { DisplayState, ShowFilter, SortKey, StateKind } from '../types';
 import { displayState, runningState } from './status';
+import { readingRank } from './reading';
 
 /** A verdict older than FRESH_DAYS makes a subject eligible again (ARCHITECTURE §2). */
 export const FRESH_DAYS = 7;
@@ -228,7 +229,14 @@ export function sortSubjects(
         return av - bv;
       }
       case 'risk':
+        return a.risk - b.risk;
       default:
+        // `notice:<section>` — worst reading last when ascending, so descending (the default
+        // direction on every column here) puts the app furthest behind at the top.
+        if (key.startsWith('notice:')) {
+          const id = key.slice('notice:'.length);
+          return readingRank(a, id) - readingRank(b, id);
+        }
         return a.risk - b.risk;
     }
   };

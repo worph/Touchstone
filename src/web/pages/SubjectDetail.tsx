@@ -20,6 +20,8 @@ import FixReportPanel, { FixReportButton } from '../components/FixReport';
 import CoverageCell from '../components/CoverageCell';
 import RequirementList from '../components/RequirementList';
 import RunCard from '../components/RunCard';
+import { ReadingPanel } from '../components/Reading';
+import { isReading, readingOf, readingSections } from '../lib/reading';
 import { dateOnly, num, since, stamp } from '../lib/format';
 import { hasFixWork } from '../lib/overview';
 import { displayState, runningState } from '../lib/status';
@@ -159,6 +161,16 @@ export default function SubjectDetail() {
       </div>
 
       {/*
+        Every reading this subject has — one panel each, above the report because they are the
+        cheapest thing on the page to act on: a version to bump needs no argument, where a
+        finding needs the report read.
+      */}
+      {readingSections([subject]).map((id) => {
+        const reading = readingOf(subject, id);
+        return reading ? <div style={{ marginTop: 14 }} key={id}><ReadingPanel reading={reading} /></div> : null;
+      })}
+
+      {/*
         The audit in flight, when it is this one's — the same card Activity draws, off the
         same poll.
 
@@ -285,10 +297,16 @@ interface LiveLeg {
   note?: string;
 }
 
-/** The sections to draw: what the subject has, plus what this run is adding. */
+/**
+ * The sections to draw as verdict cards: what the subject has, plus what this run is adding.
+ *
+ * A section that *measures* is excluded — it has no verdict, and a card reading
+ * `not yet run` beside a table that plainly did run would be the page contradicting itself.
+ * It gets a panel of its own below instead.
+ */
 function sectionsOf(subject: SubjectState, live: LiveLeg | null): Section[] {
-  const known = Object.keys(subject.sections ?? {});
-  const extra = (live?.legs ?? []).filter((id) => !known.includes(id));
+  const known = Object.keys(subject.sections ?? {}).filter((id) => !isReading(subject.sections?.[id]));
+  const extra = (live?.legs ?? []).filter((id) => !known.includes(id) && !isReading(subject.sections?.[id]));
   return [...known, ...extra];
 }
 

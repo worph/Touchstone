@@ -19,6 +19,7 @@
  * class of failure: an audit can no longer error because a wiki was slow.
  */
 
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -55,6 +56,42 @@ export interface ProtocolMeta {
    * prompt asks for and the ids the ledger accepts are one list in one place.
    */
   phases?: { id: string; label?: string }[];
+  /**
+   * **Who performs this section** — `agent` (the default, and every section before 2026-08-22)
+   * or the name of a `*.sh` file sitting beside this protocol.
+   *
+   * There is no third form, and deliberately no inline script and no path: a check is either
+   * a rubric a model reads or a file an operator can open, edit and diff in the same directory
+   * as the rubric that declares it. The alternative we rejected was a `builtin:` registry of
+   * TypeScript checks compiled into the image — which would have put the one thing most likely
+   * to need changing (a registry URL, a threshold, a tag-comparison rule) back behind a
+   * rebuild, the exact mistake that keeping the rubric in Docmost was.
+   *
+   * **Nothing a model can reach may write one.** `ProtocolStore.save` writes `${id}.md` and
+   * `PUT /protocols/:id` is the only editor; a `.sh` is therefore unreachable from any route,
+   * which is what keeps invariant 6 from widening out of "a model cannot post a verdict" into
+   * "a model cannot post code". See `isSafeExecutor`.
+   */
+  executor?: string;
+  /**
+   * Whether this section's risk counts toward the subject's — default **true**, which is
+   * every section that existed before this field.
+   *
+   * A section that measures rather than judges sets it false: `currency` reports that an
+   * image is 400 days behind, and that is worth showing and is not non-compliance. Summing it
+   * into the hallmark would silently re-rank the whole Overview, and ageing `age_days` off it
+   * would make an app that was measured look like an app that was audited.
+   */
+  scores?: boolean;
+  /**
+   * The knobs this section's executor reads — thresholds, ignore lists, anything the operator
+   * should be able to change without touching the procedure.
+   *
+   * Handed to a script executor verbatim on stdin. It lives here rather than in the script so
+   * that **the policy versions itself**: `save()` bumps `version`, every assay records the
+   * version that judged it, and "what counted as behind in July" stays answerable.
+   */
+  policy?: Record<string, unknown>;
   /**
    * Headings in the agent's narrative report that belong to this section, as case-insensitive
    * regular expression sources. Used only to split the prose into per-section bodies; the
@@ -127,11 +164,50 @@ export function parseProtocol(raw: string, file: string): { meta: ProtocolMeta; 
 export function serialiseProtocol(meta: ProtocolMeta, body: string): string {
   // Key order is stable so an edit that changes only the body produces a one-hunk diff.
   const ordered: Record<string, unknown> = {};
-  for (const key of ['id', 'name', 'version', 'kind', 'order', 'requires', 'phases', 'report_headings', 'requirements', 'imported_from', 'imported_at']) {
+  for (const key of ['id', 'name', 'version', 'kind', 'order', 'requires', 'executor', 'scores', 'policy', 'phases', 'report_headings', 'requirements', 'imported_from', 'imported_at']) {
     if (meta[key] !== undefined) ordered[key] = meta[key];
   }
   for (const [k, v] of Object.entries(meta)) if (!(k in ordered)) ordered[k] = v;
   return `---\n${YAML.stringify(ordered).trim()}\n---\n\n${body.trim()}\n`;
+}
+
+/**
+ * Who performs a section.
+ *
+ * Two forms, and there will not be a third: a model reading a rubric, or a file on disk. An
+ * `invalid` executor is not silently downgraded to the agent — a protocol that names a script
+ * we refuse to run must record that it could not run, or a typo in one character would turn a
+ * deterministic check into an LLM guessing at the same question and nobody would notice.
+ */
+export type Executor =
+  | { kind: 'agent' }
+  | { kind: 'script'; file: string }
+  | { kind: 'invalid'; raw: string };
+
+/**
+ * A `*.sh` beside the protocol, and nothing else.
+ *
+ * Deliberately stricter than it has to be. No slash, so it cannot leave the directory; no dot
+ * except the extension, so `..` is unspellable; no leading dash, so it cannot be read as a
+ * flag by anything downstream. This regex is a security boundary, not tidiness — the executor
+ * name arrives from a file an operator edits, and the app spawns what it names.
+ */
+export function isSafeExecutor(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_-]*\.sh$/.test(name);
+}
+
+/** A resolved script executor: where it is, and what it was when we ran it. */
+export interface ExecutorRef {
+  file: string;
+  path: string;
+  sha256: string;
+}
+
+export function parseExecutor(value: unknown): Executor {
+  const raw = String(value ?? '').trim();
+  if (raw === '' || raw === 'agent') return { kind: 'agent' };
+  if (isSafeExecutor(raw)) return { kind: 'script', file: raw };
+  return { kind: 'invalid', raw };
 }
 
 /**
@@ -150,6 +226,12 @@ export interface ProtocolSection {
   /** Regex sources matching this section's headings in the agent's narrative. */
   headings: string[];
   requirements: { id: string; text: string; requires?: string }[];
+  /** Who performs it — the agent, or a script beside the protocol. */
+  executor: Executor;
+  /** Whether its risk counts toward the subject's. False for a section that measures. */
+  scores: boolean;
+  /** The knobs its executor reads, handed over verbatim. */
+  policy: Record<string, unknown>;
   version: number;
   body: string;
 }
@@ -174,6 +256,14 @@ export function sectionsOf(protocols: readonly Protocol[]): ProtocolSection[] {
         .map((ph) => ({ id: String(ph.id), label: String(ph.label ?? ph.id) })),
       headings: (p.meta.report_headings ?? []).map((h) => String(h)),
       requirements: p.meta.requirements ?? [],
+      executor: parseExecutor(p.meta.executor),
+      // Absent means true: every section written before this field existed scores, and a
+      // default of false would have quietly emptied the Overview's risk column on upgrade.
+      scores: p.meta.scores !== false,
+      policy:
+        p.meta.policy && typeof p.meta.policy === 'object' && !Array.isArray(p.meta.policy)
+          ? (p.meta.policy as Record<string, unknown>)
+          : {},
       version: p.meta.version,
       body: p.body,
     }))
@@ -217,7 +307,9 @@ export async function ensureProtocolFiles(
   const out: SeedResult = { seeded: [] };
   let names: string[];
   try {
-    names = (await fs.readdir(seedDir)).filter((n) => n.endsWith('.md')).sort();
+    // `.sh` too: a leaf whose `executor:` names a script is not seeded until its script is,
+    // and a protocol pointing at a file the volume does not have would block on first boot.
+    names = (await fs.readdir(seedDir)).filter((n) => n.endsWith('.md') || isSafeExecutor(n)).sort();
   } catch (err) {
     // No seed directory is the normal development case: the checkout already has the files.
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return out;
@@ -235,6 +327,11 @@ export async function ensureProtocolFiles(
         await fs.writeFile(target, await fs.readFile(path.join(seedDir, name), 'utf8'), {
           encoding: 'utf8',
           flag: 'wx',
+          // The executable bit does not survive every copy into a volume, and a script seeded
+          // without it would fail at dispatch rather than at boot. `runScript` spawns through
+          // `sh` regardless, so this is convenience for whoever opens the directory, not a
+          // dependency.
+          ...(isSafeExecutor(name) ? { mode: 0o755 } : {}),
         });
         out.seeded.push(name);
       } catch (err) {
@@ -298,6 +395,31 @@ export class ProtocolStore {
     await fs.mkdir(this.dir, { recursive: true });
     await fs.writeFile(file, serialiseProtocol(meta, body), 'utf8');
     return this.get(id);
+  }
+
+  /**
+   * Resolve a section's script: the absolute path, and the hash of what is actually there.
+   *
+   * The hash is not decoration. The `.md` versions itself on save and every assay records that
+   * version (invariant 9) — but the `.sh` beside it has no version and is edited on the volume,
+   * so without this an operator could change what the check *does* and leave nothing in the
+   * archive to say the readings before and after were produced by different procedures.
+   *
+   * Returns `null` when the name is unsafe or the file is not there. Both are the caller's cue
+   * to record the section blocked rather than to fall back to anything.
+   */
+  async executor(file: string): Promise<ExecutorRef | null> {
+    if (!isSafeExecutor(file)) return null;
+    const full = path.join(this.dir, file);
+    // `path.join` cannot climb out given `isSafeExecutor`, but the check is cheap and this is
+    // the line between "a config value" and "a process this app spawns".
+    if (path.dirname(full) !== path.resolve(this.dir)) return null;
+    try {
+      const bytes = await fs.readFile(full);
+      return { file, path: full, sha256: createHash('sha256').update(bytes).digest('hex') };
+    } catch {
+      return null;
+    }
   }
 
   private async readFile(name: string): Promise<Protocol | null> {

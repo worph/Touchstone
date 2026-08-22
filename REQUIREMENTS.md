@@ -34,6 +34,7 @@ surprise.
 | **R9** | The audit hands the dev team something they can act on | ✅ built 2026-08-20 — the fix report |
 | **R10** | The app store is a configured value, and there may be several | ✅ built 2026-08-20 — §11 |
 | **R11** | A ref can be audited without moving the subject's hallmark — a *trial* | ✅ built 2026-08-20 — §12 |
+| **R12** | How far behind its own upstream each app is, and for how long | ✅ built 2026-08-22 — §14 |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -541,6 +542,145 @@ Three decisions worth keeping:
   *not* cover is handled as engineering — per-file and per-session byte caps, sessions that expire
   on their own, and a zip served `attachment` so uploaded bytes can never render on the origin
   that also serves the operator UI.
+
+---
+
+## 14. R12 — How out of date is each app, and since when — 2026-08-22
+
+> *"review the version in the compose of each service, check the version online and compose a
+> small report of if there is new version and the time the current version have not been up to
+> date"*
+
+**This is the fifth sanctioned exception to the parity rule** ([ARCHITECTURE §1.4](ARCHITECTURE.md#14-capability-inventory-and-parity-matrix)).
+Neither n8n workflow does anything like it. It is here because the operator asked for it directly
+and because the answer turned out to be cheap: over the 71 apps of the Yundera store the whole
+check takes one to six seconds per app and needs no agent, no bench and no browser.
+
+### 14.1 What it found on the day it was written
+
+Not illustrative — this is the store, swept once with the shipped executor:
+
+| | |
+| --- | --- |
+| apps read | 71 (2 blocked: `CasaOS` and `OpenClaw` are in the registry but no longer in `Apps/`) |
+| **behind** | **42** |
+| current | 18 |
+| unknown | 9 |
+| image rows | 138 — 67 behind, 35 current, 20 floating, 12 unknown, 4 past the 180-day line |
+| worst | `Paperless-ngx` 871 days · `Tribler` 490 · `Caddy` 400 · `Nginx` 203 |
+| incidental | 16 apps run `appshield:2.0.6` while 2 run `2.0.7` — the platform's own sidecar, out of step across the store, which nothing before this could see |
+
+### 14.2 The three numbers
+
+- **behind** — comparable releases above the pinned tag. Comparable means the same variant suffix,
+  the same precision and (unless `compare_majors`) the same major line: `postgres:16.13` is one
+  patch behind `16.14`, **not** fourteen releases behind `18.6`. A supported branch is a decision,
+  not neglect.
+- **stale since** — when the **earliest** newer release appeared. Deliberately not the newest
+  one's date (that measures how busy upstream is) and not the pinned one's (that measures how old
+  the image is). This is the number that answers the operator's question.
+- **days** — recomputed *at render time* from `stale since`. This is what makes a cadence
+  unnecessary: the record holds an absolute moment, so "400 days behind" stays true between
+  assays even though the reading is taken only when the app is audited.
+
+### 14.3 Where it runs, and why not on a timer
+
+**Inside the audit that was happening anyway.** An earlier draft had a second scheduler lane
+sweeping every subject every six hours; the operator's objection was that it would complicate the
+UX for something they would not use, and it turned out to buy nothing — because `stale since` is
+absolute, the only quantity that ages is the release *count*, and `FRESH_DAYS = 7` bounds that
+already. So there is no timer, no `state/` file of its own, no page and no switch. `cadence:` is
+not implemented; the seam that would carry it is one frontmatter field away if it is ever wanted.
+
+### 14.4 Why a script and not a rubric
+
+The check is deterministic, and the three arguments for keeping a model out of it are ordered by
+weight — token cost is the weakest of them:
+
+1. **A model is worse at exactly this.** Ordering `1.9.0` against `1.10.0`, counting 21 releases,
+   subtracting dates. Not "overkill" — *worse*.
+2. **A wrong green is unfalsifiable.** The value of the check rests entirely on `unknown` being
+   honest. A script's failure mode is an exception you can see; a model's is a confident sentence.
+3. **Non-determinism would make "it changed" meaningless.** A reading that jitters between runs
+   cannot be told apart from the world moving.
+
+And the residue that would have justified escalating to a model turned out not to be one. Of 108
+distinct images, 87% are settled by three small tag grammars; the remainder is 11 floating tags
+(a *different*, confidently stated finding — the pin moves, which is `pinned-image-tag`'s
+business) and 3 digest pins, which have a correct deterministic answer too. Bounded, repeating
+variety is where a rule beats a model permanently.
+
+A model would earn its place on the questions a registry cannot answer — *is this project
+abandoned, did it move, was that release a security fix* — and that would be a **second** section
+with `executor: agent` reading this one's output, not a replacement for it.
+
+**CVE lookup is out of scope**, decided 2026-08-22: it is the app team's responsibility, not the
+store's. It would also need a real scanner (a native binary or a daily-refreshed database, against
+the amd64+arm64 rule) and would bury the fix brief under dozens of unreachable base-image CVEs.
+
+### 14.5 The shape it took: a section, performed by a file
+
+The alternative designs were a rubric the agent reads (wrong cadence, wrong cost, wrong authority)
+and a parallel subsystem with its own storage and pages (two ways to say an app is in trouble,
+which eventually disagree). What shipped instead **widens the extension point that already
+existed**: a protocol leaf now declares *who performs it*.
+
+```yaml
+executor: currency.sh      # default `agent` — every existing protocol is unchanged
+scores: false              # measures rather than judges
+policy: { stale_days: 180, compare_majors: false, platform_images: [...] }
+```
+
+```
+data/protocols/currency.md   the policy    — versioned on save, editable in-app, recorded on every assay
+data/protocols/currency.sh   the procedure — POSIX sh, curl and jq, edited on the volume
+```
+
+The record shape does not change, so the index, the hallmark, the Overview, the subject page,
+`fix.md`, `/public`, the chat tools and **trials** all work with no knowledge that any of this
+exists. A trial of a branch reports whether that branch bumps the image, for free.
+
+The operator's constraint was **`*.sh` in the workspace only** — *"so we are not tempted to
+hardcode a script in the app"*. It is the same argument that moved the rubric out of Docmost: the
+thing most likely to need changing (a registry URL, a threshold, a tag rule) must not sit behind a
+rebuild. There are exactly two executors — `agent`, and a named sibling script — and no third
+form, no inline code and no path.
+
+### 14.6 What it costs, stated
+
+- **`curl` and `jq` in the image.** Both small, both arm64-clean, neither a native dependency of
+  the Node build. `ca-certificates` with them, or every lookup fails TLS and every reading is
+  honestly useless.
+- **Testability changes shape.** A `.sh` is not unit-testable the way a pure function is. What
+  replaces it is `test/currency.test.ts` — fixtures on stdin, assertions on stdout, running the
+  real artifact, entirely offline.
+- **The `.sh` has no version of its own.** So every assay records `executor_sha256`: without it an
+  operator could change what the check does and leave nothing in the archive to say that two
+  readings were produced by different procedures. That is invariant 9 applied to the half of a
+  check that has no version number.
+- **GHCR with more than ~10,000 tags reads `unknown`.** The OCI tag list is unordered, so
+  "nothing newer exists" is only as good as how much of it was read. Finding a newer tag is
+  positive evidence and survives truncation; finding none does not, and is not reported as
+  `current`. Immich is the store's one example.
+
+### 14.7 The rules that keep an executor from being a shell
+
+`routes/mcp-admin.ts` is designed to be beaconified into an aggregator that authenticates nobody.
+A script directory on the wrong side of that is not a bug, it is a remote shell. Four rules, each
+with a test:
+
+1. **No route may write a `.sh`.** True by construction — `ProtocolStore.save` writes `${id}.md`
+   and `PUT /protocols/:id` is the only editor — and now asserted. This is what upgrades invariant
+   6 from *a model cannot post a verdict* to *a model cannot post code*.
+2. **Only an executor a `.md` names may run.** The directory is never scanned for things to
+   execute; a dropped-in file does nothing until a protocol points at it.
+3. **Basename only.** `^[A-Za-z0-9][A-Za-z0-9_-]*\.sh$` — no slash, no dot but the extension (so
+   `..` is unspellable), no leading dash. An executor that fails this is recorded `blocked`, never
+   quietly downgraded to the agent.
+4. **Bounded, and fed on stdin.** Timeout, stdout cap, its own process group so a hung `curl` can
+   be killed with its shell, and a minimal environment. Input never touches a command line —
+   subject names come from a GitHub directory listing, so `; rm -rf ~` is a directory a stranger
+   can open a pull request for.
 
 ---
 

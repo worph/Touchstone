@@ -206,6 +206,12 @@ const META_ORDER = [
   'subject_ref',
   'commit',
   'images',
+  'executor',
+  'executor_sha256',
+  'scores',
+  'badge',
+  'badge_state',
+  'summary',
   'started_at',
   'finished_at',
 ];

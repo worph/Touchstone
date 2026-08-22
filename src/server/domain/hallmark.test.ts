@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_ORIGIN, subjectKey } from '../../shared/subject.js';
 import { FIXTURE_RECORDS, makeRecord } from './fixtures.js';
 import { hallmarks, latestDone, legState, sortNewestFirst, subjectHallmark } from './hallmark.js';
+import { recordFor } from '../store/reports.js';
 
 const NOW = Date.parse('2026-08-06T12:00:00Z');
 const APP = subjectKey(DEFAULT_ORIGIN, 'App');
@@ -114,5 +115,63 @@ describe('ordering', () => {
     const history = sortNewestFirst(FIXTURE_RECORDS.filter((r) => r.subject === 'OpenClaw'));
     const times = history.map((r) => Date.parse(r.meta.finished_at || r.meta.started_at));
     expect(times).toEqual([...times].sort((a, b) => b - a));
+  });
+});
+
+/**
+ * A section that measures rather than judges is invisible to the hallmark, and both halves
+ * matter. `scores: false` is written onto the record by the executor, so this needs nothing
+ * but the frontmatter the archive already carries.
+ */
+describe('readings do not move the hallmark', () => {
+  const reading = (at: string) =>
+    recordFor(
+      {
+        subject: 'App',
+        origin: DEFAULT_ORIGIN,
+        section: 'currency',
+        standard: 'Image Currency',
+        standard_version: 1,
+        status: 'done',
+        verdict: null,
+        top_severity: 'none',
+        risk_score: 0,
+        scores: false,
+        badge: '2 behind · 400d',
+        started_at: at,
+        finished_at: at,
+      },
+      `${DEFAULT_ORIGIN}/App/${at.replace(/:/g, '-')}-currency.md`,
+    );
+
+  it('does not add to the subject risk', () => {
+    const records = [
+      makeRecord({ subject: 'App', leg: 'static', at: '2026-08-01T00:00:00Z', top_severity: 'major', risk_score: 13 }),
+      // Even a reading that *did* record a score must not be summed: the flag decides, so a
+      // future scripted check cannot quietly re-rank the Overview by changing its own numbers.
+      { ...reading('2026-08-06T00:00:00Z'), meta: { ...reading('2026-08-06T00:00:00Z').meta, risk_score: 999 } },
+    ];
+    expect(subjectHallmark(APP, records, { now: NOW }).state.risk).toBe(13);
+  });
+
+  /**
+   * The trap this rule exists for. A currency reading is taken in seconds on every audit; if
+   * it could set `age_days` then every app would read as freshly *audited* the moment it was
+   * measured, and the age column is exactly what an operator reads to know how stale a
+   * verdict is.
+   */
+  it('does not make the subject look freshly audited', () => {
+    const records = [
+      makeRecord({ subject: 'App', leg: 'static', at: '2026-07-27T12:00:00Z' }),
+      reading('2026-08-06T12:00:00Z'),
+    ];
+    expect(subjectHallmark(APP, records, { now: NOW }).state.age_days).toBe(10);
+  });
+
+  it('still appears as a section, so the page can draw it', () => {
+    const records = [reading('2026-08-06T12:00:00Z')];
+    const state = subjectHallmark(APP, records, { now: NOW }).state;
+    expect(state.sections.currency?.meta.badge).toBe('2 behind · 400d');
+    expect(state.age_days).toBeNull();
   });
 });
