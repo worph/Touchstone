@@ -22,8 +22,9 @@ assay file; `static` and `functional` today, but the set is whatever `data/proto
 declares), **alert** (a deduplicated environment condition), **origin** (an app store — one
 `{repo, ref, apps_path}` a subject comes from, labelled "Store" in the UI; **not** `store/`,
 which is the filesystem layer, and **not** `AssayStore`, which is the read interface the routes
-take), **trial** (a one-shot audit of an arbitrary ref, written under `data/trials/` and never
-read by the report index, so it cannot move a hallmark), **board** (the read-only public view of
+take), **trial** (a one-shot audit of an arbitrary ref — or, since 2026-08-22, of files uploaded
+straight into a session — written under `data/trials/` and never read by the report index, so
+it cannot move a hallmark), **board** (the read-only public view of
 every subject's hallmark, at `/public`, addressed to app authors rather than to the operator).
 
 A subject's identity is `<origin>~<name>` — `yundera~FileBrowser`. The separator is `~` because
@@ -97,7 +98,8 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile` |
 | `protocols/*.md` | **the rubric itself**, the definition of the sections, and the version every assay records: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads. There is no separate `standards/` — a second file could only disagree with the rubric it versioned |
 | `reports/<origin>/<Subject>/<ISO>-<section>.md` | **the assay record IS the frontmatter of the report file**. The origin level is a namespace, not a uniqueness rule: two stores may both ship a `FileBrowser` |
-| `trials/<slug>/<Subject>/<ISO>-<section>.md` | a **trial** — the same run against an arbitrary ref, written where the report index never looks, so it cannot move a hallmark or enter the backlog. The slug doubles as a synthetic origin, so the path machinery is unchanged |
+| `trials/<slug>/<Subject>/<ISO>-<section>.md` | a **trial** — the same run against an arbitrary ref, or against files uploaded into a session, written where the report index never looks, so it cannot move a hallmark or enter the backlog. The slug doubles as a synthetic origin, so the path machinery is unchanged |
+| `uploads/<id>/` | the files an upload trial audits. A sibling of `trials/`, never inside it: a trial's own directory is scanned as a report tree |
 | `state/*.json`, `events.jsonl` | small mutable runtime state and the append-only log |
 | `state/index.json` | cache only — deleting it must always be safe |
 
@@ -129,15 +131,16 @@ because its data access was smeared through two 200-line n8n Code nodes.
   requirement *as it settles it*, so a run that dies at requirement 12 of 16 keeps twelve results.
   It also resolves each record's **section** from the canonical list, which is what lets one
   agent response become one assay per section without parsing the prose for headings.
-- **`routes/mcp-admin.ts`** — the *same* seven tools, served as an MCP server at
+- **`routes/mcp-admin.ts`** — the *same* twelve tools, served as an MCP server at
   `POST /api/v1/mcp/admin` so an agent can ask them: it renders `CHAT_TOOLS` into `tools/list`
   and hands `tools/call` to the same handlers with the chat's own `ChatToolContext`. There is
   no second definition of what an agent may ask this app, which is the point — a second one
   would be a second thing to keep in step with invariant 6. **Off unless `admin_mcp.enabled`**,
   and disabled it registers no route at all: it is meant to be beaconified into an aggregator
   that authenticates nobody, so turning it on is a statement about the box. `read_only` drops
-  the one tool marked `writes` (`run_assay`) from the list *and* refuses it if asked for
-  anyway; `token` is a bearer a beaconify sidecar can inject. `routes/rpc.ts` is the MCP
+  every tool marked `writes` (`run_assay`, `open_trial`, `run_trial`) from the list *and*
+  refuses them if asked for anyway — the filter reads the mark rather than a list of names,
+  so a new write tool is covered the day it lands; `token` is a bearer a beaconify sidecar can inject. `routes/rpc.ts` is the MCP
   envelope both surfaces share — `initialize`, `tools/list`, `tools/call`, and a `202` for the
   notification, which is what a discovery client waits for.
 - **`domain/fixreport.ts`** — the audit composed into a brief for whoever has to fix the app,
@@ -165,11 +168,16 @@ because its data access was smeared through two 200-line n8n Code nodes.
   authoritative; alerts dedup an environment condition to one row; outlets and push are
   best-effort.
 - **`src/server/chat/`** — the administrator chat: a bounded turn loop (`loop.ts`, 8 calls and
-  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), seven tools wrapping the
+  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), twelve tools wrapping the
   API (`registry.ts`), and the agent call (`driver.ts`) reusing `postToAgent` from the runner.
-  Six of the seven **read**, and four of those read what is *written down* — the archive, the fix
-  brief, the log, the backlog — not the live process, which a `tsx watch` restart empties while
-  the operator is still waiting for the run it started (HANDOFF §5k). A run started from a turn
+  Nine of the twelve **read**, and most of those read what is *written down* — the board, the
+  archive, a report file, the fix brief, the log, the backlog — not the live process, which a
+  `tsx watch` restart empties while the operator is still waiting for the run it started
+  (HANDOFF §5k). Four of them are the same question at four depths, which is why their
+  descriptions work so hard to stay distinct: `get_board` (every app), `get_subject` (one
+  app), `get_fix_brief` (its findings), `get_report` (the file, and the only place the
+  evidence behind a *passing* requirement survives). The three that act are `run_assay` and
+  the trial pair, `open_trial` / `run_trial`. A run started from a turn
   appends a `note` row back into that thread when it finishes, so the conversation knows what
   became of its own work.
   `prompt.md` is an asset — `build:api` copies it into `dist/`, so a new non-TS file there

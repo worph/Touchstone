@@ -73,3 +73,106 @@ describe('the store parameters', () => {
     );
   });
 });
+
+/**
+ * A trial of supplied files. The agent normally fetches its own subject with `gh`; here the
+ * bytes are handed to it, and the two things that must survive that are the ones the rubric
+ * leans on — the nominal repo it judges assets and CONTRIBUTING.md against, and the absence of
+ * any instruction to go and fetch the app itself.
+ */
+describe('auditing supplied files', () => {
+  const SOURCE = {
+    files: ['docker-compose.yml', 'icon.png', 'rationale.md'],
+    compose: 'name: openclaw\nservices:\n  app:\n    image: ghcr.io/x/y:1.0.0\n',
+    rationale: 'It needs /DATA because …',
+  };
+
+  it('inlines the files and stops telling the agent to fetch the app', () => {
+    const prompt = buildPrompt({ ...BASE, source: SOURCE }).prompt;
+
+    expect(prompt).toContain('=== APP FILES (authoritative, supplied inline');
+    expect(prompt).toContain('image: ghcr.io/x/y:1.0.0');
+    expect(prompt).toContain('--- rationale.md ---');
+    // The manifest is what `assets` is judged on, since there is nothing to fetch.
+    expect(prompt).toContain('docker-compose.yml, icon.png, rationale.md');
+
+    // The `gh` listing step is gone: running it would report the working copy as missing from
+    // the repo, which is true and is not a finding about the app.
+    expect(prompt).not.toContain('gh api repos/Yundera/AppStore/contents/Apps');
+    expect(prompt).toContain('Do NOT run gh to list or fetch them');
+  });
+
+  it('still sends the agent for CONTRIBUTING.md, which the protocol requires every run', () => {
+    const prompt = buildPrompt({ ...BASE, source: SOURCE }).prompt;
+    expect(prompt).toContain('CONTRIBUTING.md');
+    expect(prompt).toContain('repo=Yundera/AppStore');
+  });
+
+  it('never rebinds the asset rule, because supplied files were on no branch', () => {
+    const prompt = buildPrompt({ ...BASE, source: SOURCE, ref: 'main' }).prompt;
+    // `prompt.ts` rewrites `<repo>@main` to `<repo>@<ref>` for any other ref — right for a PR
+    // branch, and wrong here: an uploaded app's assets legitimately point at the real main.
+    expect(prompt).not.toContain('read it as');
+  });
+
+  it('omits the rationale heading when the app ships none', () => {
+    const prompt = buildPrompt({
+      ...BASE,
+      source: { files: ['docker-compose.yml'], compose: 'name: x\n', rationale: null },
+    }).prompt;
+    expect(prompt).toContain('--- docker-compose.yml ---');
+    expect(prompt).not.toContain('--- rationale.md ---');
+  });
+});
+
+/**
+ * The store URL a trial hands the bench.
+ *
+ * Two things this has to get right, and the second was learned the hard way. Give the agent
+ * the finished address rather than a template to assemble — and tell it that Maison will
+ * immediately rewrite that address into `/store/<store url sans scheme>/-/Apps/<APP>`. That
+ * rewrite is Maison canonicalising the query parameter (verified by hand on 2026-08-22: the
+ * rewritten page shows the unlisted-store warning and a working Install button), but an agent
+ * that has not been told looks at its URL apparently mangled into a path and starts
+ * troubleshooting a problem that does not exist.
+ */
+describe('installing from the trial\'s own store', () => {
+  const SOURCE = { files: ['docker-compose.yml'], compose: 'name: x\n' };
+  const LIVE = {
+    ...BASE,
+    sections: [
+      { id: 'static', name: 'Static Review Protocol' },
+      { id: 'functional', name: 'Functional Review Protocol', requires: ['bench', 'browser'] },
+    ],
+    source: SOURCE,
+    store_url: 'https://touchstone-lab.example/api/v1/trialstore/tok3n.zip',
+  };
+
+  it('hands over one finished URL when the host is already chosen', () => {
+    const prompt = buildPrompt({ ...LIVE, demo_host: 'https://demostaging1.inojob.com' }).prompt;
+    expect(prompt).toContain(
+      'https://demostaging1.inojob.com/store/OpenClaw?store=https%3A%2F%2Ftouchstone-lab.example%2Fapi%2Fv1%2Ftrialstore%2Ftok3n.zip',
+    );
+    expect(prompt).toContain('copied character for character');
+  });
+
+  it('warns that Maison will rewrite the address, so the agent does not chase it', () => {
+    const prompt = buildPrompt({ ...LIVE, demo_host: 'https://demostaging1.inojob.com' }).prompt;
+    expect(prompt).toContain('EXPECTED, not a failure');
+    expect(prompt).toContain('/-/Apps/OpenClaw');
+    expect(prompt).toContain('do not conclude the navigation failed');
+    // And it says what "arrived" looks like, so there is a positive test rather than a vibe.
+    expect(prompt).toContain('an Install control');
+  });
+
+  it('leaves only the host to substitute when it has not been chosen yet', () => {
+    const prompt = buildPrompt(LIVE).prompt;
+    expect(prompt).toContain('substitute ONLY the host');
+    expect(prompt).toContain('?store=https%3A%2F%2Ftouchstone-lab.example');
+  });
+
+  it('says nothing about a store when the trial has none to offer', () => {
+    const prompt = buildPrompt({ ...LIVE, store_url: undefined }).prompt;
+    expect(prompt).not.toContain('4a. STORE');
+  });
+});

@@ -1,7 +1,7 @@
 ---
 id: functional
 name: Functional Review Protocol
-version: 6
+version: 7
 kind: leaf
 
 # Where this section sits in a run, and what it cannot run without. `order` decides report
@@ -202,6 +202,16 @@ when the process last started. Refresh from the store UI's own control; if none 
 say so in the report and treat the compose check below as the thing standing in for it. This
 costs seconds and is not optional.
 
+**Unless the run supplied its own store.** A trial of files that are on no branch is given a
+store URL of its own, and the run instructions name it. Then install by opening
+`https://<DEMO>/store/<APP>?store=<that url>` rather than by browsing the catalogue: the
+catalogue serves whatever store the box is configured with, which is not the thing under trial.
+Maison will warn that the app comes from a store you have not added — **that warning is correct
+and accepting it is part of the run**. No refresh is needed in this case, and asking for one is
+a mistake worth naming: the URL is minted per trial and has never been fetched by anything, so
+there is no cached copy of it that could be stale. The two checks that bracket this phase still
+apply — assert the installed compose is the one you audited.
+
 3. Navigate to `https://<DEMO>/store`.
 4. `take_snapshot`, find the card whose heading `== APP`, click its **Install** pill. The search
    box matches name, tagline *and* category, so confirm the heading matches `APP` exactly rather
@@ -365,6 +375,14 @@ one run's untidiness becomes another run's false result.
 
 ## Changelog — not part of the rubric
 
+- **v7 (2026-08-22)** — a run may now supply its **own store**, and Phase C says how to install
+  from it: `https://<DEMO>/store/<APP>?store=<url>`, accepting Maison's "store you have not
+  added" warning as expected. This is what lets a trial of files that are on no branch run its
+  live section at all — previously it was recorded `blocked` as `store_not_installable`, on the
+  correct grounds that a bench installs from its own catalogue and would have reported a result
+  about `main` under the trial's name. It also removes the v6 failure mode rather than
+  mitigating it: a per-trial URL has never been fetched by anything, so there is no cached copy
+  of it to be stale, and no refresh to forget.
 - **v6 (2026-08-21)** — the store the box serves is a cached copy, and an audit that does not
   account for that can audit a different version of the app than the one it was asked to (§2).
   Phase C is now bracketed by a **store refresh** before and a **compose assertion** after: read

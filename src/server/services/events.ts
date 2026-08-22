@@ -97,6 +97,7 @@ export const EVENT_CODES = {
   TRIAL_COMPLETED: { category: 'assay', label: 'trial finished' },
   TRIAL_FAILED: { category: 'assay', label: 'trial failed' },
   TRIAL_SWEPT: { category: 'system', label: 'orphaned trial reports removed' },
+  UPLOAD_WRITTEN: { category: 'assay', label: 'trial file uploaded' },
 
   // ── the archive ───────────────────────────────────────────────────────────
   ARCHIVE_MIGRATED: { category: 'system', label: 'report archive moved' },
@@ -183,6 +184,7 @@ interface EventDetails {
   };
   TRIAL_FAILED: { slug: string; subject: string; reason: string };
   TRIAL_SWEPT: { slugs: string[] };
+  UPLOAD_WRITTEN: { upload: string; path: string; bytes: number };
   ARCHIVE_MIGRATED: {
     origin: string;
     subjects: number;

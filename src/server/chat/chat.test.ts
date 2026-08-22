@@ -19,6 +19,8 @@ import { buildPrompt, dispatch, runTurn } from './loop.js';
 import { ChatThreads } from './thread.js';
 import { renderCatalogue } from './catalogue.js';
 import { CHAT_TOOLS } from './registry.js';
+import { TrialStore } from '../store/trials.js';
+import { UploadStore } from '../store/uploads.js';
 
 let dir: string;
 let events: EventLog;
@@ -299,6 +301,71 @@ describe('reading what was written down', () => {
     expect(scoped.text).toContain('ASSAY_STARTED');
   });
 
+  /**
+   * The board exists so "what is failing" is one call. The thing it must not lose on the way
+   * to one line per app is invariant 4 — a blocked section is infra, and a model scanning
+   * sixty rows will otherwise count it as a second failure of the app.
+   */
+  it('puts every app on one board, worst first, with blocked still spelled as infra', async () => {
+    const res = await dispatch({ tool: 'get_board', input: {} }, archive as never);
+    expect(res.ok).toBe(true);
+
+    const lines = res.text.split('\n');
+    expect(lines[0]).toMatch(/app\(s\), worst risk first/);
+
+    // Every subject in the archive gets a row, and OpenClaw's risk 232 puts it above the rest.
+    expect(res.text).toContain('OpenClaw');
+    expect(res.text).toContain('Prowlarr');
+    const risks = lines
+      .slice(1)
+      .map((line) => Number(/risk (\d+)/.exec(line)?.[1] ?? '0'));
+    expect(risks).toEqual([...risks].sort((a, b) => b - a));
+
+    // Infra, not a verdict — and the word "blocked" never stands on its own.
+    expect(res.text).toMatch(/functional blocked \(infra: bench_unavailable\)/);
+  });
+
+  it('says the board is empty rather than implying every app passed', async () => {
+    const res = await dispatch({ tool: 'get_board', input: {} }, { store: memoryStore([]) } as never);
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('Nothing has been audited yet');
+    expect(res.text).toContain('list_subjects');
+  });
+
+  /**
+   * `get_fix_brief` quotes the failures and lists the passes as bare ids. The file is the only
+   * place the evidence behind a *pass* survives, which is the whole reason this tool exists.
+   */
+  it('hands back the report file itself, newest section by default', async () => {
+    const res = await dispatch({ tool: 'get_report', input: { subject: 'OpenClaw' } }, archive as never);
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain('# Yundera/AppStore — OpenClaw');
+    expect(res.text).toContain('## Evidence');
+  });
+
+  it('reads a named section, and names the ones it has when asked for one it has not', async () => {
+    const good = await dispatch(
+      { tool: 'get_report', input: { subject: 'OpenClaw', section: 'static' } },
+      archive as never,
+    );
+    expect(good.ok).toBe(true);
+    expect(good.text).toContain('OpenClaw');
+
+    const bad = await dispatch(
+      { tool: 'get_report', input: { subject: 'OpenClaw', section: 'security' } },
+      archive as never,
+    );
+    expect(bad.ok).toBe(false);
+    expect(bad.text).toContain('no security report');
+    expect(bad.text).toContain('static');
+  });
+
+  it('refuses to read a report for an app that has never been assayed', async () => {
+    const res = await dispatch({ tool: 'get_report', input: { subject: 'NeverAssayed' } }, archive as never);
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('no assay of NeverAssayed');
+  });
+
   it('refuses a level it does not know rather than silently ignoring it', async () => {
     const res = await dispatch({ tool: 'list_activity', input: { level: 'shouty' } }, { ...archive, events } as never);
     expect(res.ok).toBe(false);
@@ -368,5 +435,167 @@ describe('threads on disk', () => {
     await threads.append({ threadId: thread.id, role: 'user', content: 'kept' });
     await fs.appendFile(path.join(dir, 'chat', `${thread.id}.jsonl`), '{"role":"user","cont');
     expect(await threads.list(thread.id)).toHaveLength(1);
+  });
+});
+
+/**
+ * Trialling files nobody has committed.
+ *
+ * The loop these three tools serve is: change a compose, ask whether it passes, change it
+ * again. What has to hold across all of it is that a trial stays a fact about the *files* —
+ * it never moves what the app carries — and that every refusal comes back as something the
+ * caller can act on rather than as a stack trace.
+ */
+describe('trialling supplied files', () => {
+  const busyRunner = (busy: boolean) => ({
+    enabled: true,
+    busy,
+    status: () => ({
+      running: busy ? { subject: 'yundera~Radarr', started_at: '2026-08-22T09:00:00Z' } : null,
+      last: null,
+    }),
+    run: async () => ({ kind: 'blocked' as const, reason: 'store_not_installable' }),
+  });
+
+  async function wiring(opts: { busy?: boolean } = {}) {
+    const uploads = new UploadStore(
+      path.join(dir, 'state'),
+      path.join(dir, 'uploads'),
+      { max_file_bytes: 4096, max_total_bytes: 8192, ttl_min: 60 },
+    );
+    await uploads.load();
+    const trials = new TrialStore(path.join(dir, 'state'), path.join(dir, 'trials'));
+    await trials.load();
+
+    return {
+      uploads,
+      trials,
+      ctx: {
+        store: memoryStore(),
+        registry: { list: () => ['yundera~OpenClaw'] },
+        originRepo: (origin: string) => (origin === 'yundera' ? 'Yundera/AppStore' : undefined),
+        trials: {
+          runner: busyRunner(opts.busy ?? false),
+          trials,
+          uploads,
+          trialsRoot: path.join(dir, 'trials'),
+        },
+      } as never,
+    };
+  }
+
+  it('opens a session, inheriting the store the app already belongs to', async () => {
+    const { ctx, uploads } = await wiring();
+    const res = await dispatch({ tool: 'open_trial', input: { subject: 'openclaw' } }, ctx);
+
+    expect(res.ok).toBe(true);
+    // The nominal repo is in the answer, because it is what the assets rule and
+    // CONTRIBUTING.md will be resolved against — not somewhere the files come from.
+    expect(res.text).toContain('Yundera/AppStore@main');
+    expect(res.text).toContain('/api/v1/uploads/');
+    expect(res.text).toContain('run_trial');
+
+    const [session] = uploads.list();
+    expect(session?.subject).toBe('OpenClaw');
+    expect(session?.repo).toBe('Yundera/AppStore');
+  });
+
+  it('refuses an app it cannot name a store for, rather than guessing one', async () => {
+    const { ctx } = await wiring();
+    const bare = { ...(ctx as Record<string, unknown>), originRepo: undefined } as never;
+    const res = await dispatch({ tool: 'open_trial', input: { subject: 'openclaw' } }, bare);
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('repo as owner/name');
+  });
+
+  it('will not run a session with no compose in it', async () => {
+    const { ctx, uploads } = await wiring();
+    const session = await uploads.create({ subject: 'OpenClaw', repo: 'Yundera/AppStore' });
+
+    const res = await dispatch({ tool: 'run_trial', input: { upload: session.id } }, ctx);
+    expect(res.ok).toBe(false);
+    // Better here than eight minutes later as a finding about an app with no compose file.
+    expect(res.text).toContain('no docker-compose.yml');
+  });
+
+  it('starts a trial, and says what it is judging the files as', async () => {
+    const { ctx, uploads, trials } = await wiring();
+    const session = await uploads.create({ subject: 'OpenClaw', repo: 'Yundera/AppStore' });
+    await uploads.put(session, 'docker-compose.yml', Buffer.from('name: openclaw\n'));
+
+    const res = await dispatch({ tool: 'run_trial', input: { upload: session.id } }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain('Yundera/AppStore@main');
+    expect(res.text).toContain('get_trial');
+
+    const [record] = trials.list();
+    expect(record?.kind).toBe('upload');
+    expect(record?.upload_id).toBe(session.id);
+    // The slug says what it is. `Yundera-AppStore@main-…` would read as a trial of the
+    // store's own main branch, which is the one thing this is not.
+    expect(record?.slug.startsWith('upload@')).toBe(true);
+  });
+
+  it('reports the run in progress instead of queueing behind it', async () => {
+    const { ctx, uploads } = await wiring({ busy: true });
+    const session = await uploads.create({ subject: 'OpenClaw', repo: 'Yundera/AppStore' });
+    await uploads.put(session, 'docker-compose.yml', Buffer.from('name: openclaw\n'));
+
+    const res = await dispatch({ tool: 'run_trial', input: { upload: session.id } }, ctx);
+    expect(res.ok).toBe(false);
+    // Invariant 8: no queue. So the answer has to be actionable, which means naming what is
+    // running rather than saying "busy".
+    expect(res.text).toContain('Radarr');
+    expect(res.text).toContain('try again');
+  });
+
+  it('reads back a trial, and keeps it separate from what the app carries', async () => {
+    const { ctx, trials } = await wiring();
+    await trials.add({
+      slug: 'upload@abc123-2026-08-22T10-00-00-000Z',
+      kind: 'upload',
+      upload_id: 'abc123',
+      repo: 'Yundera/AppStore',
+      ref: 'main',
+      apps_path: 'Apps',
+      subject: 'OpenClaw',
+      compare_to: 'yundera~OpenClaw',
+      started_at: '2026-08-22T10:00:00Z',
+      finished_at: '2026-08-22T10:08:00Z',
+      outcome: 'verdict',
+      verdict: 'compliant',
+      risk_score: 0,
+    });
+
+    const res = await dispatch({ tool: 'get_trial', input: {} }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain('uploaded files (session abc123)');
+    expect(res.text).toContain('compliant');
+    expect(res.text).toContain('did not change it');
+  });
+
+  it('refuses a trial report it does not have, by name', async () => {
+    const { ctx } = await wiring();
+    const res = await dispatch({ tool: 'get_report', input: { trial: 'upload@nope-1' } }, ctx);
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('no trial called');
+  });
+
+  it('says a trial is still going rather than reporting an absent verdict', async () => {
+    const { ctx, trials } = await wiring();
+    await trials.add({
+      slug: 'upload@def456-2026-08-22T10-00-00-000Z',
+      kind: 'upload',
+      upload_id: 'def456',
+      repo: 'Yundera/AppStore',
+      ref: 'main',
+      apps_path: 'Apps',
+      subject: 'OpenClaw',
+      started_at: '2026-08-22T10:00:00Z',
+    });
+
+    const res = await dispatch({ tool: 'get_trial', input: {} }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain('has not finished');
   });
 });

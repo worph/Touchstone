@@ -730,6 +730,39 @@ describe('a trial', () => {
     expect(body).not.toContain('bench_host:');
   });
 
+  /**
+   * The other half of the same rule, added 2026-08-22.
+   *
+   * `store_not_installable` was never "trials cannot install" — it was "a bench installs the
+   * store's own branch, not the thing under trial". Hand the bench a store holding exactly the
+   * thing under trial and the objection is gone, so the section must run rather than block. If
+   * this ever starts blocking again with a store URL present, the condition has been widened
+   * back into a blanket rule and the feature is silently dead.
+   */
+  it('runs the functional section when the trial can serve its own subject', async () => {
+    const root = path.join(dir, 'trials', SLUG);
+    let sent = '';
+    const out = await make({
+      prober: proberOf(['https://demostaging1.example']),
+      ports: portsOf(['http://touchstone-browser:9746/mcp']),
+      agent: {
+        fetchImpl: (async (_u: string, init: RequestInit) => {
+          sent = String(init.body);
+          return { ok: true, status: 200, text: async () => sse(agentJson()) };
+        }) as unknown as typeof fetch,
+      },
+    }).run({
+      subject: subjectKey(SLUG, 'Tuwunel'),
+      try_n: 1,
+      trial: { ...TRIAL, root, store_url: 'https://ts.example/api/v1/trialstore/tok.zip' },
+    });
+
+    expect(out.kind).toBe('verdict');
+    // The bench was leased rather than declined, and the agent was told where to install from.
+    expect(sent).toContain('trialstore');
+    expect(sent).not.toContain('store_not_installable');
+  });
+
   it('audits the ref it was given, not the configured store', async () => {
     let sent = '';
     await make({

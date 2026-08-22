@@ -9,6 +9,7 @@ import { buildIndex } from './store/index.js';
 import { logArchiveMigration, migrateArchiveLayout } from './store/migrate.js';
 import { splitSubjectKey } from '../shared/subject.js';
 import { TrialStore } from './store/trials.js';
+import { UploadStore } from './store/uploads.js';
 import { ensureConfigFile, loadConfig, resolveDataDir } from './store/config.js';
 import { AlertStore } from './services/alerts.js';
 import { BenchProber } from './services/bench.js';
@@ -213,6 +214,24 @@ if (sweptTrials.length > 0) {
   });
 }
 
+/**
+ * Upload sessions — the files a trial audits when there is no ref to fetch them from.
+ *
+ * Swept at boot rather than on a timer: a session's whole life is one debug loop, and a timer
+ * is a thing a restart forgets. Anything that lapsed while the process was down goes now.
+ */
+const uploads = new UploadStore(cfg.stateDir, cfg.uploadsRoot, cfg.uploads);
+await uploads.load();
+const sweptUploads = await uploads.sweepExpired();
+if (sweptUploads.length > 0) {
+  events.log({
+    level: 'info',
+    code: 'TRIAL_SWEPT',
+    message: `Removed ${sweptUploads.length} lapsed upload session(s)`,
+    detail: { slugs: sweptUploads },
+  });
+}
+
 const chatThreads = new ChatThreads(cfg.stateDir);
 await chatThreads.load();
 
@@ -291,7 +310,10 @@ await app.register(registerRoutes, {
     events,
     store,
     known: () => registry.list(),
+    uploads,
+    publicBaseUrl: cfg.trials.public_base_url,
   },
+  uploads: { uploads, maxFileBytes: cfg.uploads.max_file_bytes, events },
   boardUrl: cfg.bench.board_url,
   /**
    * The chat's tools over MCP, for an agent rather than for a person. Off unless the operator
@@ -319,6 +341,26 @@ await app.register(registerRoutes, {
       store,
       events,
       scheduler,
+      /**
+       * The same bundle `POST /trials` uses, so a trial started by conversation is written,
+       * logged and dispatched identically to one started over HTTP. `onError` is the only
+       * difference, and only because there is no request to attribute the failure to.
+       */
+      trials: {
+        runner,
+        trials,
+        uploads,
+        trialsRoot: cfg.trialsRoot,
+        events,
+        known: () => registry.list(),
+        publicBaseUrl: cfg.trials.public_base_url,
+        onError: (err: unknown, slug: string) => app.log.error({ err, slug }, 'trial failed'),
+      },
+      /**
+       * Which repo an origin's apps belong to, so `open_trial` can inherit it. Nothing is
+       * fetched from it — it is what the asset rule and CONTRIBUTING.md resolve against.
+       */
+      originRepo: (origin: string) => cfg.origins.find((o) => o.id === origin)?.repo,
       // The same path `POST /assays` takes, so a run started by conversation is recorded,
       // notified and charged to the schedule exactly as a hand-run one is.
       startAssay: (job, opts) => {

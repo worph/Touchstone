@@ -6,10 +6,11 @@
  * agent may ask Touchstone" would be a second thing to keep in step with invariant 6, and the
  * first time the two disagreed the weaker one would be the one somebody had connected.
  *
- * So the scope here is exactly the scope of the chat: seven tools, six of which read what is
- * *written down* — the archive, the fix brief, the log, the backlog, the schedule — and one,
- * `run_assay`, which starts an audit and returns immediately. None of them writes a verdict,
- * mints a section, or names a repo and ref; `registry.ts` explains at length why not.
+ * So the scope here is exactly the scope of the chat: twelve tools, nine of which read what is
+ * *written down* — the board, the archive, a report file, the fix brief, a trial, the log, the
+ * backlog, the schedule — and three which act: `run_assay`, and the pair that trials files
+ * nobody has committed, `open_trial` and `run_trial`. None of them writes a verdict, mints a
+ * section, or names a repo and ref; `registry.ts` explains at length why not.
  *
  * ## Why it is off by default
  *

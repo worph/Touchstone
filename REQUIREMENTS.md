@@ -483,17 +483,63 @@ is never handed, so a trial cannot move a subject's hallmark, cannot enter the b
 consume a retry. `AppStore PR Review` stays in n8n and keeps the labels, the comment and the
 publishing; this is the executor it could call, and nothing calls it until someone wires it.
 
-**Trials are static-only, and the blocked report says why.** `data/protocols/functional.md:189`
-installs from the bench's own catalogue at `https://<DEMO>/store`, which serves whatever store
-that Maison box points at — not the ref under trial. A functional result would be about `main`
-while carrying the PR's name. The functional section is therefore recorded `blocked` with reason
-`store_not_installable`, which is invariant 4's exact shape. Repointing a bench's catalogue at a
-custom store URL is the follow-on that would lift this.
+**Trials were static-only, and the blocked report said why.** A bench installs from its own
+catalogue, which serves whatever store that Maison box points at — not the ref under trial — so a
+functional result would be about `main` while carrying the PR's name. The functional section was
+therefore recorded `blocked` with reason `store_not_installable`, which is invariant 4's exact
+shape.
+
+**That follow-on landed 2026-08-22 — see §13.** Maison takes its store as a parameter, so a trial
+that can publish its subject as a store hands the bench one and the two become the same bytes.
 
 **Nothing a model can call may choose the ref.** The chat's `run_assay` keeps its single property,
 constrained to a member of the registry. Invariant 6 says nothing an agent can call may write a
 verdict or mint a section; the same reasoning covers repo+ref, which is the one input that turns
-"audit an app" into "run `gh` against a URL of the model's choosing".
+"audit an app" into "run `gh` against a URL of the model's choosing". **§13 keeps that property
+and is worth reading against it**: an upload trial takes no repo and no ref, so there is still no
+URL of the model's choosing and no `gh` pointed at one. What it does newly allow is a model
+choosing the *content* audited, which is a different thing and is written down there rather than
+left to be inferred from the absence of a rule against it.
+
+---
+
+## 13. Trialling files that are on no branch — 2026-08-22
+
+The dev team's loop was: read the audit, change the app, **commit, push, wait for the store to be
+re-read**, audit again. The middle step is slow (a full audit is ~8.5 min, and every iteration
+needed a push first) and it is also where `functional.md`'s recorded 2026-08-20 incident lives —
+a fix landed at 16:45 and two audits that evening installed the pre-fix compose from Maison's
+in-process cache and attributed the failure to an app whose source was already correct.
+
+**An upload trial removes the commit.** `open_trial` mints a session; each file is written with
+`PUT /api/v1/uploads/<token>/<path>`; `run_trial` audits exactly those bytes and writes the result
+under `data/trials/`, where the report index never looks — so it still cannot move a hallmark,
+enter the backlog or consume a retry. The whole loop is callable over MCP, which is what the
+operator asked for: QA reports a problem, the dev team reads it, changes files, re-runs, and reads
+the result without leaving Claude Code.
+
+Three decisions worth keeping:
+
+- **The repo survives as a name.** `static.md` does not merely fetch from the repo, it judges
+  against it — asset URLs must point at `<repo>@main`, and that repo's `CONTRIBUTING.md` is "the
+  source of truth for what each item means". A trial with no repo at all would throw a false Major
+  on every asset URL and apply a rubric whose terms it could not look up. So the name is carried
+  and only the bytes are local. The ref is nominally `main` for the same reason: `prompt.ts`
+  rebinds the asset rule to the ref under audit for any other value, which is right for a PR
+  branch and wrong for files that were never on a branch.
+- **A trial serves its own store, which is what lifts `store_not_installable`.** The session is
+  zipped in GitHub's archive shape and served at an unguessable per-trial URL that the bench
+  fetches over the public internet (`config.trials.public_base_url`, and an `ALLOWED_PATHS` entry
+  so that one prefix is outside the SSO gate). Because the URL is minted per trial, Maison's store
+  cache cannot be serving an older copy of it — the 2026-08-20 failure mode is removed rather than
+  mitigated.
+- **What this opens was decided rather than assumed.** An upload trial makes "an arbitrary compose
+  a bench will install and run" reachable from an aggregator that authenticates nobody. The
+  operator's judgement (2026-08-22) is that this grants nothing an anonymous visitor lacked: the
+  benches are shared, publicly reachable and use published credentials. What that argument does
+  *not* cover is handled as engineering — per-file and per-session byte caps, sessions that expire
+  on their own, and a zip served `attachment` so uploaded bytes can never render on the origin
+  that also serves the operator UI.
 
 ---
 

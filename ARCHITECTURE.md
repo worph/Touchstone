@@ -733,13 +733,19 @@ rules to remember:
   audit gets a 409. A second runner would also have falsified the browser lease, whose safety
   rests on "there is one run at a time".
 
-**Trials are static-only**, and that is a fact about how apps are installed rather than a
-shortcoming: a bench installs from its own catalogue, which serves whatever store that instance
-is configured with rather than the ref under trial. The functional section is recorded `blocked`
-with reason `store_not_installable`. It is still not a statement about the subject, so §2.3's
-rule holds — but it is a statement about the *trial's configuration* rather than about infra,
-which is the one place that wording strains. Repointing a bench's catalogue at a custom store
-URL is the follow-on that would lift it.
+**A trial is static-only unless it can serve its own subject**, and that is a fact about how
+apps are installed rather than a shortcoming: a bench installs from its own catalogue, which
+serves whatever store that instance is configured with rather than the thing under trial. The
+functional section is then recorded `blocked` with reason `store_not_installable`. It is still
+not a statement about the subject, so §2.3's rule holds — but it is a statement about the
+*trial's configuration* rather than about infra, which is the one place that wording strains.
+
+Since 2026-08-22 the condition is real rather than permanent, which was always the named
+follow-on. Maison takes its store as a parameter (`?store=<zip url>`), so a trial that can
+publish its subject as a store hands the bench one and the objection dissolves — the thing
+installed and the thing audited become the same bytes. An **upload** trial can, its files
+already being on this disk; it needs `config.trials.public_base_url`, because the bench fetches
+over the public internet. A **ref** trial still cannot, and still blocks.
 
 **Nothing a model can call may choose the ref.** The chat's `run_assay` keeps its single
 property, constrained to a registry member. §6.2's reasoning about verdicts extends here:
@@ -796,8 +802,16 @@ answer is not to pretend otherwise but to bound what is reachable:
 - The surface is **off by default**, and disabled it registers no route — there is no address
   to find, and no disabled-but-answering state to mistake for a working one.
 - The tools are **the chat's, not a second set**. Nothing there writes a verdict, mints a
-  section, or takes a repo and ref (§6.2, invariant 6). The worst call is `run_assay`, which
-  starts a run of a *configured* subject — and refuses while `runner.enabled` is false.
+  section, or takes a repo and ref (§6.2, invariant 6). `run_assay` starts a run of a
+  *configured* subject and refuses while `runner.enabled` is false.
+- **Since 2026-08-22 the surface also trials uploaded files** (`open_trial`, `run_trial`;
+  REQUIREMENTS §13). That keeps the repo-and-ref property literally — there is no repo, no ref
+  and no `gh` pointed at a caller's URL — while newly letting a caller choose the *content*
+  audited. Stated plainly because it is a real widening: what an upload can ultimately do is
+  get an arbitrary compose installed on a demo bench. The operator's judgement is that this
+  grants nothing an anonymous visitor lacked, the benches being shared, publicly reachable and
+  documented with their credentials. The cost that argument does not cover is local and is
+  bounded by `config.uploads`: per-file and per-session byte caps, and sessions that lapse.
 - `admin_mcp.read_only` narrows it to the six that only report, refusing the seventh rather
   than merely hiding it, and `admin_mcp.token` is a bearer the sidecar can inject
   (`BEACONIFY_AUTH`) so nothing calling through Beacon ever holds it.

@@ -27,6 +27,7 @@ const ENV = [
   'TOUCHSTONE_BROWSER_URL',
   'TOUCHSTONE_POOL_URL',
   'TOUCHSTONE_BOARD_URL',
+  'TOUCHSTONE_PUBLIC_BASE_URL',
 ];
 
 beforeEach(async () => {
@@ -95,5 +96,50 @@ describe('ensureConfigFile', () => {
     const raw = await fs.readFile(path.join(dir, 'config.yaml'), 'utf8');
     expect(raw).toContain('Seeded on first boot');
     expect(raw).toContain('direct | beacon');
+  });
+});
+
+/**
+ * The blocks added for upload trials, held to the same rule as everything above.
+ *
+ * `trials.public_base_url` is the one that would fail quietly. Seed a literal for it and the
+ * `TOUCHSTONE_PUBLIC_BASE_URL` a container sets is overridden from first boot onward — and the
+ * symptom is not an error, it is every trial recording its functional section blocked, which
+ * reads exactly like the documented "a trial cannot install" behaviour it replaced.
+ */
+describe('the blocks upload trials added', () => {
+  it('seeds the environment it was given, not a literal', async () => {
+    process.env.TOUCHSTONE_PUBLIC_BASE_URL = 'https://touchstone-lab.example';
+    await ensureConfigFile(dir);
+
+    const cfg = await loadConfig(dir);
+    expect(cfg.trials.public_base_url).toBe('https://touchstone-lab.example');
+
+    // And the file itself carries it, so an operator reading config.yaml sees the truth.
+    const raw = await fs.readFile(path.join(dir, 'config.yaml'), 'utf8');
+    expect(raw).toContain('https://touchstone-lab.example');
+  });
+
+  it('strips a trailing slash, so the built store URL never doubles one', async () => {
+    process.env.TOUCHSTONE_PUBLIC_BASE_URL = 'https://touchstone-lab.example/';
+    await ensureConfigFile(dir);
+    expect((await loadConfig(dir)).trials.public_base_url).toBe('https://touchstone-lab.example');
+  });
+
+  it('is empty by default, which keeps trials static-only rather than half-configured', async () => {
+    delete process.env.TOUCHSTONE_PUBLIC_BASE_URL;
+    await ensureConfigFile(dir);
+    expect((await loadConfig(dir)).trials.public_base_url).toBe('');
+  });
+
+  it('round-trips the upload caps through the seeded file', async () => {
+    await ensureConfigFile(dir);
+    const cfg = await loadConfig(dir);
+    expect(cfg.uploads.max_file_bytes).toBeGreaterThan(0);
+    expect(cfg.uploads.max_total_bytes).toBeGreaterThanOrEqual(cfg.uploads.max_file_bytes);
+    expect(cfg.uploads.ttl_min).toBeGreaterThan(0);
+    // A sibling of trials/, never inside it — a trial's own directory is scanned as reports.
+    expect(cfg.uploadsRoot).toBe(path.join(dir, 'uploads'));
+    expect(cfg.uploadsRoot.startsWith(cfg.trialsRoot)).toBe(false);
   });
 });
