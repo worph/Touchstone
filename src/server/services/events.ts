@@ -174,7 +174,7 @@ interface EventDetails {
   REGISTRY_REFRESHED: { count: number; origin?: string };
   REGISTRY_RECOVERED: { count: number; origin?: string };
   REGISTRY_FAILED: { error: string; live: boolean; origin?: string };
-  TRIAL_STARTED: { slug: string; repo: string; ref: string; subject: string };
+  TRIAL_STARTED: { slug: string; source: string; subject: string };
   TRIAL_COMPLETED: {
     slug: string;
     subject: string;

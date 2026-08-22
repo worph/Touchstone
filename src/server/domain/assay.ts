@@ -153,13 +153,14 @@ export function blockedSectionAssay(input: {
         ? 'no demo instance was usable — the pool was unreachable, mid-cleanup, or too close to its daily wipe'
         : reason === 'store_unreachable'
           ? 'the store this app comes from could not be read, so there was nothing to audit against'
-          : reason === 'store_not_installable'
+          : reason === 'store_url_unconfigured'
             ? // The whole justification lives here rather than in a code comment, because the
               // blocked report IS where somebody reading a trial result asks the question.
-              `this is a trial of ${repoOf(input.subjectRef)}, but a demo instance installs from its own ` +
-              'catalogue, which serves the store that instance is configured with rather than the ref ' +
-              'under trial — so a functional result would be about the store\'s own branch while ' +
-              "carrying this ref's name, which is worse than no result"
+              'a demo instance installs from a store it fetches over the public internet, and ' +
+              'Touchstone has not been told its own external address — set `trials.public_base_url` ' +
+              'in config.yaml and this section will run. It is not a statement about the app, and ' +
+              'not a limitation of trials: with that one setting a trial serves the exact archive ' +
+              'it audited, so the bytes installed and the bytes judged are the same'
             : `a prerequisite of this section was unavailable (${reason})`;
 
   return {

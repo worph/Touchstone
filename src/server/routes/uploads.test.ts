@@ -209,13 +209,14 @@ describe('the parser swap stays inside this plugin', () => {
 });
 
 /**
- * The store zip — the one address here a demo bench on the public internet fetches.
+ * The store zip a session produces.
  *
- * Its layout is the whole reason this works without knowing Maison's unzip internals: Maison's
+ * Serving it is no longer this plugin's job — a trial saves its own copy and serves that, so
+ * the bench installs the archive that was audited rather than whatever the session holds by
+ * the time it is asked (see `routes/trials.ts`). What is still owned here is the *shape*, and
+ * that shape is the whole reason this works without knowing Maison's unzip internals: Maison's
  * own default store is a GitHub archive, which always wraps everything in one `<repo>-<ref>/`
- * directory, so reproducing that shape is correct whether Maison strips a level or globs for
- * `Apps/`. The headers matter for a different reason — this origin also serves the SSO-gated
- * operator UI, and bytes somebody uploaded must never be sniffed into HTML there.
+ * directory, so reproducing it is correct whether Maison strips a level or globs for `Apps/`.
  */
 describe('the store zip', () => {
   it('wraps the files the way a GitHub archive does', async () => {
@@ -224,13 +225,7 @@ describe('the store zip', () => {
     await put(instance, session.token, 'docker-compose.yml', 'name: claude\n');
     await put(instance, session.token, 'icon.png', Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-    const res = await instance.inject({
-      method: 'GET',
-      url: `/api/v1/trialstore/${session.token}.zip`,
-    });
-    expect(res.statusCode).toBe(200);
-
-    const entries = unzipSync(new Uint8Array(res.rawPayload));
+    const entries = unzipSync(new Uint8Array(await uploads.zipStore(session)));
     const names = Object.keys(entries).sort();
 
     // Exactly one top-level directory, and the app under `Apps/<Subject>/` inside it.
@@ -248,7 +243,7 @@ describe('the store zip', () => {
     expect([...icon!]).toEqual([0x89, 0x50, 0x4e, 0x47]);
   });
 
-  it('serves it so it can never be rendered or cached', async () => {
+  it('no longer answers on the uploads plugin, so there is one place a store is served', async () => {
     const { instance, uploads } = await serve();
     const session = await uploads.create({ subject: 'ClaudeCode', repo: 'Yundera/AppStore' });
     await put(instance, session.token, 'docker-compose.yml', 'name: claude\n');
@@ -257,32 +252,6 @@ describe('the store zip', () => {
       method: 'GET',
       url: `/api/v1/trialstore/${session.token}.zip`,
     });
-    expect(res.headers['content-type']).toContain('application/zip');
-    expect(res.headers['content-disposition']).toContain('attachment');
-    expect(res.headers['x-content-type-options']).toBe('nosniff');
-    expect(res.headers['cache-control']).toBe('no-store');
-  });
-
-  it('is 404 for an unknown token, a lapsed one, and anything not shaped like one', async () => {
-    let clock = new Date('2026-08-22T10:00:00Z');
-    const { instance, uploads } = await serve(() => clock);
-    const session = await uploads.create({ subject: 'ClaudeCode', repo: 'Yundera/AppStore' });
-    await put(instance, session.token, 'docker-compose.yml', 'name: claude\n');
-
-    const unknown = await instance.inject({ method: 'GET', url: '/api/v1/trialstore/nope.zip' });
-    expect(unknown.statusCode).toBe(404);
-
-    const wrongShape = await instance.inject({
-      method: 'GET',
-      url: `/api/v1/trialstore/${session.token}`,
-    });
-    expect(wrongShape.statusCode).toBe(404);
-
-    clock = new Date('2026-08-22T11:30:00Z');
-    const lapsed = await instance.inject({
-      method: 'GET',
-      url: `/api/v1/trialstore/${session.token}.zip`,
-    });
-    expect(lapsed.statusCode).toBe(404);
+    expect(res.statusCode).toBe(404);
   });
 });

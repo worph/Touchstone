@@ -1,5 +1,5 @@
 /**
- * Trials — would this branch pass?
+ * Trials — would this store pass?
  *
  * The question this page exists for is asked *before* a merge, about code that is not in the
  * store yet. Every other screen in the app is about what a subject carries; this one is about
@@ -7,12 +7,17 @@
  * does not look, and the page has to keep saying so — a verdict that looks like the others but
  * quietly means something else is worse than no verdict.
  *
- * Two things it must be honest about, because both are surprising:
+ * **One input, matching the API.** A trial names a store zip and an app inside it — a GitHub
+ * branch archive is one, and an upload session (MCP only, for the no-commit fix loop) produces
+ * another. The form does not ask for a repo: the rubric anchor is resolved from the configured
+ * origins, because whose `CONTRIBUTING.md` applies is a property of the store, not of the
+ * branch under trial.
  *
- * - **The functional section is always blocked**, and not because anything is broken. A demo
- *   bench installs from its own catalogue, which serves whatever store that instance points at
- *   rather than the ref under trial — so a functional result would be about `main` while
- *   carrying the branch's name. The row says this rather than showing a bare `blocked`.
+ * Two things it must be honest about:
+ *
+ * - **A trial is a full audit**, static and functional both — Touchstone serves the exact
+ *   archive it audited and the bench installs that. The one exception is an installation with
+ *   no external address configured, and the row says so rather than showing a bare `blocked`.
  * - **Nothing here moves a hallmark.** The comparison column is the subject's *current*
  *   verdict, unchanged and unaffected by anything on this page.
  */
@@ -59,9 +64,9 @@ function ComparisonRow({ row }: { row: TrialComparison }) {
         )}
         {blockedForStore ? (
           <div className="trial-why">
-            Not a fault. A demo instance installs from its own catalogue, which serves the store
-            it is configured with rather than this ref — so a functional result would be about
-            the store’s own branch while carrying this ref’s name.
+            Not a fault, and not a limit of trials. A demo instance fetches the store over the
+            public internet, and this Touchstone has no external address configured — set{' '}
+            <code>trials.public_base_url</code> and this section runs.
           </div>
         ) : null}
       </td>
@@ -102,7 +107,7 @@ function TrialDetail({ slug, onGone }: { slug: string; onGone: () => void }) {
       <div className="trial-head">
         <div>
           <div className="trial-ref">
-            {t.repo}@{t.ref}:{t.apps_path}/{t.subject}
+            {t.apps_path}/{t.subject} <span className="dim">from {t.source_url}</span>
           </div>
           <div className="dim">
             {t.finished_at ? `finished ${ageLabel(0)}` : 'running'}
@@ -159,8 +164,7 @@ export default function Trials() {
   const [nonce, setNonce] = useState(0);
   const list = useAsync(() => getTrials(), [nonce]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [repo, setRepo] = useState('');
-  const [ref, setRef] = useState('');
+  const [storeUrl, setStoreUrl] = useState('');
   const [subject, setSubject] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -171,7 +175,7 @@ export default function Trials() {
     setBusy(true);
     setError(null);
     try {
-      const { trial } = await startTrial({ repo: repo.trim(), ref: ref.trim(), subject: subject.trim() });
+      const { trial } = await startTrial({ store_url: storeUrl.trim(), subject: subject.trim() });
       setSelected(trial.slug);
       setNonce((n) => n + 1);
     } catch (err) {
@@ -179,36 +183,27 @@ export default function Trials() {
     } finally {
       setBusy(false);
     }
-  }, [repo, ref, subject]);
+  }, [storeUrl, subject]);
 
   return (
     <div className="page">
       <div className="page-head">
         <h1>Trials</h1>
         <p className="page-sub">
-          Audit a ref before it is merged. A trial runs the same protocol against the repository
+          Audit a store before it is merged. A trial runs the whole protocol against the archive
           you name and is filed on its own — it never changes what an app currently carries, and
           it never enters the audit queue.
         </p>
       </div>
 
       <div className="card trial-form">
-        <label>
-          <span>Repository</span>
+        <label className="trial-form-wide">
+          <span>Store zip</span>
           <input
             className="control"
-            value={repo}
-            onChange={(e) => setRepo(e.target.value)}
-            placeholder="Owner/AppStore"
-          />
-        </label>
-        <label>
-          <span>Ref</span>
-          <input
-            className="control"
-            value={ref}
-            onChange={(e) => setRef(e.target.value)}
-            placeholder="pr-812"
+            value={storeUrl}
+            onChange={(e) => setStoreUrl(e.target.value)}
+            placeholder="https://github.com/Owner/AppStore/archive/refs/heads/pr-812.zip"
           />
         </label>
         <label>
@@ -220,27 +215,18 @@ export default function Trials() {
             placeholder="Widget"
           />
         </label>
-        <button className="btn btn--primary" disabled={busy || !repo || !ref || !subject} onClick={() => void submit()}>
+        <button className="btn btn--primary" disabled={busy || !storeUrl || !subject} onClick={() => void submit()}>
           {busy ? 'Starting…' : 'Run trial'}
         </button>
       </div>
 
       {error ? <Notice tone="warn" title="The trial did not start">{error}</Notice> : null}
 
-      {/* Said once, here, rather than repeated on every row: the compose-level checks are the
-          whole of a trial, and that is a property of how apps are installed rather than a
-          shortcoming of this run. */}
-      <Notice tone="info" title="Compose-level checks only">
-        Installing the app would use a demo instance’s own catalogue, which serves the store it
-        is configured with rather than the ref under trial, so the functional section is
-        recorded as not run.
-      </Notice>
-
       {list.loading ? <Loading what="trials" /> : null}
       {!list.loading && trials.length === 0 ? (
         <EmptyState
           title="No trials yet"
-          sub="Name a repository, a ref and an app above to audit a branch before it is merged."
+          sub="Name a store zip and an app above to audit it before it is merged."
         />
       ) : null}
 
@@ -254,7 +240,7 @@ export default function Trials() {
               onClick={() => setSelected(t.slug)}
             >
               <span className="env-name">
-                {t.subject} <span className="dim">{t.repo}@{t.ref}</span>
+                {t.subject} <span className="dim">{t.upload_id ? `upload ${t.upload_id}` : t.source_url}</span>
               </span>
               <span className="env-status">
                 {t.outcome === 'verdict' ? t.verdict : (t.outcome ?? 'running')}

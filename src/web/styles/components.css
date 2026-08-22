@@ -1202,6 +1202,9 @@
   padding: 14px 18px;
 }
 .trial-form label { display: flex; flex-direction: column; gap: 4px; min-width: 150px; flex: 1 1 150px; }
+/* A store URL is a GitHub archive link — long enough that a 150px share of the row truncates
+   it to uselessness, so it takes the whole line and the app name sits under it. */
+.trial-form-wide { flex: 1 1 100% !important; }
 .trial-form label > span {
   font: 600 10.5px/1 var(--sans);
   letter-spacing: 0.09em;

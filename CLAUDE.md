@@ -22,9 +22,9 @@ assay file; `static` and `functional` today, but the set is whatever `data/proto
 declares), **alert** (a deduplicated environment condition), **origin** (an app store — one
 `{repo, ref, apps_path}` a subject comes from, labelled "Store" in the UI; **not** `store/`,
 which is the filesystem layer, and **not** `AssayStore`, which is the read interface the routes
-take), **trial** (a one-shot audit of an arbitrary ref — or, since 2026-08-22, of files uploaded
-straight into a session — written under `data/trials/` and never read by the report index, so
-it cannot move a hallmark), **board** (the read-only public view of
+take), **trial** (a one-shot audit of **one store zip and one app inside it** — a GitHub branch
+archive, or files uploaded straight into a session — written under `data/trials/` and never read
+by the report index, so it cannot move a hallmark), **board** (the read-only public view of
 every subject's hallmark, at `/public`, addressed to app authors rather than to the operator).
 
 A subject's identity is `<origin>~<name>` — `yundera~FileBrowser`. The separator is `~` because
@@ -98,8 +98,9 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile` |
 | `protocols/*.md` | **the rubric itself**, the definition of the sections, and the version every assay records: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads. There is no separate `standards/` — a second file could only disagree with the rubric it versioned |
 | `reports/<origin>/<Subject>/<ISO>-<section>.md` | **the assay record IS the frontmatter of the report file**. The origin level is a namespace, not a uniqueness rule: two stores may both ship a `FileBrowser` |
-| `trials/<slug>/<Subject>/<ISO>-<section>.md` | a **trial** — the same run against an arbitrary ref, or against files uploaded into a session, written where the report index never looks, so it cannot move a hallmark or enter the backlog. The slug doubles as a synthetic origin, so the path machinery is unchanged |
-| `uploads/<id>/` | the files an upload trial audits. A sibling of `trials/`, never inside it: a trial's own directory is scanned as a report tree |
+| `trials/<slug>/<Subject>/<ISO>-<section>.md` | a **trial** — the same run against a store zip, written where the report index never looks, so it cannot move a hallmark or enter the backlog. The slug doubles as a synthetic origin, so the path machinery is unchanged |
+| `trials/<slug>/store.zip` | that trial's own copy of the archive it audited, re-served at `/api/v1/trialstore/<store_token>.zip` for the bench to install. Inside the trial's directory because the index only ever picks up `*.md`, so it is invisible to it and dies with the trial |
+| `uploads/<id>/` | a session's files, which a trial zips into a store. A sibling of `trials/`, never inside it: a trial's own directory is scanned as a report tree |
 | `state/*.json`, `events.jsonl` | small mutable runtime state and the append-only log |
 | `state/index.json` | cache only — deleting it must always be safe |
 
@@ -157,10 +158,22 @@ because its data access was smeared through two 200-line n8n Code nodes.
   `onRoute` hook throws at boot on any verb but GET/HEAD — and it composes nothing of its own:
   `hallmarks()` and `buildFixReport()`, the same functions the operator routes call. There is no
   public report-file endpoint, so it hands out no address it will not serve.
-- **`store/trials.ts` + `routes/trials.ts`** — trials. Input is validated at the route because
-  `repo`/`ref` reach a prompt the agent runs `gh` against; the index over them is built per
-  request with `cacheFile: null`, because `defaultCacheFile()` resolves to the *same* path for
-  `data/reports` and `data/trials`.
+- **`store/trials.ts` + `routes/trials.ts` + `services/trialrun.ts` + `services/trialstore.ts`** —
+  trials. **One input**: a store zip and an app inside it. An upload session is a way of
+  *producing* that zip rather than a second kind of trial, so past `buildSpec` there is one
+  record, one slug and one pipeline. A store zip is both halves of an audit at once — the files
+  the static section reads and the bytes the bench installs — which is why the collapse also
+  removed a correctness problem: a ref trial used to read its bytes from a place the bench never
+  installed from. Every trial saves the archive it fetched and serves *that*, so Maison's
+  in-process store cache can never hold an older copy (the URL is minted per trial). The index
+  over trials is built per request with `cacheFile: null`, because `defaultCacheFile()` resolves
+  to the *same* path for `data/reports` and `data/trials`.
+  `services/trialstore.ts` is **the only place Touchstone dereferences a caller-chosen URL**, so
+  it is the only place with a host allowlist (GitHub archives + `trials.public_base_url`), a
+  re-check at every redirect hop, and a byte cap enforced on what arrived rather than on what
+  `content-length` claimed. Widening that allowlist turns "audit this store" into a request
+  forgery primitive, because `run_trial` is reachable from an admin MCP that authenticates
+  nobody.
 - **`services/ports.ts`** — probes the two non-bench dependencies (agent, browser) by `tools/list`
   over MCP. `services/bench.ts` keeps its own prober because the bench pool is **discovered** from
   the pool API, not configured.

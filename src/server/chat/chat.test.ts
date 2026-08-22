@@ -454,7 +454,7 @@ describe('trialling supplied files', () => {
       running: busy ? { subject: 'yundera~Radarr', started_at: '2026-08-22T09:00:00Z' } : null,
       last: null,
     }),
-    run: async () => ({ kind: 'blocked' as const, reason: 'store_not_installable' }),
+    run: async () => ({ kind: 'blocked' as const, reason: 'store_url_unconfigured' }),
   });
 
   async function wiring(opts: { busy?: boolean } = {}) {
@@ -529,11 +529,11 @@ describe('trialling supplied files', () => {
     expect(res.text).toContain('get_trial');
 
     const [record] = trials.list();
-    expect(record?.kind).toBe('upload');
     expect(record?.upload_id).toBe(session.id);
-    // The slug says what it is. `Yundera-AppStore@main-…` would read as a trial of the
-    // store's own main branch, which is the one thing this is not.
-    expect(record?.slug.startsWith('upload@')).toBe(true);
+    // Provenance is a field, not a slug shape: one kind of trial, one kind of slug, named for
+    // the app it is about.
+    expect(record?.source_url).toBe(`upload:${session.id}`);
+    expect(record?.slug.startsWith('OpenClaw@')).toBe(true);
   });
 
   it('reports the run in progress instead of queueing behind it', async () => {
@@ -552,11 +552,10 @@ describe('trialling supplied files', () => {
   it('reads back a trial, and keeps it separate from what the app carries', async () => {
     const { ctx, trials } = await wiring();
     await trials.add({
-      slug: 'upload@abc123-2026-08-22T10-00-00-000Z',
-      kind: 'upload',
+      slug: 'OpenClaw@abc123ff-2026-08-22T10-00-00-000Z',
+      source_url: 'upload:abc123',
       upload_id: 'abc123',
       repo: 'Yundera/AppStore',
-      ref: 'main',
       apps_path: 'Apps',
       subject: 'OpenClaw',
       compare_to: 'yundera~OpenClaw',
@@ -584,11 +583,10 @@ describe('trialling supplied files', () => {
   it('says a trial is still going rather than reporting an absent verdict', async () => {
     const { ctx, trials } = await wiring();
     await trials.add({
-      slug: 'upload@def456-2026-08-22T10-00-00-000Z',
-      kind: 'upload',
+      slug: 'OpenClaw@def456ff-2026-08-22T10-00-00-000Z',
+      source_url: 'upload:def456',
       upload_id: 'def456',
       repo: 'Yundera/AppStore',
-      ref: 'main',
       apps_path: 'Apps',
       subject: 'OpenClaw',
       started_at: '2026-08-22T10:00:00Z',

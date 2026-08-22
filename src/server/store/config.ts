@@ -181,11 +181,15 @@ export interface TouchstoneConfig {
   /**
    * Trials, and the one thing a trial cannot work out for itself.
    *
-   * A demo bench installs from a store zip it fetches **over the public internet**, so for the
-   * functional section of a trial to run at all, Touchstone has to know its own external
-   * address. It cannot infer one: the request that starts a trial arrives on the internal
-   * network under a service name no bench can resolve. Empty means trials stay static-only,
-   * which is what they were before this existed and is a correct, self-explaining state.
+   * A trial saves the archive it audited and serves it back for a bench to install, which is
+   * what makes the bytes judged and the bytes running the same thing. The bench fetches it
+   * **over the public internet**, so Touchstone has to know its own external address, and it
+   * cannot infer one: the request that starts a trial arrives on the internal network under a
+   * service name no bench can resolve.
+   *
+   * Empty means trials stay static-only. Since 2026-08-22 that is the **only** reason a trial
+   * is not a full audit — it is recorded `store_url_unconfigured` and the blocked report names
+   * this setting, rather than describing a limitation of trials.
    */
   trials: {
     /** e.g. `https://touchstone-yunderalabs.nsl.sh`. No trailing slash. */
@@ -501,16 +505,21 @@ admin_mcp:
 
 # ── trials ──────────────────────────────────────────────────────────────────────────────
 # Touchstone's own address, as a demo bench on the public internet would reach it — e.g.
-# https://touchstone-<your domain>. Needed only so the functional section of a trial can hand
-# a bench a store to install from; Touchstone cannot infer it, because the request that starts
-# a trial arrives on the internal network. Left empty, trials run their static sections and
-# record the rest blocked, which is what they did before this setting existed.
+# https://touchstone-<your domain>. A trial saves the archive it audited and serves it back
+# here for the bench to install, which is what makes the bytes judged and the bytes running the
+# same thing. Touchstone cannot infer it: the request that starts a trial arrives on the
+# internal network under a service name no bench can resolve.
+#
+# LEAVE IT EMPTY AND TRIALS ARE STATIC-ONLY — the functional section records
+# store_url_unconfigured and the blocked report names this setting. That is the only
+# remaining reason a trial is not a full audit.
 trials:
   public_base_url: "${cfg.trials.public_base_url}"
 
 # ── upload sessions ─────────────────────────────────────────────────────────────────────
-# The files a trial audits when there is no ref to fetch them from. A session is opened by
-# open_trial, written to with PUT /api/v1/uploads/<token>/<path>, and expires on its own.
+# One of the two ways to name a store: PUT an app's files into a session and the trial zips
+# them, so the fix loop needs no commit and no push. The other way is a store zip URL, which
+# must be a GitHub archive — see services/trialstore.ts for why that allowlist exists.
 # These caps are about disk on this box, not about what an upload may contain.
 uploads:
   max_file_bytes: ${cfg.uploads.max_file_bytes}

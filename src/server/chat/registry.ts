@@ -49,7 +49,7 @@ import type { PortProber } from '../services/ports.js';
 import type { BenchProber } from '../services/bench.js';
 import {
   dispatchTrial,
-  specFromUpload,
+  buildSpec,
   trialIndex,
   trialsReady,
   type TrialRunDeps,
@@ -648,13 +648,22 @@ export const CHAT_TOOLS: ChatTool[] = [
     name: 'run_trial',
     writes: true,
     description:
-      'Audit the files in an upload session. Returns as soon as the audit has STARTED — it takes minutes, far longer than this conversation will wait, so do not expect a verdict here and do not call it twice hoping for one; call `get_trial` afterwards. The result is written where the report index never looks, so **a trial can never move what an app currently carries** and never enters the backlog. Only the static sections run: judging whether an app installs needs a demo instance serving these files, which a trial has no way to arrange, and that section is recorded blocked rather than guessed at.',
+      'Audit a candidate store — either the files in an upload session, or a store zip at a URL (a GitHub branch or tag archive). Returns as soon as the audit has STARTED — it takes minutes, far longer than this conversation will wait, so do not expect a verdict here and do not call it twice hoping for one; call `get_trial` afterwards. The result is written where the report index never looks, so **a trial can never move what an app currently carries** and never enters the backlog. It runs the FULL protocol, static and functional both: Touchstone serves the exact archive it audited and the demo instance installs that, so the bytes judged and the bytes running are the same. The functional half is skipped only when this installation has no external address configured, and the blocked report says so.',
     inputSchema: {
       type: 'object',
       properties: {
-        upload: { type: 'string', description: 'The session id open_trial returned.' },
+        upload: { type: 'string', description: 'The session id open_trial returned. Use this OR store_url.' },
+        store_url: {
+          type: 'string',
+          description:
+            'A store zip to audit instead — e.g. https://github.com/<owner>/<repo>/archive/refs/heads/<branch>.zip . Must be a GitHub archive; anything else is refused.',
+        },
+        subject: {
+          type: 'string',
+          description: 'The app inside that store. Required with store_url; taken from the session otherwise.',
+        },
+        apps_path: { type: 'string', description: 'Where apps live in that store. Defaults to Apps.' },
       },
-      required: ['upload'],
     },
     handler: async (input, ctx) => {
       const deps = ctx.trials;
@@ -674,12 +683,12 @@ export const CHAT_TOOLS: ChatTool[] = [
       }
 
       const at = new Date().toISOString();
-      const built = await specFromUpload(deps.uploads, String(input.upload ?? '').trim(), at, deps.publicBaseUrl);
+      const built = await buildSpec(deps, input, at);
       if (!built.ok) return failed(built.error);
 
-      const record = await dispatchTrial(deps, built.spec, at);
+      const record = await dispatchTrial(deps, built.spec, at, built.compare_to);
       return ok(
-        `Trial ${record.slug} has started on the files in session ${record.upload_id} — ${record.subject}, judged as ${record.repo}@main. It takes minutes. Call get_trial with that id for the result.`,
+        `Trial ${record.slug} has started — ${record.subject} from ${record.source_url}, judged as ${record.repo}@main. It takes minutes. Call get_trial with that id for the result.`,
       );
     },
   },
@@ -705,10 +714,9 @@ export const CHAT_TOOLS: ChatTool[] = [
         return failed(wanted ? `There is no trial called "${wanted}".` : 'No trial has been run yet.');
       }
 
-      const what =
-        record.kind === 'upload'
-          ? `uploaded files (session ${record.upload_id})`
-          : `${record.repo}@${record.ref}`;
+      const what = record.upload_id
+        ? `uploaded files (session ${record.upload_id})`
+        : record.source_url;
       const lines = [`Trial ${record.slug} — ${record.subject} from ${what}, started ${record.started_at}.`];
 
       if (!record.finished_at) {

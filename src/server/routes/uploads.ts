@@ -111,37 +111,6 @@ const routes: FastifyPluginAsync<UploadRoutesOptions> = async (app, options) => 
     },
   );
 
-  /**
-   * The session as a store zip, for a demo bench to install from.
-   *
-   * **This is the one address here meant to be fetched from outside the box**, because the
-   * thing fetching it is a demo instance on the public internet with no credentials of ours.
-   * The token in the path is the whole guard, which is the same guard the write routes use.
-   *
-   * Deliberately *not* under `/public`. That prefix is the board an app author is sent to and
-   * it "hands out no address it will not serve" — putting caller-supplied bytes in its
-   * namespace would muddy exactly the property that makes publishing it safe. This lives
-   * under `/api/v1` with everything else and is exempted from the gate by name.
-   *
-   * The three headers are not decoration. Touchstone's origin also serves the SSO-gated
-   * operator UI, so bytes somebody uploaded must never be sniffed into HTML and rendered
-   * there; and a store zip that got cached would reintroduce the staleness this whole feature
-   * exists to remove.
-   */
-  app.get<{ Params: { file: string } }>('/trialstore/:file', async (request, reply) => {
-    const named = /^([A-Za-z0-9_-]+)\.zip$/.exec(request.params.file);
-    if (!named) return fail(reply, 404, 'no such trial store');
-    const found = store.byToken(named[1]!);
-    if (!found) return fail(reply, 404, 'no such trial store');
-
-    return reply
-      .type('application/zip')
-      .header('content-disposition', `attachment; filename="${found.subject}-trial.zip"`)
-      .header('x-content-type-options', 'nosniff')
-      .header('cache-control', 'no-store')
-      .send(await store.zipStore(found));
-  });
-
   app.delete<{ Params: { token: string; '*': string } }>(
     '/uploads/:token/*',
     async (request, reply) => {

@@ -660,11 +660,14 @@ describe('a store that cannot be read', () => {
  * first half is already covered by every other test in this file.
  */
 describe('a trial', () => {
-  const SLUG = 'Acme-AppStore@pr-812-2026-08-20T19-00-00Z';
+  const SLUG = 'Tuwunel@a1b2c3d4-2026-08-20T19-00-00Z';
   const TRIAL = {
     repo: 'Acme/AppStore',
-    ref: 'pr-812',
     apps_path: 'Apps',
+    // Always present: a trial resolves to a store zip before it reaches the runner, and these
+    // are the app's files read out of that zip.
+    source: { files: ['docker-compose.yml'], compose: 'services: {}\n', rationale: null },
+    store_url: 'https://ts.example/api/v1/trialstore/tok.zip',
   };
 
   function trialJob(root: string) {
@@ -673,6 +676,12 @@ describe('a trial', () => {
       try_n: 1,
       trial: { ...TRIAL, root },
     };
+  }
+
+  /** The same job with no address to serve its store from — the one degraded case left. */
+  function unservableJob(root: string) {
+    const { store_url: _dropped, ...rest } = TRIAL;
+    return { subject: subjectKey(SLUG, 'Tuwunel'), try_n: 1, trial: { ...rest, root } };
   }
 
   it('writes under its own root and leaves the archive untouched', async () => {
@@ -700,46 +709,34 @@ describe('a trial', () => {
     expect(upserted).toEqual([]);
   });
 
-  it('records the functional section blocked, and says why in the report', async () => {
+  it('blocks the functional section only when it has no address to serve its store from', async () => {
     const root = path.join(dir, 'trials', SLUG);
-    await make().run(trialJob(root));
+    await make({ prober: proberOf(['https://demostaging1.example']) }).run(unservableJob(root));
 
     const d = path.join(root, SLUG, 'Tuwunel');
     const fn = (await fs.readdir(d)).find((f) => f.endsWith('-functional.md'))!;
     const body = await fs.readFile(path.join(d, fn), 'utf8');
 
     expect(body).toContain('status: blocked');
-    expect(body).toContain('blocked_reason: store_not_installable');
+    expect(body).toContain('blocked_reason: store_url_unconfigured');
     // Never a verdict. `blocked` is a statement about the environment, and a trial that scored
-    // the app on an install of `main` would be attributing a result to the wrong code.
+    // the app on an install of something else would be attributing a result to the wrong code.
     expect(body).toContain('verdict: null');
-    // The justification lives in the artefact, because that is where somebody asks.
-    expect(body).toContain('installs from its own');
-  });
-
-  it('is static-only even when a bench and a browser are available', async () => {
-    // Not "no bench today" — the bench pool is healthy in this run. A trial declines it,
-    // because a healthy bench would install the store's own branch, not the ref under trial.
-    const root = path.join(dir, 'trials', SLUG);
-    await make({ prober: proberOf(['https://demostaging1.example']) }).run(trialJob(root));
-
-    const d = path.join(root, SLUG, 'Tuwunel');
-    const staticFile = (await fs.readdir(d)).find((f) => f.endsWith('-static.md'))!;
-    const body = await fs.readFile(path.join(d, staticFile), 'utf8');
-    expect(body).toContain('status: done');
-    expect(body).not.toContain('bench_host:');
+    // The justification lives in the artefact, because that is where somebody asks — and it
+    // must name the setting, since that is the whole of the remedy.
+    expect(body).toContain('trials.public_base_url');
   });
 
   /**
-   * The other half of the same rule, added 2026-08-22.
+   * The rule that replaced `store_not_installable`, 2026-08-22.
    *
-   * `store_not_installable` was never "trials cannot install" — it was "a bench installs the
-   * store's own branch, not the thing under trial". Hand the bench a store holding exactly the
-   * thing under trial and the objection is gone, so the section must run rather than block. If
-   * this ever starts blocking again with a store URL present, the condition has been widened
-   * back into a blanket rule and the feature is silently dead.
+   * That block was never "trials cannot install" — it was "a bench installs the store's own
+   * branch, not the thing under trial". Every trial now serves the exact archive it audited, so
+   * the objection is gone and the section must run. If this ever starts blocking again with a
+   * store URL present, the condition has been widened back into a blanket rule and full trials
+   * are silently dead.
    */
-  it('runs the functional section when the trial can serve its own subject', async () => {
+  it('runs the functional section, which is now every trial that can be served', async () => {
     const root = path.join(dir, 'trials', SLUG);
     let sent = '';
     const out = await make({
@@ -751,19 +748,15 @@ describe('a trial', () => {
           return { ok: true, status: 200, text: async () => sse(agentJson()) };
         }) as unknown as typeof fetch,
       },
-    }).run({
-      subject: subjectKey(SLUG, 'Tuwunel'),
-      try_n: 1,
-      trial: { ...TRIAL, root, store_url: 'https://ts.example/api/v1/trialstore/tok.zip' },
-    });
+    }).run(trialJob(root));
 
     expect(out.kind).toBe('verdict');
     // The bench was leased rather than declined, and the agent was told where to install from.
     expect(sent).toContain('trialstore');
-    expect(sent).not.toContain('store_not_installable');
+    expect(sent).not.toContain('store_url_unconfigured');
   });
 
-  it('audits the ref it was given, not the configured store', async () => {
+  it('judges against the rubric anchor it was given, not the configured store', async () => {
     let sent = '';
     await make({
       origins: [{ id: 'yundera', repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' }],
@@ -775,12 +768,14 @@ describe('a trial', () => {
       },
     }).run(trialJob(path.join(dir, 'trials', SLUG)));
 
-    expect(sent).toContain('repo=Acme/AppStore ; ref=pr-812');
+    // `main` unconditionally: a trial audits an archive, not a branch, and `prompt.ts` rebinds
+    // the asset rule for any other value — right for a store pinned to a branch, wrong here.
+    expect(sent).toContain('repo=Acme/AppStore ; ref=main');
     expect(sent).not.toContain('repo=Yundera/AppStore');
   });
 
   it('is not gated on the configured store being reachable', async () => {
-    // A trial reads a repo of its own. Refusing it because the *archive's* store is down would
+    // A trial carries its own bytes. Refusing it because the *archive's* store is down would
     // be checking the wrong thing.
     const out = await make({ storeReachable: () => false }).run(
       trialJob(path.join(dir, 'trials', SLUG)),

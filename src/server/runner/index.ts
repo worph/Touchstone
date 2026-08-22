@@ -65,26 +65,35 @@ export interface RunnerJob {
    * `archived: () => store.subjects()` would make every trial a schedulable subject.
    */
   trial?: {
+    /**
+     * The **rubric anchor**, never a place a byte came from.
+     *
+     * `static.md` resolves the asset rule against `<repo>@main` and reads that repo's
+     * `CONTRIBUTING.md` as the definition of every checklist item, so a run carrying no repo
+     * would throw a false Major on every asset URL and apply a rubric whose terms it could not
+     * look up. The ref is `main` for the same reason and is not a field: a trial audits an
+     * archive, not a branch, and `prompt.ts` rebinds the asset rule for any other value —
+     * which is right for a store pinned to a branch and wrong for a working copy.
+     */
     repo: string;
-    ref: string;
     apps_path: string;
     root: string;
     /**
-     * The app's files, when they were handed to us rather than fetched from `repo@ref`.
+     * The app's files, read out of the store archive this trial audits.
      *
-     * Present, `repo` and `ref` are **nominal**: metadata the rubric still needs (the asset
-     * rule resolves against `<repo>@main` and `CONTRIBUTING.md` is read from it) but not a
-     * place any app content comes from. The bytes below are the subject.
+     * Always present: a trial resolves to a store zip before it reaches here, whatever the
+     * caller named, and that zip is where these come from. It is also where `store_url` points,
+     * so the bytes judged and the bytes installed are the same by construction rather than by
+     * the hand-written compose assertion `functional.md` v6 had to add.
      */
-    source?: { files: string[]; compose: string; rationale?: string | null };
+    source: { files: string[]; compose: string; rationale?: string | null };
     /**
-     * A store zip a bench can install these files from, if there is one.
+     * Where a bench fetches this trial's own copy of that archive.
      *
-     * This is what lifts `store_not_installable`. That block exists because a bench installs
-     * from its own catalogue, which serves whatever store the box is pointed at rather than
-     * the thing under trial — so a functional result would be about `main` while carrying the
-     * trial's name. Hand the bench a store containing exactly these files and the objection
-     * disappears, because the two are the same thing.
+     * Absent only when `trials.public_base_url` is unset — Touchstone cannot serve a store it
+     * has no external address for, and the functional section then records
+     * `store_url_unconfigured`. That is the one remaining reason a trial is not a full audit,
+     * and it is a fact about this box's configuration rather than about trials.
      */
     store_url?: string;
   };
@@ -245,7 +254,7 @@ export class Runner {
     const startedAt = this.now().toISOString();
     const { origin, name: appName } = splitSubjectKey(job.subject);
     const store = job.trial
-      ? { id: origin, repo: job.trial.repo, ref: job.trial.ref, apps_path: job.trial.apps_path }
+      ? { id: origin, repo: job.trial.repo, ref: 'main', apps_path: job.trial.apps_path }
       : this.originOf(origin);
     // A trial's reports go where the index does not look; an assay's go to the archive.
     const reportsRoot = job.trial?.root ?? this.opts.reportsRoot;
@@ -295,20 +304,16 @@ export class Runner {
     let browserEndpoint: string | undefined;
     const missing = new Map<string, string>();
 
-    // A trial with nowhere to serve its subject from is static-only, and that falls out of the
-    // machinery that already exists rather than needing a branch of its own: declare the bench
-    // unavailable up front and the partition below records every section that wanted one as
-    // blocked, with this reason, while the rest of the run proceeds. A trial that *can* serve
-    // its subject (`store_url`) skips this and leases a bench like any other run.
+    // A trial that cannot be served has nothing for a bench to install, and that falls out of
+    // the machinery that already exists rather than needing a branch of its own: declare the
+    // bench unavailable up front and the partition below records every section that wanted one
+    // as blocked, with this reason, while the rest of the run proceeds.
     //
-    // The reason is not squeamishness. A bench installs from its own catalogue at
-    // `https://<DEMO>/store`, which serves whatever store that Maison box points at — `main`,
-    // not the ref under trial. A functional result would be about `main` while carrying the
-    // branch's name, which is worse than no result at all.
-    // A trial with nowhere to serve its subject from still cannot be installed — which is the
-    // original reason, not a special case. With a store URL the bench installs exactly what is
-    // under trial, so the capability is available like any other.
-    if (job.trial && !job.trial.store_url) missing.set('bench', 'store_not_installable');
+    // This is now the *only* thing that makes a trial less than a full audit, and it is a fact
+    // about this box rather than about trials: `trials.public_base_url` is unset, so Touchstone
+    // does not know the address a bench on the public internet would fetch its store from. With
+    // it, a trial hands the bench the exact archive it audited and leases like any other run.
+    if (job.trial && !job.trial.store_url) missing.set('bench', 'store_url_unconfigured');
 
     if (wanted.has('bench') && !missing.has('bench')) {
       const leasable = this.opts.prober?.leasable() ?? [];
@@ -390,8 +395,8 @@ export class Runner {
       repo: store.repo,
       ref: store.ref,
       apps_path: store.apps_path,
-      // Only an upload trial has these. Everything else fetches its own subject with `gh`.
-      ...(job.trial?.source ? { source: job.trial.source } : {}),
+      // A trial always supplies its own bytes; an assay fetches the subject with `gh`.
+      ...(job.trial ? { source: job.trial.source } : {}),
       ...(job.trial?.store_url ? { store_url: job.trial.store_url } : {}),
       protocols: {
         ...(plan.orchestrator ? { orchestrator: plan.orchestrator } : {}),

@@ -12,6 +12,8 @@ import path from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { zipSync } from 'fflate';
+
 import { EventLog } from '../services/events.js';
 import { defaultCacheFile } from '../store/index.js';
 import { TrialStore } from '../store/trials.js';
@@ -45,7 +47,28 @@ async function serve(opts: Record<string, unknown>): Promise<FastifyInstance> {
   return instance;
 }
 
-const BODY = { repo: 'Acme/AppStore', ref: 'pr-812', subject: 'Widget' };
+const STORE_URL = 'https://github.com/Acme/AppStore/archive/refs/heads/pr-812.zip';
+const BODY = { store_url: STORE_URL, subject: 'Widget' };
+
+/** A store zip in GitHub's shape — one wrapper directory, then `Apps/<App>/`. */
+function storeZip(app = 'Widget'): Buffer {
+  return Buffer.from(
+    zipSync({
+      [`AppStore-pr-812/Apps/${app}/docker-compose.yml`]: new TextEncoder().encode('services: {}\n'),
+    }),
+  );
+}
+
+/** Serves that zip to whatever asks, so no test reaches GitHub. */
+function fetchOf(zip: Buffer = storeZip()): typeof fetch {
+  return (async () => ({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    headers: new Headers({ 'content-length': String(zip.byteLength) }),
+    arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength),
+  })) as unknown as typeof fetch;
+}
 
 /** Wait for a condition, or fail with what it was still waiting on. */
 async function waitFor(cond: () => boolean, ms = 3000): Promise<void> {
@@ -82,15 +105,15 @@ afterEach(async () => {
 describe('POST /trials', () => {
   it('starts a trial and answers before it finishes', async () => {
     const { runner, jobs } = runnerOf();
-    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events });
+    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events, fetchImpl: fetchOf() });
 
     const res = await app.inject({ method: 'POST', url: '/trials', payload: BODY });
 
     // 202, not 200: an audit takes minutes, and a socket held that long is at the mercy of
     // every proxy between here and the browser.
     expect(res.statusCode).toBe(202);
-    const body = res.json() as { trial: { slug: string; ref: string } };
-    expect(body.trial.ref).toBe('pr-812');
+    const body = res.json() as { trial: { slug: string; source_url: string } };
+    expect(body.trial.source_url).toBe(STORE_URL);
 
     // Poll rather than sleep. `POST /trials` answers 202 and dispatches the run without
     // awaiting it, so a fixed wait is a race that only loses when the suite is busy — which is
@@ -101,20 +124,28 @@ describe('POST /trials', () => {
     // run does, so without this the outcome lands in `trials.json` while `afterEach` is
     // deleting the temp directory — an ENOTEMPTY that reads as a trials bug and is a test one.
     await waitFor(() => trials.get(body.trial.slug)?.outcome !== undefined);
-    const job = jobs[0] as { subject: string; trial: { repo: string; root: string } };
+    const job = jobs[0] as {
+      subject: string;
+      trial: { repo: string; root: string; store_url?: string; source: { compose: string } };
+    };
     // The slug is the synthetic origin, so the path machinery needs no special case.
     expect(job.subject).toBe(`${body.trial.slug}~Widget`);
-    expect(job.trial.repo).toBe('Acme/AppStore');
     expect(job.trial.root).toContain(body.trial.slug);
+    // The app was read out of the archive rather than fetched separately — which is what makes
+    // the bytes judged and the bytes installed the same thing.
+    expect(job.trial.source.compose).toContain('services:');
   });
 
-  it('refuses input that would choose the repository for us', async () => {
+  it('refuses input that would choose what this process fetches', async () => {
     const { runner, jobs } = runnerOf();
-    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events });
+    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events, fetchImpl: fetchOf() });
 
     for (const bad of [
-      { ...BODY, repo: 'not-a-repo' },
-      { ...BODY, ref: '../../etc/passwd' },
+      { ...BODY, store_url: 'not-a-url' },
+      { ...BODY, store_url: 'http://github.com/Acme/AppStore/archive/main.zip' },
+      // The allowlist, reached through the route: a URL that parses but names a host this
+      // process may not be made to GET.
+      { ...BODY, store_url: 'https://169.254.169.254/latest/meta-data.zip' },
       { ...BODY, apps_path: '../secrets' },
       { ...BODY, subject: 'a/b' },
       {},
@@ -129,7 +160,7 @@ describe('POST /trials', () => {
     // The Runner is single-flight process-wide and `RunLedger.live()` assumes one open run.
     // Sharing the instance is what makes that safe; the honest cost is this 409.
     const { runner, jobs } = runnerOf({ busy: true });
-    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events });
+    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events, fetchImpl: fetchOf() });
 
     const res = await app.inject({ method: 'POST', url: '/trials', payload: BODY });
     expect(res.statusCode).toBe(409);
@@ -138,7 +169,7 @@ describe('POST /trials', () => {
 
   it('says the runner is off rather than failing obscurely', async () => {
     const { runner } = runnerOf({ enabled: false });
-    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events });
+    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events, fetchImpl: fetchOf() });
 
     const res = await app.inject({ method: 'POST', url: '/trials', payload: BODY });
     expect(res.statusCode).toBe(409);
@@ -155,7 +186,7 @@ describe('POST /trials', () => {
 describe('GET and DELETE /trials/:slug', () => {
   it('404s an unknown trial and 400s a slug it did not produce', async () => {
     const { runner } = runnerOf();
-    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events });
+    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events, fetchImpl: fetchOf() });
 
     expect((await app.inject({ method: 'GET', url: '/trials/Acme-AppStore@nope' })).statusCode).toBe(404);
     for (const bad of ['..', 'a%2Fb', 'yundera~FileBrowser']) {
@@ -166,10 +197,11 @@ describe('GET and DELETE /trials/:slug', () => {
 
   it('lists trials newest first and can drop one from the list', async () => {
     const { runner } = runnerOf();
-    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events });
+    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events, fetchImpl: fetchOf() });
 
-    await trials.add({ slug: 'A@one', repo: 'A/B', ref: 'one', apps_path: 'Apps', subject: 'X', started_at: '2026-08-20T09:00:00.000Z' });
-    await trials.add({ slug: 'A@two', repo: 'A/B', ref: 'two', apps_path: 'Apps', subject: 'X', started_at: '2026-08-20T10:00:00.000Z' });
+    const at = (t: string) => ({ repo: 'A/B', source_url: 'https://github.com/A/B/archive/main.zip', apps_path: 'Apps', subject: 'X', started_at: t });
+    await trials.add({ slug: 'A@one', ...at('2026-08-20T09:00:00.000Z') });
+    await trials.add({ slug: 'A@two', ...at('2026-08-20T10:00:00.000Z') });
 
     const listed = (await app.inject({ method: 'GET', url: '/trials' })).json() as { trials: { slug: string }[] };
     expect(listed.trials.map((t) => t.slug)).toEqual(['A@two', 'A@one']);
@@ -177,6 +209,57 @@ describe('GET and DELETE /trials/:slug', () => {
     expect((await app.inject({ method: 'DELETE', url: '/trials/A@one' })).statusCode).toBe(200);
     const after = (await app.inject({ method: 'GET', url: '/trials' })).json() as { trials: { slug: string }[] };
     expect(after.trials.map((t) => t.slug)).toEqual(['A@two']);
+  });
+});
+
+/**
+ * The store a trial serves — the one address here a demo bench on the public internet fetches.
+ *
+ * It is the trial's **own copy**, not the caller's URL and not the upload session's live
+ * contents. That is what makes the bytes installed the bytes audited, and it is what makes
+ * Maison's in-process store cache harmless: the token is minted per trial, so the URL has never
+ * been fetched by anything. The headers matter for a different reason — this origin also serves
+ * the SSO-gated operator UI, and bytes somebody supplied must never be sniffed into HTML there.
+ */
+describe('GET /trialstore/:token.zip', () => {
+  it('serves the archive the trial audited, so it can never be rendered or cached', async () => {
+    const { runner } = runnerOf();
+    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events, fetchImpl: fetchOf() });
+
+    const started = await app.inject({ method: 'POST', url: '/trials', payload: BODY });
+    const { trial } = started.json() as { trial: { slug: string; store_token: string } };
+    await waitFor(() => trials.get(trial.slug)?.outcome !== undefined);
+
+    const res = await app.inject({ method: 'GET', url: `/trialstore/${trial.store_token}.zip` });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/zip');
+    expect(res.headers['content-disposition']).toContain('attachment');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['cache-control']).toBe('no-store');
+
+    // Byte-for-byte what was fetched. Anything else and the compose assertion in
+    // `functional.md` would be checking two different things against each other.
+    expect(Buffer.from(res.rawPayload).equals(storeZip())).toBe(true);
+  });
+
+  it('404s an unknown token, a wrong shape, and a trial whose store has been swept', async () => {
+    const { runner } = runnerOf();
+    app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events, fetchImpl: fetchOf() });
+
+    const started = await app.inject({ method: 'POST', url: '/trials', payload: BODY });
+    const { trial } = started.json() as { trial: { slug: string; store_token: string } };
+    await waitFor(() => trials.get(trial.slug)?.outcome !== undefined);
+
+    expect((await app.inject({ method: 'GET', url: '/trialstore/nope.zip' })).statusCode).toBe(404);
+    expect(
+      (await app.inject({ method: 'GET', url: `/trialstore/${trial.store_token}` })).statusCode,
+    ).toBe(404);
+
+    // Deleting the trial takes its store with it — the row and the bytes have one lifetime.
+    await trials.remove(trial.slug);
+    expect(
+      (await app.inject({ method: 'GET', url: `/trialstore/${trial.store_token}.zip` })).statusCode,
+    ).toBe(404);
   });
 });
 
