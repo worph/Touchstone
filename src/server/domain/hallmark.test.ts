@@ -175,3 +175,49 @@ describe('readings do not move the hallmark', () => {
     expect(state.age_days).toBeNull();
   });
 });
+
+describe('hallmarks({ include })', () => {
+  const TRACKED = subjectKey(DEFAULT_ORIGIN, 'Tracked');
+
+  it('composes a row for a subject the archive has never heard of', () => {
+    const rows = hallmarks(FIXTURE_RECORDS, { include: [TRACKED], now: NOW });
+    const row = rows.find((r) => r.name === TRACKED);
+    expect(row).toBeDefined();
+    expect(row?.label).toBe('Tracked');
+    expect(row?.origin).toBe(DEFAULT_ORIGIN);
+    expect(row?.static).toBeNull();
+    expect(row?.functional).toBeNull();
+    expect(row?.age_days).toBeNull();
+    expect(row?.risk).toBe(0);
+  });
+
+  /**
+   * The overlap is the whole list, normally: every audited app is also a tracked one. If the
+   * union deduplicated by identity rather than by key, the Store page would draw every app
+   * twice and React would warn about the duplicate keys rather than anyone noticing the
+   * counts were wrong.
+   */
+  it('does not duplicate a subject that is in both the archive and the registry', () => {
+    const archived = hallmarks(FIXTURE_RECORDS, { now: NOW });
+    const both = hallmarks(FIXTURE_RECORDS, {
+      include: archived.map((r) => r.name),
+      now: NOW,
+    });
+    expect(both.length).toBe(archived.length);
+    expect(both).toEqual(archived);
+  });
+
+  it('leaves the archive-only list untouched when nothing is included', () => {
+    expect(hallmarks(FIXTURE_RECORDS, { now: NOW })).toEqual(
+      hallmarks(FIXTURE_RECORDS, { include: [], now: NOW }),
+    );
+  });
+
+  /** A never-run row has no risk, so it must not displace anything that has one. */
+  it('sorts a never-run subject below every scored one', () => {
+    const rows = hallmarks(FIXTURE_RECORDS, { include: [TRACKED], now: NOW });
+    const at = rows.findIndex((r) => r.name === TRACKED);
+    expect(rows.slice(0, at).every((r) => r.risk >= 0)).toBe(true);
+    expect(rows.filter((r) => r.risk > 0).every((r) => rows.indexOf(r) < at)).toBe(true);
+  });
+});

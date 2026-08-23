@@ -66,11 +66,52 @@ describe('read-only by construction', () => {
 });
 
 describe('GET /public/subjects', () => {
-  it('is the operator table, unchanged', async () => {
+  it('is the operator table, unchanged — same verdicts, same composition', async () => {
     const pub = await get<SubjectState[]>('/api/v1/public/subjects');
     const ops = await get<SubjectState[]>('/api/v1/subjects');
     expect(pub.status).toBe(200);
     expect(pub.body).toEqual(ops.body);
+  });
+
+  /**
+   * The one way the two lists are allowed to differ, and the reason it is a test rather than
+   * a comment.
+   *
+   * The operator's table is the store's inventory: it unions the registry in, so an app that
+   * has never been audited still gets a row and a button. The board is the archive alone —
+   * publishing "we have not looked at this one" to app authors is a backlog with somebody
+   * else's name on it, and it would also invite the reading that a never-run app has been
+   * judged and found wanting.
+   *
+   * The parity test above uses a harness with no registry, so it would go on passing if this
+   * distinction were lost. This one is what actually holds it.
+   */
+  it('does not show what the registry merely tracks — the operator table does', async () => {
+    const withRegistry = Fastify();
+    await withRegistry.register(routes, {
+      prefix: '/api/v1',
+      store: fixtureStore(),
+      registry: { list: () => [subjectKey(DEFAULT_ORIGIN, 'NeverAudited')] } as never,
+    });
+    await withRegistry.ready();
+
+    const ops = (await withRegistry.inject({ method: 'GET', url: '/api/v1/subjects' }))
+      .json() as SubjectState[];
+    const pub = (await withRegistry.inject({ method: 'GET', url: '/api/v1/public/subjects' }))
+      .json() as SubjectState[];
+
+    const row = ops.find((r) => r.label === 'NeverAudited');
+    expect(row).toBeDefined();
+    // A row, and honestly empty: no verdict either way, and nothing to age.
+    expect(row?.static).toBeNull();
+    expect(row?.functional).toBeNull();
+    expect(row?.age_days).toBeNull();
+    expect(row?.risk).toBe(0);
+
+    expect(pub.some((r) => r.label === 'NeverAudited')).toBe(false);
+    expect(pub.length).toBe(ops.length - 1);
+
+    await withRegistry.close();
   });
 
   it('keeps blocked distinguishable from failing, which is the whole point of showing it', async () => {

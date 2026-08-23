@@ -22,6 +22,7 @@ import { Runner } from './runner/index.js';
 import { PortProber } from './services/ports.js';
 import { ensureProtocolFiles, ProtocolStore } from './store/protocols.js';
 import { RevisionStore } from './store/revisions.js';
+import { StoreDocReader } from './services/storedoc.js';
 import { RunLedger } from './services/ledger.js';
 import { outcomeClause, type RunOutcome } from '../shared/activity.js';
 import { subjectName } from '../shared/subject.js';
@@ -194,6 +195,16 @@ const revisions = new RevisionStore(cfg.protocolsDir, {
   },
 });
 await revisions.sweep();
+
+/**
+ * Reading the store's own documents — the contribution guide the rubric is meant to track.
+ *
+ * Constructed here rather than per request because the cache is the point: GitHub is read
+ * unauthenticated and the 60-an-hour budget is shared with the registry refresh, so a
+ * conversation re-reading CONTRIBUTING.md must not be able to make an origin unreachable and
+ * stop the runner dispatching. See `services/storedoc.ts`.
+ */
+const storedoc = new StoreDocReader();
 
 /**
  * Where the agent records requirements while it works. See `services/ledger.ts` — the point
@@ -390,6 +401,18 @@ await app.register(registerRoutes, {
       store,
       events,
       scheduler,
+      /**
+       * The rubric, its history, and the store repo it is supposed to track.
+       *
+       * The same three objects the Protocols page is served from, so an edit made by
+       * conversation is written, recorded and logged exactly as one made in the editor —
+       * `domain/protocoledit.ts` is the single path both take. `storedoc` is what makes
+       * "is this still current?" answerable rather than inferable: it reads the store's own
+       * CONTRIBUTING.md at the ref this instance audits against.
+       */
+      protocols,
+      revisions,
+      storedoc,
       /**
        * The same bundle `POST /trials` uses, so a trial started by conversation is written,
        * logged and dispatched identically to one started over HTTP. `onError` is the only

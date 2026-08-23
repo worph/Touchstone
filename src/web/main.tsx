@@ -16,7 +16,7 @@ import Protocols from './pages/Protocols';
 import Settings from './pages/Settings';
 import Trials from './pages/Trials';
 import AdminChat from './pages/AdminChat';
-import Overview from './pages/Overview';
+import Store from './pages/Store';
 import PublicBoard from './pages/PublicBoard';
 import PublicSubject from './pages/PublicSubject';
 import SubjectDetail from './pages/SubjectDetail';
@@ -44,7 +44,7 @@ createRoot(root).render(
 
         <Route element={<Shell><Outlet /></Shell>}>
           <Route path="/" element={<AdminChat />} />
-          <Route path="/overview" element={<Overview />} />
+          <Route path="/store" element={<Store />} />
           <Route path="/s/:name" element={<SubjectDetail />} />
           <Route path="/activity" element={<Activity />} />
           <Route path="/automation" element={<Automation />} />
@@ -56,10 +56,13 @@ createRoot(root).render(
           <Route path="/settings" element={<Settings />} />
           <Route path="/config" element={<Configuration />} />
           {/* Addresses that used to be somewhere else. `/chat` was the administrator's own
-              page before it became the front door; the other two predate the Overview. */}
+              page before it became the front door; `/overview` is the page this one grew out
+              of, and the other two predate even that. Kept rather than dropped because they
+              are in the operator's history, in the chat's own notes, and in HANDOFF.md. */}
           <Route path="/chat" element={<Navigate to="/" replace />} />
-          <Route path="/subjects" element={<Navigate to="/overview" replace />} />
-          <Route path="/findings" element={<Navigate to="/overview" replace />} />
+          <Route path="/overview" element={<Navigate to="/store" replace />} />
+          <Route path="/subjects" element={<Navigate to="/store" replace />} />
+          <Route path="/findings" element={<Navigate to="/store" replace />} />
           <Route
             path="*"
             element={
@@ -67,7 +70,7 @@ createRoot(root).render(
                 <EmptyState
                   glyph="⌕"
                   title="No such page"
-                  sub="Touchstone has the administrator, the overview, a subject, the protocol, trials, automation, activity and settings."
+                  sub="Touchstone has the administrator, the store, a subject, the protocol, trials, automation, activity and settings."
                 />
               </div>
             }

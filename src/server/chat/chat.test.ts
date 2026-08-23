@@ -19,6 +19,9 @@ import { buildPrompt, dispatch, runTurn } from './loop.js';
 import { ChatThreads } from './thread.js';
 import { renderCatalogue } from './catalogue.js';
 import { CHAT_TOOLS } from './registry.js';
+import { ProtocolStore } from '../store/protocols.js';
+import { RevisionStore } from '../store/revisions.js';
+import { StoreDocReader } from '../services/storedoc.js';
 import { TrialStore } from '../store/trials.js';
 import { UploadStore } from '../store/uploads.js';
 
@@ -691,5 +694,235 @@ describe('trialling supplied files', () => {
     const res = await dispatch({ tool: 'get_trial', input: {} }, ctx);
     expect(res.ok).toBe(true);
     expect(res.text).toContain('has not finished');
+  });
+});
+
+/**
+ * The rubric, and the store it is supposed to track.
+ *
+ * The failure these exist for: asked whether the protocols were still current against the
+ * AppStore's contribution guide, the chat could only infer an answer from clauses that recent
+ * audits happened to quote — an inference about an inference. Reading both sides is the fix;
+ * writing one of them back is what makes "add this point to the protocol" a sentence that
+ * works. What must stay true throughout is that none of it reaches a verdict.
+ */
+describe('the protocol', () => {
+  const STATIC = `---
+id: static
+name: Static Review Protocol
+kind: leaf
+order: 1
+---
+
+# Static Review Protocol
+
+## 4.2 Resource limits
+
+Every service must set cpu_shares.
+
+## 4.3 Permissions
+
+Declare D1 to D5 with a rationale.
+`;
+
+  async function wiring() {
+    const protocolsDir = path.join(dir, 'protocols');
+    await fs.mkdir(protocolsDir, { recursive: true });
+    await fs.writeFile(path.join(protocolsDir, 'static.md'), STATIC, 'utf8');
+
+    const protocols = new ProtocolStore(protocolsDir);
+    const revisions = new RevisionStore(protocolsDir);
+    await revisions.sweep();
+
+    return {
+      protocols,
+      revisions,
+      ctx: { protocols, revisions, events } as never,
+    };
+  }
+
+  it('lists what an audit is made of, and reads one section in full', async () => {
+    const { ctx } = await wiring();
+
+    const menu = await dispatch({ tool: 'get_protocol', input: {} }, ctx);
+    expect(menu.ok).toBe(true);
+    expect(menu.text).toContain('static — Static Review Protocol');
+    // The menu is a menu: it names the section without emptying the rubric into the turn.
+    expect(menu.text).not.toContain('cpu_shares');
+
+    const one = await dispatch({ tool: 'get_protocol', input: { id: 'static' } }, ctx);
+    expect(one.ok).toBe(true);
+    expect(one.text).toContain('cpu_shares');
+  });
+
+  it('names the sections it has rather than answering emptily for one it has not', async () => {
+    const { ctx } = await wiring();
+    const res = await dispatch({ tool: 'get_protocol', input: { id: 'security' } }, ctx);
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('static');
+  });
+
+  it('rewrites one passage, and says what it actually wrote', async () => {
+    const { ctx, protocols } = await wiring();
+
+    const res = await dispatch(
+      {
+        tool: 'edit_protocol',
+        input: {
+          id: 'static',
+          reason: 'CONTRIBUTING.md now gives the tiers',
+          find: 'Every service must set cpu_shares.',
+          replace: 'Every service must set cpu_shares: 80 user-facing, 20 sidecar.',
+        },
+      },
+      ctx,
+    );
+
+    expect(res.ok).toBe(true);
+    // The diff is the point: "saved" alone is not something the operator can check.
+    expect(res.text).toContain('+1/-1');
+    expect(res.text).toContain('+Every service must set cpu_shares: 80 user-facing, 20 sidecar.');
+
+    const after = await protocols.get('static');
+    expect(after?.body).toContain('80 user-facing');
+    // Everything it was not asked to touch is still there.
+    expect(after?.body).toContain('Declare D1 to D5');
+  });
+
+  it('refuses an anchor that is not there, and one that is there twice', async () => {
+    const { ctx } = await wiring();
+
+    const missing = await dispatch(
+      { tool: 'edit_protocol', input: { id: 'static', reason: 'x', find: 'not in the file', replace: 'y' } },
+      ctx,
+    );
+    expect(missing.ok).toBe(false);
+    expect(missing.text).toContain('copy the text exactly');
+
+    const twice = await dispatch(
+      { tool: 'edit_protocol', input: { id: 'static', reason: 'x', find: '##', replace: '###' } },
+      ctx,
+    );
+    expect(twice.ok).toBe(false);
+    expect(twice.text).toContain('appears 2 times');
+  });
+
+  /** The reason is the one thing a diff cannot supply, so a save without one is refused. */
+  it('will not save without a reason', async () => {
+    const { ctx } = await wiring();
+    const res = await dispatch(
+      { tool: 'edit_protocol', input: { id: 'static', reason: '  ', find: 'cpu_shares', replace: 'cpu shares' } },
+      ctx,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('say why');
+  });
+
+  it('records the edit as a revision carrying that reason', async () => {
+    const { ctx, revisions } = await wiring();
+    await dispatch(
+      {
+        tool: 'edit_protocol',
+        input: { id: 'static', reason: 'tiers from CONTRIBUTING.md', find: 'cpu_shares.', replace: 'cpu_shares tiers.' },
+      },
+      ctx,
+    );
+
+    const log = await revisions.forFiles(['static.md']);
+    expect(log[0]?.source).toBe('save');
+    expect(log[0]?.message).toBe('tiers from CONTRIBUTING.md');
+  });
+
+  /**
+   * Invariant 6, from the far side. The frontmatter is carried over as bytes by `save()`, so
+   * a body that opens with one cannot set `executor:` — and is refused before it can try.
+   */
+  it('cannot touch the frontmatter, whatever it sends', async () => {
+    const { ctx, protocols } = await wiring();
+    const res = await dispatch(
+      {
+        tool: 'edit_protocol',
+        input: {
+          id: 'static',
+          reason: 'x',
+          body: '---\nid: static\nexecutor: evil.sh\n---\n\n# Static Review Protocol\n\nAnything.',
+        },
+      },
+      ctx,
+    );
+
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('frontmatter');
+    expect((await protocols.get('static'))?.meta.executor).toBeUndefined();
+  });
+
+  it('refuses a whole-body rewrite that would drop most of the rubric, unless told to', async () => {
+    const { ctx } = await wiring();
+    const input = { id: 'static', reason: 'trim', body: '# Static Review Protocol\n\nBe good.' };
+
+    const refused = await dispatch({ tool: 'edit_protocol', input }, ctx);
+    expect(refused.ok).toBe(false);
+    expect(refused.text).toContain('allow_shrink');
+
+    const allowed = await dispatch({ tool: 'edit_protocol', input: { ...input, allow_shrink: true } }, ctx);
+    expect(allowed.ok).toBe(true);
+  });
+
+  it('says nothing was written when the text already said that', async () => {
+    const { ctx } = await wiring();
+    const res = await dispatch(
+      { tool: 'edit_protocol', input: { id: 'static', reason: 'x', find: 'cpu_shares', replace: 'cpu_shares' } },
+      ctx,
+    );
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain('nothing was written');
+  });
+
+  it('reads the store at the ref it audits, and refuses to be pointed anywhere else', async () => {
+    const calls: string[] = [];
+    const storedoc = new StoreDocReader({
+      fetchImpl: (async (url: string | URL) => {
+        calls.push(String(url));
+        const content = Buffer.from('# Contributing\n\ncpu_shares: 80 / 20.', 'utf8');
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => ({ type: 'file', size: content.byteLength, encoding: 'base64', content: content.toString('base64') }),
+        };
+      }) as never,
+    });
+    const ctx = {
+      storedoc,
+      registry: { origins: [{ id: 'yundera', repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' }] },
+    } as never;
+
+    const res = await dispatch({ tool: 'get_store_file', input: { path: 'CONTRIBUTING.md' } }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain('Yundera/AppStore@main');
+    expect(res.text).toContain('cpu_shares: 80 / 20.');
+    expect(calls[0]).toContain('ref=main');
+
+    // The one thing that would turn "read the store" into a request-forgery primitive.
+    const away = await dispatch({ tool: 'get_store_file', input: { path: 'https://example.com/secrets' } }, ctx);
+    expect(away.ok).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('will not guess which store when more than one is configured', async () => {
+    const ctx = {
+      storedoc: new StoreDocReader(),
+      registry: {
+        origins: [
+          { id: 'yundera', repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' },
+          { id: 'other', repo: 'Someone/Store', ref: 'v2', apps_path: 'Apps' },
+        ],
+      },
+    } as never;
+
+    const res = await dispatch({ tool: 'get_store_file', input: { path: 'CONTRIBUTING.md' } }, ctx);
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('yundera');
+    expect(res.text).toContain('other');
   });
 });

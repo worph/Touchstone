@@ -179,8 +179,22 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     return { kind: 'ok' as const, name: resolved.key, records: recordsForSubject(store, resolved.key) };
   }
 
-  // GET /subjects — the Overview table. One row per subject, both legs, risk descending.
-  app.get('/subjects', async (): Promise<SubjectState[]> => hallmarks(store.all()));
+  /**
+   * GET /subjects — the Store table. One row per **tracked** subject, both legs, risk
+   * descending.
+   *
+   * The union of the registry and the archive, not the archive alone. An app that has never
+   * been audited has no report file and so no index entry, and for as long as this returned
+   * `hallmarks(store.all())` those apps were invisible to the operator: the page said 20
+   * subjects while the scheduler queued 72, and the ones most in need of a first look were
+   * the ones that could not be seen or started.
+   *
+   * The registry is asked for names only. Nothing about a verdict comes from it, so a store
+   * that has gone unreachable cannot blank a row — `registry.list()` keeps serving its last
+   * good list, and a subject that drops out of the store keeps its row through the archive.
+   */
+  app.get('/subjects', async (): Promise<SubjectState[]> =>
+    hallmarks(store.all(), { include: options.registry?.list() ?? [] }));
 
   // GET /subjects/:name — the subject detail page: the composed row plus full history.
   app.get<{ Params: { name: string } }>('/subjects/:name', async (request, reply) => {

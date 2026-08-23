@@ -51,7 +51,7 @@ the link back to it.
 │ ▮≡ Touchstone│                                               │
 │              │                                               │
 │ CONFORMANCE  │                                               │
-│  Overview    │                   page                        │
+│  Store       │                   page                        │
 │  Protocol    │                                               │
 │  Trials      │                                               │
 │              │                                               │
@@ -107,13 +107,29 @@ background tab shows no strip, no page and no badge.
 
 ---
 
-### 2.1 Overview — the table
+### 2.1 Store — the table
 
-Answers, in order: *is the loop running*, *what's broken*, *what do I fix first*.
+Answers, in order: *is the loop running*, *what's broken*, *what do I fix first* — and, since
+2026-08-23, *what is in the store at all*.
+
+**It was the Overview, and the rename marks a change of question.** The Overview drew the
+archive: one row per app that had been audited. That silently excluded every app nobody had got
+to yet — 52 of 72 at the time — so the rows most in need of a first look were on no page, and
+there was nowhere to start one from. `GET /subjects` now returns the union of the registry and
+the archive, and every row carries an **audit** button. The triage the Overview did is
+unchanged: risk still sorts descending, and the summary chips are still the filter.
+
+Two things it deliberately does not do. It does not put the button on `/public` — the column is
+an `action` render prop the operator page passes and the board does not, so it is absent from
+the board's DOM rather than merely hidden (invariant 10). And it does not warn about the bench
+pool per row: one open alert above the table says it once, because an audit with no bench still
+runs and records those sections blocked, which costs the app nothing.
+
+`/overview` redirects here.
 
 ```
 ┌ Touchstone ─────────────────────────────────────────────────────────────────┐
-│ Overview   Activity ●1                                                   ⚙  │
+│ Store      Activity ●1                                                   ⚙  │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │   69 subjects          STATIC   ✅ 12   ⛔ 19   ⬜ 38 not yet    risk 1 407  │
@@ -538,7 +554,8 @@ look up rather than something they hear about when a review fails.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- **It is the Overview's table, not a summary of it.** Same rows, same cells, same tallies, out of
+- **It is the Store page's table, not a summary of it.** Same rows — minus the ones the archive
+  has never heard of — same cells, same tallies, out of
   the same `SubjectTable` component and the same `hallmarks()` call. The claim the board makes to
   an author is that they are reading the verdict the operator reads; two compositions would be two
   opinions, and the published one would be the one nobody checks.
@@ -672,7 +689,7 @@ These matter more than usual, because the system's normal condition includes "la
 
 | State | What the UI shows |
 | --- | --- |
-| No assays yet | Overview lists subjects as `⬜ not yet run` with a *Run first assay* action. Never an empty page. |
+| No assays yet | The Store page lists every tracked subject as `⬜ not yet run`, each with its own **audit** button. Never an empty page — the registry alone fills it. |
 | Bench pool down | Banner + functional column uniformly `▨ blocked`. Functional re-assay disabled with the reason. Static work continues visibly. |
 | Assay running | The row shows `◴ running · 7/24`, the shell shows the strip, the tab title shows the clock, and both Activity and the subject's own page show the card. All of them come from `GET /assays/current` and none from a file: the runner writes a report when it has a verdict, so a run in progress has no record and must not be given a placeholder one. |
 | Subject parked | `⚠ parked ·3` with the date it is released. Not styled as an error. |

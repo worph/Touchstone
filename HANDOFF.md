@@ -2182,3 +2182,142 @@ data/protocols/currency.md` — which is as direct a demonstration of the featur
 - Nothing prunes the history, on purpose (it is invariant 9's dereference target).
 - The public frame prints the hash unlinked — there is no protocol page under `/public`.
 
+
+---
+
+## 5w. The Overview became the Store page — 2026-08-23
+
+The operator's ask: *a page listing all the tracked apps in the store, with the same latest
+status the Overview shows, and a button to trigger an audit — and maybe drop the Overview.*
+
+**The Overview drew the archive, and that was the whole problem.** `GET /subjects` composed
+`hallmarks(store.all())`, one row per subject with at least one report file. On yunderalabs that
+was 20 rows while the scheduler was queueing 72: the 52 apps that had never been audited — the
+ones most in need of a first look, and the entire backlog — appeared on no page in the
+application, and there was nowhere to start one of them from. The registry knew about them; only
+the archive was ever asked.
+
+### What landed
+
+| Piece | Where |
+| --- | --- |
+| `hallmarks(records, { include })` — names to compose even with no records | `domain/hallmark.ts`, new `BoardOptions` |
+| `GET /subjects` = registry ∪ archive | `routes/index.ts` |
+| the per-row trigger | `web/components/AuditButton.tsx` |
+| the optional column | `SubjectTable`'s `action?: (s) => ReactNode` |
+| the page | `web/pages/Store.tsx` (was `Overview.tsx`), route `/store` |
+| nav, glyph, redirects, back-links | `Shell.tsx`, `main.tsx`, `SubjectDetail.tsx` |
+
+`subjectHallmark(key, [])` already composed a never-run row — it splits origin and label off the
+key rather than reading them off a record, which `routes/index.ts` has relied on since the
+subject page learned to render an app mid-first-audit. So the union needed no second code path,
+only a wider list of names.
+
+### Four decisions worth keeping
+
+1. **`include` is an option, not the default.** `/public/subjects` calls `hallmarks(store.all())`
+   and still must: a board addressed to app authors that lists every app we have not got to yet
+   is a backlog with somebody else's name on it, and it invites the reading that a never-run app
+   was judged and found wanting. There is now a test that holds this — the old parity test
+   ("the board is the operator table, unchanged") uses a harness with **no registry** and would
+   have gone on passing after the distinction was lost.
+2. **The button is a render prop, not a flag.** `SubjectTable` is shared with the board by
+   design. A `canAudit` boolean would put the control inside the shared component and leave one
+   prop standing between an app author and a run; `action?: (s) => ReactNode` means the board
+   passes nothing and the column is not in its DOM to reach. Invariant 10, kept structurally.
+3. **`AuditButton` is not `ReassayButton`.** The older one fetches the bench pool to warn about
+   blocked sections, counts elapsed time, and reports its subject's last outcome — all correct
+   for one control on a subject page, all wrong seventy-two rows down a table (the pool fetch
+   alone would be 72 requests for one boolean). The new one polls nothing: `useRunStatus()` is
+   the shared poller, so no two rows can disagree about what is running. One agent means one
+   enabled button — while any audit is in flight every row is disabled, the row that owns it
+   says `auditing…`, and the rest say why on hover rather than failing on submit.
+4. **The bench warning stayed at page level.** The existing open-alert notice already says it
+   once and explains that a run with no bench still starts and records those sections blocked.
+
+### Verified
+
+`yarn typecheck` clean, `yarn test` **714 passed** (was 709), `yarn build` clean. Run against
+the live registry: `/subjects` returned **71** rows on an empty archive (all never-run, correct
+origin and label, `age_days: null`, `risk: 0`) while `/public/subjects` returned **0**. Rendered
+in the dev stack: 71 rows, risk sort intact, `audit` on every row; the board at `/public` shows
+its 3 archived apps and has no audit column.
+
+### Left undone
+
+- **The chat's `get_board`** (`chat/registry.ts:309`) still composes the archive alone. Adding 52
+  never-run rows to every board call is noise the operator did not ask for, and `get_schedule`
+  already answers "what has not been audited". Worth revisiting if the chat starts being asked
+  "what is in the store".
+- **Not deployed.** yunderalabs runs image `1.1.4`; this is source only.
+
+## 5x. The administrator can read the standard, and the store it tracks — 2026-08-23
+
+### The failure
+
+Asked *"can you check if the protocols are up to date against the AppStore contribution file?"*,
+the chat called `get_board` and two `get_report`s and then said, honestly, that it could not: no
+tool exposed the protocol text and none exposed the store's `CONTRIBUTING.md`. What it offered
+instead was an inference — v7's evidence *quotes* current CONTRIBUTING material, so v7 is
+probably current — which is an inference about an inference, over an archive of what audits
+happened to mention.
+
+Both halves of the question were unreachable, and the write half of the answer (*"add this point
+to the protocol"*) was too.
+
+### What landed — three tools and one extracted save path
+
+| | |
+| --- | --- |
+| `get_protocol` | no id → the menu (section, kind, order, executor, `requires`, `scores: false`, bytes, sha, last change and its reason); an id → that section's prose |
+| `get_store_file` | a file or a directory listing out of a **configured** origin's repo, at its pinned ref |
+| `edit_protocol` | `writes: true`. `find`/`replace` (must match exactly once) or a whole `body`; `reason` required; returns the line diff of what was actually written |
+| `domain/protocoledit.ts` | `saveProtocol()` — the save + `revisions.sweep({save})` + `PROTOCOL_EDITED` triple, now called by both `PUT /protocols/:id` and the tool |
+
+Wired into `chat.ctx` in `src/server/index.ts` (`protocols`, `revisions`, `storedoc`), which
+`routes/index.ts` already hands to the admin MCP, so all three are on `/mcp/admin` too.
+
+### Four decisions worth keeping
+
+- **Anchored edit first.** `functional.md` is 27 KB and `static.md` 20 KB. A tool that only took
+  a whole body would make "add this point" a re-emission of the entire rubric, and a paragraph
+  lost on the way back is indistinguishable from one somebody meant to delete. `find` must occur
+  exactly once; 0 or *n* are two different refusals with two different fixes. The whole-body path
+  survives for a genuine rewrite, guarded against an empty body, a leading `---`, and a >50%
+  shrink without `allow_shrink`.
+- **`get_store_file` is not a second `trialstore.ts`, and the difference is not one of degree.**
+  The host is a constant in the module, the repo and ref come from `config.yaml`, and the caller
+  supplies only a path — so no allowlist is needed and none was added, and `trialstore.ts` stays
+  the only place a caller-chosen URL is dereferenced. It reads GitHub unauthenticated, so only
+  public repos resolve and there is nothing to exfiltrate with a clever path.
+- **The five-minute cache is a safety property, not a performance one.** Unauthenticated GitHub
+  allows 60 requests an hour per IP and `store/registry.ts` spends from the same budget. A turn
+  re-reading CONTRIBUTING.md three times must not be able to drive an origin unreachable, because
+  `reachable()` false stops the runner dispatching — invariant 3, arrived at sideways.
+- **Invariant 6 did not need widening.** `ProtocolStore.save()` carries the frontmatter over as
+  bytes rather than re-emitting it, so no caller of `edit_protocol` — the chat, or an agent on an
+  admin MCP that authenticates nobody — can mint a section, name an `executor:` or flip
+  `scores:`. It moves what the **next** audit is judged by, recorded as a revision with a required
+  reason, and `read_only` drops it from the MCP entirely.
+
+### One test changed on purpose
+
+`routes/mcp-admin.test.ts`'s "mints no verdict tool" barred `/record|verdict|protocol|origin/`
+from the tool names. `protocol` is now legitimately there, so the pattern narrowed to
+`/record|verdict|hallmark|compliant/` — what invariant 6 actually forbids — and `edit_protocol`
+was added to the `writers` expectation so its `read_only` coverage is asserted rather than
+assumed.
+
+### Verified
+
+`yarn typecheck` clean, `yarn test` **741 passed** (was 714): +15 in a new
+`services/storedoc.test.ts`, +11 in `chat/chat.test.ts`, +1 in `store/origins.test.ts`.
+
+### Left undone
+
+- **Not exercised against the live agent.** The tools and their refusals are covered by unit
+  tests; the end-to-end loop — ask the drift question, get an anchored edit back — has not been
+  run through a real turn on the dev stack.
+- **No web surface for `via`.** `PROTOCOL_EDITED` now records whether an edit came from the
+  editor, the chat or MCP; the Protocols history renders the reason but not yet the caller.
+- **Not deployed.** Source only.

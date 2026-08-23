@@ -22,6 +22,7 @@ import type { FastifyPluginAsync } from 'fastify';
 
 import { lineDiff } from '../../shared/linediff.js';
 import { renderMarkdown } from '../domain/markdown.js';
+import { saveProtocol } from '../domain/protocoledit.js';
 import type { EventLog } from '../services/events.js';
 import { isSafeId, parseExecutor, type ProtocolStore } from '../store/protocols.js';
 import type { RevisionStore } from '../store/revisions.js';
@@ -31,9 +32,6 @@ export interface ProtocolRoutesOptions {
   revisions?: RevisionStore;
   events?: EventLog;
 }
-
-/** Long enough that a reason is a sentence, short enough that it is not a second rubric. */
-const MAX_MESSAGE = 200;
 
 const routes: FastifyPluginAsync<ProtocolRoutesOptions> = async (app, options) => {
   /**
@@ -154,43 +152,19 @@ const routes: FastifyPluginAsync<ProtocolRoutesOptions> = async (app, options) =
     async (req, reply) => {
       if (!options.protocols) return reply.code(503).send({ error: 'no protocol store' });
       if (!isSafeId(req.params.id)) return reply.code(400).send({ error: 'bad id' });
-      const body = req.body?.body;
-      if (typeof body !== 'string' || body.trim().length === 0) {
-        // An empty rubric would grade every app against nothing and pass them all. Refusing
-        // is the only safe answer, and it is cheaper than explaining the result later.
-        return reply.code(400).send({ error: 'the protocol body cannot be empty' });
-      }
-      const message = (req.body?.message ?? '').trim().slice(0, MAX_MESSAGE);
-      if (message === '') {
-        // The diff says what changed; only a person can say why. An edit made here is the one
-        // kind the app can insist on a reason for, so it does.
-        return reply.code(400).send({ error: 'say why the protocol is being changed' });
-      }
+      // The empty-body and no-reason refusals, the sweep and the event all live in
+      // `domain/protocoledit.ts`, because the administrator chat saves protocols too and a
+      // second copy of this sequence is a second place to forget the history.
+      const result = await saveProtocol(options, {
+        id: req.params.id,
+        body: req.body?.body,
+        message: req.body?.message,
+        via: 'api',
+      });
+      if (!result.ok) return reply.code(result.status).send({ error: result.error });
 
-      const saved = await options.protocols.save(req.params.id, body);
-      if (!saved) return reply.code(404).send({ error: 'no such protocol' });
-
-      // A full sweep rather than a record of this one file: a save is the cheapest moment to
-      // notice that somebody also hand-edited the script beside it. Those rows come out
-      // `observed`; only the file just written carries the operator's reason.
-      const recorded = await options.revisions?.sweep({ save: { file: saved.file, message } });
-      const revision = recorded?.find((r) => r.file === saved.file) ?? null;
-
-      if (revision) {
-        options.events?.log({
-          level: 'info',
-          code: 'PROTOCOL_EDITED',
-          message: 'The audit protocol was edited, and the next audit will use it',
-          detail: {
-            id: saved.meta.id,
-            sha256: revision.sha256,
-            seq: revision.seq,
-            bytes: saved.bytes,
-            message,
-          },
-        });
-      }
-      return { ...saved, revision, html: renderMarkdown(saved.body) };
+      const saved = result.protocol;
+      return { ...saved, revision: result.revision, html: renderMarkdown(saved.body) };
     },
   );
 };
