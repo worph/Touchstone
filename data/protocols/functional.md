@@ -1,7 +1,7 @@
 ---
 id: functional
 name: Functional Review Protocol
-version: 7
+version: 8
 kind: leaf
 
 # Where this section sits in a run, and what it cannot run without. `order` decides report
@@ -109,6 +109,34 @@ not yours to declare.
 *Why the licence was removed:* audits were declaring apps `functional` while Phases F and G were
 skipped as "optional deep", so the two highest-consequence checks — zero-config and data
 persistence — were never exercised at all.
+
+### Say what you could not reach
+
+A failing phase takes the later ones down with it. An app that will not start hides E9, E10, F
+and G completely; an install that fails hides everything after C. Record those phases `errored`
+— they could not run — and then **say so in one sentence at the top of your prose**, before any
+finding:
+
+> Coverage: phases A–C ran. D onward could not be reached, because the container exited at boot.
+> The findings below are therefore not exhaustive.
+
+This sentence is not a courtesy. Two readers depend on it and neither can recover it afterwards:
+
+- **Whoever fixes the app.** The fix brief hands them the requirement ids to clear. A short list
+  of findings from a run that got three phases in reads as *nearly done*, and they will ship one
+  round of changes expecting to be finished.
+- **The next audit's reader.** Clearing one failure lets the following run reach checks this one
+  never attempted, so it will legitimately report findings that are new. Said in advance that is
+  the process working. Left unsaid it reads as the audit contradicting itself, and the verdict
+  loses its authority — which costs more than any single finding.
+
+**Never write it when every phase ran.** "Not exhaustive" attached to a complete run is worse
+than useless: it teaches the reader to skip the line on the run where it is true.
+
+The same applies within a phase. If you could not check something because a precondition was not
+met — no seed data, no second account, a control that never rendered — record the requirement
+`unverified` rather than `pass`, and name the precondition. Absence of evidence is recorded as
+absence of evidence; it is never recorded as a pass.
 
 ## 1. Inputs
 
@@ -375,6 +403,14 @@ one run's untidiness becomes another run's false result.
 
 ## Changelog — not part of the rubric
 
+- **v8 (2026-08-23)** — **say what you could not reach.** A run whose early phases fail never
+  attempts the later ones, and until now nothing required the report to admit it: a three-phase
+  run and a complete one produced findings lists that looked alike. Two readers were misled by
+  that — whoever fixes the app, who reads a short list as nearly done; and whoever reads the next
+  audit, which legitimately finds more once the first failure is cleared, and without the
+  disclosure reads as the audit contradicting itself. Now a run that could not reach a phase
+  opens its prose with one sentence naming what ran and what did not, and is explicitly forbidden
+  from writing that sentence when everything ran.
 - **v7 (2026-08-22)** — a run may now supply its **own store**, and Phase C says how to install
   from it: `https://<DEMO>/store/<APP>?store=<url>`, accepting Maison's "store you have not
   added" warning as expected. This is what lets a trial of files that are on no branch run its

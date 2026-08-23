@@ -70,6 +70,42 @@ export interface ProbeResult {
   detail?: string;
   latencyMs: number;
   httpStatus?: number;
+  /** The bench's UI build, when the login flow reached a page we could read one from. */
+  build?: string;
+}
+
+/** At most this much of the landing page is read to find the build. It is a 400-byte shell. */
+const BUILD_SNIFF_BYTES = 64 * 1024;
+
+/**
+ * The bench's platform build, as a fingerprint rather than a version.
+ *
+ * **Why a fingerprint.** Maison ships from `go build -trimpath -ldflags="-s -w"` with no
+ * version variable and exposes no `/version`; every one of its API routes is behind the OIDC
+ * gate. There is no number to ask for. What it does serve is a Vite bundle whose filename is a
+ * content hash — `/assets/index-C_5OE2_1.js` — which changes exactly when the UI is rebuilt
+ * and is stable across restarts. That is not a semantic version and this must never be
+ * rendered as one, but it answers the question the archive could not: *did the platform under
+ * these two runs differ?*
+ *
+ * **Why it is here at all.** On 2026-08-22 AnnasTorrents went from compliant to Critical on
+ * bytes that had not changed, and SegmentPlayer newly failed `cpu-shares` the same way. With
+ * only `bench_host` on the record there was nothing to separate an app regression from
+ * environment drift, and the drift was attributed to the apps. A `blocked` assay is already
+ * "infra, not the subject" (invariant 4); this is the same idea for a *silent* environment
+ * change, which produces a verdict rather than a block and so is far more dangerous.
+ *
+ * It is deliberately best-effort: a bench that answers 200 without a recognisable bundle
+ * yields `undefined`, and nothing anywhere gates on it. A fingerprint we could not take is
+ * not a bench fault, and a probe that failed to read one must still report the bench healthy.
+ */
+export function buildFrom(html: string): string | undefined {
+  const match = /<script[^>]+src=["'](\/assets\/[^"']+\.js)["']/i.exec(html);
+  const asset = match?.[1] ?? /["'](\/assets\/index-[^"']+\.js)["']/i.exec(html)?.[1];
+  if (!asset) return undefined;
+  // The hash alone, not the path: `index-C_5OE2_1` reads as an identity in a frontmatter
+  // field, where `/assets/index-C_5OE2_1.js` reads as a URL somebody might try to fetch.
+  return asset.replace(/^\/assets\//, '').replace(/\.js$/, '');
 }
 
 // ── the pool ────────────────────────────────────────────────────────────────────────────
@@ -207,7 +243,19 @@ export async function probeBench(bench: BenchConfig, timeoutMs = 8000): Promise<
       }
 
       // Terminal. Classify by what the gate finally said.
-      if (res.status === 200) return { status: 'healthy', latencyMs: since(), httpStatus: 200 };
+      if (res.status === 200) {
+        // Read the landing page only to fingerprint the build. Capped, and every failure
+        // path here is swallowed: this module's job is to say whether the bench is usable,
+        // and it must not start reporting a healthy bench as down because a body was odd.
+        let build: string | undefined;
+        try {
+          const body = (await res.text()).slice(0, BUILD_SNIFF_BYTES);
+          build = buildFrom(body);
+        } catch {
+          build = undefined;
+        }
+        return { status: 'healthy', latencyMs: since(), httpStatus: 200, ...(build ? { build } : {}) };
+      }
       if (res.status >= 500) {
         return {
           // The box answers, but its login is broken — demostaging2 on 2026-08-19. That is
@@ -396,6 +444,9 @@ export class BenchProber {
           board_says: bench.claim ? describeClaim(bench.claim) : undefined,
           remaining_min: remaining,
           processing: bench.claim?.processing,
+          // Keep the last fingerprint when this probe could not take one, so a single odd
+          // response does not read as "the platform changed to nothing".
+          build: probe.build ?? previous?.build,
         };
         this.health.set(bench.name, next);
         this.logTransition(previous, next, probe);

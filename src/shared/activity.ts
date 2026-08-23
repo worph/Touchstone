@@ -102,6 +102,15 @@ export interface BenchHealth {
   remaining_min?: number | null;
   /** Mid-cleanup. Serves a login page and then silently fails to install — never claimable. */
   processing?: boolean;
+  /**
+   * The bench's platform build, as a content fingerprint of the UI it serves — see
+   * `buildFrom` in `services/bench.ts` for why this is a fingerprint and not a version.
+   *
+   * Carried onto every assay run against this bench as `bench_build`, so two reports can be
+   * compared for environment drift. Never a gate: `undefined` is "we could not read one",
+   * which is a fact about the probe, not about the bench.
+   */
+  build?: string;
 }
 
 export type PortKind = 'agent' | 'browser';

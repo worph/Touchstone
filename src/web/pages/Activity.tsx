@@ -236,6 +236,10 @@ export default function Activity() {
                 </span>
                 <span className="env-probe">
                   {b.detail ? `login flow → ${b.detail}` : 'login flow → ok'}
+                  {/* Which build of the platform this box is running. Not a version — Maison
+                      publishes none — but it changes when the box is redeployed, and that is
+                      the fact an operator needs when yesterday's verdicts stop reproducing. */}
+                  {b.build ? <span className="env-board"> · build {b.build}</span> : null}
                   {/* The board said Ready for the whole of the 2026-08-05 outage. Showing
                       the disagreement is the point; agreeing silently is the bug. */}
                   {b.board_says !== undefined && b.status !== 'healthy' ? (

@@ -1924,3 +1924,92 @@ and splits the one response into two assay files with `shapeReport` / `splitSect
 - **Ports:** Vite 5173, API 8081. 8080 is the production default but is taken by ttyd in this
   container.
 - **`yarn sync`, not `yarn import`.** `import` is a yarn-1 builtin and will not run the script.
+
+## 5t. What the first real fleet audit found out about Touchstone — 2026-08-23
+
+Eight AppStore apps were taken from non-compliant to compliant against this system on
+2026-08-22 (AIOStreams 153 → 0, Beacon 143 → 0, BrowserMCP 123 → 0, ChronosMCP 102 → 0,
+Caddy 30 → 0, AnnasTorrents 13 → 0, FileBrowser 11 → 0, ClaudeCode 1 → 0). Using it that hard
+for a day surfaced defects in Touchstone itself that no single audit would have shown. Three
+were fixed here; two are known and unfixed, and are listed at the end.
+
+### The score looked like it did not add up, and one field made sure it never would
+
+A static assay routinely carries `risk_score: 30` beside `coverage.risk: 20`. Both are correct:
+the score is the run's (it lands on the primary section so the archive's risk is not multiplied
+by the number of sections) and the coverage is that section's own. Nothing on the record said
+so, and a reader who finds one contradiction in a report starts discounting the findings too.
+The primary now carries **`combined_score_of`** — the sections its score covers — which is the
+other half of the `combined_score_on` the non-primary sections already had.
+
+Underneath that was a real bug. `risk_score_declared` existed to catch the agent's arithmetic
+disagreeing with its own item list, and it recorded **the declared value** — which is already on
+the record as `risk_score`. So the one field whose purpose was to expose a disagreement wrote the
+same number twice. It is now `risk_score_computed` and holds the computed run-wide sum.
+
+The Subject page's mismatch line was wrong in the matching way: it fired on a run-wide comparison
+and then displayed `coverage.risk`, a *third* number that was never one of the two being
+compared. It now renders `risk_score` against `risk_score_computed`.
+
+### An audit could not say which platform produced it
+
+On 2026-08-22 AnnasTorrents went compliant → Critical, and SegmentPlayer newly failed
+`cpu-shares`, both on app bytes that had not changed. `bench_host` traces a verdict to a box but
+not to a moment in that box's life, so there was nothing in the archive to separate an app
+regression from environment drift — and the drift was attributed to the apps.
+
+Every assay now carries **`bench_build`**. It is a *fingerprint, not a version*, and MVP.md §5.2
+says why at length: Maison ships from `-ldflags="-s -w"` with no version symbol, publishes no
+`/version`, and puts every API route behind the OIDC gate, so there is no number to ask for. What
+it does serve is a Vite bundle whose filename is a content hash. `buildFrom` in `services/bench.ts`
+reads it off the landing page the prober already fetches at the end of the login flow — no extra
+request, and every failure path swallowed, because a fingerprint we could not take must never make
+a healthy bench read as down. A **blocked** section gets neither `bench_host` nor `bench_build`:
+it never reached a bench, so it has no environment to describe.
+
+Invariant 4 says `blocked` is never a statement about the subject. This is the same idea for a
+*silent* environment change — which is more dangerous, because it produces a verdict instead of a
+block.
+
+### The fix brief promised something it could not deliver
+
+It ended "The change is complete when a re-audit records these ids as `pass`". That is not true and
+the fleet run proved it twice: AIOStreams needed two rounds and ChronosMCP three, each time because
+clearing one finding let the audit reach a check it had not previously been able to run. A brief
+that promises completeness trains a reader to commit after one round and to read the second round
+as the audit changing its mind — which costs more than any single finding, because it is the
+verdict's authority.
+
+Acceptance now lists the ids as *what this audit asks for* and names the two ways the next round
+legitimately grows: checks that were behind a failure, and requirements the protocol does not list
+(the `unlisted` mechanism, which found `caddy-wiring` and `install-hook-app-dir-path` and is worth
+keeping precisely because a fixed checklist would not have).
+
+**Functional Review Protocol v8** is the other half. A run that could not reach a phase must now
+open its prose with one sentence naming what ran and what did not, and is explicitly forbidden from
+writing that sentence when everything ran — a disclaimer on a complete run teaches the reader to
+skip it on the run where it is true.
+
+### Live protocol state
+
+yunderalabs was on functional **v6** and had never received v7 (the `?store=` install path from
+§5q). It was brought forward with two `PUT /protocols/functional` calls — v7's body, then v8's — so
+each version on that box has the content it claims. It now reads `functional v8`, `static v7`,
+byte-identical to `data/protocols/`. `save()` only ever replaces the body and keeps the existing
+frontmatter, so neither call could add or alter a requirement id (invariant 6 holds through the
+edit).
+
+### Known, not fixed
+
+- **The single global lock is the throughput ceiling.** One audit at a time store-wide; a full
+  trial is 13–35 minutes. Eight apps took about five hours including re-trials, and the backlog is
+  53. Two directions, both real work: parallelise across the demo instances (the pool reports two),
+  and let `run_trial` take a set of subjects so a proven fix can be trialled across the apps that
+  share its root cause in one pass. `leasable()` reporting "1 of 2 usable" while both benches list
+  healthy is **correct** — healthy and claimable are different questions, and the second gates on
+  the `> 1h` runway rule — but it does not say which rule excluded which bench, and it reads as a
+  bug every time.
+- **An `unlisted` id has no way to graduate.** `install-hook-app-dir-path` fired on 1 of the 8 apps
+  audited but is present in 4 of 69 across the store. There is no process that turns a recurring
+  unlisted id into a canonical requirement and a CONTRIBUTING line at the same time. This is an
+  operator process, not a code change, and it is deliberately not invented here.

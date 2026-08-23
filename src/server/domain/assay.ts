@@ -218,6 +218,15 @@ export interface AgentAssayInput {
   finishedAt: string;
   /** The bench a section ran against, recorded so a result can be traced to a box. */
   benchHost?: string;
+  /**
+   * *Which build of the platform* that box was running — a fingerprint, not a version.
+   *
+   * `benchHost` traces a result to a box; this traces it to a moment in that box's life. Two
+   * runs of unchanged app bytes that disagree are either an agent inconsistency or an
+   * environment change, and without this the archive cannot tell them apart — which is how a
+   * platform change came to be recorded as two apps regressing on 2026-08-22.
+   */
+  benchBuild?: string;
   /** The browser it drove. Same reason: a live result is only as good as the pair. */
   browserEndpoint?: string;
   /**
@@ -317,6 +326,7 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
     started_at: input.startedAt,
     finished_at: input.finishedAt,
     ...(input.benchHost ? { bench_host: input.benchHost } : {}),
+    ...(input.benchBuild ? { bench_build: input.benchBuild } : {}),
     ...(input.browserEndpoint ? { browser: input.browserEndpoint } : {}),
     produced_by: 'touchstone-runner',
   };
@@ -372,6 +382,13 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
         risk_score: isPrimary ? declared.risk_score : 0,
         blocked_reason: status.ran ? null : 'bench_unavailable',
         ...(isPrimary || !primary ? {} : { combined_score_on: primary.id }),
+        // The other half of `combined_score_on`, and the reason it exists: on the primary,
+        // `risk_score` covers the whole run while the `coverage` block a few lines down
+        // covers only this section's own items. Two different scopes, one document, and
+        // until this field they looked like an arithmetic error — a reader comparing
+        // `risk_score: 30` against `coverage.risk: 20` had nothing on the record telling
+        // them the missing 10 was the functional section's, counted here by design.
+        ...(isPrimary && sections.length > 1 ? { combined_score_of: sections.map((s) => s.id) } : {}),
         ...(status.ran || !blockedDetail ? {} : { blocked_detail: blockedDetail }),
         ...common,
         ...(coverage ? { coverage } : {}),
@@ -380,8 +397,14 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
         // The declared score and the sum of the declared items should agree. When they do
         // not, the agent's arithmetic and its item list came apart — worth recording, not
         // smoothing. Checked against the whole run's items, which is what it was declared for.
+        //
+        // What gets recorded is the **computed** number. The declared one is already on this
+        // record as `risk_score` — invariant 1 keeps it authoritative — so writing it a second
+        // time under a second name (which is what this did until 2026-08-23) emitted two
+        // identical values and left the disagreement invisible, in the one field whose entire
+        // purpose was to make it visible.
         ...(isPrimary && recorded.length > 0 && coverageOf(recorded).risk !== declared.risk_score
-          ? { risk_score_declared: declared.risk_score }
+          ? { risk_score_computed: coverageOf(recorded).risk }
           : {}),
       } as unknown as AssayMeta,
       body: composeBody(

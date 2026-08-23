@@ -165,8 +165,28 @@ export interface AssayMeta {
   coverage?: Coverage;
   requirements?: RecordedRequirement[];
   phases?: RecordedPhase[];
-  /** Only when the agent's own risk_score disagreed with the sum of its items. */
-  risk_score_declared?: number;
+  /**
+   * The sum of this run's recorded items, present **only when it disagreed** with the agent's
+   * own `risk_score`.
+   *
+   * The declared number stays authoritative and stays in `risk_score` (invariant 1); this is
+   * the other half of the disagreement, so both are legible on one record. Recording the
+   * declared value here instead — which is what happened until 2026-08-23 — wrote the same
+   * number twice and said nothing.
+   */
+  risk_score_computed?: number;
+  /**
+   * On the primary section, the sections whose risk `risk_score` includes. Absent on a
+   * single-section run, and absent on every other section, which carries `combined_score_on`
+   * pointing back here instead.
+   *
+   * `risk_score` is the whole run's; the sibling `coverage.risk` is this section's own. This
+   * field is what says so on the record, rather than leaving the two to read as a
+   * contradiction.
+   */
+  combined_score_of?: string[];
+  /** On a non-primary section: which section carries this run's combined `risk_score`. */
+  combined_score_on?: string;
   /** Unrecognised frontmatter keys, preserved verbatim across a read/write cycle. */
   [key: string]: unknown;
 }
