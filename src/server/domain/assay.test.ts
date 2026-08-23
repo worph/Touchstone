@@ -193,3 +193,87 @@ describe('a section that was never attempted', () => {
     expect(out[1]?.body).toContain('network_unavailable');
   });
 });
+
+/**
+ * The two numbers on the primary section, and why they are not the same number.
+ *
+ * `risk_score` scores the whole run; the `coverage` block beside it covers only that
+ * section's own items. Both are correct and they routinely differ, which for months read as
+ * an arithmetic error on the face of the report. These pin the fields that say so.
+ */
+describe('the scope of the score is on the record', () => {
+  it('names the sections the primary score covers, so the sibling coverage block cannot read as a contradiction', () => {
+    const out = compose({ phases: [phase('A', 'functional')] });
+    expect(out[0]?.meta.combined_score_of).toEqual(['static', 'functional']);
+    // The other sections point back, which is how a reader gets from either file to the score.
+    expect(out[1]?.meta.combined_score_on).toBe('static');
+  });
+
+  it('leaves it off a single-section run, where there is nothing to combine', () => {
+    const out = compose({ sections: [STATIC] });
+    expect(out[0]?.meta.combined_score_of).toBeUndefined();
+  });
+
+  it('records the computed sum when it disagrees with the declaration — not the declaration again', () => {
+    // Two Major fails across the two sections sum to 20; the agent declared 12.
+    const out = compose({
+      requirements: [
+        req('pinned-image-tag', 'static', { verdict: 'fail', severity: 'major' }),
+        req('phase-g-persistence', 'functional', { verdict: 'fail', severity: 'major' }),
+      ],
+      phases: [phase('A', 'functional')],
+    });
+    // The declaration stays authoritative and stays where it was (invariant 1)…
+    expect(out[0]?.meta.risk_score).toBe(12);
+    // …and the other half of the disagreement is now legible. Recording the declared value
+    // here — which is what this did until 2026-08-23 — wrote 12 twice and said nothing.
+    expect(out[0]?.meta.risk_score_computed).toBe(20);
+  });
+
+  it('sums across every section, not just the primary, because that is the scope it is compared against', () => {
+    const out = compose({
+      requirements: [req('phase-g-persistence', 'functional', { verdict: 'fail', severity: 'critical' })],
+      phases: [phase('A', 'functional')],
+    });
+    // The primary's own coverage is empty; the run's items sum to 100 all the same.
+    expect(out[0]?.meta.coverage).toBeUndefined();
+    expect(out[0]?.meta.risk_score_computed).toBe(100);
+  });
+
+  it('stays silent when the agent got its arithmetic right', () => {
+    const out = compose({
+      declared: { verdict: 'non-compliant', severity: 'Major', risk_score: 10, report_markdown: REPORT },
+      requirements: [req('pinned-image-tag', 'static', { verdict: 'fail', severity: 'major' })],
+      phases: [phase('A', 'functional')],
+    });
+    expect(out[0]?.meta.risk_score_computed).toBeUndefined();
+  });
+});
+
+/** Which platform build produced a verdict — see `buildFrom` in `services/bench.ts`. */
+describe('the bench build rides every assay', () => {
+  it('stamps the fingerprint onto every section that ran', () => {
+    const out = compose({ benchHost: 'https://demostaging1.inojob.com', benchBuild: 'index-C_5OE2_1' });
+    expect(out.map((a) => a.meta.bench_build)).toEqual(['index-C_5OE2_1', 'index-C_5OE2_1']);
+  });
+
+  it('leaves a blocked section without one, exactly as it leaves it without a bench_host', () => {
+    // A section that never ran has no environment to describe, and stamping the build of a
+    // box it did not reach would make the archive answer "which platform produced this
+    // verdict?" for a file that carries no verdict. Same reason `bench_host` is absent.
+    const out = compose({
+      sections: [STATIC],
+      blocked: [{ section: FUNCTIONAL, reason: 'bench_unavailable' }],
+      benchHost: 'https://demostaging1.inojob.com',
+      benchBuild: 'index-C_5OE2_1',
+    });
+    expect(out[0]?.meta.bench_build).toBe('index-C_5OE2_1');
+    expect(out[1]?.meta.bench_build).toBeUndefined();
+    expect(out[1]?.meta.bench_host).toBeUndefined();
+  });
+
+  it('is simply absent when the probe could not read one', () => {
+    const out = compose({ benchHost: 'https://demostaging1.inojob.com' });
+    expect(out[0]?.meta.bench_build).toBeUndefined();
+  });
+});

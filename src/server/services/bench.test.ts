@@ -8,6 +8,7 @@ import {
   BenchProber,
   boardClaimsReady,
   describeClaim,
+  buildFrom,
   probeBench,
   readPool,
   type BenchConfig,
@@ -377,5 +378,66 @@ describe('what the log says', () => {
     await p.probeAll();
     await events.flush();
     expect(events.query({ code: 'BENCH_UNREACHABLE' })[0]?.message).toContain('did not answer');
+  });
+});
+
+/**
+ * The platform fingerprint.
+ *
+ * Maison has no version to ask for — `-ldflags="-s -w"`, no `/version`, every API route
+ * behind the OIDC gate — so what the archive records is the content hash of the bundle it
+ * serves. It answers "did the platform differ between these two runs?", which is the question
+ * that went unanswerable on 2026-08-22, and it answers nothing else.
+ */
+describe('the platform fingerprint', () => {
+  const SHELL = [
+    '<!doctype html><html><head><title>Maison</title>',
+    '<script type="module" crossorigin src="/assets/index-C_5OE2_1.js"></script>',
+    '<link rel="stylesheet" href="/assets/index-DUdNsmIy.css">',
+    '</head><body><div id="app"></div></body></html>',
+  ].join('');
+
+  it('reads the hash out of the served shell, as an identity rather than a URL', () => {
+    expect(buildFrom(SHELL)).toBe('index-C_5OE2_1');
+  });
+
+  it('takes the script, not the stylesheet beside it', () => {
+    expect(buildFrom(SHELL)).not.toContain('DUdNsmIy');
+  });
+
+  it('gives up quietly on a page it does not recognise', () => {
+    // A bench answering 200 with something else is still a healthy bench. Nothing gates on
+    // the fingerprint, so failing to take one must cost nothing.
+    expect(buildFrom('<html><body>hello</body></html>')).toBeUndefined();
+    expect(buildFrom('')).toBeUndefined();
+  });
+
+  it('rides a successful probe, and is absent when the gate never let us through', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(SHELL, { status: 200 })));
+    await expect(probeBench(BENCH)).resolves.toMatchObject({
+      status: 'healthy',
+      build: 'index-C_5OE2_1',
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async () => answer(403)));
+    const denied = await probeBench(BENCH);
+    expect(denied.status).toBe('auth');
+    expect(denied.build).toBeUndefined();
+  });
+
+  it('does not let an unreadable body turn a healthy bench into a down one', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        status: 200,
+        headers: new Headers(),
+        text: async () => {
+          throw new Error('socket hung up mid-body');
+        },
+      })),
+    );
+    const probe = await probeBench(BENCH);
+    expect(probe.status).toBe('healthy');
+    expect(probe.build).toBeUndefined();
   });
 });

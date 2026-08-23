@@ -152,6 +152,10 @@ status: done                 # queued | running | done | blocked
 verdict: non-compliant       # compliant | non-compliant | errored | deferred | null
 top_severity: critical       # critical | major | minor | none   ← from the headline
 risk_score: 232              #                                    ← from the headline
+risk_score_computed: 241     # ONLY when it disagrees with the line above — see §5.1
+combined_score_of:           # on the primary: the sections `risk_score` covers
+  - static
+  - functional
 blocked_reason: null         # bench_unavailable | agent_busy | browser_unavailable
 try_n: 1
 trigger: schedule            # schedule | webhook | form | reassay
@@ -162,6 +166,8 @@ commit: 6b9af120ba7f
 images: [openclaw:2.1.0]
 started_at: 2026-08-05T09:14:22Z
 finished_at: 2026-08-05T09:29:41Z
+bench_host: https://demostaging1.inojob.com
+bench_build: index-C_5OE2_1  # which build of the platform produced this — see §5.2
 ---
 
 # Yundera/AppStore — OpenClaw
@@ -172,6 +178,56 @@ Unknown keys are preserved on read and rewritten on write. The body is never par
 and — since findings are no longer extracted — never parsed by anything except the renderer.
 
 There is no `findings:` list. That is the single biggest change from the previous contract.
+
+#### 5.1 The three fields about the score
+
+A run declares **one** verdict, one tier and one risk score, so they land on the first section and
+the rest carry `combined_score_on` pointing at it (ARCHITECTURE §4; attributing the score to each
+section would multiply the archive's risk by the number of sections). The consequence is that the
+primary's frontmatter holds two numbers with **different scopes**:
+
+| Field | Scope | Present |
+| --- | --- | --- |
+| `risk_score` | the whole run | always; on non-primary sections it is `0` |
+| `coverage.risk` | *this section's* items only | when the section recorded any |
+| `risk_score_computed` | the whole run's items, summed by Touchstone | only when it ≠ `risk_score` |
+| `combined_score_of` | which sections `risk_score` covers | on the primary of a multi-section run |
+| `combined_score_on` | where this section's score went | on every non-primary section |
+
+`combined_score_of` exists because the first two read as an arithmetic error otherwise. A static
+assay carrying `risk_score: 30` beside `coverage.risk: 20` is correct — the missing 10 is the
+functional section's, counted once, on this file — but nothing on the record said so, and a reader
+who spots one contradiction starts doubting the findings too.
+
+`risk_score_computed` is the **computed** half of a disagreement. The declared half is authoritative
+(invariant 1) and already sits in `risk_score`, so recording the declared value here — which is what
+happened until 2026-08-23 — wrote the same number twice and left the disagreement invisible, in the
+one field whose whole purpose was to make it visible. The Subject page rendered the mismatch line
+from `coverage.risk`, a third number that was never the one being compared.
+
+#### 5.2 `bench_build` — which platform produced this verdict
+
+`bench_host` traces a result to a box. `bench_build` traces it to a moment in that box's life: it is
+the content hash of the UI bundle the bench served when the prober last logged in
+(`buildFrom` in `services/bench.ts`).
+
+It is a **fingerprint, not a version**, and must never be rendered as one. Maison ships from
+`go build -trimpath -ldflags="-s -w"` with no version symbol, publishes no `/version`, and puts
+every API route behind the OIDC gate — there is no number to ask for. What it does serve is a Vite
+bundle whose filename is a content hash, which changes when the platform is redeployed and is stable
+across restarts. That is enough to answer the one question the archive could not: *did the platform
+differ between these two runs?*
+
+Why it was added: on 2026-08-22 AnnasTorrents went compliant → Critical, and SegmentPlayer newly
+failed `cpu-shares`, both on app bytes that had not changed. With only `bench_host` on the record
+there was nothing to separate an app regression from environment drift, so the drift was attributed
+to the apps. `blocked` already means "infra, not the subject" (invariant 4); this is the same idea
+for a *silent* environment change, which produces a verdict rather than a block and is therefore far
+more dangerous.
+
+Nothing gates on it. Absent means the probe could not read one, which is a fact about the probe. A
+**blocked** section carries neither `bench_host` nor `bench_build`: it never reached a bench, so it
+has no environment to describe.
 
 **`origin` arrived on 2026-08-20**, when the app store became a configured value rather than five
 hardcoded strings. A file written before then has none, and `coerceMeta` fills it with the default

@@ -312,6 +312,7 @@ export class Runner {
     // rest are *recorded* as blocked.
     const wanted = new Set(plan.sections.flatMap((s) => s.requires));
     let benchHost: string | undefined;
+    let benchBuild: string | undefined;
     let browserEndpoint: string | undefined;
     const missing = new Map<string, string>();
 
@@ -329,7 +330,13 @@ export class Runner {
     if (wanted.has('bench') && !missing.has('bench')) {
       const leasable = this.opts.prober?.leasable() ?? [];
       if (leasable.length === 0) missing.set('bench', 'bench_unavailable');
-      else benchHost = leasable[0]!.url;
+      else {
+        // Read off the lease, not probed again here: the fingerprint has to describe the box
+        // this run is about to use, and the prober already took one on the cycle that
+        // declared it leasable. A second fetch would be a second answer.
+        benchHost = leasable[0]!.url;
+        benchBuild = leasable[0]!.build;
+      }
     }
     if (wanted.has('browser')) {
       // A lease is `(bench, browser)` together. There is one run at a time — the scheduler's
@@ -539,6 +546,7 @@ export class Runner {
       startedAt,
       finishedAt,
       ...(benchHost ? { benchHost } : {}),
+      ...(benchBuild ? { benchBuild } : {}),
       ...(browserEndpoint ? { browserEndpoint } : {}),
       ...(flagged ? { requirements: flagged.requirements, phases: flagged.phases } : {}),
     });

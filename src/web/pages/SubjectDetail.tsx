@@ -197,12 +197,18 @@ export default function SubjectDetail() {
             {currentRec?.meta.coverage ? (
               <span className="dim" style={{ fontSize: 11.5 }}>
                 <CoverageCell coverage={currentRec.meta.coverage} /> verified
-                {currentRec.meta.risk_score_declared !== undefined ? (
+                {currentRec.meta.risk_score_computed !== undefined ? (
                   // The agent's own score and the sum of its items came apart. Both are kept;
                   // saying so is better than picking one and looking certain.
+                  //
+                  // Both halves are read off the record, and both are run-wide. This used to
+                  // print `coverage.risk` as "its items sum to", which is *this section's*
+                  // items — while the mismatch that raised the line was measured across the
+                  // whole run. So the line could fire on a genuine disagreement and then
+                  // display two numbers that were never the two being compared.
                   <span className="req-mismatch">
-                    {' '}· the audit declared risk {currentRec.meta.risk_score_declared}, its items sum to{' '}
-                    {currentRec.meta.coverage.risk}
+                    {' '}· the audit declared risk {currentRec.meta.risk_score}, its items sum to{' '}
+                    {currentRec.meta.risk_score_computed}
                   </span>
                 ) : null}
               </span>

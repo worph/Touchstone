@@ -202,6 +202,11 @@ const META_ORDER = [
   'verdict',
   'top_severity',
   'risk_score',
+  // Kept adjacent to `risk_score`: all three are about the same number's scope and
+  // provenance, and a reader who sees one has to see the others to read it correctly.
+  'risk_score_computed',
+  'combined_score_of',
+  'combined_score_on',
   'blocked_reason',
   'subject_ref',
   'commit',
@@ -214,6 +219,8 @@ const META_ORDER = [
   'summary',
   'started_at',
   'finished_at',
+  'bench_host',
+  'bench_build',
 ];
 
 /** Contract keys first, in contract order; unknown keys keep their relative order after. */

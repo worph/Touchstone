@@ -207,3 +207,36 @@ describe('buildFixReport', () => {
     expect(fixReportFilename('SegmentPlayer')).toBe('SegmentPlayer-fix.md');
   });
 });
+
+/**
+ * Acceptance is a list of what to fix, not a promise of what it buys.
+ *
+ * Of the eight apps taken to compliant on 2026-08-22, AIOStreams needed two rounds and
+ * ChronosMCP three — each time because clearing one finding let the audit reach a check it
+ * had not been able to run before. A brief that says "fix these and you are done" trains a
+ * reader to commit after one round and to read the second round as the audit changing its
+ * mind.
+ */
+describe('what acceptance promises', () => {
+  const brief = (requirements: RecordedRequirement[]) =>
+    buildFixReport({ subject: 'SegmentPlayer', sections: [{ path: 'p', meta: meta({ requirements }) }] }) ?? '';
+
+  it('lists the ids without claiming they are sufficient', () => {
+    const out = brief([req({ id: 'cpu-shares', severity: 'major', note: 'not set on either service' })]);
+    expect(out).toContain('`cpu-shares`');
+    expect(out).toContain('not a guarantee of compliance');
+    // The two reasons the next round can grow, named rather than hinted at.
+    expect(out).toMatch(/behind a failure/i);
+    expect(out).toMatch(/does not list/i);
+  });
+
+  it('no longer promises that the same ids passing means done', () => {
+    const out = brief([req({ id: 'cpu-shares', severity: 'major' })]);
+    expect(out).not.toContain('The change is complete when');
+  });
+
+  it('says nothing of the sort when there is nothing to fix', () => {
+    const out = brief([req({ id: 'cpu-shares', verdict: 'pass' })]);
+    expect(out).not.toContain('not a guarantee of compliance');
+  });
+});

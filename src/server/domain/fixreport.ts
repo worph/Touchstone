@@ -169,7 +169,7 @@ export function buildFixReport(input: FixReportInput): string | null {
   L.push('## Rules of engagement');
   L.push('');
   L.push('1. Change only what a finding below requires. An unrelated improvement makes the fix harder to review and can break a requirement that currently passes.');
-  L.push('2. Each finding names a **requirement id**. Those ids are the acceptance criteria — the next audit checks the same ids.');
+  L.push('2. Each finding names a **requirement id**. Those ids are what the next audit re-checks — but see **Acceptance**: they are what this audit could reach, not a guarantee that nothing else is wrong.');
   L.push('3. Where the audit proposed a remedy it is quoted under **Proposed fix**. Where it did not, derive one from the requirement and the evidence, and say what you chose and why.');
   L.push('4. `CONTRIBUTING.md` in the app repository is the normative source. Read it before changing the compose file; the audit is an application of it, not a replacement for it.');
   L.push('5. Do not edit anything under Touchstone — the report is a record. Fix the app.');
@@ -292,9 +292,30 @@ export function buildFixReport(input: FixReportInput): string | null {
   L.push('## Acceptance');
   L.push('');
   if (findings.length > 0) {
-    L.push('The change is complete when a re-audit records these ids as `pass`:');
+    L.push('Fixing every id below is what this audit asks for:');
     L.push('');
     L.push(findings.map((f) => `- \`${f.requirement.id}\``).join('\n'));
+    L.push('');
+    // The honest caveat, and it is not a formality: of the eight apps taken to compliant on
+    // 2026-08-22, AIOStreams needed two rounds and ChronosMCP three, every time because
+    // clearing one finding let the audit reach a check it had not been able to run before.
+    // A brief that promises "fix these and you are done" trains people to commit after one
+    // round and read the second round's findings as the audit changing its mind.
+    L.push(
+      '**It is not a guarantee of compliance.** This list is what *this* audit was able to reach. ' +
+        'Two things routinely add to it on the next round, and neither is the audit contradicting itself:',
+    );
+    L.push('');
+    L.push(
+      '- **Checks that were behind a failure.** An app that will not start hides every check that ' +
+        'needed it running. Clearing a finding is what lets the next audit get far enough to look.',
+    );
+    L.push(
+      '- **Requirements the protocol does not list.** The audit records a defect it finds under an ' +
+        'id of its own, marked unlisted. It cannot be predicted from the list above, and it is a real finding.',
+    );
+    L.push('');
+    L.push('So: fix these, re-audit, and expect to read the result rather than to file it.');
     L.push('');
   }
   L.push(
