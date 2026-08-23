@@ -20,6 +20,7 @@ import type { ReportResponse } from '../../shared/types.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import { renderMarkdown } from '../domain/markdown.js';
 import { coverageOf } from '../services/ledger.js';
+import type { BenchProber } from '../services/bench.js';
 import type { RunLedger } from '../services/ledger.js';
 import type { Runner, RunOutcome } from '../runner/index.js';
 import type { Scheduler } from '../scheduler/index.js';
@@ -31,6 +32,8 @@ export interface AssayRoutesOptions {
   ledger?: RunLedger;
   scheduler?: Scheduler;
   store?: ReportIndex;
+  /** The demo pool, reported on `/assays/current` — see the `bench` field there. */
+  prober?: BenchProber;
 }
 
 /** How many settled requirements ride along. Enough to see movement, not a second report. */
@@ -97,6 +100,16 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
             recent: [...live.requirements].slice(-RECENT_REQUIREMENTS).reverse(),
           }
         : null,
+      /**
+       * The demo pool rides along, because every surface that offers to *start* a run is
+       * already subscribed here.
+       *
+       * The re-assay button used to fetch `GET /benches` once on mount and keep a single
+       * boolean from it, so its "no bench" note was a snapshot from page load — which is how
+       * an operator came to act on a bench verdict that had been false for five minutes. One
+       * poller, one answer, and the button can no longer disagree with the strip above it.
+       */
+      ...(options.prober ? { bench: { leasable: options.prober.leasable().length, window: options.prober.window() } } : {}),
     };
   });
 

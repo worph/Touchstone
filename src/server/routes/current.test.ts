@@ -42,9 +42,14 @@ function fakeRunner(running: RunStatus['running']) {
   } as never;
 }
 
-async function build(running: RunStatus['running']) {
+async function build(running: RunStatus['running'], prober?: unknown) {
   const instance = Fastify();
-  await instance.register(routes, { prefix: '/api/v1', ledger, runner: fakeRunner(running) });
+  await instance.register(routes, {
+    prefix: '/api/v1',
+    ledger,
+    runner: fakeRunner(running),
+    ...(prober ? { prober: prober as never } : {}),
+  });
   await instance.ready();
   return instance;
 }
@@ -157,5 +162,37 @@ describe('GET /assays/current', () => {
     expect(body.progress?.verified).toBe(12);
     expect(body.progress?.recent.length).toBeLessThanOrEqual(5);
     expect(body.progress?.recent[0]?.id).toBe('rule-11');
+  });
+});
+
+/**
+ * The demo pool rides this endpoint because every surface that offers to *start* a run already
+ * subscribes to it.
+ *
+ * The re-assay button used to fetch `GET /benches` once on mount and keep a single boolean, so
+ * its "no bench" note was a snapshot from page load — and on 2026-08-23 an operator acted on
+ * one that had been false for five minutes.
+ */
+describe('the demo pool, on the endpoint the whole UI already polls', () => {
+  it('carries how many benches are claimable and when that changes', async () => {
+    const instance = await build(null, {
+      leasable: () => [{ name: 'demostaging1' }],
+      window: () => 'demostaging1 is usable for another 92 min, until its wipe at ~14:59 UTC',
+    });
+    const res = await instance.inject({ method: 'GET', url: '/api/v1/assays/current' });
+    const body = res.json() as RunStatus;
+    expect(body.bench).toEqual({
+      leasable: 1,
+      window: 'demostaging1 is usable for another 92 min, until its wipe at ~14:59 UTC',
+    });
+    await instance.close();
+  });
+
+  /** No prober wired is a real configuration, not a dead pool: say nothing rather than "0". */
+  it('omits the pool entirely when nothing can be asked', async () => {
+    const instance = await build(null);
+    const body = (await instance.inject({ method: 'GET', url: '/api/v1/assays/current' })).json() as RunStatus;
+    expect(body.bench).toBeUndefined();
+    await instance.close();
   });
 });

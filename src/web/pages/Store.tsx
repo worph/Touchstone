@@ -166,9 +166,22 @@ export default function Store() {
             }
           >
             {openAlerts[0]!.detail ? <>{openAlerts[0]!.detail}. </> : null}
-            Audits still run: a section that needs nothing missing gets its verdict, the rest are
-            recorded blocked. No app is charged a retry for this and no verdict is reached about
-            one — a blocked cell is grey and hatched, never red.
+            {/*
+              The alert's own `impact`, not a copy of it.
+
+              This used to be a hardcoded paragraph saying audits still run and cost the app
+              nothing — true, but a second copy of the sentence `services/bench.ts` already
+              composes, and one that could say nothing about *when* the condition lifts because
+              it did not know. Rendering `impact` means the banner, the push notification and
+              the chat all quote one source, and the window arrives with it.
+            */}
+            {openAlerts[0]!.impact ?? (
+              <>
+                Audits still run: a section that needs nothing missing gets its verdict, the rest
+                are recorded blocked. No app is charged a retry for this and no verdict is reached
+                about one — a blocked cell is grey and hatched, never red.
+              </>
+            )}
           </Notice>
         </div>
       ) : backlog ? (

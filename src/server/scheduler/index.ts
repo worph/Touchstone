@@ -61,6 +61,19 @@ function migrateKeys(
   return out;
 }
 
+/**
+ * Was this tick stopped by the bench gate?
+ *
+ * The condition, never the reason string: `benchNote()` interpolates each bench's countdown,
+ * so two consecutive gated ticks produce two different `reason`s and any equality check would
+ * report a transition every five minutes — which is the repetition this predicate exists to
+ * end. `decide()` builds the reason with this exact prefix (`policy.ts`), and `policy.test.ts`
+ * pins it.
+ */
+function benchGated(decision: TickDecision | undefined): boolean {
+  return decision?.action === 'idle' && decision.reason.startsWith('no usable demo bench');
+}
+
 export { decide, stateLine, queue, cooldownLeftMin } from './policy.js';
 export type { PolicyInput, SchedulerConstants, SubjectSchedule, TickDecision } from './policy.js';
 export { recordResult, openClaim } from './record.js';
@@ -336,6 +349,39 @@ export class Scheduler {
       });
     }
 
+    // ── the bench gate, as two transitions ───────────────────────────────────────────────
+    // On 2026-08-23 a dead pool put nineteen identical `TICK_BENCH_GATED` rows into the log
+    // between 12:00 and 13:22 — the "one row per thing" that alerts exist to end, and the rule
+    // `bench.ts` already states for its own probe: "a bench that has been down for two days is
+    // one alert and one event, not one event every five minutes". The standing condition lives
+    // in the `bench.unreachable` alert; the log's job is to say when it started and when it
+    // lifted. Demoting the repeat to `debug` would not have done it — `GET /events` does not
+    // filter debug and the Activity page opens at `all`, so the rows would still be there.
+    //
+    // The *ungate* had no row at all before, and that was the sharper gap: on the same day the
+    // pool recovered at 13:23:01 and nothing said so, because the alert stayed open on a second
+    // bench that was still broken and its resolution therefore never fired either.
+    //
+    // Both tested on the gate condition rather than on `reason`, which `benchNote()` rewrites
+    // every tick as the countdown ticks down — string equality would never match.
+    const gatedNow = benchGated(decision);
+    const gatedBefore = benchGated(this.lastTick?.decision);
+    if (gatedNow && !gatedBefore) {
+      this.opts.events.log({
+        level: 'warn',
+        code: 'TICK_BENCH_GATED',
+        message: 'The tick found no demo bench worth claiming, so nothing was audited',
+        detail: { reason: decision.reason, backlog: decision.backlog },
+      });
+    } else if (!gatedNow && gatedBefore) {
+      this.opts.events.log({
+        level: 'info',
+        code: 'TICK_BENCH_UNGATED',
+        message: 'A demo bench is claimable again, so sections that need one can run',
+        detail: { reason: decision.reason, backlog: decision.backlog },
+      });
+    }
+
     if (decision.action === 'audit' && decision.subject) {
       this.opts.events.log({
         level: 'info',
@@ -376,13 +422,8 @@ export class Scheduler {
           this.opts.dispatch?.({ subject: decision.subject as SubjectKey, try_n: claim.try_n }),
         ).catch((err) => console.error('dispatch failed', err));
       }
-    } else if (decision.reason.startsWith('no usable demo bench')) {
-      this.opts.events.log({
-        level: 'warn',
-        code: 'TICK_BENCH_GATED',
-        message: 'The tick found no demo bench worth claiming, so nothing was audited',
-        detail: { reason: decision.reason, backlog: decision.backlog },
-      });
+    } else if (benchGated(decision)) {
+      // Logged above, as a transition rather than once per tick.
     } else {
       this.opts.events.log({
         level: 'debug',

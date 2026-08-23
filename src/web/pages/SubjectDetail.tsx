@@ -6,26 +6,24 @@
  * (ARCHITECTURE.md §1.4 G). The blocked card naming its reason and saying `no try used`
  * is the sentence this page exists to print.
  */
-import { standardLabel } from '@shared/standard';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import type { AssayMeta, AssayRecord, Section, SubjectState } from '@shared/types';
+import type { Section } from '@shared/types';
 import MarkdownView, { MissingReport } from '../components/MarkdownView';
-import StatusCell from '../components/StatusCell';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getReport, getSubject } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
 import ReassayButton from '../components/ReassayButton';
 import FixReportPanel, { FixReportButton } from '../components/FixReport';
-import CoverageCell from '../components/CoverageCell';
-import RequirementList from '../components/RequirementList';
+import LegCard, { StandardTag, verdictSections } from '../components/LegCard';
+import { RequirementsPanel } from '../components/RequirementList';
 import RunCard from '../components/RunCard';
 import { ReadingPanel } from '../components/Reading';
-import { isReading, readingOf, readingSections } from '../lib/reading';
-import { dateOnly, num, since, stamp } from '../lib/format';
+import { readingOf, readingSections } from '../lib/reading';
+import { num, stamp } from '../lib/format';
+import { download } from '../lib/download';
 import { hasFixWork } from '../lib/overview';
-import { displayState, runningState } from '../lib/status';
 import { useRunStatus } from '../data/runStatus';
 import { liveLegs, progressLabel } from '../lib/run';
 
@@ -66,9 +64,6 @@ export default function SubjectDetail() {
   const currentLeg = (selectedLeg && reported.includes(selectedLeg) ? selectedLeg : reported[0]) ?? null;
   const currentRec = currentLeg ? (subject?.sections?.[currentLeg] ?? null) : null;
   const currentFile = currentRec?.file ?? null;
-
-  /** Recorded by the agent during the run. Absent on everything imported before the runner. */
-  const requirements = currentRec?.meta.requirements ?? [];
 
   const report = useAsync(
     () => (currentFile ? getReport(name, currentFile) : Promise.resolve(null)),
@@ -156,7 +151,7 @@ export default function SubjectDetail() {
           `data/protocols/` held three, with no change to this file.
         */}
         <div className="legs">
-          {sectionsOf(subject, live).map((id) => (
+          {verdictSections(subject, live).map((id) => (
             <LegCard key={id} leg={id} rec={subject.sections?.[id] ?? null} live={live} />
           ))}
         </div>
@@ -192,33 +187,7 @@ export default function SubjectDetail() {
 
       {/* What was actually checked. Above the report, because the report is the evidence for
           these and a reader looking for "what failed" should not have to scroll a rubric. */}
-      {requirements.length > 0 ? (
-        <section className="panel" style={{ marginTop: 14 }}>
-          <div className="pane-head">
-            <span className="section-title">requirements</span>
-            {currentRec?.meta.coverage ? (
-              <span className="dim" style={{ fontSize: 11.5 }}>
-                <CoverageCell coverage={currentRec.meta.coverage} /> verified
-                {currentRec.meta.risk_score_computed !== undefined ? (
-                  // The agent's own score and the sum of its items came apart. Both are kept;
-                  // saying so is better than picking one and looking certain.
-                  //
-                  // Both halves are read off the record, and both are run-wide. This used to
-                  // print `coverage.risk` as "its items sum to", which is *this section's*
-                  // items — while the mismatch that raised the line was measured across the
-                  // whole run. So the line could fire on a genuine disagreement and then
-                  // display two numbers that were never the two being compared.
-                  <span className="req-mismatch">
-                    {' '}· the audit declared risk {currentRec.meta.risk_score}, its items sum to{' '}
-                    {currentRec.meta.risk_score_computed}
-                  </span>
-                ) : null}
-              </span>
-            ) : null}
-          </div>
-          <RequirementList items={requirements} />
-        </section>
-      ) : null}
+      <RequirementsPanel rec={currentRec} />
 
       {never ? (
         <div className="panel" style={{ marginTop: 14 }}>
@@ -297,97 +266,4 @@ export default function SubjectDetail() {
       )}
     </div>
   );
-}
-
-interface LiveLeg {
-  legs: Section[];
-  started_at: string;
-  note?: string;
-}
-
-/**
- * The sections to draw as verdict cards: what the subject has, plus what this run is adding.
- *
- * A section that *measures* is excluded — it has no verdict, and a card reading
- * `not yet run` beside a table that plainly did run would be the page contradicting itself.
- * It gets a panel of its own below instead.
- */
-function sectionsOf(subject: SubjectState, live: LiveLeg | null): Section[] {
-  const known = Object.keys(subject.sections ?? {}).filter((id) => !isReading(subject.sections?.[id]));
-  const extra = (live?.legs ?? []).filter((id) => !known.includes(id) && !isReading(subject.sections?.[id]));
-  return [...known, ...extra];
-}
-
-function LegCard({ leg, rec, live }: { leg: Section; rec: AssayRecord | null; live: LiveLeg | null }) {
-  /**
-   * No count on the card. `16/25` is a fact about the *run*, and printing it once per section
-   * says each section is 16/25 of the way through its own list — two cards, the same number,
-   * neither of them true. The run's progress belongs to the run card, which is on screen
-   * beside this one; the section card says only that this section is being worked on.
-   */
-  const running = live?.legs.includes(leg) ? runningState(live.started_at) : null;
-  const s = running ?? displayState(rec);
-  return (
-    <div className="leg-card">
-      <span className="leg-name">{leg}</span>
-      {/* While running the note is suppressed: the line below already says "being assayed
-          now", and the run's clock and count belong to the run card, once, not to each
-          section. A finished record keeps its note — that one is about the section. */}
-      <StatusCell state={s} size="lg" showNote={!running} />
-      {running ? (
-        <div className="leg-meta">
-          <span>being assayed now</span>
-        </div>
-      ) : rec ? (
-        <div className="leg-meta">
-          <span>{standardLabel(rec.meta)}</span>
-          <span>
-            {s.kind === 'blocked' ? 'since' : 'ran'} {dateOnly(rec.meta.started_at)} ·{' '}
-            {since(rec.meta.started_at)}
-          </span>
-          {/* The sentence the wiki table could not say. */}
-          {rec.meta.status === 'blocked' ? <span>no try used</span> : null}
-        </div>
-      ) : (
-        <div className="leg-meta">
-          <span>this section has never been assayed</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * The standard that judged this assay, as a link to the exact bytes of it.
- *
- * The old label was `Static Review Protocol v7`, and `v7` pointed at nothing: the text it
- * named was overwritten the next time somebody edited the rubric. A hash points at a snapshot
- * the protocol history keeps, so the claim "you were graded under this" is checkable rather
- * than asserted. A legacy record still renders its integer — unlinked, because there is
- * nothing on the other end of it.
- */
-function StandardTag({ meta, section }: { meta: AssayMeta; section: Section }) {
-  const label = standardLabel(meta);
-  if (!meta.standard_sha256) return <span className="tag">{label}</span>;
-  return (
-    <Link
-      className="tag tag--link"
-      to={`/protocol?p=${encodeURIComponent(section)}&rev=${encodeURIComponent(meta.standard_sha256)}`}
-      title="Read the revision of the standard that judged this assay"
-    >
-      {label}
-    </Link>
-  );
-}
-
-function download(filename: string, text: string): void {
-  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
 }

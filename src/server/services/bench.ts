@@ -165,6 +165,96 @@ export function boardClaimsReady(claim: string | null | undefined): boolean {
   return /✅|\bready\b|\bonline\b|\bhealthy\b/i.test(claim) && !/❌|\bdown\b|\berror\b/i.test(claim);
 }
 
+// ── when, not just what ─────────────────────────────────────────────────────────────────
+
+/**
+ * Whether a functional assay may claim this bench — the rule, as a predicate.
+ *
+ * Extracted from `BenchProber.leasable()` so `describeWindow` below cannot drift from the
+ * gate it is describing. A sentence that said "usable" about a bench the runner then refused
+ * would be worse than no sentence at all.
+ */
+export function isLeasable(bench: BenchHealth, minRemainingMin: number): boolean {
+  if (bench.status !== 'healthy') return false;
+  if (bench.processing === true) return false;
+  if (bench.remaining_min === undefined) return true; // hand-configured, no board to ask
+  return bench.remaining_min !== null && bench.remaining_min > minRemainingMin;
+}
+
+/** `13:42 UTC`, from a moment. The log and the pool API are both UTC; so is this. */
+function clockOf(at: Date): string {
+  return `${String(at.getUTCHours()).padStart(2, '0')}:${String(at.getUTCMinutes()).padStart(2, '0')} UTC`;
+}
+
+/** When a bench was last seen healthy, as something a person can act on. */
+function lastSeen(iso: string | undefined, now: Date): string {
+  if (!iso) return 'never';
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return 'never';
+  return at.toISOString().slice(0, 10) === now.toISOString().slice(0, 10)
+    ? `not since ${clockOf(at)}`
+    : `not since ${at.toISOString().slice(0, 10)}`;
+}
+
+/**
+ * The pool in one sentence — and, crucially, **when the answer changes**.
+ *
+ * On 2026-08-23 an operator started an audit into a dead pool, was told `functional` would be
+ * recorded blocked, and had nowhere to go from there. Every surface named the condition and
+ * none named the recovery: the bench became claimable again ninety seconds later and nothing
+ * said so. Everything needed to answer "when" was already on these rows — `remaining_min`,
+ * `processing`, `healthy_at` — and nothing turned it into a sentence.
+ *
+ * So this is that sentence, in one place, rendered by the re-assay button, the Store banner
+ * (through the alert's `impact`), the Activity page and the chat alike. It is deliberately
+ * about the pool rather than about a bench: the question it answers is "can a functional
+ * section run, and if not, when" — `claimNote()` on the Activity page still says what each
+ * individual row's runway is, which is a different question.
+ *
+ * `now` is a parameter so the prose is testable.
+ */
+export function describeWindow(
+  rows: readonly BenchHealth[],
+  minRemainingMin: number,
+  now: Date = new Date(),
+): string {
+  if (rows.length === 0) return 'no demo bench is configured';
+
+  // The bench the runner would actually take. `list()` is name-sorted and `execute()` reads
+  // `leasable()[0]`, so describing any other row would be describing a box nothing will use.
+  const claimable = rows.filter((b) => isLeasable(b, minRemainingMin));
+  const taking = claimable[0];
+  if (taking) {
+    const left = taking.remaining_min;
+    return typeof left === 'number'
+      ? `${taking.name} is usable for another ${left} min, until its wipe at ~${clockOf(new Date(now.getTime() + left * 60_000))}`
+      : `${taking.name} is usable (the board gives no countdown)`;
+  }
+
+  const healthy = rows.filter((b) => b.status === 'healthy');
+  if (healthy.length > 0) {
+    // Mid-cleanup first: it is the only one of these that resolves by itself, and quickly.
+    const busy = healthy.find((b) => b.processing === true);
+    if (busy) return `${busy.name} is mid-cleanup — usually back within minutes`;
+
+    // Healthy and inside the guard. The one with the *most* runway is the one whose wipe —
+    // and therefore whose next usable window — comes soonest.
+    const soonest = [...healthy].sort((a, b) => (b.remaining_min ?? 0) - (a.remaining_min ?? 0))[0]!;
+    const left = soonest.remaining_min;
+    if (typeof left === 'number') {
+      return (
+        `${soonest.name} is ${left} min from its wipe at ~${clockOf(new Date(now.getTime() + left * 60_000))}` +
+        ` and inside the ${minRemainingMin} min guard — usable again shortly after it`
+      );
+    }
+    return `${soonest.name} answers but the board gives no countdown, so it cannot be claimed`;
+  }
+
+  // Nothing answering at all. Name each box and when it was last seen, because "the pool is
+  // down" sends whoever reads it straight off to look up the thing we already know.
+  return `no demo bench is answering — ${rows.map((b) => `${b.name} ${lastSeen(b.healthy_at, now)}`).join(', ')}`;
+}
+
 // ── the probe ───────────────────────────────────────────────────────────────────────────
 
 /** A cookie jar just large enough for one login flow. Discarded when the probe returns. */
@@ -365,12 +455,17 @@ export class BenchProber {
    * has no countdown to read, is exempt.
    */
   leasable(): BenchHealth[] {
-    const min = this.opts.minRemainingMin ?? 60;
-    return this.healthy().filter((b) => {
-      if (b.processing === true) return false;
-      if (b.remaining_min === undefined) return true; // hand-configured, no board to ask
-      return b.remaining_min !== null && b.remaining_min > min;
-    });
+    return this.list().filter((b) => isLeasable(b, this.opts.minRemainingMin ?? 60));
+  }
+
+  /**
+   * Whether a functional assay can start, and when that changes — see `describeWindow`.
+   *
+   * A method rather than a call at each site because `minRemainingMin` is this object's, and
+   * a caller that guessed 60 would describe a gate it does not control.
+   */
+  window(now = new Date()): string {
+    return describeWindow(this.list(), this.opts.minRemainingMin ?? 60, now);
   }
 
   /** Is the pool answering at all? Distinct from having a bench worth claiming. */
@@ -567,10 +662,17 @@ export class BenchProber {
     // What this is currently stopping, in the operator's terms. Not "the functional queue":
     // there is no queue (invariant 8), and which sections need a bench is the protocol's to
     // say — an audit still runs, it is simply narrower while this holds.
+    // Always set, and always carrying the window.
+    //
+    // It used to be `undefined` whenever anything was still leasable, so a half-broken pool —
+    // one box down, one working, which is the ordinary case — gave the operator a card naming
+    // a fault and saying nothing about whether work could proceed. And even when it was set it
+    // said only what would go wrong, never when it would stop. The second clause is the whole
+    // point: an alert whose remedy is "wait ninety seconds" should say so.
     const impact =
-      this.leasable().length === 0
-        ? 'sections that need a bench will be recorded blocked · no try consumed'
-        : undefined;
+      (this.leasable().length === 0
+        ? 'sections that need a bench will be recorded blocked · no try consumed · '
+        : 'audits still run · ') + this.window();
 
     if (authFailing.length > 0) {
       this.opts.alerts.open({

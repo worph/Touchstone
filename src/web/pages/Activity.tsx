@@ -209,6 +209,22 @@ export default function Activity() {
           </div>
         ) : null}
 
+        {/*
+          The pool in one line, above the roster.
+
+          The rows below say what each *box* is; this says whether a functional section can run
+          at all, and when that changes. Those came apart on 2026-08-23: every row read healthy
+          while nothing was claimable, and an operator reading the roster had no way to see it.
+          Composed by the server (`services/bench.ts`), so the page, the re-assay button, the
+          alert and the chat cannot phrase the same pool three ways.
+        */}
+        {benches && benches.benches.length > 0 ? (
+          <div className="act-quiet" data-pool={benches.leasable > 0 ? 'up' : 'down'}>
+            <strong className="num">{benches.leasable}</strong> of {benches.benches.length} usable
+            {benches.window ? ` — ${benches.window}` : ''}.
+          </div>
+        ) : null}
+
         {(benches?.benches.length ?? 0) === 0 ? (
           <div className="act-quiet">
             The demo pool has not been read yet, so the functional queue stays paused. The

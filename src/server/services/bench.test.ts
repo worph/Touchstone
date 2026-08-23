@@ -8,11 +8,13 @@ import {
   BenchProber,
   boardClaimsReady,
   describeClaim,
+  describeWindow,
   buildFrom,
   probeBench,
   readPool,
   type BenchConfig,
 } from './bench.js';
+import type { BenchHealth } from '../../shared/activity.js';
 import { EventLog } from './events.js';
 
 const BENCH: BenchConfig = { name: 'demostaging1', url: 'https://demostaging1.example' };
@@ -219,7 +221,35 @@ describe('the pool', () => {
     await p.probeAll();
     expect(alerts.get('bench.auth')?.impact).toContain('recorded blocked');
     expect(alerts.get('bench.auth')?.impact).toContain('no try consumed');
+    // And when it lifts. An alert that names only the fault leaves the operator with nothing
+    // to do and nothing to wait for — which is how one came to sit open all day.
+    expect(alerts.get('bench.auth')?.impact).toContain('demostaging1');
     expect(p.poolUp).toBe(false);
+  });
+
+  /**
+   * A half-broken pool is the ordinary case, and it used to carry no impact line at all — the
+   * card named a fault and said nothing about whether work could proceed.
+   */
+  it('still says what is happening when one bench is down and another is fine', async () => {
+    let call = 0;
+    vi.stubGlobal('fetch', async (url: string) =>
+      url.includes('/api/demos')
+        ? new Response(
+            JSON.stringify([
+              { id: 'demostaging1.x', url: 'https://demostaging1.example', hoursUntilCleanup: 12, isProcessing: false, lastCleanupSuccess: true },
+              { id: 'demostaging2.x', url: 'https://demostaging2.example', hoursUntilCleanup: 12, isProcessing: false, lastCleanupSuccess: true },
+            ]),
+            { status: 200 },
+          )
+        : answer(call++ === 0 ? 200 : 401),
+    );
+    const p = new BenchProber({ benches: [], stateDir: dir, events, alerts, poolUrl: 'https://app.example/demo/api/demos' });
+    await p.probeAll();
+
+    const impact = alerts.get('bench.auth')?.impact;
+    expect(impact).toContain('audits still run');
+    expect(impact).toContain('is usable for another');
   });
 
   it('resolves the alert as soon as a bench answers again', async () => {
@@ -439,5 +469,87 @@ describe('the platform fingerprint', () => {
     const probe = await probeBench(BENCH);
     expect(probe.status).toBe('healthy');
     expect(probe.build).toBeUndefined();
+  });
+});
+
+/**
+ * When the pool comes back — the sentence that was missing on 2026-08-23.
+ *
+ * An operator started an audit into a dead pool, was told `functional` would be recorded
+ * blocked, and had nowhere to go: every surface named the condition and none named the
+ * recovery. The bench became claimable again ninety seconds later and nothing said so. All the
+ * facts were already on these rows; only the sentence was missing.
+ *
+ * `now` is fixed so the clock arithmetic is deterministic.
+ */
+describe('when a functional section could next run', () => {
+  const NOW = new Date('2026-08-23T13:27:00Z');
+
+  function row(over: Partial<BenchHealth> = {}): BenchHealth {
+    return {
+      name: 'demostaging1',
+      url: 'https://demostaging1.example',
+      status: 'healthy',
+      remaining_min: 600,
+      processing: false,
+      ...over,
+    };
+  }
+
+  it('says nothing is configured rather than inventing an outage', () => {
+    expect(describeWindow([], 60, NOW)).toBe('no demo bench is configured');
+  });
+
+  it('counts down the bench a run would actually take, and names its wipe', () => {
+    // 92 minutes on from 13:27 is 14:59 — the real shape of demostaging1 that afternoon.
+    expect(describeWindow([row({ remaining_min: 92 })], 60, NOW)).toBe(
+      'demostaging1 is usable for another 92 min, until its wipe at ~14:59 UTC',
+    );
+  });
+
+  /** The runner takes `leasable()[0]`, so any other row would describe a box nothing uses. */
+  it('describes the bench the runner would claim, not the first one listed', () => {
+    const rows = [row({ name: 'demostaging1', remaining_min: 20 }), row({ name: 'demostaging2' })];
+    expect(describeWindow(rows, 60, NOW)).toContain('demostaging2 is usable');
+  });
+
+  /**
+   * The case that actually bit. The login probe answered 200 while the pool API still said
+   * `isProcessing`, so the bench read healthy and was not claimable — and `get_status` said
+   * "0 of 2 usable — demostaging1 healthy", which reads as a contradiction.
+   */
+  it('explains a bench that answers but is mid-cleanup, and that it resolves itself', () => {
+    expect(describeWindow([row({ processing: true })], 60, NOW)).toBe(
+      'demostaging1 is mid-cleanup — usually back within minutes',
+    );
+  });
+
+  it('explains a bench held back by the guard, and when it returns', () => {
+    expect(describeWindow([row({ remaining_min: 34 })], 60, NOW)).toBe(
+      'demostaging1 is 34 min from its wipe at ~14:01 UTC and inside the 60 min guard —' +
+        ' usable again shortly after it',
+    );
+  });
+
+  it('names every box and when each was last seen when none is answering', () => {
+    const rows = [
+      row({ status: 'unreachable', healthy_at: '2026-08-23T11:49:00Z' }),
+      row({ name: 'demostaging2', status: 'unreachable', healthy_at: '2026-08-23T07:11:00Z' }),
+    ];
+    expect(describeWindow(rows, 60, NOW)).toBe(
+      'no demo bench is answering — demostaging1 not since 11:49 UTC, demostaging2 not since 07:11 UTC',
+    );
+  });
+
+  it('does not claim a countdown the board never gave', () => {
+    expect(describeWindow([row({ remaining_min: null })], 60, NOW)).toContain('no countdown');
+  });
+
+  /** A hand-configured bench has no board to ask, and that is not a reason to refuse it. */
+  it('treats an absent countdown as usable, matching the claim rule', () => {
+    const { remaining_min: _drop, ...bare } = row();
+    expect(describeWindow([bare as BenchHealth], 60, NOW)).toBe(
+      'demostaging1 is usable (the board gives no countdown)',
+    );
   });
 });

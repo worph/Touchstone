@@ -26,6 +26,7 @@
  * smaller change than muting the thing people asked to be told about.
  */
 
+import { blockedReasonClause } from '../../shared/activity.js';
 import { callTool, McpError } from './mcp.js';
 import type { Alert, AlertTransition } from './alerts.js';
 import type { EventLog, EventRecord } from './events.js';
@@ -254,31 +255,15 @@ export function pushBodyFor(event: EventRecord): string {
       if (typeof d.risk === 'number' && d.risk > 0) parts.push(`risk ${d.risk}`);
       // The functional half being blocked is the difference between "this app is fine" and
       // "half of this was never checked", so it belongs in the two lines someone reads.
-      if (d.blocked) parts.push(`a section was blocked (${describeReason(String(d.blocked))})`);
+      if (d.blocked) parts.push(`a section was blocked (${blockedReasonClause(String(d.blocked))})`);
       return parts.join(' · ');
     }
     case 'ASSAY_BLOCKED':
-      return `${name} — could not start: ${describeReason(String(d.reason ?? 'unknown'))}`;
+      return `${name} — could not start: ${blockedReasonClause(String(d.reason ?? 'unknown'))}`;
     case 'ASSAY_FAILED':
       return `${name} — the audit failed: ${trim(String(d.error ?? 'no reason given'), 120)}`;
     default:
       return event.message;
-  }
-}
-
-/** Reasons are snake_case codes in the log; nobody reads those on a phone. */
-function describeReason(reason: string): string {
-  switch (reason) {
-    case 'bench_unavailable':
-      return 'no usable demo bench';
-    case 'browser_unavailable':
-      return 'no browser was answering';
-    case 'runner_disabled':
-      return 'the runner is switched off';
-    case 'runner_busy':
-      return 'another audit is already running';
-    default:
-      return reason.replace(/_/g, ' ');
   }
 }
 
