@@ -6,10 +6,11 @@
  * (ARCHITECTURE.md §1.4 G). The blocked card naming its reason and saying `no try used`
  * is the sentence this page exists to print.
  */
+import { standardLabel } from '@shared/standard';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import type { AssayRecord, Section, SubjectState } from '@shared/types';
+import type { AssayMeta, AssayRecord, Section, SubjectState } from '@shared/types';
 import MarkdownView, { MissingReport } from '../components/MarkdownView';
 import StatusCell from '../components/StatusCell';
 import { EmptyState, Loading, Notice } from '../components/Ui';
@@ -136,9 +137,10 @@ export default function SubjectDetail() {
                   <span className="tag" key={im}>{im}</span>
                 ))}
                 {refs.commit ? <span className="tag">commit {refs.commit}</span> : null}
-                <span className="tag">
-                  {refs.standard} v{refs.standard_version}
-                </span>
+                {/* The revision that judged this, and — because it is a hash rather than a
+                    number — a way to go and read exactly those bytes. That dereference is the
+                    whole point of the protocol history. */}
+                <StandardTag meta={refs} section={refs.section} />
               </div>
             </div>
           ) : null}
@@ -338,9 +340,7 @@ function LegCard({ leg, rec, live }: { leg: Section; rec: AssayRecord | null; li
         </div>
       ) : rec ? (
         <div className="leg-meta">
-          <span>
-            {rec.meta.standard} v{rec.meta.standard_version}
-          </span>
+          <span>{standardLabel(rec.meta)}</span>
           <span>
             {s.kind === 'blocked' ? 'since' : 'ran'} {dateOnly(rec.meta.started_at)} ·{' '}
             {since(rec.meta.started_at)}
@@ -354,6 +354,29 @@ function LegCard({ leg, rec, live }: { leg: Section; rec: AssayRecord | null; li
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The standard that judged this assay, as a link to the exact bytes of it.
+ *
+ * The old label was `Static Review Protocol v7`, and `v7` pointed at nothing: the text it
+ * named was overwritten the next time somebody edited the rubric. A hash points at a snapshot
+ * the protocol history keeps, so the claim "you were graded under this" is checkable rather
+ * than asserted. A legacy record still renders its integer — unlinked, because there is
+ * nothing on the other end of it.
+ */
+function StandardTag({ meta, section }: { meta: AssayMeta; section: Section }) {
+  const label = standardLabel(meta);
+  if (!meta.standard_sha256) return <span className="tag">{label}</span>;
+  return (
+    <Link
+      className="tag tag--link"
+      to={`/protocol?p=${encodeURIComponent(section)}&rev=${encodeURIComponent(meta.standard_sha256)}`}
+      title="Read the revision of the standard that judged this assay"
+    >
+      {label}
+    </Link>
   );
 }
 

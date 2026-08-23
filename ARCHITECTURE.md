@@ -327,14 +327,19 @@ protocol   -- data/protocols/<id>.md; a `leaf` IS a section definition
   -- phases    its fixed steps, if it has any; the UI track and the prompt both read this list
 
 standard   -- not a separate entity: a section's standard IS its protocol file
-  name, version
-  -- taken from the leaf's own frontmatter, which the editor bumps on every save. There was
-  --   a `data/standards/*.yaml` override until 2026-08-20; it could only ever disagree with
-  --   the rubric it claimed to version, and did.
+  name, sha256
+  -- the leaf's name, and the hash of the whole file that is its revision. There was an
+  --   integer in the frontmatter until 2026-08-23; it moved only when somebody used the
+  --   editor, moved whether or not the content changed, and named text that no longer
+  --   existed once it was edited. `store/revisions.ts` keeps a snapshot per revision, so the
+  --   hash on an assay resolves to the bytes that judged it.
+  -- There was also a `data/standards/*.yaml` override until 2026-08-20; it could only ever
+  --   disagree with the rubric it claimed to version, and did.
 
 -- WHAT HAPPENED ---------------------------------------------------------
 assay                        -- the frontmatter of a report file IS this record
-  subject, origin, section, standard, standard_version,
+  subject, origin, section, standard, standard_sha256,
+  -- `standard_version` (an integer) on any file written before 2026-08-23; read, never written
   -- `subject` is the bare name; `origin` is filled in on read when the file predates it
   -- `leg` on any file written before 2026-08-20; filled into `section` on read
   status, verdict, top_severity, risk_score,
@@ -371,7 +376,8 @@ it is today. §1.4 G explains why.
 | Entity | Storage |
 | --- | --- |
 | `standard` | the protocol file itself — a section's name and version are its own rubric's |
-| `protocol` | `protocols/*.md` — the rubric, the definition of the sections, and the version every assay records |
+| `protocol` | `protocols/*.md` — the rubric, the definition of the sections, and — as the sha256 of the file — the revision every assay records |
+| `revision` | one recorded state of a protocol file: `{seq, at, file, sha256, parent, bytes, source, message}` in `protocols/.history/log.jsonl`, beside a snapshot of the bytes |
 | `subject` | each origin's GitHub contents API + overrides in `config.yaml` |
 | `origin` | `config.yaml` `origins[]` — never discovered, and the default one is re-added if dropped |
 | `assay` | **frontmatter of the report file** — the record and the artefact are one thing |
@@ -866,7 +872,7 @@ Two properties make the exclusion safe to write down:
   401 in production, which is the worst way to find out.
 
 What it publishes is what an app author is entitled to about their own app: the hallmark, the
-standard version that judged it, the requirements the audit settled, and the fix brief. It is not
+standard revision that judged it, the requirements the audit settled, and the fix brief. It is not
 a second composition — `hallmarks()` and `buildFixReport()` are the same functions the operator
 pages read, because a published verdict that has drifted from the internal one is the failure mode
 a separate public surface invites.

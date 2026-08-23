@@ -11,6 +11,9 @@ dist
 # baked in — a redeploy carrying somebody else's archive would be a very confusing bug.
 data/*
 !data/protocols/
+# ...but not the history of somebody else's edits to them. `ensureProtocolFiles` would
+# filter it out anyway; this keeps it out of the image in the first place.
+data/protocols/.history
 data/reports
 data/trials
 data/state

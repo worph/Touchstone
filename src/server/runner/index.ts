@@ -38,6 +38,7 @@ import { subjectRefOf, type OriginEntry } from '../store/config.js';
 import type { BenchProber } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 import { sectionsOf, type ExecutorRef, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
+import type { RevisionStore } from '../store/revisions.js';
 import { coverageOf, type CanonicalRequirement, type RunLedger, type RunState } from '../services/ledger.js';
 import type { EventLog } from '../services/events.js';
 import { callAgent, type AgentOptions, type AgentOutcome } from './agent.js';
@@ -154,6 +155,11 @@ export interface RunnerOptions {
   ports?: PortProber;
   /** The rubric, read fresh per run so an edit takes effect on the next audit, not the next boot. */
   protocols?: ProtocolStore;
+  /**
+   * The protocol history. Optional, and a run proceeds without it — a box that cannot write
+   * its history must still be able to audit (invariant 7).
+   */
+  revisions?: RevisionStore;
   /** Where the agent records requirements as it settles them. Absent = the old blob-only path. */
   ledger?: RunLedger;
   /** How the agent reaches this app's MCP surface. Named in the prompt. */
@@ -287,6 +293,15 @@ export class Runner {
     }
 
     // ── what this run is made of ─────────────────────────────────────────────────────────
+    // Record what is about to judge this run, before reading it. Every assay stamps the
+    // sha256 of the protocol that graded it, and this is what guarantees those bytes are in
+    // the history to be read back — including when the rubric was last changed by somebody
+    // with an editor and a shell rather than by this app.
+    //
+    // After the store-reachability gate above on purpose: a run blocked by infra should not
+    // manufacture a revision row. Awaited, not fired off, or it races the read below.
+    await this.opts.revisions?.sweep();
+
     // Read per run, not cached: an operator who edits the protocol expects the next audit to
     // use it, and a rubric held in memory since boot is the kind of staleness nobody suspects.
     const plan = await this.plan();
@@ -737,7 +752,7 @@ export class Runner {
     return {
       id: section.id,
       name: section.name,
-      standard: { name: section.name, version: section.version },
+      standard: { name: section.name, sha256: section.sha256 },
       phases: section.phases.map((p) => p.id),
       headings: section.headings,
     };

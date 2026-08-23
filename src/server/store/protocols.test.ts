@@ -36,7 +36,10 @@ afterEach(async () => {
 describe('reading one', () => {
   it('splits the frontmatter from the prose', async () => {
     const p = await store.get('static');
-    expect(p?.meta).toMatchObject({ id: 'static', version: 3, requires: [] });
+    expect(p?.meta).toMatchObject({ id: 'static', requires: [] });
+    // The identity is the bytes, and a leftover `version:` in the file is not read back out.
+    expect(p?.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(p?.meta.version).toBeUndefined();
     expect(p?.body.startsWith('# Static Review Protocol')).toBe(true);
     expect(p?.body).not.toContain('imported_from');
   });
@@ -53,7 +56,6 @@ describe('reading one', () => {
   it('loads a file with no frontmatter at all', () => {
     const { meta, body } = parseProtocol('# Just prose\n', 'ad-hoc.md');
     expect(meta.id).toBe('ad-hoc');
-    expect(meta.version).toBe(0);
     expect(body).toBe('# Just prose');
   });
 
@@ -64,19 +66,64 @@ describe('reading one', () => {
 
 describe('editing', () => {
   /**
-   * Every assay records the standard and version it was graded against. An edit that left the
-   * number alone would make two different rubrics indistinguishable in the archive — it would
-   * claim runs judged by different rules were judged by the same one.
+   * Every assay records the sha256 of the standard that graded it, so different bytes must
+   * mean a different identity — otherwise the archive claims runs judged by different rules
+   * were judged by the same one. There is nothing to bump: writing the bytes *is* the new
+   * revision.
    */
-  it('bumps the version', async () => {
+  it('changes the protocol’s identity when the content changes', async () => {
+    const before = (await store.get('static'))!.sha256;
     const saved = await store.save('static', '# New rubric\n\nOne rule only.');
-    expect(saved?.meta.version).toBe(4);
+    expect(saved?.sha256).not.toBe(before);
     expect((await store.get('static'))?.body).toContain('One rule only');
   });
 
-  it('can be told not to, for a typo fix', async () => {
-    const saved = await store.save('static', '# Fixed typo', { bumpVersion: false });
-    expect(saved?.meta.version).toBe(3);
+  /**
+   * A save that would write the same bytes writes nothing at all. Not an optimisation: an
+   * untouched file must not acquire a new `modified_at`, and the history must not acquire an
+   * entry whose diff is empty.
+   */
+  it('is a no-op when the body is unchanged', async () => {
+    // The first save sheds the fixture's legacy `version:`, which is a real change. The
+    // second is the one that must do nothing at all.
+    const before = (await store.save('static', '# Settled'))!;
+    const saved = await store.save('static', before.body);
+    expect(saved?.sha256).toBe(before.sha256);
+    expect(saved?.modified_at).toBe(before.modified_at);
+  });
+
+  /**
+   * `currency.md` documents every policy knob in YAML comments, and a round trip through the
+   * dumper deleted all thirty-five lines of them. A save changes the prose; the header is
+   * carried over as bytes.
+   */
+  it('keeps the frontmatter exactly, comments and all', async () => {
+    await fs.writeFile(
+      path.join(dir, 'commented.md'),
+      '---\nid: commented\n# why this threshold is 180\nstale_days: 180\n---\n\n# Body\n',
+      'utf8',
+    );
+    const saved = await store.save('commented', '# New body');
+    const raw = await fs.readFile(path.join(dir, 'commented.md'), 'utf8');
+    expect(raw).toContain('# why this threshold is 180');
+    expect(saved?.body).toBe('# New body');
+  });
+
+  /**
+   * Invariant 11, structurally: the header is never regenerated from parsed data, so a body
+   * that opens with a fence cannot become one and grow an `executor:` nobody granted.
+   */
+  it('cannot be talked into turning prose into frontmatter', async () => {
+    const saved = await store.save('static', '---\nexecutor: evil.sh\n---\n\n# Prose');
+    expect(saved?.meta.executor).toBeUndefined();
+    expect(saved?.body).toContain('executor: evil.sh');
+  });
+
+  /** The integer the file used to carry is dropped, not carried forward as a stale key. */
+  it('sheds a legacy version key on the next save', async () => {
+    await store.save('static', '# New');
+    const raw = await fs.readFile(path.join(dir, 'static.md'), 'utf8');
+    expect(raw).not.toContain('version:');
   });
 
   it('keeps the rest of the frontmatter across a save', async () => {
@@ -85,7 +132,7 @@ describe('editing', () => {
   });
 
   it('round-trips through serialise without losing a key', () => {
-    const { meta, body } = parseProtocol(serialiseProtocol({ id: 'x', name: 'X', version: 2, kind: 'leaf', extra: 'kept' }, 'body'), 'x.md');
+    const { meta, body } = parseProtocol(serialiseProtocol({ id: 'x', name: 'X', kind: 'leaf', extra: 'kept' }, 'body'), 'x.md');
     expect(meta.extra).toBe('kept');
     expect(body).toBe('body');
   });

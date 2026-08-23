@@ -2093,3 +2093,92 @@ UX.md §5 lost the line "No editing of the standard in the UI" — the Protocol 
 rubric since 2026-08-20 (§4f) and the claim had simply gone stale. Two lines took its place: no
 editing of `config.yaml` in the UI, and no tool for the administrator to read or write its own
 context.
+
+## 5v. The rubric has a history, and its version is its bytes — 2026-08-23
+
+Asked for as "a local git, just to track protocol updates and see the diff in the interface".
+Built as something smaller and better fitted: an append-only log with snapshots, `no git`. The
+three arguments against a repo in `data/`, in order of how much they would have cost:
+
+- **`data/protocols/*.md` are tracked by this repo.** A `.git` under `data/` makes it an
+  embedded repository, and a UI edit in dev commits into a directory the outer repo also
+  tracks.
+- **It invites `git checkout`.** Rewinding a rubric would put two different texts under one
+  `version:`, which is exactly the ambiguity invariant 9 exists to prevent.
+- **A subprocess on a read path**, plus `index.lock`, plus a degraded mode for when git is
+  missing (invariant 7).
+
+### One identity, decided by the user
+
+The integer and the hash were not going to coexist — "we either use the new snapshot system or
+the old version system, not both". So `version:` is deleted from the frontmatter, and the
+sha256 of the whole file is the revision. `standard_version` in an assay becomes
+`standard_sha256`; the old field is read-only legacy, exactly like `leg`.
+
+Frontmatter is included in the hash because `policy:` lives there — a threshold is part of what
+a check does.
+
+### What shipped
+
+- `src/server/store/revisions.ts` — the log, the snapshots, the sweep, a promise-chain lock,
+  and every failure path returning rather than throwing. `data/protocols/.history/log.jsonl`
+  plus `<file>/<seq>-<sha12>.<ext>`.
+- **Swept on observe**, at boot (`index.ts`), after a save (`routes/protocols.ts`) and before
+  a run reads the protocol (`Runner.execute`, after the store-reachability gate so an infra
+  block manufactures no revision). Hooking the save alone would have missed the case that
+  matters most — a rubric edited over SSH.
+- Three routes under `/protocols/:id/revisions`: the timeline (rubric **and** the script it
+  names, because that is one question), one revision with its bytes, and a diff against the
+  parent. **No restore verb.**
+- `src/shared/linediff.ts` — prefix/suffix trim, LCS, hunks. No new dependency.
+- `src/shared/standard.ts` — `standardLabel()`, the one place that knows both branches.
+  Twelve-character hashes everywhere, matching what `scripted.ts` has always printed.
+- Protocols page: hash labels, a **required** reason field beside save, and a history panel
+  with per-row diffs. `observed` rows say "no reason recorded" rather than showing a blank.
+- `PROTOCOL_REVISED` (info) for observed rows only; `PROTOCOL_EDITED`'s detail carries the
+  sha, the seq and the reason.
+- The in-body `## Changelog` sections are gone from all three protocols, along with the
+  sentence in `prompt.ts` that told the agent not to act on them.
+
+### The migration was an ordering, not a script
+
+Ship the log first, boot once, *then* strip the changelogs. The boot sweep captured the
+pre-cutover text — changelogs, `version:` keys and all — as revisions 1–4 at 12:01:26, and the
+strip landed as 5–7. Nothing was backfilled: synthesising rows for v6 and v5 would have put
+entries in the log that dereference to nothing, which is the defect the whole change exists to
+remove.
+
+**On a deployed box this does not happen by itself.** `ensureProtocolFiles` never overwrites,
+so a volume keeps its current rubric; the operator removes the changelog from the Protocols
+page, with a reason, and revision 1 there is that box's own pre-cutover text.
+
+### A defect the live check found
+
+Saving through the app reserialised the frontmatter through the YAML dumper, **deleting every
+comment in it** — thirty-five lines documenting `currency.md`'s policy knobs. Pre-existing, and
+never noticed because that file had only ever been hand-edited. `save()` now carries the
+frontmatter over as bytes and replaces the prose only. Two things came free: a body-only edit
+produces a body-only diff, and no route can rewrite `executor:`, which makes invariant 11
+structural instead of argued.
+
+The damaged file was restored from its own snapshot — `cp .history/currency.md/0005-…md
+data/protocols/currency.md` — which is as direct a demonstration of the feature as it gets.
+
+### Verified on the running dev stack
+
+- Boot sweep records `seed` rows once and nothing on a second boot.
+- A hand edit on disk → one `observed` row, `message: null`, `PROTOCOL_REVISED` in Activity.
+- A save with a reason → one `save` row carrying it; the same text saved again → no row, no
+  rewrite, `no change to save` on the page.
+- No reason → 400 and nothing recorded. Empty body → 400.
+- `GET /protocols/currency/revisions/1f16c2557cf4` still returns the pre-cutover text,
+  changelog included, after three further edits.
+- The diff of revision 5 against 1 is exactly the changelog removal and the `version:` line.
+- `yarn typecheck`, `yarn build` and 707 tests green.
+
+### Left undone
+
+- Deletion of a protocol file is not recorded.
+- Nothing prunes the history, on purpose (it is invariant 9's dereference target).
+- The public frame prints the hash unlinked — there is no protocol page under `/public`.
+

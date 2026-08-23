@@ -118,7 +118,23 @@ export interface AssayMeta {
   /** The pre-rename spelling of `section`, still on every file written before 2026-08-20. */
   leg?: Section;
   standard: string;
-  standard_version: number;
+  /**
+   * **The revision of the standard that judged this** — the sha256 of the protocol file, as
+   * it was when the run read it. Invariant 9.
+   *
+   * A hash rather than a number because the number could not be dereferenced: the archive
+   * said `v7` and no v7 survived an edit. `store/revisions.ts` keeps the bytes, so this
+   * resolves. Absent on anything written before 2026-08-23.
+   */
+  standard_sha256?: string;
+  /**
+   * @deprecated The integer the protocol carried in its own frontmatter until 2026-08-23.
+   *
+   * Read, never written. Every assay in the archive from before the cutover has one, and an
+   * app author looking at an older verdict is entitled to see what it says — it just cannot
+   * be turned back into the text it named.
+   */
+  standard_version?: number;
   status: AssayStatus;
   verdict: Verdict | null;
   top_severity: Severity;
@@ -131,10 +147,9 @@ export interface AssayMeta {
    * Who performed this assay, when it was not the agent — the `*.sh` the protocol named, and
    * the hash of what that file contained at the time.
    *
-   * The hash is the procedure's version. The rubric bumps `standard_version` on every save,
-   * but a script beside it is edited on the volume and has no number of its own; without this
-   * an operator could change what a check does and leave nothing in the archive to say that
-   * two readings were produced by two different procedures.
+   * The hash is the procedure's version, exactly as `standard_sha256` is the rubric's. Both
+   * resolve to bytes in the protocol history, so an operator who changes what a check does
+   * cannot leave the archive claiming that two readings came from one procedure.
    */
   executor?: string;
   executor_sha256?: string;

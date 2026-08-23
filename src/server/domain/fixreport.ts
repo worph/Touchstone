@@ -17,6 +17,7 @@
  * use, or feeds it to one in CI, and it has to be complete on its own.
  */
 
+import { standardLabel } from '../../shared/standard.js';
 import type { AssayMeta, RecordedPhase, RecordedRequirement, Section, Severity } from '../../shared/types.js';
 import { SEVERITY_RANK } from '../../shared/types.js';
 import { PHASE_LABEL } from '../../shared/activity.js';
@@ -139,14 +140,14 @@ export function buildFixReport(input: FixReportInput): string | null {
       // produce one, which is the opposite of what happened.
       L.push(
         `- **${cap(m.section)}** — ${m.status === 'blocked' ? 'not measured' : `measured: ${String(m.badge ?? 'see below')}`}` +
-          ` · ${m.standard} v${m.standard_version} · read ${m.finished_at}`,
+          ` · ${standardLabel(m)} · read ${m.finished_at}`,
       );
       continue;
     }
     L.push(
       `- **${cap(m.section)}** — ${m.status === 'blocked' ? 'blocked' : (m.verdict ?? 'no verdict')}` +
         `${m.status === 'blocked' ? '' : ` · top severity ${m.top_severity} · risk ${m.risk_score}`}` +
-        ` · judged by ${m.standard} v${m.standard_version} · finished ${m.finished_at}`,
+        ` · judged by ${standardLabel(m)} · finished ${m.finished_at}`,
     );
   }
   const images = legs.flatMap((l) => l.meta.images ?? []);

@@ -31,6 +31,7 @@ import type { AlertStore } from '../services/alerts.js';
 import type { BenchProber } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 import type { ProtocolStore } from '../store/protocols.js';
+import type { RevisionStore } from '../store/revisions.js';
 import type { RunLedger } from '../services/ledger.js';
 import type { EventLog } from '../services/events.js';
 import type { PushService } from '../services/push.js';
@@ -63,6 +64,7 @@ export interface RoutesOptions {
   prober?: BenchProber;
   ports?: PortProber;
   protocols?: ProtocolStore;
+  revisions?: RevisionStore;
   ledger?: RunLedger;
   push?: PushService;
   scheduler?: Scheduler;
@@ -131,7 +133,11 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     ...(options.chat?.ctx ? { ctx: options.chat.ctx } : {}),
     ...(options.events ? { events: options.events } : {}),
   });
-  await app.register(protocolRoutes, { protocols: options.protocols, events: options.events });
+  await app.register(protocolRoutes, {
+    protocols: options.protocols,
+    revisions: options.revisions,
+    events: options.events,
+  });
   await app.register(settingsRoutes, {
     ...(options.settings ?? {}),
     ...(options.events ? { events: options.events } : {}),

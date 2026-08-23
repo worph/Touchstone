@@ -19,6 +19,7 @@
  * There is no history and no report source. The hallmark is what the subject carries *now* —
  * that is what a hallmark is — and the evidence is quoted into the brief.
  */
+import { standardLabel } from '@shared/standard';
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
@@ -90,11 +91,12 @@ export default function PublicSubject() {
                   <span className="tag" key={im}>{im}</span>
                 ))}
                 {refs.commit ? <span className="tag">commit {refs.commit}</span> : null}
-                {/* Which version of the standard judged this. Invariant 9: every assay records
-                    it, and an author is entitled to know they were graded on an older one. */}
-                <span className="tag">
-                  {refs.standard} v{refs.standard_version}
-                </span>
+                {/* Which revision of the standard judged this. Invariant 9: every assay
+                    records it, and an author is entitled to know they were graded on an older
+                    one. Not a link: there is no protocol page under /public, and a link into
+                    the operator frame is a dead end for somebody with no account. The hash
+                    still prints, so an author can quote the exact revision. */}
+                <span className="tag">{standardLabel(refs)}</span>
               </div>
             </div>
           ) : null}
@@ -157,9 +159,7 @@ function SectionCard({ section, rec }: { section: Section; rec: AssayRecord | nu
       <StatusCell state={s} size="lg" />
       {rec ? (
         <div className="leg-meta">
-          <span>
-            {rec.meta.standard} v{rec.meta.standard_version}
-          </span>
+          <span>{standardLabel(rec.meta)}</span>
           <span>
             {s.kind === 'blocked' ? 'since' : 'assayed'} {dateOnly(rec.meta.started_at)} ·{' '}
             {since(rec.meta.started_at)}

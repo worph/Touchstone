@@ -156,12 +156,37 @@ export function subjectNames(records: readonly AssayRecord[]): SubjectKey[] {
   return [...new Set(records.map((r) => r.subject))].sort((a, b) => a.localeCompare(b));
 }
 
-/** The Overview table: one row per subject, risk descending, label as the tiebreak. */
+export interface BoardOptions extends HallmarkOptions {
+  /**
+   * Subjects to compose even though the archive holds nothing for them.
+   *
+   * The archive is the record of what has been *judged*; the registry is the list of what is
+   * *tracked*. For most of this app's life those were the same question, because a page that
+   * ranks by risk has nothing to say about a row with no risk. The Store page asks the other
+   * one — "what is in the store, and what do we know about it" — and 52 of 72 apps having
+   * never been audited is precisely the answer it exists to give, so those rows cannot come
+   * from the archive.
+   *
+   * `subjectHallmark(key, [])` already composes a never-run row (it splits origin and label
+   * off the key rather than reading them off a record), so this needs no second code path:
+   * it only widens the list of names.
+   *
+   * Deliberately an option rather than the default. `/public` calls `hallmarks(store.all())`
+   * and must keep showing the archive alone — a board addressed to app authors that lists
+   * every app we have not got to yet is a backlog with somebody else's name on it.
+   */
+  include?: readonly string[];
+}
+
+/** The Store table: one row per subject, risk descending, label as the tiebreak. */
 export function hallmarks(
   records: readonly AssayRecord[],
-  options: HallmarkOptions = {},
+  options: BoardOptions = {},
 ): SubjectState[] {
-  return subjectNames(records)
+  const names = [...new Set([...subjectNames(records), ...(options.include ?? [])])].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  return names
     .map((name) => subjectHallmark(name, records, options).state)
     .sort((a, b) => b.risk - a.risk || a.label.localeCompare(b.label) || a.name.localeCompare(b.name));
 }

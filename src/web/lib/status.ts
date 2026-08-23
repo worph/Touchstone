@@ -5,6 +5,7 @@
  * `not yet run` are three different unknowns, and none of them is a failure.
  * Nothing outside this module decides what an assay looks like.
  */
+import { standardLabel } from '@shared/standard';
 import type { AssayMeta, AssayRecord, Severity } from '@shared/types';
 import { SEVERITY_RANK } from '@shared/types';
 import type { DisplayState } from '../types';
@@ -79,7 +80,12 @@ export function runningState(startedAt: string, note?: string, now = Date.now())
  * absent, the hint says less and nothing else changes.
  */
 export type StatusFacts = Pick<AssayMeta, 'status' | 'verdict' | 'top_severity' | 'risk_score'> &
-  Partial<Pick<AssayMeta, 'blocked_reason' | 'standard' | 'standard_version' | 'started_at'>>;
+  Partial<
+    Pick<
+      AssayMeta,
+      'blocked_reason' | 'standard' | 'standard_sha256' | 'standard_version' | 'started_at'
+    >
+  >;
 
 /**
  * @param rec  the latest assay for one section, or null if it was never assayed
@@ -122,9 +128,7 @@ export function displayFacts(m: StatusFacts | null | undefined, now = Date.now()
         severity: 'none',
         label: 'compliant',
         mark: '✓',
-        hint: m.standard
-          ? `Assayed under ${m.standard} v${m.standard_version} and clean.`
-          : 'Assayed and clean.',
+        hint: m.standard ? `Assayed under ${standardLabel(m)} and clean.` : 'Assayed and clean.',
       };
     case 'non-compliant':
       return {

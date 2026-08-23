@@ -17,3 +17,6 @@ data/cache/
 data/trials/
 # The files an upload trial audits — somebody's working copy, never ours to commit.
 data/uploads/
+# The protocol's own history: snapshots of every revision of every rubric and script on
+# THIS box. `data/protocols/*.md` are tracked; what an operator did to them is not ours.
+data/protocols/.history/

@@ -19,7 +19,9 @@ import type {
   PushStatus,
   RunStatus,
 } from '@shared/activity';
+import type { Diff } from '@shared/linediff';
 import type { ScheduleResponse } from '@shared/schedule';
+import type { Revision } from '@shared/standard';
 import type { SubjectDetail } from '../types';
 
 const BASE = '/api/v1';
@@ -217,7 +219,6 @@ async function put<T>(path: string, body: unknown): Promise<T> {
 export interface ProtocolSummary {
   id: string;
   name: string;
-  version: number;
   /** A `leaf` is one section of an audit; its id is the section id. */
   kind: 'orchestrator' | 'leaf';
   /** Where it sits in a run, and what it cannot run without. */
@@ -226,8 +227,12 @@ export interface ProtocolSummary {
   phases?: { id: string; label?: string }[];
   imported_from?: string;
   file: string;
+  /** The protocol's identity: the sha256 of the file. There is no version number. */
+  sha256: string;
   bytes: number;
   modified_at: string;
+  /** Its newest row in the history, or null if the log has not recorded it. */
+  revision: Revision | null;
 }
 
 export interface ProtocolDoc {
@@ -235,11 +240,18 @@ export interface ProtocolDoc {
   body: string;
   html: string;
   file: string;
+  sha256: string;
   bytes: number;
   modified_at: string;
+  revision: Revision | null;
 }
 
-export function getProtocols(): Promise<{ directory: string | null; protocols: ProtocolSummary[] }> {
+export function getProtocols(): Promise<{
+  directory: string | null;
+  /** Set when the history could not be read or written. The protocols themselves still work. */
+  history_failed: string | null;
+  protocols: ProtocolSummary[];
+}> {
   return get('/protocols');
 }
 
@@ -247,9 +259,49 @@ export function getProtocol(id: string): Promise<ProtocolDoc> {
   return get<ProtocolDoc>(`/protocols/${encodeURIComponent(id)}`);
 }
 
-/** Saving bumps the version, because every assay records the version it was graded against. */
-export function saveProtocol(id: string, body: string): Promise<ProtocolDoc> {
-  return put<ProtocolDoc>(`/protocols/${encodeURIComponent(id)}`, { body });
+/**
+ * Saving records a revision, and the reason is not optional.
+ *
+ * Every assay records the sha256 of the protocol that graded it; the history is what turns
+ * that hash back into text. The diff will say what changed — only the person saving can say
+ * why, which is the one thing that cannot be recovered later.
+ */
+export function saveProtocol(id: string, body: string, message: string): Promise<ProtocolDoc> {
+  return put<ProtocolDoc>(`/protocols/${encodeURIComponent(id)}`, { body, message });
+}
+
+/** One section's history: its rubric and the script it names, interleaved, newest first. */
+export function getProtocolRevisions(
+  id: string,
+): Promise<{ files: string[]; failed: string | null; revisions: Revision[] }> {
+  return get(`/protocols/${encodeURIComponent(id)}/revisions`);
+}
+
+/** One revision, and the bytes it names. `body` is null when the snapshot is gone. */
+export function getProtocolRevision(
+  id: string,
+  sha: string,
+): Promise<{ revision: Revision; body: string | null; html: string | null }> {
+  return get(`/protocols/${encodeURIComponent(id)}/revisions/${encodeURIComponent(sha)}`);
+}
+
+/**
+ * What changed, against the parent revision unless told otherwise.
+ *
+ * Computed on the server: the alternative is shipping two copies of a 27 KB rubric to the
+ * browser to render a two-line change.
+ */
+export function getProtocolDiff(
+  id: string,
+  rev: { sha256: string; seq: number },
+  against?: string,
+): Promise<{ from: Revision | null; to: Revision; diff: Diff }> {
+  // The seq, not only the hash: a file restored to an earlier state carries the identity it
+  // had then, so a hash can name two rows with different parents — and a diff is about a row.
+  const q = new URLSearchParams({ seq: String(rev.seq), ...(against ? { against } : {}) });
+  return get(
+    `/protocols/${encodeURIComponent(id)}/revisions/${encodeURIComponent(rev.sha256)}/diff?${q}`,
+  );
 }
 
 // ── this instance: the context prompt, and the config it booted with ───────────────────

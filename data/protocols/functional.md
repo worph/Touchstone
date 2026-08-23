@@ -1,7 +1,6 @@
 ---
 id: functional
 name: Functional Review Protocol
-version: 8
 kind: leaf
 
 # Where this section sits in a run, and what it cannot run without. `order` decides report
@@ -398,50 +397,3 @@ an archive.
 
 An archive left behind turns the *next* run's Phase C install into a restore prompt. That is how
 one run's untidiness becomes another run's false result.
-
----
-
-## Changelog — not part of the rubric
-
-- **v8 (2026-08-23)** — **say what you could not reach.** A run whose early phases fail never
-  attempts the later ones, and until now nothing required the report to admit it: a three-phase
-  run and a complete one produced findings lists that looked alike. Two readers were misled by
-  that — whoever fixes the app, who reads a short list as nearly done; and whoever reads the next
-  audit, which legitimately finds more once the first failure is cleared, and without the
-  disclosure reads as the audit contradicting itself. Now a run that could not reach a phase
-  opens its prose with one sentence naming what ran and what did not, and is explicitly forbidden
-  from writing that sentence when everything ran.
-- **v7 (2026-08-22)** — a run may now supply its **own store**, and Phase C says how to install
-  from it: `https://<DEMO>/store/<APP>?store=<url>`, accepting Maison's "store you have not
-  added" warning as expected. This is what lets a trial of files that are on no branch run its
-  live section at all — previously it was recorded `blocked` as `store_not_installable`, on the
-  correct grounds that a bench installs from its own catalogue and would have reported a result
-  about `main` under the trial's name. It also removes the v6 failure mode rather than
-  mitigating it: a per-trial URL has never been fetched by anything, so there is no cached copy
-  of it to be stale, and no refresh to forget.
-- **v6 (2026-08-21)** — the store the box serves is a cached copy, and an audit that does not
-  account for that can audit a different version of the app than the one it was asked to (§2).
-  Phase C is now bracketed by a **store refresh** before and a **compose assertion** after: read
-  the installed compose back off the tile and compare it against the source at `REF`, and on a
-  mismatch return `errored` naming both versions rather than filing anything against the app.
-  Phase G.16 restores **the archive this run just created** rather than "the newest row" — the
-  picker labels archives by date alone, and restoring another run's archive reinstalls that
-  run's compose. Written after a fix landed at 16:45 on 2026-08-20 and two audits that same
-  evening tested the pre-fix compose from cache, correctly observed the failure it caused, and
-  attributed it to an app whose source no longer had the defect.
-- **v5 (2026-08-20)** — migration (G′) is stated as belonging to the PR path rather than to an
-  audit, and its `n-a` now carries that reason instead of "no `PRIOR_VERSION` supplied". Dropped
-  the `PRIOR_VERSION` input and its mention in cleanup: nothing here ever supplies one, and
-  Maison has no way to install an earlier version.
-- **v4 (2026-08-20)** — folded four stacked amendments (strict full-run 2026-07-07, demo-host
-  selection 2026-07-17, Touchstone 2026-08-19, Maison 2026-08-20, Touchstone 2026-08-20) into
-  one present-tense body and deleted what they had superseded: the `functional` /
-  `not-functional` / `needs-changes` / `needs-human` vocabulary, the
-  `{ functional_verdict, phases, evidence, install_seconds }` return shape, the board-reading
-  host-selection procedure, and the pre-Maison Immich worked example. Reconciled with
-  `CONTRIBUTING.md` at `6758715`: E9 now names AppShield, whose apps have no login form of
-  their own and are therefore the easiest kind to mis-pass on a signed-in session.
-- **v3 (2026-08-20)** — Maison replaces CasaOS: store routes, archive-based Phase G, two-half
-  cleanup.
-- **v2 and earlier** — the fixed phase plan, mandatory F and G, per-phase pass/fail/errored.
-  Imported from Docmost on 2026-08-19.

@@ -21,6 +21,7 @@ import { Scheduler } from './scheduler/index.js';
 import { Runner } from './runner/index.js';
 import { PortProber } from './services/ports.js';
 import { ensureProtocolFiles, ProtocolStore } from './store/protocols.js';
+import { RevisionStore } from './store/revisions.js';
 import { RunLedger } from './services/ledger.js';
 import { outcomeClause, type RunOutcome } from '../shared/activity.js';
 import { subjectName } from '../shared/subject.js';
@@ -46,7 +47,7 @@ try {
 const cfg = await loadConfig(dataDir);
 
 // The rubric has to be *on disk in the data dir*, not merely in the image: it is editable in
-// the app, it versions itself on save, and every assay records the version that judged it. In a
+// the app, and every assay records the sha256 of the file that judged it. In a
 // container the data dir is an empty volume on first boot, and an empty protocol directory
 // means every run blocks `no_protocol`. Seeding never overwrites — an operator's edit outranks
 // the image's copy, or a redeploy would quietly change the standard.
@@ -164,6 +165,37 @@ await ports.load();
 const protocols = new ProtocolStore(cfg.protocolsDir);
 
 /**
+ * What the rubric used to say, and when it stopped saying it.
+ *
+ * Swept here rather than lazily: the log has to be recording *before* anything reads a
+ * protocol, so the bytes an audit was judged against are already captured when it starts. On
+ * a box that predates this file, the first sweep records whatever is on the volume — changelog
+ * sections and stale `version:` keys and all — which is how the pre-cutover text survives.
+ */
+const revisions = new RevisionStore(cfg.protocolsDir, {
+  onWarn: (message) =>
+    events.log({
+      level: 'warn',
+      code: 'PROTOCOL_HISTORY_FAILED',
+      message: `The protocol history is not being recorded — ${message}`,
+      detail: { dir: cfg.protocolsDir },
+    }),
+  onRecorded: (rev) => {
+    // Only the ones nobody announced. A `save` already has PROTOCOL_EDITED and a `seed`
+    // already has PROTOCOL_SEEDED; an `observed` row is the one that says the standard
+    // changed on the volume while the app was not looking.
+    if (rev.source !== 'observed') return;
+    events.log({
+      level: 'info',
+      code: 'PROTOCOL_REVISED',
+      message: `${rev.file} changed on disk outside the app, and was recorded as revision ${rev.seq}`,
+      detail: { file: rev.file, sha256: rev.sha256, seq: rev.seq },
+    });
+  },
+});
+await revisions.sweep();
+
+/**
  * Where the agent records requirements while it works. See `services/ledger.ts` — the point
  * is that a run which dies two-thirds through keeps what it established.
  */
@@ -180,6 +212,7 @@ const runner = new Runner({
   prober,
   ports,
   protocols,
+  revisions,
   ledger,
   callbackUrl: cfg.runner.callback_url,
   busyBackoffMs: cfg.runner.busy_backoff_min * 60_000,
@@ -301,6 +334,7 @@ await app.register(registerRoutes, {
   registry,
   ports,
   protocols,
+  revisions,
   ledger,
   browser: {
     ...(cfg.browsers[0] ? { browserUrl: cfg.browsers[0].url } : {}),

@@ -197,6 +197,9 @@ const META_ORDER = [
   'origin',
   'section',
   'standard',
+  'standard_sha256',
+  // Legacy, still in every file written before 2026-08-23. Kept immediately behind its
+  // replacement so an old file rewritten today keeps a key order a diff can follow.
   'standard_version',
   'status',
   'verdict',

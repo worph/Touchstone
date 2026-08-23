@@ -34,7 +34,6 @@ export interface ProtocolMeta {
    */
   id: string;
   name: string;
-  version: number;
   /** `orchestrator` composes; a `leaf` is one section of the work. */
   kind: 'orchestrator' | 'leaf';
   /**
@@ -88,8 +87,8 @@ export interface ProtocolMeta {
    * should be able to change without touching the procedure.
    *
    * Handed to a script executor verbatim on stdin. It lives here rather than in the script so
-   * that **the policy versions itself**: `save()` bumps `version`, every assay records the
-   * version that judged it, and "what counted as behind in July" stays answerable.
+   * that **the policy versions itself**: it is inside the bytes the file's hash covers, every
+   * assay records that hash, and "what counted as behind in July" stays answerable.
    */
   policy?: Record<string, unknown>;
   /**
@@ -124,6 +123,20 @@ export interface Protocol {
   body: string;
   /** `<id>.md`, relative to the protocols directory. */
   file: string;
+  /**
+   * **This protocol's version** — the sha256 of the whole file, frontmatter included.
+   *
+   * Frontmatter included because `policy:` lives up there: a threshold changed in the header
+   * changes what the check does, and a hash over the prose alone would call two different
+   * rubrics the same thing.
+   *
+   * It replaced an integer the file carried and `save()` incremented. The integer only ever
+   * moved when somebody used the editor, it moved whether or not the content changed, and —
+   * the fatal one — it resolved to nothing: the archive said `v7` and no v7 survived
+   * anywhere. See `store/revisions.ts`, which is what makes this dereferenceable.
+   */
+  sha256: string;
+  /** Size on disk, in bytes. */
   bytes: number;
   modified_at: string;
 }
@@ -139,18 +152,22 @@ function normaliseRequires(parsed: Record<string, unknown>): string[] {
 export function parseProtocol(raw: string, file: string): { meta: ProtocolMeta; body: string } {
   const m = FRONTMATTER.exec(raw);
   if (!m) {
-    // A file with no frontmatter is still a protocol — it just has no version to report.
-    // Refusing to load it would make a hand-written one impossible to start.
-    return { meta: { id: path.basename(file, '.md'), name: path.basename(file, '.md'), version: 0, kind: 'leaf' }, body: raw.trim() };
+    // A file with no frontmatter is still a protocol — it is identified by its bytes like
+    // every other one. Refusing to load it would make a hand-written one impossible to start.
+    return { meta: { id: path.basename(file, '.md'), name: path.basename(file, '.md'), kind: 'leaf' }, body: raw.trim() };
   }
   const parsed = (YAML.parse(m[1]!) ?? {}) as Record<string, unknown>;
   const id = String(parsed.id ?? path.basename(file, '.md'));
+  // A `version:` left over from before the hash is dropped on the way in, so nothing
+  // downstream can display a number that stopped meaning anything. It survives on disk until
+  // the file is next saved, which is deliberate: this reads protocols, it does not rewrite
+  // them behind an operator's back.
+  delete parsed.version;
   return {
     meta: {
       ...parsed,
       id,
       name: String(parsed.name ?? id),
-      version: Number(parsed.version ?? 0) || 0,
       kind: parsed.kind === 'orchestrator' ? 'orchestrator' : 'leaf',
       // `requires_bench: true` predates capabilities and meant exactly "a demo instance and
       // a browser to drive it", so it widens to both rather than to `bench` alone.
@@ -161,10 +178,27 @@ export function parseProtocol(raw: string, file: string): { meta: ProtocolMeta; 
   };
 }
 
+/**
+ * The existing frontmatter, then the new prose.
+ *
+ * A file that has none gets a minimal one synthesised. That is not tidiness: without a block
+ * in front of it, a body beginning with `---` would *become* the frontmatter on the next
+ * read, and a saved rubric could grow an `executor:` it was never given. There is always a
+ * block, so prose is always prose.
+ *
+ * A stale `version:` is dropped as it passes — the one key this rewrites, because it stopped
+ * meaning anything on 2026-08-23 and a number nothing reads is worse than no number.
+ */
+function replaceBody(raw: string | null, meta: ProtocolMeta, body: string): string {
+  const m = raw ? FRONTMATTER.exec(raw) : null;
+  if (!m) return serialiseProtocol(meta, body);
+  return `${m[0].replace(/^version:.*\r?\n/m, '')}\n${body.trim()}\n`;
+}
+
 export function serialiseProtocol(meta: ProtocolMeta, body: string): string {
   // Key order is stable so an edit that changes only the body produces a one-hunk diff.
   const ordered: Record<string, unknown> = {};
-  for (const key of ['id', 'name', 'version', 'kind', 'order', 'requires', 'executor', 'scores', 'policy', 'phases', 'report_headings', 'requirements', 'imported_from', 'imported_at']) {
+  for (const key of ['id', 'name', 'kind', 'order', 'requires', 'executor', 'scores', 'policy', 'phases', 'report_headings', 'requirements', 'imported_from', 'imported_at']) {
     if (meta[key] !== undefined) ordered[key] = meta[key];
   }
   for (const [k, v] of Object.entries(meta)) if (!(k in ordered)) ordered[k] = v;
@@ -232,7 +266,8 @@ export interface ProtocolSection {
   scores: boolean;
   /** The knobs its executor reads, handed over verbatim. */
   policy: Record<string, unknown>;
-  version: number;
+  /** The rubric's identity — the sha256 of the file that declared this section. */
+  sha256: string;
   body: string;
 }
 
@@ -264,7 +299,7 @@ export function sectionsOf(protocols: readonly Protocol[]): ProtocolSection[] {
         p.meta.policy && typeof p.meta.policy === 'object' && !Array.isArray(p.meta.policy)
           ? (p.meta.policy as Record<string, unknown>)
           : {},
-      version: p.meta.version,
+      sha256: p.sha256,
       body: p.body,
     }))
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
@@ -295,10 +330,10 @@ export interface SeedResult {
 /**
  * Copy the shipped rubric into `dir` for any leaf that is not already there.
  *
- * **Never overwrites.** The protocol is editable in the app and versions itself on save, so an
- * operator's edit outranks the image's copy — a redeploy that silently reverted the rubric
- * would also silently change what every subsequent assay is judged against. A file that exists
- * is left exactly as it is, whatever its version.
+ * **Never overwrites.** The protocol is editable in the app, so an operator's edit outranks
+ * the image's copy — a redeploy that silently reverted the rubric would also silently change
+ * what every subsequent assay is judged against. A file that exists is left exactly as it is,
+ * whatever it now says.
  */
 export async function ensureProtocolFiles(
   dir: string,
@@ -378,32 +413,53 @@ export class ProtocolStore {
   }
 
   /**
-   * Replace a protocol's body, bumping its version.
+   * Replace a protocol's **prose**, and nothing else.
    *
-   * The version bump is automatic and not optional: every assay records the standard and
-   * version it was graded against, so an edit that left the number alone would make two
-   * different rubrics indistinguishable in the archive.
+   * There is nothing to bump: the file's identity is its bytes, so writing different bytes
+   * *is* the new revision, and `store/revisions.ts` records it with whatever reason the
+   * operator gave. What used to be here — an integer incremented on every save — moved the
+   * number whether or not the content changed and left no way to read what the old number
+   * named.
+   *
+   * **The frontmatter block is carried over verbatim rather than regenerated**, which matters
+   * three ways. It keeps the operator's YAML comments — `currency.md` documents every policy
+   * knob in them, and a round-trip through the YAML dumper silently deleted all thirty-five
+   * lines of that. It keeps a body-only edit to a body-only diff, which is the whole point of
+   * a history somebody reads. And it means no route can rewrite `executor:`: the field is not
+   * re-emitted from parsed data, it is bytes that were already there. See invariant 11.
+   *
+   * A save that would produce byte-identical content writes nothing at all. Not an
+   * optimisation: an unchanged file must not acquire a new `modified_at`, and the history
+   * must not acquire an entry whose diff is empty.
    */
-  async save(id: string, body: string, opts: { bumpVersion?: boolean } = {}): Promise<Protocol | null> {
+  async save(id: string, body: string): Promise<Protocol | null> {
     const existing = await this.get(id);
     if (!existing) return null;
-    const meta: ProtocolMeta = {
-      ...existing.meta,
-      version: opts.bumpVersion === false ? existing.meta.version : existing.meta.version + 1,
-    };
-    const file = path.join(this.dir, existing.file);
+    const raw = await this.rawOf(existing.file);
+    const next = replaceBody(raw, existing.meta, body);
+    if (next === raw) return existing;
     await fs.mkdir(this.dir, { recursive: true });
-    await fs.writeFile(file, serialiseProtocol(meta, body), 'utf8');
+    await fs.writeFile(path.join(this.dir, existing.file), next, 'utf8');
     return this.get(id);
+  }
+
+  /** The file exactly as it is on disk, or null. Used to tell a real edit from a re-save. */
+  private async rawOf(name: string): Promise<string | null> {
+    try {
+      return await fs.readFile(path.join(this.dir, name), 'utf8');
+    } catch {
+      return null;
+    }
   }
 
   /**
    * Resolve a section's script: the absolute path, and the hash of what is actually there.
    *
-   * The hash is not decoration. The `.md` versions itself on save and every assay records that
-   * version (invariant 9) — but the `.sh` beside it has no version and is edited on the volume,
-   * so without this an operator could change what the check *does* and leave nothing in the
-   * archive to say the readings before and after were produced by different procedures.
+   * The hash is not decoration — it is the script's version, in the same sense that the
+   * rubric's hash is the rubric's. Both are recorded on every assay (invariant 9), so an
+   * operator who changes what a check *does* cannot leave the archive claiming that the
+   * readings before and after came from one procedure. This field is where that idea started,
+   * back when the `.md` beside it still carried an integer instead.
    *
    * Returns `null` when the name is unsafe or the file is not there. Both are the caller's cue
    * to record the section blocked rather than to fall back to anything.
@@ -425,9 +481,22 @@ export class ProtocolStore {
   private async readFile(name: string): Promise<Protocol | null> {
     const file = path.join(this.dir, name);
     try {
-      const [raw, stat] = await Promise.all([fs.readFile(file, 'utf8'), fs.stat(file)]);
+      // Read once as bytes and decode from that, rather than reading a string: the hash has
+      // to be over the bytes, because that is what `store/revisions.ts` hashes and what
+      // `executor()` has always hashed. Hashing a decoded string instead would give one file
+      // two identities the moment it contained a BOM or anything not valid UTF-8 — and the
+      // archive would point at a revision the log had never heard of.
+      const [buf, stat] = await Promise.all([fs.readFile(file), fs.stat(file)]);
+      const raw = buf.toString('utf8');
       const { meta, body } = parseProtocol(raw, name);
-      return { meta, body, file: name, bytes: raw.length, modified_at: stat.mtime.toISOString() };
+      return {
+        meta,
+        body,
+        file: name,
+        sha256: createHash('sha256').update(buf).digest('hex'),
+        bytes: buf.byteLength,
+        modified_at: stat.mtime.toISOString(),
+      };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw err;
