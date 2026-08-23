@@ -25,18 +25,26 @@ import type { EventLog } from '../services/events.js';
 export const GITHUB_APPS_URL = 'https://api.github.com/repos/Yundera/AppStore/contents/Apps';
 
 /**
- * The contents API for one origin.
+ * The contents API for one path in one origin.
  *
  * `?ref=` is not optional. Without it the API answers for the repo's default branch whatever
  * `ref` says, so an origin pinned to a branch would list `main`'s app directory and audit the
  * wrong set of apps — a wrong answer rather than an error, which is the worst kind.
+ *
+ * One builder for every read of a store's repo — the app list here, and any other file via
+ * `services/storedoc.ts`. Two would be two places for the ref to go missing.
  */
-export function appsUrlFor(origin: { repo: string; ref: string; apps_path: string }): string {
-  const path = origin.apps_path.replace(/^\/+|\/+$/g, '');
+export function contentUrlFor(origin: { repo: string; ref: string }, path: string): string {
+  const clean = path.replace(/^\/+|\/+$/g, '');
   return (
-    `https://api.github.com/repos/${origin.repo}/contents/${path}` +
+    `https://api.github.com/repos/${origin.repo}/contents/${clean}` +
     `?ref=${encodeURIComponent(origin.ref)}`
   );
+}
+
+/** Where the apps live in one origin — `contentUrlFor` at that origin's `apps_path`. */
+export function appsUrlFor(origin: { repo: string; ref: string; apps_path: string }): string {
+  return contentUrlFor(origin, origin.apps_path);
 }
 
 /**

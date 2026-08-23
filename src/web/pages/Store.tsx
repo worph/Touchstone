@@ -1,16 +1,29 @@
 /**
- * Overview — the landing page. Answers, in order: is the system healthy, what
- * is broken, what do I fix first.
+ * Store — every app the store tracks, what we currently know about it, and the way to go
+ * and find out.
  *
- * The two status columns are the point. In the current corpus the functional
- * column is uniformly hatched and the story tells itself: nothing is wrong with
- * these apps' functional behaviour, we simply have not been able to look.
+ * This was the Overview, and the rename is not cosmetic: the page changed which question it
+ * answers. The Overview drew the **archive** — one row per app that had been audited — and
+ * ranked it by risk, so it answered "what do I fix first" and was silent about the 52 of 72
+ * apps nobody had looked at yet. Those are the rows an operator most needs to see and start,
+ * and they were not on any page. `GET /subjects` now returns the union of the registry and
+ * the archive, so the table is the store's inventory and a never-run row is a first-class
+ * answer rather than an absence.
+ *
+ * The triage the Overview did is not lost — it is the `show` filter and the summary chips,
+ * which is where it already lived. Risk still sorts descending by default, so the apps that
+ * are failing are still the first thing on the page.
+ *
+ * The two status columns remain the point. In the current corpus the functional column is
+ * largely hatched and the story tells itself: nothing is wrong with these apps' functional
+ * behaviour, we simply have not been able to look.
  */
 import { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { subjectName } from '@shared/subject';
 import type { Leg, SubjectState } from '@shared/types';
+import AuditButton from '../components/AuditButton';
 import ReassayButton from '../components/ReassayButton';
 import { StatusLegend } from '../components/StatusCell';
 import SubjectTable, { SubjectSummary } from '../components/SubjectTable';
@@ -37,7 +50,7 @@ const SHOW_OPTIONS: { value: ShowFilter; label: string }[] = [
   { value: 'stale', label: `stale (≥ ${FRESH_DAYS}d)` },
 ];
 
-export default function Overview() {
+export default function Store() {
   const { data, error, loading, reload } = useAsync(getSubjects, []);
   /**
    * The live environment, beside the archive's memory of it.
@@ -116,8 +129,8 @@ export default function Overview() {
       <div className="page">
         <EmptyState
           glyph="⬜"
-          title="No subjects yet"
-          sub="The index is empty. Audit an app from its page, or arm the scheduler, and reports will appear under data/reports as markdown files."
+          title="No apps tracked"
+          sub="Neither the store nor the archive lists anything. The registry may not have been read yet — check the store's reachability on Automation — or no origin is configured in config.yaml."
         />
       </div>
     );
@@ -226,6 +239,9 @@ export default function Overview() {
             href={(s) => `/s/${encodeURIComponent(s.name)}`}
             live={live}
             showOrigin={showOrigin}
+            /* The operator's table gets the verb; the board that shares this component
+               passes nothing and so has no column to reach. */
+            action={(s) => <AuditButton subject={s.name} label={s.label} />}
           />
         )}
         <StatusLegend />

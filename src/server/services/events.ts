@@ -248,7 +248,16 @@ interface EventDetails {
   ASSAY_REQUIREMENT_REVISED: { subject: string; id: string; from: string; to: string };
   ASSAY_REQUIREMENT_UNLISTED: { subject: string; id: string; section: string | undefined };
   PROTOCOL_MISSING: { dir: string };
-  PROTOCOL_EDITED: { id: string; sha256: string; seq: number; bytes: number; message: string };
+  /** `via` is who asked — the editor, the chat, or an agent on the admin MCP. A label on the
+   *  row rather than a permission: all three go through `domain/protocoledit.ts`. */
+  PROTOCOL_EDITED: {
+    id: string;
+    sha256: string;
+    seq: number;
+    bytes: number;
+    message: string;
+    via: 'api' | 'chat' | 'mcp';
+  };
   PROTOCOL_REVISED: { file: string; sha256: string; seq: number };
   PROTOCOL_HISTORY_FAILED: { dir: string };
   // No version: unlike a protocol, the context is not recorded in anything it influenced.

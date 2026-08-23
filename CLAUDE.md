@@ -133,6 +133,20 @@ because its data access was smeared through two 200-line n8n Code nodes.
 - **`store/protocols.ts`** — the protocol files, and `sectionsOf()`, which turns the leaves into
   the `ProtocolSection[]` every other piece reads. This is the **only** place frontmatter is
   interpreted, so a new field has exactly one place to be understood.
+- **`domain/protocoledit.ts`** — the one path a protocol is saved by. A save is three things
+  that have to happen together — replace the prose, sweep the history so the bytes are recorded
+  *with the reason*, log `PROTOCOL_EDITED` — and there are now two callers: `PUT /protocols/:id`
+  and the chat's `edit_protocol`. A second caller that forgot the sweep would leave the edit
+  recorded as `observed`, with nothing to say for itself, which is the hole the history exists
+  to close. `via` is a label on the row, never a permission: what a chat may save is what the
+  editor may save, because it is the same function.
+- **`services/storedoc.ts`** — reads a file out of a **configured** origin's repo, at its pinned
+  ref, through the same builder the app list uses (`contentUrlFor`). Deliberately not a second
+  `trialstore.ts`: the host is a constant here and the repo comes from `config.yaml`, so a
+  caller supplies only a path and there is no request-forgery primitive to build. It reads
+  GitHub unauthenticated — public repos only, no credential to exfiltrate — and caches for five
+  minutes because that 60-an-hour budget is `store/registry.ts`'s too, and an origin driven
+  unreachable stops the runner dispatching.
 - **`runner/`** — `prompt.ts` (assembles the sections being run into the prompt), `agent.ts` (the
   MCP call plus n8n's exact failure classification: `agent-auth` / `agent-busy` / `agent-error` /
   `parse-failed`), `index.ts` (one job in, one assay file per section out, a `RunOutcome` back).
@@ -142,7 +156,7 @@ because its data access was smeared through two 200-line n8n Code nodes.
   requirement *as it settles it*, so a run that dies at requirement 12 of 16 keeps twelve results.
   It also resolves each record's **section** from the canonical list, which is what lets one
   agent response become one assay per section without parsing the prose for headings.
-- **`routes/mcp-admin.ts`** — the *same* twelve tools, served as an MCP server at
+- **`routes/mcp-admin.ts`** — the *same* fifteen tools, served as an MCP server at
   `POST /api/v1/mcp/admin` so an agent can ask them: it renders `CHAT_TOOLS` into `tools/list`
   and hands `tools/call` to the same handlers with the chat's own `ChatToolContext`. There is
   no second definition of what an agent may ask this app, which is the point — a second one
@@ -208,18 +222,29 @@ because its data access was smeared through two 200-line n8n Code nodes.
   authoritative; alerts dedup an environment condition to one row; outlets and push are
   best-effort.
 - **`src/server/chat/`** — the administrator chat: a bounded turn loop (`loop.ts`, 8 calls and
-  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), twelve tools wrapping the
+  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), fifteen tools wrapping the
   API (`registry.ts`), and the agent call (`driver.ts`) reusing `postToAgent` from the runner.
-  Nine of the twelve **read**, and most of those read what is *written down* — the board, the
+  Eleven of the fifteen **read**, and most of those read what is *written down* — the board, the
   archive, a report file, the fix brief, the log, the backlog — not the live process, which a
   `tsx watch` restart empties while the operator is still waiting for the run it started
   (HANDOFF §5k). Four of them are the same question at four depths, which is why their
   descriptions work so hard to stay distinct: `get_board` (every app), `get_subject` (one
   app), `get_fix_brief` (its findings), `get_report` (the file, and the only place the
-  evidence behind a *passing* requirement survives). The three that act are `run_assay` and
-  the trial pair, `open_trial` / `run_trial`. A run started from a turn
+  evidence behind a *passing* requirement survives). The four that act are `run_assay`, the
+  trial pair `open_trial` / `run_trial`, and `edit_protocol`. A run started from a turn
   appends a `note` row back into that thread when it finishes, so the conversation knows what
   became of its own work.
+  **`get_protocol` / `get_store_file` / `edit_protocol` are the standard and the store it
+  tracks.** They exist because "are the protocols still current against the AppStore's
+  CONTRIBUTING.md?" was unanswerable: the chat could see neither side and inferred from
+  clauses that recent audits happened to quote. `get_store_file` is *not* a URL fetcher — the
+  host is a constant, the repo and ref come from `config.yaml`, and the caller supplies only a
+  path, which is why `services/trialstore.ts` remains the only place a caller-chosen URL is
+  dereferenced. It caches for five minutes because unauthenticated GitHub allows 60 requests
+  an hour and `store/registry.ts` spends from the same budget: a chatty turn must not be able
+  to make an origin unreachable and stop the runner (invariant 3). `edit_protocol` prefers an
+  anchored `find`/`replace` over a whole body — `functional.md` is 27 KB, and a rewrite that
+  drops a paragraph is indistinguishable from one that meant to.
   `prompt.md` is an asset — `build:api` copies it into `dist/`, so a new non-TS file there
   needs the same treatment. It carries a `{{CONTEXT}}` placeholder for the operator's own
   standing instructions (`data/context.md`, edited on Settings), read **once per turn** and
@@ -227,17 +252,25 @@ because its data access was smeared through two 200-line n8n Code nodes.
   characters rather than as the conversation. No tool reads or writes it: standing instructions
   a model can rewrite are not standing instructions.
 - **`src/web/`** — React + Vite SPA in **two frames**. The operator frame is `Shell` and eight pages
-  (Administrator chat at `/`, Overview at `/overview`, Subject detail, Automation, Activity,
+  (Administrator chat at `/`, **Store** at `/store`, Subject detail, Automation, Activity,
   Trials, Settings at `/settings`, Configuration at `/config`) plus Protocols — the chat is the front page and therefore has no nav row of its own,
   the brand being the way back to it; `/chat` redirects to `/`. The
   **public frame** is `PublicFrame` and two read-only pages under `/public` (the board and one
   app), addressed to app authors rather than to the operator. `main.tsx` splits them with two
   layout routes rather than a flag, so a public page cannot render operator chrome — it is not in
   its tree. `components/SubjectTable.tsx` is shared by both tables on purpose: an author must be
-  reading the operator's verdicts, not a restyled copy of them.
+  reading the operator's verdicts, not a restyled copy of them — which is why the Store page's
+  per-row **audit** button is an `action` render prop the *caller* supplies rather than a flag
+  the table reads: the board passes nothing, so the column is not in its DOM at all
+  (invariant 10). The **Store page is the former Overview**, answering a different question:
+  `GET /subjects` returns the union of the registry and the archive, so an app that has never
+  been audited gets a row and a button instead of being missing — 52 of 72 apps were invisible
+  to the operator while that route composed `store.all()` alone. `/public/subjects` still does
+  compose the archive alone, deliberately: a board addressed to app authors must not publish a
+  backlog with their name on it. `/overview` redirects to `/store`.
   `src/web/data/client.ts` is the only thing that talks to the API,
   and `data/runStatus.ts` is the **single poller** for the run in flight — the shell strip, the
-  Overview's `◴ running` cells, Activity's card and the re-assay button all subscribe to it rather
+  Store page's `◴ running` cells and audit buttons, and Activity's card, all subscribe to it rather
   than polling `/assays/current` themselves. `@shared/*` aliases
   `src/shared/` in both the Vite and Vitest configs; the server imports it with `.js` specifiers.
   Hand-written CSS, no framework: **every colour is a token in `styles/base.css`** — the light
@@ -271,6 +304,12 @@ because its data access was smeared through two 200-line n8n Code nodes.
    gate does not know to read is a place a Critical could hide. The agent judges each
    requirement; Touchstone computes the gate (any Critical ⇒ non-compliant, unconditionally). An
    agent that can post its own verdict makes the rubric advisory.
+   Since 2026-08-23 the chat *may* edit a rubric's **prose** (`edit_protocol`), and that does
+   not widen this: `ProtocolStore.save()` carries the frontmatter over as bytes rather than
+   re-emitting it, so no caller can mint a section, name an `executor:` or flip `scores:`. What
+   an edit moves is what the **next** audit is judged by — recorded as a revision with a
+   required reason, and dropped entirely from the admin MCP under `read_only`. It cannot move
+   an audit that has already run.
 7. **The app stays diagnosable with every outbound port broken.** Activity must render with Beacon
    unreachable and push unconfigured.
 8. **There is no queue.** The backlog is re-derived from last-run on every tick, so it cannot drift.

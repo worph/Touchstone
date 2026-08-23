@@ -24,13 +24,15 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Conformance',
     items: [
-      { to: '/overview', label: 'Overview' },
+      // Every app the store tracks, what it currently carries, and the button that starts
+      // an audit of one. The Overview it replaced drew only the apps already in the archive.
+      { to: '/store', label: 'Store' },
       // The rubric every verdict is measured against. It used to live in a wiki this
       // app only held a slug for; it is a local file now, and editable.
       { to: '/protocol', label: 'Protocol' },
       // Auditing a ref before it is merged. Under Conformance rather than Operations because
-      // it answers the same question the Overview does — would this pass — about code that is
-      // not in the store yet.
+      // it answers the same question the Store page does — would this pass — about code that
+      // is not in the store yet.
       { to: '/trials', label: 'Trials' },
     ],
   },
@@ -206,7 +208,7 @@ function TabIcon({ to }: { to: string }) {
 
 const GLYPH: Record<string, ReactNode> = {
   // a checklist: the subject table
-  '/overview': (
+  '/store': (
     <>
       <path d="M9 6h11" />
       <path d="M9 12h11" />

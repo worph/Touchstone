@@ -135,13 +135,22 @@ describe('the scope', () => {
     expect(result(missing.body).isError).toBe(true);
   });
 
+  /**
+   * This used to bar `protocol` from the tool names as well, and dropping that is a deliberate
+   * widening rather than a relaxed test. `edit_protocol` exists now, and what invariant 6
+   * forbids is a model **writing a verdict** — which stays impossible here, and stays
+   * impossible for a different reason than a name check: `ProtocolStore.save()` carries the
+   * frontmatter over as bytes, so no caller of this surface can mint a section, name an
+   * executor, or reach the gate. What it can do is rewrite prose, recorded as a revision with
+   * a reason, and hidden entirely when `read_only` is set.
+   */
   it('mints no verdict tool — the gate is not reachable from here', async () => {
     const instance = await serve({ enabled: true });
     const res = await rpc(instance, { jsonrpc: '2.0', id: 1, method: 'tools/list' });
     const names = (res.json() as { result: { tools: { name: string }[] } }).result.tools.map(
       (tool) => tool.name,
     );
-    expect(names.some((name) => /record|verdict|protocol|origin/.test(name))).toBe(false);
+    expect(names.some((name) => /record|verdict|hallmark|compliant/.test(name))).toBe(false);
   });
 });
 
@@ -155,7 +164,11 @@ describe('read_only', () => {
   const writers = CHAT_TOOLS.filter((tool) => tool.writes).map((tool) => tool.name);
 
   it('knows which tools act, and there is more than one', () => {
-    expect(writers).toEqual(expect.arrayContaining(['run_assay', 'open_trial', 'run_trial']));
+    expect(writers).toEqual(
+      // `edit_protocol` is the one that changes what every *future* audit concludes, so an
+      // installation that wanted this surface answers-only must not be served it.
+      expect.arrayContaining(['run_assay', 'open_trial', 'run_trial', 'edit_protocol']),
+    );
   });
 
   it('hides every tool that acts', async () => {

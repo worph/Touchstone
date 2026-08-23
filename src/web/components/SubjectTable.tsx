@@ -10,6 +10,7 @@
  * leads, and whether there is a run in flight to overlay. Everything about how a state is
  * drawn stays here, once.
  */
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
 import type { Leg, SubjectState } from '@shared/types';
@@ -32,10 +33,20 @@ export interface SubjectTableProps {
   live?: LiveRun | null;
   /** A column that always reads the same word is furniture; only shown with two stores. */
   showOrigin: boolean;
+  /**
+   * What this caller lets you *do* to a row, if anything.
+   *
+   * A render prop rather than a boolean, and passed in rather than decided here, because the
+   * public board shares this table and invariant 10 says nothing under `/public` may write.
+   * A `canAudit` flag would put the control in the shared component and leave one prop
+   * standing between an app author and a button that starts a run; omitting the prop leaves
+   * the column out of the DOM entirely, so there is nothing to reach.
+   */
+  action?: (s: SubjectState) => ReactNode;
 }
 
 export default function SubjectTable({
-  rows, sort, dir, onSort, href, live = null, showOrigin,
+  rows, sort, dir, onSort, href, live = null, showOrigin, action,
 }: SubjectTableProps) {
   // Derived from what is in the archive rather than passed in: a section that measures gets
   // a column the moment one of its assays exists, and nothing here has to be told its name.
@@ -54,12 +65,21 @@ export default function SubjectTable({
             <Th label="Verified" k="coverage" sort={sort} dir={dir} onSort={onSort} align="right" />
             <Th label="Risk" k="risk" sort={sort} dir={dir} onSort={onSort} align="right" />
             <Th label="Last" k="age" sort={sort} dir={dir} onSort={onSort} align="right" />
+            {action ? <th aria-label="audit" /> : null}
             <th aria-label="open" />
           </tr>
         </thead>
         <tbody>
           {rows.map((s) => (
-            <Row key={s.name} s={s} live={live} showOrigin={showOrigin} href={href} notices={notices} />
+            <Row
+              key={s.name}
+              s={s}
+              live={live}
+              showOrigin={showOrigin}
+              href={href}
+              notices={notices}
+              action={action}
+            />
           ))}
         </tbody>
       </table>
@@ -73,13 +93,14 @@ function label(id: string): string {
 }
 
 function Row({
-  s, live, showOrigin, href, notices,
+  s, live, showOrigin, href, notices, action,
 }: {
   s: SubjectState;
   live: LiveRun | null;
   showOrigin: boolean;
   href: (s: SubjectState) => string;
   notices: string[];
+  action?: (s: SubjectState) => ReactNode;
 }) {
   const never = !s.static && !s.functional;
   const running = live?.subject === s.name;
@@ -112,6 +133,7 @@ function Row({
         </span>
       </td>
       <td className="col-num dim">{ageLabel(s.age_days)}</td>
+      {action ? <td className="col-action">{action(s)}</td> : null}
       <td className="col-chev">
         <Link to={to} aria-label={`Open ${s.label}`}>›</Link>
       </td>

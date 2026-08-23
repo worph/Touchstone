@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_ORIGIN } from '../../shared/subject.js';
 import { resolveOrigins } from './config.js';
-import { appsUrlFor } from './registry.js';
+import { appsUrlFor, contentUrlFor } from './registry.js';
 
 describe('resolveOrigins', () => {
   it('re-adds the default origin when config replaced the list', () => {
@@ -65,5 +65,17 @@ describe('appsUrlFor', () => {
     expect(appsUrlFor({ repo: 'Acme/AppStore', ref: 'release/1.2', apps_path: '/Apps/' })).toBe(
       'https://api.github.com/repos/Acme/AppStore/contents/Apps?ref=release%2F1.2',
     );
+  });
+
+  /**
+   * `appsUrlFor` is this at one particular path. One builder, because the ref is the thing
+   * that goes missing, and `services/storedoc.ts` reads the same repos for other files.
+   */
+  it('is the same builder any other file in the store is read with', () => {
+    const origin = { repo: 'Acme/AppStore', ref: 'pr-812', apps_path: 'Apps' };
+    expect(contentUrlFor(origin, 'CONTRIBUTING.md')).toBe(
+      'https://api.github.com/repos/Acme/AppStore/contents/CONTRIBUTING.md?ref=pr-812',
+    );
+    expect(contentUrlFor(origin, origin.apps_path)).toBe(appsUrlFor(origin));
   });
 });

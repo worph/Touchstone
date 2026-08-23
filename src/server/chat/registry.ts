@@ -9,7 +9,7 @@
  * Every one is a thin wrapper over something the API already does; the chat is a way of
  * reaching the app by conversation, not a second implementation of it.
  *
- * **Nine of the twelve read, and three act.** The chat began with three tools, two of which
+ * **Eleven of the fifteen read, and four act.** The chat began with three tools, two of which
  * described the *live process* — `runner.status()`, the ledger — and that was the wrong half
  * of the app to know about. An audit takes minutes, a turn takes seconds, and `tsx watch`
  * restarts the process on any edit; so by the time the operator asked what came of a run,
@@ -30,19 +30,34 @@
  * being a gate. `run_assay` starts an audit; what that audit concludes is the runner's to
  * record. Reading more does not weaken that rule: invariant 6 is about writes, and the read
  * surface being thin was never an argument, only an accident of what got built first.
+ *
+ * **`edit_protocol` is the one tool that changes what a future audit concludes, and it still
+ * does not write a verdict.** It rewrites a rubric's prose; the gate stays Touchstone's to
+ * compute. Three things keep that from being a distinction on paper. `ProtocolStore.save()`
+ * carries the frontmatter over as bytes, so no caller here can mint a section, name an
+ * executor or flip `scores:` — invariants 6 and 11 hold by how a save is written rather than
+ * by a check in a handler. Every edit is a revision with a required reason, so the archive can
+ * still resolve the hash an assay recorded back to text. And it is marked `writes`, so an
+ * installation serving this registry over MCP with `read_only` does not serve it at all.
  */
 
 import { standardLabel } from '../../shared/standard.js';
 import { outcomeClause, type EventLevel, type EventRecord } from '../../shared/activity.js';
+import { lineDiff, type Diff } from '../../shared/linediff.js';
+import type { Revision } from '../../shared/standard.js';
 import { asSubjectKey, subjectName, subjectOrigin, type SubjectKey } from '../../shared/subject.js';
 import type { AssayRecord, Section, SubjectState } from '../../shared/types.js';
 import { buildFixReport } from '../domain/fixreport.js';
+import { saveProtocol } from '../domain/protocoledit.js';
 import { hallmarks, LEGS, subjectHallmark, subjectNames, type LegState } from '../domain/hallmark.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import type { Runner } from '../runner/index.js';
 import type { Scheduler } from '../scheduler/index.js';
+import type { Protocol, ProtocolStore } from '../store/protocols.js';
 import type { SubjectRegistry } from '../store/registry.js';
+import type { RevisionStore } from '../store/revisions.js';
+import { StoreDocError, type StoreDocReader } from '../services/storedoc.js';
 import type { RunLedger } from '../services/ledger.js';
 import type { AlertStore } from '../services/alerts.js';
 import type { EventLog } from '../services/events.js';
@@ -88,6 +103,17 @@ export interface ChatToolContext {
   trials?: TrialRunDeps;
   /** The store repo an origin came from, so a trial can inherit it instead of being told. */
   originRepo?: (origin: string) => string | undefined;
+  /**
+   * The rubric, readable and — through `domain/protocoledit.ts` — writable.
+   *
+   * The three of these travel together because a save is all three: replace the prose, record
+   * the revision with its reason, log it. A context holding the store but not the history
+   * could save a rubric that the archive could never resolve back to text.
+   */
+  protocols?: ProtocolStore;
+  revisions?: RevisionStore;
+  /** Reads a file out of a configured store's repo. Not a URL fetcher — see `storedoc.ts`. */
+  storedoc?: StoreDocReader;
 }
 
 export interface ChatToolResult {
@@ -271,6 +297,43 @@ function describeEvent(event: EventRecord): string {
     (event.subject ? ` [${subjectName(event.subject)}${event.section ? `/${event.section}` : ''}]` : '') +
     ` — ${event.message}`
   );
+}
+
+/** One line of the protocol menu: what the section is, who performs it, when it last moved. */
+function protocolRow(p: Protocol, rev?: Revision): string {
+  const bits = [p.meta.kind, p.meta.order === undefined ? null : `order ${p.meta.order}`]
+    .filter(Boolean)
+    .join(', ');
+  const executor = typeof p.meta.executor === 'string' && p.meta.executor.trim() !== '' ? p.meta.executor : 'agent';
+  const requires = Array.isArray(p.meta.requires) && p.meta.requires.length > 0 ? ` · needs ${p.meta.requires.join('+')}` : '';
+  // `scores: false` is worth saying on the menu rather than leaving to be inferred from the
+  // body: a reading is measured and reported but never reaches the hallmark (invariant 12).
+  const scores = p.meta.scores === false ? ' · a reading, invisible to the hallmark' : '';
+  const changed = rev ? ` · last changed ${rev.at.slice(0, 10)}${rev.message ? `: ${rev.message}` : ' (noticed on disk, no reason given)'}` : '';
+  return `${p.meta.id} — ${p.meta.name} · ${bits} · run by ${executor}${requires}${scores} · ${p.bytes} bytes · ${p.sha256.slice(0, 12)}${changed}`;
+}
+
+/** Diff lines a tool result carries. Past this the turn is reading a file, not a change. */
+const DIFF_LINES = 60;
+
+/**
+ * The change, in the shape a person reads a diff in.
+ *
+ * Handed back so the turn can report what it *actually* wrote rather than what it meant to —
+ * the two differ often enough that "saved" alone is not an answer the operator can check.
+ */
+function renderDiff(diff: Diff): string {
+  const out: string[] = [];
+  for (const hunk of diff.hunks) {
+    out.push(`@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@`);
+    for (const line of hunk.lines) {
+      out.push(`${line.op === 'add' ? '+' : line.op === 'remove' ? '-' : ' '}${line.text}`);
+    }
+  }
+  if (out.length > DIFF_LINES) {
+    return [...out.slice(0, DIFF_LINES), `…and ${out.length - DIFF_LINES} more diff line(s).`].join('\n');
+  }
+  return out.join('\n');
 }
 
 export const CHAT_TOOLS: ChatTool[] = [
@@ -847,6 +910,203 @@ export const CHAT_TOOLS: ChatTool[] = [
         if (eligible.length > QUEUE_ROWS) lines.push(`  …and ${eligible.length - QUEUE_ROWS} more.`);
       }
       return ok(lines.join('\n'));
+    },
+  },
+
+  {
+    name: 'get_protocol',
+    description:
+      'The rubric itself — the sections an audit is made of and the requirements each one grades. With no id it is the menu: every section, who performs it, and when it last changed. With an id it is that section\'s full text. This is the *standard*, not a result about any app: `get_report` is what one app was measured against it. The bodies run to thousands of words, so name the section you mean rather than reading all of them.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'A section id from the menu — `static`, `functional`, `currency`. Omit for the menu.',
+        },
+      },
+    },
+    handler: async (input, ctx) => {
+      const protocols = ctx.protocols;
+      if (!protocols) return failed('No protocol store is wired, so the rubric cannot be read here.');
+
+      const all = await protocols.list();
+      if (all.length === 0) return failed('There are no protocol files, so nothing defines what an audit checks.');
+
+      const log = (await ctx.revisions?.forFiles(all.map((p) => p.file))) ?? [];
+      const headOf = (file: string) => log.find((r) => r.file === file);
+
+      const id = String(input.id ?? '').trim();
+      if (id === '') {
+        return ok(
+          [`${all.length} protocol file(s) in ${protocols.directory}:`, ...all.map((p) => protocolRow(p, headOf(p.file)))].join('\n'),
+        );
+      }
+
+      const found = all.find((p) => p.meta.id === id);
+      if (!found) {
+        return failed(`There is no protocol called "${id}". These exist: ${all.map((p) => p.meta.id).join(', ')}.`);
+      }
+      return ok([protocolRow(found, headOf(found.file)), '', found.body].join('\n'));
+    },
+  },
+
+  {
+    name: 'get_store_file',
+    description:
+      'A file out of the store an app comes from — CONTRIBUTING.md, a template, one app\'s compose — read at the exact ref Touchstone audits against. This is the other half of `get_protocol`: the document the rubric is meant to track, so "is the protocol still current?" is a question you can answer by reading both rather than by inferring from what audits happened to quote. Give a path relative to the top of the repository; a directory path lists what is in it. Only the stores in this instance\'s configuration are readable, at their pinned refs.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Relative to the top of the repository — `CONTRIBUTING.md`, `Apps/FileBrowser/docker-compose.yml`, or `.` for the root listing.',
+        },
+        origin: {
+          type: 'string',
+          description: 'Which store, when more than one is configured. Omit when there is only one.',
+        },
+      },
+      required: ['path'],
+    },
+    handler: async (input, ctx) => {
+      const reader = ctx.storedoc;
+      if (!reader) return failed('No store reader is wired, so files cannot be read from the store repository.');
+      const origins = ctx.registry?.origins ?? [];
+      if (origins.length === 0) return failed('No store is configured, so there is no repository to read from.');
+
+      const wanted = String(input.origin ?? '').trim();
+      let origin = origins[0]!;
+      if (wanted !== '') {
+        const hit = origins.find((o) => o.id === wanted);
+        if (!hit) return failed(`There is no store called "${wanted}". These are configured: ${origins.map((o) => o.id).join(', ')}.`);
+        origin = hit;
+      } else if (origins.length > 1) {
+        return failed(`Name the store: ${origins.map((o) => `${o.id} (${o.repo}@${o.ref})`).join(', ')}.`);
+      }
+
+      try {
+        const doc = await reader.read(origin, String(input.path ?? ''));
+        const head = `${origin.repo}@${origin.ref} — ${doc.path === '' ? '/' : doc.path}`;
+        if (doc.kind === 'dir') {
+          if (doc.entries.length === 0) return ok(`${head}\n\n(empty)`);
+          return ok(
+            [`${head} — ${doc.entries.length} entries:`, ...doc.entries.map((e) => `  ${e.name}${e.type === 'dir' ? '/' : ''}`)].join('\n'),
+          );
+        }
+        return ok([`${head} — ${doc.bytes} bytes`, '', doc.text].join('\n'));
+      } catch (err) {
+        return failed(err instanceof StoreDocError ? err.message : `That file could not be read: ${String(err)}`);
+      }
+    },
+  },
+
+  {
+    /**
+     * The one tool that changes what every *future* audit is judged by.
+     *
+     * Two shapes, and the anchored one is not a convenience. `functional.md` is 27 KB: a tool
+     * that only took a whole body would make "add this point" a re-emission of the entire
+     * rubric, and a paragraph dropped on the way back looks exactly like a paragraph somebody
+     * meant to delete. `find`/`replace` keeps the change the size of the change.
+     *
+     * What it cannot do is not enforced here, and that is the point: `ProtocolStore.save()`
+     * carries the frontmatter over as bytes, so no caller of this — the chat, or an agent on
+     * the admin MCP — can mint a section, name an executor or flip `scores:`. Invariants 6
+     * and 11 hold because of how a save is written, not because of a check in this handler.
+     */
+    name: 'edit_protocol',
+    writes: true,
+    description:
+      'Change a section\'s prose — add a requirement, correct one that has drifted from the store\'s contribution guide, drop one that no longer applies. Prefer `find`/`replace`: `find` must appear exactly once in the current text and only that passage is rewritten, which keeps the change small enough to check. `body` replaces the whole section and is for a genuine rewrite. Always say why in `reason` — it is recorded with the revision and is the one thing a diff cannot tell anybody later. This edits the standard, so it changes what every *future* audit concludes; it does not re-judge anything already audited, and it is not a way to record a verdict.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'The section id — `static`, `functional`, `currency`.' },
+        reason: { type: 'string', description: 'Why, in a sentence. Recorded with the revision.' },
+        find: {
+          type: 'string',
+          description: 'The exact passage to rewrite, copied from `get_protocol`. Must occur exactly once.',
+        },
+        replace: { type: 'string', description: 'What that passage becomes. Empty string deletes it.' },
+        body: { type: 'string', description: 'The whole section, rewritten. Use only when `find`/`replace` will not do.' },
+        allow_shrink: {
+          type: 'boolean',
+          description: 'Confirms a whole-body rewrite that drops more than half the text. Say what is going before you set it.',
+        },
+      },
+      required: ['id', 'reason'],
+    },
+    handler: async (input, ctx) => {
+      const protocols = ctx.protocols;
+      if (!protocols) return failed('No protocol store is wired, so the rubric cannot be edited here.');
+
+      const id = String(input.id ?? '').trim();
+      const current = await protocols.get(id);
+      if (!current) {
+        const all = await protocols.list();
+        return failed(`There is no protocol called "${id}". These exist: ${all.map((p) => p.meta.id).join(', ')}.`);
+      }
+
+      const hasAnchor = typeof input.find === 'string';
+      const hasBody = typeof input.body === 'string';
+      if (hasAnchor && hasBody) {
+        return failed('Give either find/replace or body, not both — they are two ways of saying what the new text is.');
+      }
+
+      let next: string;
+      if (hasAnchor) {
+        const find = String(input.find);
+        if (find === '') return failed('`find` is empty. Copy the passage to rewrite out of get_protocol.');
+        if (typeof input.replace !== 'string') {
+          return failed('`find` needs a `replace` — pass an empty string to delete the passage.');
+        }
+        const hits = current.body.split(find).length - 1;
+        if (hits === 0) {
+          return failed(
+            'That passage is not in the protocol as written. Read it with get_protocol and copy the text exactly, whitespace included.',
+          );
+        }
+        if (hits > 1) {
+          return failed(`That passage appears ${hits} times, so it does not say which one to change. Include enough surrounding text to make it unique.`);
+        }
+        next = current.body.replace(find, String(input.replace));
+      } else if (hasBody) {
+        next = String(input.body);
+        if (next.trim() === '') return failed('The protocol body cannot be empty — that would grade every app against nothing.');
+        if (next.trimStart().startsWith('---')) {
+          // The frontmatter belongs to the file and is carried over as bytes; a body that
+          // opens with one is either a paste of the whole file or an attempt to set fields
+          // this path deliberately cannot set.
+          return failed('Send the prose only — the frontmatter block is the file\'s and is kept as it is.');
+        }
+        if (next.length * 2 < current.body.length && input.allow_shrink !== true) {
+          return failed(
+            `That body is ${next.length} characters against the current ${current.body.length} — more than half the rubric would be gone. ` +
+              'If that is meant, say what is being removed and pass allow_shrink: true.',
+          );
+        }
+      } else {
+        return failed('Nothing to change: give find/replace for one passage, or body for the whole section.');
+      }
+
+      const result = await saveProtocol(
+        { protocols, ...(ctx.revisions ? { revisions: ctx.revisions } : {}), ...(ctx.events ? { events: ctx.events } : {}) },
+        { id, body: next, message: String(input.reason ?? ''), via: 'chat' },
+      );
+      if (!result.ok) return failed(result.error);
+      if (!result.changed) return ok(`${id} already said exactly that, so nothing was written and no revision was recorded.`);
+
+      const diff = lineDiff(current.body, result.protocol.body);
+      return ok(
+        [
+          `${id} saved — +${diff.added}/-${diff.removed} lines, now ${result.protocol.sha256.slice(0, 12)}.`,
+          result.revision ? `Recorded as revision ${result.revision.seq}, reason: ${result.revision.message ?? ''}` : 'The history could not record it — say so.',
+          'The next audit uses this; anything already audited keeps the revision that judged it.',
+          '',
+          renderDiff(diff),
+        ].join('\n'),
+      );
     },
   },
 ];
