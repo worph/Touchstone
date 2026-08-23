@@ -32,6 +32,7 @@
  * surface being thin was never an argument, only an accident of what got built first.
  */
 
+import { standardLabel } from '../../shared/standard.js';
 import { outcomeClause, type EventLevel, type EventRecord } from '../../shared/activity.js';
 import { asSubjectKey, subjectName, subjectOrigin, type SubjectKey } from '../../shared/subject.js';
 import type { AssayRecord, Section, SubjectState } from '../../shared/types.js';
@@ -204,7 +205,7 @@ function describeSection(id: Section, state: LegState): string[] {
   } else {
     lines.push(
       `${id}: ${meta.verdict ?? 'no verdict recorded'}, top severity ${meta.top_severity}, ` +
-        `risk ${meta.risk_score} — judged by ${meta.standard} v${meta.standard_version}, finished ${meta.finished_at}.`,
+        `risk ${meta.risk_score} — judged by ${standardLabel(meta)}, finished ${meta.finished_at}.`,
     );
     const cov = meta.coverage;
     if (cov) {

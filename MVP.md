@@ -147,7 +147,8 @@ subject: OpenClaw            # the BARE app name. Identity is `<origin>~<subject
 origin: yundera              # which store it came from — `config.yaml`'s `origins[].id`
 section: static              # the leaf protocol that judged it — `data/protocols/static.md`
 standard: Static Review Protocol
-standard_version: 3
+standard_sha256: 9c1b3f2a…    # the sha256 of the protocol file that judged it — invariant 9
+                             # `standard_version: 3` on files written before 2026-08-23
 status: done                 # queued | running | done | blocked
 verdict: non-compliant       # compliant | non-compliant | errored | deferred | null
 top_severity: critical       # critical | major | minor | none   ← from the headline

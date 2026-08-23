@@ -291,7 +291,9 @@ describe('GET and DELETE /trials/:slug', () => {
     // assume — a cell that cannot tell them apart gives the operator the wrong instruction.
     expect(functional?.trial?.blocked_reason).toBe('bench_unavailable');
     expect(functional?.trial?.blocked_reason).not.toBe('store_url_unconfigured');
-    // Invariant 9 travels with it, so a cell can cite the standard that judged it.
+    // Invariant 9 travels with it, so a cell can cite the standard that judged it. This
+    // fixture is deliberately a pre-2026-08-23 file, carrying the integer rather than the
+    // sha256 — proof that the legacy half of `standardLabel` still has something to read.
     expect(functional?.trial?.standard_version).toBe(6);
   });
 });

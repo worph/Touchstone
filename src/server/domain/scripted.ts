@@ -112,7 +112,7 @@ export function assayFromScript(input: ScriptedAssayInput): { meta: AssayMeta; b
     ...(input.origin ? { origin: input.origin } : {}),
     section: section.id,
     standard: section.standard.name,
-    standard_version: section.standard.version,
+    standard_sha256: section.standard.sha256,
     // Provenance for the *procedure*, beside the standard's version for the policy. Without
     // the hash an edit to the script would change every reading with nothing in the archive
     // to say the readings either side of it were produced differently — invariant 9, applied

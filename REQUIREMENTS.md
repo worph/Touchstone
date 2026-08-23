@@ -35,6 +35,7 @@ surprise.
 | **R10** | The app store is a configured value, and there may be several | ✅ built 2026-08-20 — §11 |
 | **R11** | A ref can be audited without moving the subject's hallmark — a *trial* | ✅ built 2026-08-20 — §12 |
 | **R12** | How far behind its own upstream each app is, and for how long | ✅ built 2026-08-22 — §14 |
+| **R13** | What the standard said when it judged, and what changed since | ✅ built 2026-08-23 — §15 |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -755,3 +756,78 @@ engineering rather than an argument.
 resolved from the configured origins rather than supplied by the caller: whose contribution rules
 apply is a property of the store, not of the branch under trial — which is both one fewer input
 and the more correct reading.
+
+## 15. R13 — What the standard said when it judged, and what changed since — 2026-08-23
+
+### 15.1 What was true before
+
+A protocol's identity was an integer it carried in its own frontmatter, and `save()` bumped it.
+Every assay recorded it — `standard_version: 7` — and on a box with a volume that number
+resolved to **nothing**: the text of v7 was overwritten the moment somebody edited the rubric,
+and the only surviving copy of it was in this repo's git history, which covers edits made in a
+checkout and misses every edit made through the Protocols page.
+
+Three separate defects, all of them in one field:
+
+- **It could not be dereferenced.** The archive named a rubric nobody could read.
+- **It lied both ways.** A save bumped it whether or not the content changed; a hand edit on
+  the volume changed the content without touching it.
+- **It did not cover the scripts.** A `*.sh` executor had no version at all — only
+  `executor_sha256` on the assay, which likewise resolved to nothing.
+
+### 15.2 The requirement
+
+Traceability on the thing every verdict is measured against: **what changed, when, and why** —
+and, for any hash an assay recorded, the bytes it names.
+
+### 15.3 What it took
+
+**One identity, not two.** The sha256 of the whole file — frontmatter included, because
+`policy:` lives up there and a threshold is part of what a check does. Rubrics and scripts are
+now identified the same way, which is also why `executor_sha256`'s old justification (that the
+`.md` had a number and the `.sh` did not) has been deleted rather than edited.
+
+**An append-only log with snapshots**, `data/protocols/.history/`: `log.jsonl` plus
+`<file>/<seq>-<sha12>.<ext>`. Gitignored, and excluded from the image seed.
+
+**Swept on observe, not on save.** Hash what is on disk at boot, after each save, and once
+before a run reads the protocol; record only what differs from that file's newest entry. This
+is the half that catches an edit made over SSH — the case the integer could never see. Such a
+row is `observed` and carries **no reason**, in visible contrast to a `save`, which carries
+the one the operator was required to give. `PROTOCOL_REVISED` puts it in Activity.
+
+**No restore route.** Putting an old revision back is: open it, load it into the editor, save
+it forward with its own reason. A rewind endpoint would let the admin MCP that authenticates
+nobody quietly revert the standard every subsequent audit is judged against.
+
+**A diff nobody had to install.** `src/shared/linediff.ts` — common prefix/suffix trim, LCS
+over the middle, hunks with three lines of context. About seventy lines, no dependency, and
+pure, so both frames could use it if the other one ever needs to.
+
+### 15.4 A defect it surfaced on the day it shipped
+
+`save()` reserialised the frontmatter through the YAML dumper, which **silently deleted every
+comment in it**. `currency.md` documents all five policy knobs in those comments — thirty-five
+lines of them — and one save through the app would have thrown them away. It predated this
+work and nothing had noticed, because the file had only ever been hand-edited.
+
+Fixed by carrying the frontmatter block over as bytes: `save()` replaces the prose and nothing
+else. That also made invariant 11 structural rather than argued — the header is never
+regenerated from parsed data, so no route can rewrite `executor:`, and a body opening with a
+`---` fence cannot become frontmatter because there is always a block ahead of it.
+
+### 15.5 What the archive keeps
+
+Nothing is rewritten. Reports from before the cutover keep `standard_version`, and
+`standardLabel()` renders `Static Review Protocol v7` for them and
+`Static Review Protocol @9c1b3f2a4d55` for everything after. Restamping old reports with
+hashes would claim those runs were judged by bytes we cannot produce.
+
+### 15.6 Not done, deliberately
+
+- **Deletion of a protocol file is not recorded.** The log's shape leaves room for it.
+- **Nothing is pruned.** The history is the dereference target for invariant 9, and trimming
+  it would break links from the archive. Seventy-three kilobytes of protocol and roughly
+  fifteen edits in the project's life; revisit if that ever stops being true.
+- **The public frame shows the hash but does not link it.** There is no protocol page under
+  `/public`, and a link into the operator frame is a dead end for somebody with no account.

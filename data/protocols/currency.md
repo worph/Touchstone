@@ -1,7 +1,6 @@
 ---
 id: currency
 name: Image Currency
-version: 1
 kind: leaf
 
 # Last of the three, and it needs nothing: no bench, no browser, no agent. `requires: []`
@@ -98,8 +97,3 @@ registry it comes from.
 - a tag that does not parse, or a registry with no readable tag list
 - any registry error at all, including a rate limit — which records the whole section
   `blocked`, because "we could not look" is never "there is nothing to see"
-
-## Changelog
-
-- **v1** — 2026-08-22. First version. Docker Hub, GHCR (and `lscr.io`, which is GHCR) and
-  Quay; `compare_majors: false`; 180 days to stale.

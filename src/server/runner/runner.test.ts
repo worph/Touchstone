@@ -31,7 +31,6 @@ function protocolsOf(
         meta: {
           id: s.id,
           name: `${s.id[0]!.toUpperCase()}${s.id.slice(1)} Review Protocol`,
-          version: 1,
           kind: 'leaf' as const,
           order: s.order,
           requires: s.requires,
@@ -42,6 +41,9 @@ function protocolsOf(
         },
         body: `the ${s.id} rubric`,
         file: `${s.id}.md`,
+        // Stands in for the sha256 of the file: what matters downstream is that each section
+        // carries its own, and that it reaches the report unchanged.
+        sha256: s.id[0]!.repeat(64),
         bytes: 10,
         modified_at: '2026-08-20T00:00:00Z',
       })),
@@ -302,8 +304,8 @@ describe('a run that produces a verdict', () => {
     expect(files.filter((f) => f.endsWith('-licensing.md'))).toHaveLength(1);
   });
 
-  /** Principle 6: the rubric that judged an assay is the protocol, and it versions itself. */
-  it('stamps a section from its own protocol', async () => {
+  /** Principle 6 and invariant 9: what judged this assay, and exactly which bytes of it. */
+  it('stamps a section with its own protocol’s revision', async () => {
     await make().run({ subject: SUBJECT, try_n: 1 });
     const files = await fs.readdir(subjectDir());
     const body = await fs.readFile(
@@ -311,7 +313,8 @@ describe('a run that produces a verdict', () => {
       'utf8',
     );
     expect(body).toContain('standard: Static Review Protocol');
-    expect(body).toContain('standard_version: 1');
+    expect(body).toContain(`standard_sha256: ${'s'.repeat(64)}`);
+    expect(body).not.toContain('standard_version');
   });
 
   /** There is no rubric on disk, so there is nothing to judge against and nothing to write. */
@@ -797,13 +800,13 @@ describe('scripted sections', () => {
     await fs.mkdir(pdir, { recursive: true });
     await fs.writeFile(
       path.join(pdir, 'static.md'),
-      '---\nid: static\nname: Static Review Protocol\nversion: 1\nkind: leaf\norder: 1\n' +
+      '---\nid: static\nname: Static Review Protocol\nkind: leaf\norder: 1\n' +
         'report_headings: ["^tech\\\\s*&\\\\s*documentation"]\n---\n\nthe static rubric\n',
       'utf8',
     );
     await fs.writeFile(
       path.join(pdir, 'currency.md'),
-      '---\nid: currency\nname: Image Currency\nversion: 4\nkind: leaf\norder: 3\n' +
+      '---\nid: currency\nname: Image Currency\nkind: leaf\norder: 3\n' +
         `executor: currency.sh\n${extra}policy:\n  stale_days: 180\n---\n\nthe currency policy\n`,
       'utf8',
     );
@@ -884,7 +887,7 @@ describe('scripted sections', () => {
     await withScript('#!/bin/sh\necho "{}"\n');
     await fs.writeFile(
       path.join(pdir, 'currency.md'),
-      '---\nid: currency\nname: Image Currency\nversion: 4\nkind: leaf\norder: 3\n' +
+      '---\nid: currency\nname: Image Currency\nkind: leaf\norder: 3\n' +
         'executor: ../../bin/evil.sh\nscores: false\n---\n\npolicy\n',
       'utf8',
     );

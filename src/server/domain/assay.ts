@@ -92,7 +92,8 @@ export function composeBody(
 
 export interface Standard {
   name: string;
-  version: number;
+  /** The sha256 of the protocol file — see `Protocol.sha256`, and invariant 9. */
+  sha256: string;
 }
 
 /** The agent's declaration, already parsed. Capitalised severity, as the contract states. */
@@ -111,7 +112,7 @@ export interface AssaySection {
   id: string;
   /** Human name, for the report heading. */
   name: string;
-  /** What judged it, and at which version — principle 6, recorded on every assay. */
+  /** What judged it, and which revision of it — principle 6, recorded on every assay. */
   standard: Standard;
   /** The ids of its phase plan, in order. Empty for a section that has no phases. */
   phases: string[];
@@ -169,7 +170,7 @@ export function blockedSectionAssay(input: {
       ...(input.origin ? { origin: input.origin } : {}),
       section: section.id,
       standard: section.standard.name,
-      standard_version: section.standard.version,
+      standard_sha256: section.standard.sha256,
       status: 'blocked',
       verdict: null,
       top_severity: 'none',
@@ -367,7 +368,7 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
         subject,
         section: section.id,
         standard: section.standard.name,
-        standard_version: section.standard.version,
+        standard_sha256: section.standard.sha256,
         status: status.ran ? 'done' : 'blocked',
         verdict: status.ran
           ? isPrimary

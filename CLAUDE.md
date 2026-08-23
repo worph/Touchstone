@@ -101,7 +101,8 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile`. Displayed — redacted, never posted — by the Configuration page |
 | `context.md` | the **administrator's standing instructions**, prepended to the chat's prompt every turn. Beside `config.yaml` rather than under `state/` because everything in there is regenerable and this is the one operator-authored string with no other copy. Written by the Settings page, gitignored |
 | `protocols/*.sh` | **the procedure**, for a leaf whose `executor:` names one. A sibling of the rubric that declares it, on the volume, so a threshold or a registry URL is an edit rather than a rebuild. **No route can write one** — `save()` writes `${id}.md`, which is what keeps invariant 6 from widening into "a model cannot post code" |
-| `protocols/*.md` | **the rubric itself**, the definition of the sections, and the version every assay records: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads. There is no separate `standards/` — a second file could only disagree with the rubric it versioned |
+| `protocols/.history/` | **what the rubric used to say** — `log.jsonl` plus a snapshot per revision, so the sha256 an assay recorded resolves to bytes. Swept at boot, after a save and before a run reads the protocol, so an edit made over SSH is recorded too (as `observed`, with no reason, which is the honest thing to show). Append-only and **not restorable through any route**: putting an old revision back is an ordinary save of that text, forward |
+| `protocols/*.md` | **the rubric itself**, the definition of the sections, and — as the sha256 of the whole file, frontmatter included — the revision every assay records: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads. There is no separate `standards/` — a second file could only disagree with the rubric it versioned. A save replaces the **prose** and carries the frontmatter over as bytes, so an operator's YAML comments survive and no route can rewrite `executor:` |
 | `reports/<origin>/<Subject>/<ISO>-<section>.md` | **the assay record IS the frontmatter of the report file**. The origin level is a namespace, not a uniqueness rule: two stores may both ship a `FileBrowser` |
 | `trials/<slug>/<Subject>/<ISO>-<section>.md` | a **trial** — the same run against a store zip, written where the report index never looks, so it cannot move a hallmark or enter the backlog. The slug doubles as a synthetic origin, so the path machinery is unchanged |
 | `trials/<slug>/store.zip` | that trial's own copy of the archive it audited, re-served at `/api/v1/trialstore/<store_token>.zip` for the bench to install. Inside the trial's directory because the index only ever picks up `*.md`, so it is invisible to it and dies with the trial |
@@ -125,6 +126,10 @@ because its data access was smeared through two 200-line n8n Code nodes.
   (`busy → forced → cooldown → backlog empty → pick the stalest`; the bench gate sits *after* that
   chain so the pick stays diffable against n8n). `record.ts` is the pure port of `Record result`.
   `index.ts` does all the world-reading and owns `state/schedule.json` and the timer.
+- **`store/revisions.ts`** — the protocol's history. Identity is the **sha256 of the file**,
+  for a rubric and its script alike; this is what makes that hash resolve to bytes. The sweep
+  reads what is on disk rather than hooking the save, which is the only way an edit made over
+  SSH is ever seen. There is no restore verb — see invariant 9 and `routes/protocols.ts`.
 - **`store/protocols.ts`** — the protocol files, and `sectionsOf()`, which turns the leaves into
   the `ProtocolSection[]` every other piece reads. This is the **only** place frontmatter is
   interpreted, so a new field has exactly one place to be understood.
@@ -269,7 +274,11 @@ because its data access was smeared through two 200-line n8n Code nodes.
 7. **The app stays diagnosable with every outbound port broken.** Activity must render with Beacon
    unreachable and push unconfigured.
 8. **There is no queue.** The backlog is re-derived from last-run on every tick, so it cannot drift.
-9. **Every assay records the standard version that judged it.**
+9. **Every assay records the standard *revision* that judged it, and that revision is
+   retrievable.** The identity is the sha256 of the protocol file — and of the executor when a
+   script performed it — not a number the file carries. An integer only moved when somebody
+   used the editor, moved whether or not the content changed, and named text that no longer
+   existed; `store/revisions.ts` keeps the bytes, so the hash resolves.
 10. **`/public` is read-only, and not by convention.** Nothing under that prefix — route or page —
     may write, and the check is at boot rather than at review time. It is the surface app authors
     see, so it is also the one place where an accidental control would be reachable by somebody

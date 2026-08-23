@@ -20,10 +20,11 @@
  *   needs a live instance. The words of each leaf are still the protocol's own, verbatim.
  * - **No amendments to reconcile, 2026-08-20.** Step 2 used to tell the agent to read "every
  *   dated Amendment section" and apply it as binding over the body. The local protocol files
- *   were consolidated the same day — each now states one current rule once, with the history
- *   demoted to a non-normative Changelog — so that instruction sent the agent looking for
- *   sections that are not there and invited it to treat a changelog as orders. The Docmost
- *   branch below still says it, because the wiki copies n8n reads still carry amendments.
+ *   were consolidated the same day — each now states one current rule once — so that
+ *   instruction sent the agent looking for sections that are not there. Since 2026-08-23 the
+ *   files carry no in-body history either: what a rubric used to say lives in the protocol
+ *   history, where a model cannot mistake it for the rubric. The Docmost branch below still
+ *   says it, because the wiki copies n8n reads still carry amendments.
  * - **repo, ref and apps_path are parameters, 2026-08-20.** The node hardcoded
  *   `Yundera/AppStore`, wrote `at ref main` as a literal and spelled `Apps` in three places.
  *   Once the store is a configured origin those are wrong for every store but the first — and
@@ -206,7 +207,7 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
     L.push('1. Validate the app name: run gh api repos/' + repo + '/contents/' + appsPath + '?ref=' + ref + ' using jq filter .[].name . If the app named ' + app + ' is not a real app directory, return a JSON object whose error field is the string not-an-app and whose app_name field is ' + app + ', then stop.');
   }
   L.push(protocolsInline
-    ? '2. The protocol is reproduced IN FULL at the end of this prompt. Read all of it and apply it as written: it is current, self-consistent and has no superseded parts to reconcile, and a Changelog section at the end of a leaf is history rather than rubric - do not act on it. Apply the Static leaf deviation decision table (rules D1-D5) mechanically and its static persistence check (every actual app state location - config dir, database, user/ACL store - must be mapped under /DATA/AppData/' + app + '/, else fail with data-loss/Critical severity). Do NOT fetch it from anywhere; there is nowhere to fetch it from.'
+    ? '2. The protocol is reproduced IN FULL at the end of this prompt. Read all of it and apply it as written: it is current, self-consistent and has no superseded parts to reconcile. Apply the Static leaf deviation decision table (rules D1-D5) mechanically and its static persistence check (every actual app state location - config dir, database, user/ACL store - must be mapped under /DATA/AppData/' + app + '/, else fail with data-loss/Critical severity). Do NOT fetch it from anywhere; there is nowhere to fetch it from.'
     : '2. Fetch the orchestrator via mcp__beacon__call (tool_name docmost-mcp__get_page, slug_id In2NAGjv0h) and READ IT IN FULL including its dated Amendment section, applying the amendment as BINDING (it supersedes the older body on conflict). Also apply the Static leaf deviation decision table (rules D1-D5) mechanically and its static persistence check (every actual app state location - config dir, database, user/ACL store - must be mapped under /DATA/AppData/' + app + '/, else fail with data-loss/Critical severity). It composes leaves you must also fetch and apply: Static Review Protocol slug_id LPwfKYUVig' + (live ? ' and Functional Review Protocol slug_id functional.' : ' (no live section is being run).'));
   L.push(src
     ? '3. Run every section listed above against the supplied files, in the order given. The compose and any rationale.md are reproduced below, and the file list below IS the app directory - judge asset items (icon, screenshots, thumbnail) on whether those files are present in that list and on where their URLs point, not by fetching them. There is no compose_base, so scope = n-a.'
@@ -215,8 +216,8 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
     // The static rubric requires asset URLs point at `<repo>@main`, which is right for the
     // store's own branch and wrong for anything else: read literally on a PR branch it flags
     // every asset URL as pointing at the wrong ref. Bound here rather than by editing the
-    // protocol file, because that file IS the standard and is what `standard_version` versions
-    // — changing it changes what every future assay is judged by.
+    // protocol file, because that file IS the standard and its bytes are what every assay
+    // records — changing it changes what every future assay is judged by.
     L.push('   Where the protocol says an asset URL must point at <repo>@main, read it as ' + repo + '@' + ref + ' for this run: this audit is of ' + ref + ', not of main, and an asset pinned to the ref under audit is correct rather than a finding.');
   }
   if (live) {

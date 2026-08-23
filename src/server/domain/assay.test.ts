@@ -21,7 +21,7 @@ import { assaysFromAgentReport, type AssaySection } from './assay.js';
 const STATIC: AssaySection = {
   id: 'static',
   name: 'Static Review Protocol',
-  standard: { name: 'Static Review Protocol', version: 4 },
+  standard: { name: 'Static Review Protocol', sha256: '4'.repeat(64) },
   phases: [],
   headings: ['^tech\\s*&\\s*documentation'],
 };
@@ -29,7 +29,7 @@ const STATIC: AssaySection = {
 const FUNCTIONAL: AssaySection = {
   id: 'functional',
   name: 'Functional Review Protocol',
-  standard: { name: 'Functional Review Protocol', version: 3 },
+  standard: { name: 'Functional Review Protocol', sha256: '3'.repeat(64) },
   phases: ['A', 'C', 'E8'],
   headings: ['^functionality'],
 };
@@ -83,10 +83,12 @@ describe('one file per section', () => {
     expect(out.map((a) => a.meta.section)).toEqual(['static', 'functional']);
   });
 
-  it('stamps each with the standard that judged it', () => {
+  /** Invariant 9. Each section carries its own rubric's hash, not the run's first one. */
+  it('stamps each with the revision of the standard that judged it', () => {
     const out = compose({ phases: [phase('A', 'functional')] });
-    expect(out[0]?.meta.standard_version).toBe(4);
-    expect(out[1]?.meta.standard_version).toBe(3);
+    expect(out[0]?.meta.standard_sha256).toBe('4'.repeat(64));
+    expect(out[1]?.meta.standard_sha256).toBe('3'.repeat(64));
+    expect(out[0]?.meta.standard_version).toBeUndefined();
   });
 
   /** Principle 3: the declaration is the verdict, and it is declared once for the run. */

@@ -7,7 +7,7 @@ import type { ScriptRun } from '../runner/exec.js';
 const section: AssaySection = {
   id: 'currency',
   name: 'Image Currency',
-  standard: { name: 'Image Currency', version: 3 },
+  standard: { name: 'Image Currency', sha256: 'c'.repeat(64) },
   phases: [],
   headings: [],
 };
@@ -32,7 +32,7 @@ describe('assayFromScript', () => {
     const { meta } = assayFromScript({ ...base, scores: false, run: done({ badge: 'current' }) });
     expect(meta.executor).toBe('currency.sh');
     expect(meta.executor_sha256).toBe('a'.repeat(64));
-    expect(meta.standard_version).toBe(3);
+    expect(meta.standard_sha256).toBe('c'.repeat(64));
   });
 
   /**

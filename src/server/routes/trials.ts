@@ -203,6 +203,7 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
             risk_score: Number(rec.meta.risk_score) || 0,
             blocked_reason: rec.meta.blocked_reason ?? null,
             standard: rec.meta.standard,
+            standard_sha256: rec.meta.standard_sha256,
             standard_version: rec.meta.standard_version,
             started_at: rec.meta.started_at,
           }

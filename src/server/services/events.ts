@@ -124,6 +124,12 @@ export const EVENT_CODES = {
   ASSAY_REQUIREMENT_UNLISTED: { category: 'assay', label: 'requirement not in the protocol' },
   PROTOCOL_MISSING: { category: 'assay', label: 'no protocol on disk' },
   PROTOCOL_EDITED: { category: 'config', label: 'protocol edited' },
+  // A rubric or a script that changed on the volume without going through the app. `info`,
+  // not `warn`: editing a protocol over SSH is legitimate, and warning on every one of them
+  // is how an operator learns to ignore warns. It is here at all because a standard that
+  // changed while nobody was looking is exactly what the history exists to make visible.
+  PROTOCOL_REVISED: { category: 'config', label: 'protocol changed on disk' },
+  PROTOCOL_HISTORY_FAILED: { category: 'config', label: 'protocol history not recorded' },
   // The administrator's standing instructions. `config` rather than `chat`: it is a change
   // to how this instance is set up, not something that happened in a conversation.
   CONTEXT_EDITED: { category: 'config', label: 'administrator context edited' },
@@ -242,7 +248,9 @@ interface EventDetails {
   ASSAY_REQUIREMENT_REVISED: { subject: string; id: string; from: string; to: string };
   ASSAY_REQUIREMENT_UNLISTED: { subject: string; id: string; section: string | undefined };
   PROTOCOL_MISSING: { dir: string };
-  PROTOCOL_EDITED: { id: string; version: number; bytes: number };
+  PROTOCOL_EDITED: { id: string; sha256: string; seq: number; bytes: number; message: string };
+  PROTOCOL_REVISED: { file: string; sha256: string; seq: number };
+  PROTOCOL_HISTORY_FAILED: { dir: string };
   // No version: unlike a protocol, the context is not recorded in anything it influenced.
   CONTEXT_EDITED: { bytes: number };
   AGENT_BUSY: { subject: string; waitMs: number; attempt: number };

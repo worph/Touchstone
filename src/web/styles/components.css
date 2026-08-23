@@ -260,6 +260,12 @@
   color: var(--fg-1);
 }
 
+/* A tag that goes somewhere — the revision of the standard that judged an assay, linking to
+   the text of it. Underlined on hover rather than always, so a row of tags does not read as
+   a row of links when only one of them is. */
+.tag--link { color: var(--link); text-decoration: none; }
+.tag--link:hover { text-decoration: underline; text-underline-offset: 2px; }
+
 /* The store a subject came from, beside its name. Only rendered when more than one store is
    configured — see Overview's `showOrigin`. Quiet on purpose: it disambiguates a row, it is
    not a status. */
@@ -659,6 +665,96 @@
 /* The context prompt is a paragraph or two, not a rubric: the protocol editor's 62vh of
    empty box reads as "you have not written enough". */
 .proto-editor--short { min-height: 34vh; }
+
+/* The reason a save carries. Short on purpose — a sentence, not a second rubric. */
+.proto-why {
+  min-width: 220px;
+  max-width: 340px;
+  font-size: 12.5px;
+}
+
+/* ── the protocol's history ─────────────────────────────────────────────────
+   Activity's log row with different columns: a date, a source glyph, the reason
+   (or the admission that there is none), the hash, and a disclosure holding the
+   diff. `.log` and the atoms below it are shared with EventRow on purpose — an
+   append-only list of things that happened is the same object twice. */
+.rev-row { grid-template-columns: 78px 14px 1fr auto 20px; }
+.rev-row[data-source='observed'] .log-glyph { color: var(--minor); }
+.rev-row[data-source='save'] .log-glyph { color: var(--ok); }
+.rev-row[data-open] { background: var(--bg-2); }
+.rev-file { margin-right: 8px; font-size: 11.5px; color: var(--fg-3); }
+
+.rev-detail {
+  grid-column: 1 / -1;
+  margin: 6px 0 4px;
+}
+
+.rev-detail-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+}
+
+.rev-tally {
+  margin: 0 0 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+/* ── a diff ─────────────────────────────────────────────────────────────────
+   Added and removed carry a glyph in the gutter as well as a tint, because
+   colour is never the only channel (styles/base.css). The block scrolls
+   sideways rather than wrapping: a wrapped diff line stops lining up, which is
+   the one thing a diff is for. */
+.diff {
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+}
+
+.diff-hunk + .diff-hunk { border-top: 1px solid var(--border); }
+
+.diff-head {
+  padding: 3px 10px;
+  color: var(--fg-3);
+  background: var(--bg-2);
+}
+
+.diff-line {
+  display: flex;
+  gap: 8px;
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.diff-gutter {
+  flex: none;
+  width: 9px;
+  color: var(--fg-3);
+  text-align: center;
+}
+
+.diff-text { color: var(--fg-1); }
+
+.diff-line[data-op='add'] {
+  background: var(--ok-dim);
+  box-shadow: inset 2px 0 0 var(--ok);
+}
+.diff-line[data-op='add'] .diff-gutter,
+.diff-line[data-op='add'] .diff-text { color: var(--ok); }
+
+.diff-line[data-op='remove'] {
+  background: var(--crit-dim);
+  box-shadow: inset 2px 0 0 var(--crit);
+}
+.diff-line[data-op='remove'] .diff-gutter,
+.diff-line[data-op='remove'] .diff-text { color: var(--crit); }
 
 /* ── coverage and requirements ──────────────────────────────────────────────
    Coverage is deliberately NOT coloured by how good it looks: it is not the

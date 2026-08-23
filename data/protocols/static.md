@@ -1,7 +1,6 @@
 ---
 id: static
 name: Static Review Protocol
-version: 7
 kind: leaf
 
 # First section, and the one that carries the run's headline verdict. It requires nothing,
@@ -297,26 +296,3 @@ assets a hook needs may live under `Apps/<app>/pre-install/` in the repo.
   the gap. A confident wrong cause is worse than an open question: it gets acted on.
 - **Never** approve, merge, comment, label or publish. Record requirements and write prose;
   that is the whole output.
-
----
-
-## Changelog — not part of the rubric
-
-- **v7 (2026-08-21)** — corrected §7's account of where hooks run. `/DATA` is bind-mounted into
-  the Maison container **at the same path**, so a hook and the host see one filesystem: a
-  `mkdir` in a hook lands in the right place with the wrong *owner* (the real defect, and still
-  `folders`' job), and an existence test in a hook reads the real host file and is an effective
-  guard. The previous wording — "creates the directory in the wrong place" — was generalised by
-  an audit into "a `[ -f ]` in a hook cannot see the host database", and shipped as a Major
-  against an app whose guard was correct. Added the matching guardrail: a static verdict is not
-  revised on runtime evidence until the installed version is confirmed to be this source, and an
-  unreconciled contradiction is reported as one rather than explained away.
-- **v6 (2026-08-20)** — folded the 2026-08-20 Touchstone amendment into the body and dropped the
-  orchestrator framing, the `{ items, static_verdict, scope, opinions }` return shape and the
-  `flagged` verdict along with it. Reconciled with `CONTRIBUTING.md` at `6758715`: dropped
-  `volume-env-descriptions` (Maison never renders those lists) for `broad-mount-disclosure`,
-  added `hook-idempotency`, folded `schema_version` into `declared-folders` and raised it to
-  Major, and made `mkdir` in a hook a fail rather than a redundancy.
-- **v5 (2026-08-20)** — `x-compose-app`, `declared-folders`, Maison metadata rules.
-- **v4 and earlier** — severity on every finding, the static persistence cross-check, the D1–D5
-  deviation table. Imported from Docmost `LPwfKYUVig` on 2026-08-19.

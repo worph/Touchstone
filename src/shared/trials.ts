@@ -145,6 +145,8 @@ export interface TrialCell {
   blocked_reason?: string | null;
   /** Invariant 9's record, and what the `compliant` hint cites. */
   standard?: string;
+  standard_sha256?: string;
+  /** @deprecated Pre-2026-08-23 archive only; `standardLabel` falls back to it. */
   standard_version?: number;
   started_at?: string;
 }
