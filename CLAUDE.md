@@ -98,7 +98,8 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 
 | Path | What |
 | --- | --- |
-| `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile` |
+| `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile`. Displayed — redacted, never posted — by the Configuration page |
+| `context.md` | the **administrator's standing instructions**, prepended to the chat's prompt every turn. Beside `config.yaml` rather than under `state/` because everything in there is regenerable and this is the one operator-authored string with no other copy. Written by the Settings page, gitignored |
 | `protocols/*.sh` | **the procedure**, for a leaf whose `executor:` names one. A sibling of the rubric that declares it, on the volume, so a threshold or a registry URL is an edit rather than a rebuild. **No route can write one** — `save()` writes `${id}.md`, which is what keeps invariant 6 from widening into "a model cannot post code" |
 | `protocols/*.md` | **the rubric itself**, the definition of the sections, and the version every assay records: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads. There is no separate `standards/` — a second file could only disagree with the rubric it versioned |
 | `reports/<origin>/<Subject>/<ISO>-<section>.md` | **the assay record IS the frontmatter of the report file**. The origin level is a namespace, not a uniqueness rule: two stores may both ship a `FileBrowser` |
@@ -188,6 +189,13 @@ because its data access was smeared through two 200-line n8n Code nodes.
   the script said so or died saying nothing. It knows a section produced rows and a badge; it does
   not know what an image is, which is what lets the next deterministic check be two files on the
   volume. `data/protocols/currency.{md,sh}` is the first one — REQUIREMENTS §14.
+- **`store/context.ts` + `routes/settings.ts`** — the two things about *this instance* the app
+  shows you. The context prompt is the half Touchstone owns and a page may write; `config.yaml`
+  is the half a person edits on the volume and is **read-only here on purpose** — it is loaded
+  once at boot and handed to the services as values, so a save button would change a file
+  without changing behaviour. `redactConfig` (in `store/config.ts`) masks on **key names**
+  rather than values, because `config.yaml` merges over the defaults with an index signature:
+  whatever an operator puts in it otherwise comes straight back out of `GET /config`.
 - **`services/ports.ts`** — probes the two non-bench dependencies (agent, browser) by `tools/list`
   over MCP. `services/bench.ts` keeps its own prober because the bench pool is **discovered** from
   the pool API, not configured.
@@ -208,10 +216,14 @@ because its data access was smeared through two 200-line n8n Code nodes.
   appends a `note` row back into that thread when it finishes, so the conversation knows what
   became of its own work.
   `prompt.md` is an asset — `build:api` copies it into `dist/`, so a new non-TS file there
-  needs the same treatment.
-- **`src/web/`** — React + Vite SPA in **two frames**. The operator frame is `Shell` and six pages
+  needs the same treatment. It carries a `{{CONTEXT}}` placeholder for the operator's own
+  standing instructions (`data/context.md`, edited on Settings), read **once per turn** and
+  substituted **last** — a context containing `{{HISTORY}}` must reach the model as those
+  characters rather than as the conversation. No tool reads or writes it: standing instructions
+  a model can rewrite are not standing instructions.
+- **`src/web/`** — React + Vite SPA in **two frames**. The operator frame is `Shell` and eight pages
   (Administrator chat at `/`, Overview at `/overview`, Subject detail, Automation, Activity,
-  Trials) plus Protocols — the chat is the front page and therefore has no nav row of its own,
+  Trials, Settings at `/settings`, Configuration at `/config`) plus Protocols — the chat is the front page and therefore has no nav row of its own,
   the brand being the way back to it; `/chat` redirects to `/`. The
   **public frame** is `PublicFrame` and two read-only pages under `/public` (the board and one
   app), addressed to app authors rather than to the operator. `main.tsx` splits them with two

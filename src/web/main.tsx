@@ -11,7 +11,9 @@ import Shell from './components/Shell';
 import { EmptyState } from './components/Ui';
 import Activity from './pages/Activity';
 import Automation from './pages/Automation';
+import Configuration from './pages/Configuration';
 import Protocols from './pages/Protocols';
+import Settings from './pages/Settings';
 import Trials from './pages/Trials';
 import AdminChat from './pages/AdminChat';
 import Overview from './pages/Overview';
@@ -48,6 +50,11 @@ createRoot(root).render(
           <Route path="/automation" element={<Automation />} />
           <Route path="/protocol" element={<Protocols />} />
           <Route path="/trials" element={<Trials />} />
+          {/* This instance about itself: the one setting the app owns, and the file it
+              booted on. Separate pages because they are separate kinds of thing — one is
+              written here, the other is read here and written on the volume. */}
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/config" element={<Configuration />} />
           {/* Addresses that used to be somewhere else. `/chat` was the administrator's own
               page before it became the front door; the other two predate the Overview. */}
           <Route path="/chat" element={<Navigate to="/" replace />} />
@@ -60,7 +67,7 @@ createRoot(root).render(
                 <EmptyState
                   glyph="⌕"
                   title="No such page"
-                  sub="Touchstone has the administrator, the overview, a subject, automation and activity."
+                  sub="Touchstone has the administrator, the overview, a subject, the protocol, trials, automation, activity and settings."
                 />
               </div>
             }

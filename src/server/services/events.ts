@@ -124,6 +124,9 @@ export const EVENT_CODES = {
   ASSAY_REQUIREMENT_UNLISTED: { category: 'assay', label: 'requirement not in the protocol' },
   PROTOCOL_MISSING: { category: 'assay', label: 'no protocol on disk' },
   PROTOCOL_EDITED: { category: 'config', label: 'protocol edited' },
+  // The administrator's standing instructions. `config` rather than `chat`: it is a change
+  // to how this instance is set up, not something that happened in a conversation.
+  CONTEXT_EDITED: { category: 'config', label: 'administrator context edited' },
   AGENT_BUSY: { category: 'agent', label: 'agent busy' },
   AGENT_UNAUTHENTICATED: { category: 'agent', label: 'agent not logged in' },
 
@@ -240,6 +243,8 @@ interface EventDetails {
   ASSAY_REQUIREMENT_UNLISTED: { subject: string; id: string; section: string | undefined };
   PROTOCOL_MISSING: { dir: string };
   PROTOCOL_EDITED: { id: string; version: number; bytes: number };
+  // No version: unlike a protocol, the context is not recorded in anything it influenced.
+  CONTEXT_EDITED: { bytes: number };
   AGENT_BUSY: { subject: string; waitMs: number; attempt: number };
   AGENT_UNAUTHENTICATED: { subject: string; error: string; raw: string };
   PORT_HEALTHY: { port: string; kind: 'agent' | 'browser'; tools: number };

@@ -2013,3 +2013,83 @@ edit).
   audited but is present in 4 of 69 across the store. There is no process that turns a recurring
   unlisted id into a canonical requirement and a CONTRIBUTING line at the same time. This is an
   operator process, not a code change, and it is deliberately not invented here.
+
+---
+
+## 5u. The instance can describe itself — Settings and Configuration, 2026-08-23
+
+Two pages, asked for together and shipped together because they are the same question at two
+temperatures: *what is this box set up as*. One half the app owns and a page may write; the other
+half a person edits on the volume and the app only reads.
+
+### The context prompt — `data/context.md`
+
+The administrator chat's prompt was fixed at build time. Everything about *this* instance — that
+it audits the Yundera store on a test box, that the scheduler is disarmed on purpose because n8n
+still drives the real loop, which store "the store" means — had to be retyped at the top of every
+conversation or left unsaid. `Settings` (`/settings`) is one textarea over one file, and
+`{{CONTEXT}}` in `chat/prompt.md` is where it lands.
+
+Four decisions in it worth not re-litigating:
+
+- **Beside `config.yaml`, not under `state/`.** `store/state.ts` opens by saying everything in
+  that directory is regenerable — losing it costs a reindex and a re-probe, never a report. This
+  is the one operator-authored string in the app with no other copy anywhere, so it sits with the
+  other file on the volume a person is expected to have written. It is gitignored for the same
+  reason `config.yaml` is: it is about somebody's box.
+- **Read once per turn.** Not per round — nothing the model does inside a turn can change a
+  standing instruction, and re-reading it eight times only opens a window where two rounds of one
+  answer were given different instructions. Not per thread either, which is what "loaded on each
+  new conversation" would literally mean: an operator who edits it wants the next thing they say
+  to be governed by it, not to have to start a conversation first. The page says so after a save,
+  because per-thread is the obvious wrong guess.
+- **Substituted last.** `buildPrompt` is a chain of `.split(marker).join(value)`. Putting the
+  operator's prose in first would let a context containing `{{HISTORY}}` expand into the
+  conversation. It goes in after every other marker is spent, and there is a test that a context
+  naming `{{HISTORY}}` reaches the model as those eleven characters.
+- **No tool reads or writes it.** The chat's registry still has twelve tools and none of them
+  touch this file. Standing instructions a model can rewrite are not standing instructions —
+  invariant 6 is the general form of the same argument.
+
+An empty context contributes **no heading at all**, rather than a `## What the operator has told
+you` over a blank line: a section title over nothing invites the model to wonder what it was
+supposed to have been told. A context that cannot be read costs the model some background and
+never the turn — the operator asked a question and is owed an answer.
+
+Bounded at 16 KB, enforced on the server and shown on the page as a live byte count. A turn
+carries this, the tool catalogue, the live status and the history in one prompt; the ceiling is a
+property of the page rather than a surprise on save.
+
+### Configuration — `/config`
+
+The effective config as JSON: the defaults with `config.yaml` merged over them, which is what the
+process is *running on* rather than what the file says on its own. It answers the question that
+used to need an `exec` into the container.
+
+**Read-only, and not as a limitation.** The config is loaded once at boot and handed to the
+services as values — the roots, the scheduler's constants, the agent's address. A save button
+would change a file without changing behaviour until a restart, which is a worse control than no
+control. The page carries the path and the time it was read instead.
+
+**`redactConfig` matches on key names, not values.** `TouchstoneConfig` has an index signature and
+`loadConfig` merges `config.yaml` over the defaults, so whatever an operator put in that file also
+comes out of `GET /config`. Anything whose key looks like a credential (`token`, `secret`,
+`password`, `api_key`, `…_key`) is masked before it leaves the process, so the browser is never
+sent the value. A credential that is **set** reads as `••••••••` and one that is not reads as
+empty: they are different problems and the page is for diagnosing.
+
+### The nav grew a third group
+
+`Instance` — Settings, Configuration — under Conformance and Operations. Six of the seven
+destinations are tabs on a phone; Configuration gives up its tab (`tab: false` in `Shell`'s
+`NAV`) because it is a page you read once and reach from Settings, not one you switch between.
+
+### Also
+
+`CONTEXT_EDITED` joins the event catalogue under `config`, beside `PROTOCOL_EDITED`. It carries
+bytes and no version: unlike a protocol, the context is not recorded in anything it influenced.
+
+UX.md §5 lost the line "No editing of the standard in the UI" — the Protocol page has edited the
+rubric since 2026-08-20 (§4f) and the claim had simply gone stale. Two lines took its place: no
+editing of `config.yaml` in the UI, and no tool for the administrator to read or write its own
+context.

@@ -9,13 +9,16 @@ import RunningStrip, { RunTitle } from './RunningStrip';
 const BADGE_MS = 30_000;
 
 /**
- * Four destinations. The administrator is not among them: it is the front page now, so the
+ * The destinations. The administrator is not among them: it is the front page now, so the
  * brand — the one piece of chrome on every screen, sidebar and phone header alike — is the
  * link back to it, and a nav row pointing at `/` would be a second door to the same room.
  * The badge on Activity counts open alerts and unread error rows — nothing else, deliberately.
  *
- * Grouped in the sidebar the way the app divides: the standard and what it is measured against on top, what the machine is
- * doing underneath. With only four there is nothing to hide behind a "more" sheet, so the phone gets all four as tabs.
+ * Grouped in the sidebar the way the app divides: the standard and what it is measured
+ * against on top, what the machine is doing under that, and what this particular instance is
+ * set up as at the bottom. The phone gets the same list as tabs, minus the ones marked
+ * `tab: false` — the tab bar is a hand's width and Configuration is a page you read once,
+ * reached from Settings, rather than one you switch to.
  */
 const NAV: { group: string; items: NavItem[] }[] = [
   {
@@ -39,11 +42,21 @@ const NAV: { group: string; items: NavItem[] }[] = [
       { to: '/activity', label: 'Activity', badge: true },
     ],
   },
+  {
+    group: 'Instance',
+    items: [
+      // The one setting the app itself owns: what the administrator is told before it
+      // answers. Everything else about this box is the file below it.
+      { to: '/settings', label: 'Settings' },
+      // Read-only, and read rarely — so it keeps its sidebar row and gives up its tab.
+      { to: '/config', label: 'Configuration', tab: false },
+    ],
+  },
 ];
 
-type NavItem = { to: string; label: string; end?: boolean; badge?: boolean };
+type NavItem = { to: string; label: string; end?: boolean; badge?: boolean; tab?: boolean };
 
-const TABS = NAV.flatMap((section) => section.items);
+const TABS = NAV.flatMap((section) => section.items).filter((item) => item.tab !== false);
 
 export default function Shell({ children }: { children: ReactNode }) {
   const badge = useBadge();
@@ -226,6 +239,20 @@ const GLYPH: Record<string, ReactNode> = {
       <circle cx="18" cy="6" r="3" />
       <circle cx="6" cy="18" r="3" />
       <path d="M18 9a9 9 0 0 1-9 9" />
+    </>
+  ),
+  // sliders: what this instance is set to
+  '/settings': (
+    <>
+      <path d="M5 21V14" />
+      <path d="M5 10V3" />
+      <path d="M12 21v-9" />
+      <path d="M12 8V3" />
+      <path d="M19 21v-5" />
+      <path d="M19 12V3" />
+      <path d="M2.5 14h5" />
+      <path d="M9.5 12h5" />
+      <path d="M16.5 16h5" />
     </>
   ),
   // a loop: the queue coming round again

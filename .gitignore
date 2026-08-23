@@ -8,6 +8,9 @@ dist/
 data/reports/
 data/state/
 data/config.yaml
+# The administrator's standing instructions — written by whoever runs the instance,
+# about that instance. Never ours to commit.
+data/context.md
 
 .DS_Store
 data/cache/

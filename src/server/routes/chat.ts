@@ -33,6 +33,14 @@ export interface ChatRoutesOptions {
   ask?: AskOptions;
   /** The inference-free "what is happening" block handed to the model. */
   status?: () => Promise<string>;
+  /**
+   * The operator's standing instructions — `data/context.md`, edited on the Settings page.
+   *
+   * A function rather than a string because it is read from disk per turn: the template is
+   * read once at boot and is part of the build, this is data on the volume and an edit has
+   * to take effect on the next message rather than on the next restart.
+   */
+  context?: () => Promise<string>;
 }
 
 /** Ping often enough that no proxy between here and the browser calls the socket idle. */
@@ -137,6 +145,7 @@ const routes: FastifyPluginAsync<ChatRoutesOptions> = async (app, options) => {
         ctx: options.ctx ?? {},
         ...(options.events ? { events: options.events } : {}),
         ...(options.status ? { status: options.status } : {}),
+        ...(options.context ? { context: options.context } : {}),
         ...(options.ask ? { ask: options.ask } : {}),
         onMessage: (row: ChatMessage) => frame('message', row),
       });
