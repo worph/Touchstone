@@ -37,6 +37,7 @@ import type { PushService } from '../services/push.js';
 import type { Runner } from '../runner/index.js';
 import type { Scheduler } from '../scheduler/index.js';
 import type { ChatRoutesOptions } from './chat.js';
+import type { SettingsRoutesOptions } from './settings.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import alertRoutes from './alerts.js';
 import benchRoutes from './benches.js';
@@ -50,6 +51,7 @@ import protocolRoutes from './protocols.js';
 import publicRoutes from './public.js';
 import browserRoutes, { registerBrowserProxy } from './browser.js';
 import scheduleRoutes from './schedule.js';
+import settingsRoutes from './settings.js';
 import trialRoutes from './trials.js';
 import uploadRoutes from './uploads.js';
 
@@ -79,6 +81,11 @@ export interface RoutesOptions {
   /** The browser sidecar, so a running audit can be watched. See `routes/browser.ts`. */
   browser?: BrowserRoutesOptions;
   boardUrl?: string;
+  /**
+   * This instance's own two settings surfaces: the administrator's context prompt, and the
+   * config it booted with. Absent, both answer rather than 404 — see `routes/settings.ts`.
+   */
+  settings?: SettingsRoutesOptions;
   /** The administrator chat. Absent means the page renders and says it is not wired. */
   chat?: ChatRoutesOptions;
   /**
@@ -125,6 +132,10 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     ...(options.events ? { events: options.events } : {}),
   });
   await app.register(protocolRoutes, { protocols: options.protocols, events: options.events });
+  await app.register(settingsRoutes, {
+    ...(options.settings ?? {}),
+    ...(options.events ? { events: options.events } : {}),
+  });
   await app.register(chatRoutes, {
     ...(options.chat ?? {}),
     ...(options.events ? { events: options.events } : {}),

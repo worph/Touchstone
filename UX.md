@@ -41,7 +41,7 @@ the UI is down.
 ## 2. Pages
 
 The chrome follows Newsdesk: a light page, and the whole nav down the left on a desk. Below 860px
-that column becomes a sticky header plus a bottom tab bar — four destinations fit as tabs, so
+that column becomes a sticky header plus a bottom tab bar — the destinations fit as tabs, so
 nothing hides behind a "more" sheet. The administrator chat is not one of them: it is `/`, the
 page Touchstone opens on, and the brand — present in both the sidebar and the phone header — is
 the link back to it.
@@ -53,10 +53,15 @@ the link back to it.
 │ CONFORMANCE  │                                               │
 │  Overview    │                   page                        │
 │  Protocol    │                                               │
+│  Trials      │                                               │
 │              │                                               │
 │ OPERATIONS   │                                               │
 │  Automation  │                                               │
 │  Activity  ● │                                               │
+│              │                                               │
+│ INSTANCE     │                                               │
+│  Settings    │                                               │
+│  Configurat. │                                               │
 │              │                                               │
 │ ┌──────────┐ │                                               │
 │ │◴ SegmentP│ │                                               │
@@ -66,16 +71,22 @@ the link back to it.
 └──────────────┴───────────────────────────────────────────────┘
 ```
 
-Five destinations, plus subject detail reached by clicking. Everything else is a filtered view of
-one of these — resist adding a sixth.
+Seven destinations in three groups, plus subject detail reached by clicking. Everything else is a
+filtered view of one of these — resist adding an eighth. Six of the seven are tabs on a phone;
+**Configuration** is not, because it is a page you read once and reach from Settings rather than
+one you switch between.
 
 The **public board** (§2.6) is not one of them and is not in this nav. It is a separate frame at
 `/public`, reached from the sidebar footer rather than from the tab bar: it is addressed to app
 authors, not to the operator, and putting it in the nav would both crowd the phone's tabs and
 suggest it is a page of this app rather than a view published out of it.
 
-The fifth was **Automation**, added 2026-08-20, and it is the one page that is not a view of the
-archive: it is a view of the *driver*. That is why it did not fit inside Activity, which was the
+**Instance** is the third group, added 2026-08-23: not the standard and not the loop, but how
+this particular box is set up — the one setting the app owns (§2.7) and the file it booted on
+(§2.8). It is last because it is the group you visit least.
+
+**Automation**, added 2026-08-20, is the one page that is not a view of the archive: it is a view
+of the *driver*. That is why it did not fit inside Activity, which was the
 obvious place for it. Activity answers "what happened"; the loop's page answers "what is about to
 happen, and may it". Folding a switch that dispatches work into a log people scroll would put the
 one irreversible control in the app somewhere it is read past.
@@ -561,6 +572,53 @@ which is what a hallmark *is*.
 
 ---
 
+### 2.7 Settings — what the administrator is told before it answers
+
+One editable thing: the **context prompt**, `data/context.md`. It is prepended to the
+administrator chat's prompt on every turn — which box this is, which stores matter here, what
+the operator wants left alone — and it exists because the alternative was retyping the same
+paragraph at the top of every conversation.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ ADMINISTRATOR CONTEXT  /data/context.md    [revert] [ save ] │
+│ Loaded into the administrator's prompt before every message. │
+│ [ 412 / 16,000 bytes ] [ saved 23/08 13:18 ] [ unsaved ]     │
+├──────────────────────────────────────────────────────────────┤
+│  This instance audits the Yundera store on holyhorse, which  │
+│  is a test box — nothing on it is customer data. …           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+- **It says what it is not.** Background, not authority: it cannot record a verdict and it cannot
+  give the chat a tool the registry does not have. A text box that looks like it configures the
+  audit would be read as configuring the audit.
+- **The byte count is on screen, not at the limit.** A turn carries this, the tool catalogue, the
+  live status and the conversation in one prompt, so the ceiling is a fact about the page rather
+  than an error message discovered on save.
+- **It takes effect on the next message**, not the next conversation and not the next restart —
+  the file is read per turn. The page says so after a save, because "loaded on each new
+  conversation" is the obvious wrong guess.
+- **Empty is normal.** A fresh instance has no standing instructions and does not look broken for
+  it; the placeholder is an example, not a default.
+
+### 2.8 Configuration — what this process booted on
+
+The effective config as JSON: the defaults with `config.yaml` merged over them, which is what the
+app is *running on* rather than what the file says on its own.
+
+- **Read-only, and not as a limitation.** `config.yaml` is loaded once at boot and handed to the
+  services as values, so a save button here would change a file without changing behaviour until
+  a restart — worse than no button. The page gives the path and the time it was read.
+- **Credentials never reach the browser.** Redaction is on the server and matches on key names,
+  because `config.yaml` merges over the defaults with an index signature — whatever an operator
+  put in it would otherwise come straight back out. A credential that is *set* reads as `••••••••`
+  and one that is not reads as empty: they are different problems.
+- **It is a page you read, not one you switch to**, so it keeps its sidebar row and gives up its
+  tab on the phone. Settings links to it.
+
+---
+
 ## 3. Reports as files
 
 Docmost stops being storage. Layout inside the data dir:
@@ -623,6 +681,9 @@ These matter more than usual, because the system's normal condition includes "la
 | Beacon or push down | Everything still renders. Undelivered notifications are marked in the log. |
 | No scheduler wired up | Automation says so and offers no button. `armed: null` is not `armed: false` — one has a Start button and the other has nothing to start. |
 | Automation not refreshing | A notice, and the page keeps its last state: this is the view, not the driver, and the loop carries on. |
+| No context prompt written | Settings shows an empty box with an example placeholder, and the administrator's prompt carries no context section at all — a heading over nothing invites the model to wonder what it was supposed to have been told. |
+| Context unreadable mid-turn | The turn answers without it. The operator asked a question and is owed an answer; losing it to a permission bit on a file of background prose would be the worse failure. |
+| API running without a config | Configuration says the page was handed nothing, which is not the same as nothing being configured. |
 
 ---
 
@@ -633,7 +694,12 @@ These matter more than usual, because the system's normal condition includes "la
 - **No history strip, no charts, no regression markers.** Nothing reads past assays.
 - **No Standards page.** The rubric is versioned content owned elsewhere.
 - **No PR or gate surface.** That workflow stays in n8n.
-- **No editing of the standard in the UI.**
+- **No editing of `config.yaml` in the UI.** It is read at boot and handed to the services as
+  values; a form that wrote it would be a control that appears to do something until a restart.
+  It is displayed (§2.8), never posted.
+- **No tool for the administrator to read or write its own context.** The chat's registry has
+  twelve tools and none of them touch `data/context.md`. Standing instructions a model can
+  rewrite are not standing instructions, and invariant 6 is the general form of that.
 - **No per-user accounts or roles.** AppShield already authenticated the visitor, and the trusted
   gate makes that count. One shared authenticated view — plus `/public` (§2.6), which is
   unauthenticated by design and carries no control at all. There are two audiences, not two

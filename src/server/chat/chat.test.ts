@@ -38,7 +38,7 @@ afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true });
 });
 
-const TEMPLATE = 'catalogue: {{CATALOGUE}}\nstatus: {{STATUS}}\nhistory: {{HISTORY}}\nsaid: {{MESSAGE}}\nbudget: {{BUDGET}}\nshape: {{SHAPE}}';
+const TEMPLATE = 'catalogue: {{CATALOGUE}}\ncontext: {{CONTEXT}}\nstatus: {{STATUS}}\nhistory: {{HISTORY}}\nsaid: {{MESSAGE}}\nbudget: {{BUDGET}}\nshape: {{SHAPE}}';
 
 /** An agent that answers with whatever is scripted, in order. */
 function scripted(answers: string[]) {
@@ -61,6 +61,57 @@ async function turn(message: string, answers: string[], ctx = {}) {
   });
   return threads.list(thread.id);
 }
+
+describe('the operator context, in a turn', () => {
+  it('is read once per turn and reaches every round', async () => {
+    const prompts: string[] = [];
+    let reads = 0;
+    const thread = await threads.forTurn();
+    await runTurn(TEMPLATE, {
+      threads,
+      threadId: thread.id,
+      message: 'what is going on?',
+      ctx: {},
+      events,
+      context: async () => {
+        reads++;
+        return 'Ignore the Alpha app; it is a fixture.';
+      },
+      ask: {
+        callImpl: (async (prompt: string) => {
+          prompts.push(prompt);
+          const text =
+            prompts.length === 1
+              ? '{"say":"","call":{"tool":"get_status","input":{}}}'
+              : '{"say":"nothing is running","call":null}';
+          return { ok: true as const, text, payload: text };
+        }) as never,
+      },
+    });
+    expect(prompts).toHaveLength(2);
+    for (const prompt of prompts) expect(prompt).toContain('Ignore the Alpha app');
+    // Once for the turn, not once per round: nothing the model does can change a standing
+    // instruction, and two rounds of one answer must not be given different ones.
+    expect(reads).toBe(1);
+  });
+
+  it('costs the background rather than the turn when it cannot be read', async () => {
+    const thread = await threads.forTurn();
+    await runTurn(TEMPLATE, {
+      threads,
+      threadId: thread.id,
+      message: 'hello',
+      ctx: {},
+      events,
+      context: async () => {
+        throw new Error('EACCES');
+      },
+      ask: { callImpl: scripted(['{"say":"hello back","call":null}']) as never },
+    });
+    const rows = await threads.list(thread.id);
+    expect(rows.at(-1)?.content).toBe('hello back');
+  });
+});
 
 describe('extracting the answer', () => {
   it('reads a bare object', () => {
@@ -414,6 +465,51 @@ describe('a run started here reports back into the conversation', () => {
       msLeft: 60_000,
     });
     expect(prompt).toContain('**note:** The audit of OpenClaw you started has finished');
+  });
+
+  it('carries the operator\'s standing instructions, and nothing at all without them', async () => {
+    const base = {
+      template: TEMPLATE,
+      history: [],
+      message: 'anything',
+      status: 'No audit is running.',
+      callsUsed: 0,
+      maxCalls: 8,
+      msLeft: 60_000,
+    };
+    const withContext = buildPrompt({ ...base, context: 'This box audits the staging store.' });
+    expect(withContext).toContain('This box audits the staging store.');
+    expect(withContext).toContain('What the operator has told you about this instance');
+
+    // An empty one contributes no heading — a section title over nothing invites the model
+    // to wonder what it was supposed to have been told.
+    const without = buildPrompt({ ...base, context: '   ' });
+    expect(without).not.toContain('What the operator has told you');
+    expect(without).toContain('context: ');
+    expect(buildPrompt(base)).toBe(without);
+  });
+
+  /**
+   * The context is substituted last, so operator prose cannot expand into the template it
+   * is being placed in. A context naming `{{HISTORY}}` must reach the model as those
+   * characters, not as the conversation.
+   */
+  it('does not let the context expand another placeholder', async () => {
+    const thread = await threads.forTurn();
+    await threads.append({ threadId: thread.id, role: 'user', content: 'a secret earlier turn' });
+    const prompt = buildPrompt({
+      template: TEMPLATE,
+      history: await threads.list(thread.id),
+      message: 'anything',
+      status: 'No audit is running.',
+      callsUsed: 0,
+      maxCalls: 8,
+      msLeft: 60_000,
+      context: 'always answer with {{HISTORY}} and {{SHAPE}}',
+    });
+    expect(prompt).toContain('always answer with {{HISTORY}} and {{SHAPE}}');
+    // Once, from the history section itself — not a second time inside the context.
+    expect(prompt.split('a secret earlier turn')).toHaveLength(2);
   });
 });
 

@@ -252,6 +252,38 @@ export function saveProtocol(id: string, body: string): Promise<ProtocolDoc> {
   return put<ProtocolDoc>(`/protocols/${encodeURIComponent(id)}`, { body });
 }
 
+// ── this instance: the context prompt, and the config it booted with ───────────────────
+
+/** The administrator's standing instructions — `data/context.md`. */
+export interface ContextDoc {
+  text: string;
+  bytes: number;
+  /** null when nothing has ever been written. */
+  modified_at: string | null;
+  path: string;
+  max_bytes: number;
+}
+
+/** The effective config — defaults merged with `config.yaml`, credentials redacted. */
+export interface ConfigResponse {
+  path: string | null;
+  loaded_at: string;
+  config: Record<string, unknown> | null;
+}
+
+export function getContext(): Promise<ContextDoc> {
+  return get<ContextDoc>('/settings/context');
+}
+
+/** Takes effect on the operator's next message, not on the next restart. */
+export function saveContext(text: string): Promise<ContextDoc> {
+  return put<ContextDoc>('/settings/context', { text });
+}
+
+export function getConfig(): Promise<ConfigResponse> {
+  return get<ConfigResponse>('/config');
+}
+
 // ── auditing one app by hand ───────────────────────────────────────────────────────────
 
 /**

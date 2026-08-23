@@ -567,3 +567,35 @@ export async function ensureConfigFile(dataDir?: string): Promise<string | null>
     throw err;
   }
 }
+
+/**
+ * Names that mean "this value is a credential".
+ *
+ * Matched on the key rather than the value, because a secret is not recognisable by looking
+ * at it. `admin_mcp.token` is the only one today, but `config.yaml` is merged over the
+ * defaults with an index signature — an operator may put anything in it, and the config page
+ * would otherwise publish it to anyone who can load the SPA.
+ */
+const SECRET_KEY = /token|secret|password|passwd|credential|api[_-]?key|(^|_)key$/i;
+
+/** What replaces a secret that is set. Deliberately says *that* it is set — an empty
+ *  credential and a hidden one are different problems, and the page is for diagnosing. */
+export const REDACTED = '••••••••';
+
+/**
+ * A copy of the config safe to hand to the browser.
+ *
+ * Structure and non-secret values verbatim; anything whose key looks like a credential
+ * becomes `REDACTED` when it is set and stays empty when it is not. Recursive, because the
+ * index signature means the shape below the known keys is whatever the operator wrote.
+ */
+export function redactConfig(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((v) => redactConfig(v));
+  if (!isPlainObject(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (SECRET_KEY.test(k) && typeof v === 'string') out[k] = v ? REDACTED : '';
+    else out[k] = redactConfig(v);
+  }
+  return out;
+}

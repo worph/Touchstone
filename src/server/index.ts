@@ -25,6 +25,7 @@ import { RunLedger } from './services/ledger.js';
 import { outcomeClause, type RunOutcome } from '../shared/activity.js';
 import { subjectName } from '../shared/subject.js';
 import { ChatThreads } from './chat/thread.js';
+import { ContextStore } from './store/context.js';
 import { CHAT_TOOLS } from './chat/registry.js';
 
 const PORT = Number(process.env.TOUCHSTONE_PORT ?? 8080);
@@ -235,6 +236,14 @@ if (sweptUploads.length > 0) {
 const chatThreads = new ChatThreads(cfg.stateDir);
 await chatThreads.load();
 
+/**
+ * The operator's standing instructions for the administrator chat — `data/context.md`.
+ *
+ * Not loaded here: the store reads per call, so an edit on the Settings page governs the
+ * next thing the operator says rather than the next restart.
+ */
+const chatContext = new ContextStore(cfg.dataDir);
+
 const chatPrompt = await fs
   .readFile(fileURLToPath(new URL('./chat/prompt.md', import.meta.url)), 'utf8')
   .catch(() => null);
@@ -317,6 +326,9 @@ await app.register(registerRoutes, {
   },
   uploads: { uploads, maxFileBytes: cfg.uploads.max_file_bytes, events },
   boardUrl: cfg.bench.board_url,
+  // This instance about itself: the context prompt the chat is handed, and the config this
+  // process booted with — redacted on the way out, `routes/settings.ts`.
+  settings: { context: chatContext, config: cfg },
   /**
    * The chat's tools over MCP, for an agent rather than for a person. Off unless the operator
    * said otherwise; it takes the `chat.ctx` below rather than a context of its own.
@@ -329,6 +341,7 @@ await app.register(registerRoutes, {
   chat: {
     threads: chatThreads,
     ...(chatPrompt ? { template: chatPrompt } : {}),
+    context: async () => (await chatContext.read()).text,
     ask: { agent: { url: cfg.runner.agent_url, tool: cfg.runner.agent_tool, via: cfg.runner.agent_via } },
     ctx: {
       runner,

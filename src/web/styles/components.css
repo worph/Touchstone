@@ -656,6 +656,10 @@
 
 .proto-editor:focus-visible { outline: 2px solid var(--focus); }
 
+/* The context prompt is a paragraph or two, not a rubric: the protocol editor's 62vh of
+   empty box reads as "you have not written enough". */
+.proto-editor--short { min-height: 34vh; }
+
 /* ── coverage and requirements ──────────────────────────────────────────────
    Coverage is deliberately NOT coloured by how good it looks: it is not the
    verdict, and green would merge two questions that must stay apart. The only
@@ -1432,3 +1436,22 @@ button.row-link {
 .tbl--reading tbody tr[data-state="behind"] td:first-child { box-shadow: inset 2px 0 0 var(--minor); }
 .tbl--reading tbody tr[data-state="stale"]  td:first-child { box-shadow: inset 2px 0 0 var(--major); }
 .tbl--reading tbody tr[data-state="current"] td:first-child { box-shadow: inset 2px 0 0 var(--ok); }
+
+/* ── the configuration dump ─────────────────────────────────────────────────
+   Deliberately plain: it is the config as JSON, and colouring it by hand would
+   be a syntax highlighter to maintain for a page that is read twice a year.
+   It scrolls in its own box rather than widening the page. */
+.json-view {
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  max-height: 68vh;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--fg);
+  tab-size: 2;
+  background: var(--bg-1);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+}

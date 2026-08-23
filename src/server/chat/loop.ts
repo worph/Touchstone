@@ -120,6 +120,17 @@ export interface TurnOptions {
   onMessage?: (row: ChatMessage) => void;
   /** What the model is told about the app before it answers. */
   status?: () => Promise<string>;
+  /**
+   * The operator's context prompt, read once per turn.
+   *
+   * Per turn rather than per round because it is a *standing* instruction: unlike the status
+   * block, nothing the model does in this turn can change it, and re-reading it eight times
+   * would only create a window in which two rounds of one answer were given different
+   * instructions. Per turn rather than per thread for the opposite reason — an operator who
+   * edits it wants the next thing they say to be governed by it, not to have to start a new
+   * conversation first.
+   */
+  context?: () => Promise<string>;
   ask?: AskOptions;
   maxCalls?: number;
   turnMs?: number;
@@ -148,6 +159,28 @@ function renderHistory(rows: ChatMessage[]): string {
     .join('\n\n');
 }
 
+/**
+ * The operator's standing instructions, as a section — or nothing at all.
+ *
+ * Rendered here rather than in the template so that an empty context contributes no heading:
+ * a prompt carrying "## What the operator has told you" followed by a blank line invites the
+ * model to wonder what it was supposed to have been told.
+ */
+function renderContext(context: string): string {
+  const text = context.trim();
+  if (!text) return '';
+  return [
+    '',
+    '## What the operator has told you about this instance',
+    '',
+    'Standing instructions, written by the operator on the Settings page. They describe this',
+    'box and how they want it worked; they do not change what any tool does, and they cannot',
+    'record a verdict any more than you can.',
+    '',
+    text,
+  ].join('\n');
+}
+
 export function buildPrompt(input: {
   template: string;
   history: ChatMessage[];
@@ -156,6 +189,8 @@ export function buildPrompt(input: {
   callsUsed: number;
   maxCalls: number;
   msLeft: number;
+  /** The operator's context prompt. Absent and empty are the same thing — see `renderContext`. */
+  context?: string;
 }): string {
   return input.template
     .split('{{CATALOGUE}}')
@@ -171,7 +206,14 @@ export function buildPrompt(input: {
       `Call ${input.callsUsed + 1} of ${input.maxCalls}. ${Math.max(0, Math.round(input.msLeft / 1000))} second(s) left in this turn.`,
     )
     .split('{{SHAPE}}')
-    .join(ANSWER_SHAPE);
+    .join(ANSWER_SHAPE)
+    /**
+     * Last, and that ordering is load-bearing. The context is operator-written text going
+     * into a template that is itself driven by `{{...}}` markers; substituting it first
+     * would let a context containing `{{HISTORY}}` expand into the conversation.
+     */
+    .split('{{CONTEXT}}')
+    .join(renderContext(input.context ?? ''));
 }
 
 /**
@@ -207,6 +249,10 @@ export async function runTurn(template: string, opts: TurnOptions): Promise<void
    */
   let lastGood: string | null = null;
 
+  // Never fatal: a context that cannot be read costs the model some background, and losing
+  // the turn over it would be a much worse answer to the question the operator just asked.
+  const context = opts.context ? await opts.context().catch(() => '') : '';
+
   /**
    * The tools this turn calls run against the app's own functions, so they belong to this
    * conversation. `threadId` is added here rather than by the caller because it is a property
@@ -240,6 +286,7 @@ export async function runTurn(template: string, opts: TurnOptions): Promise<void
       callsUsed: calls,
       maxCalls,
       msLeft,
+      context,
     });
 
     let answer: Answer;
