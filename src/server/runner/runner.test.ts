@@ -8,6 +8,8 @@ import type { BenchProber } from '../services/bench.js';
 import { classify, extractText } from './agent.js';
 import { DEFAULT_ORIGIN, subjectKey } from '../../shared/subject.js';
 import { Runner, type RunnerOptions } from './index.js';
+import { liveWorld, resolveCapabilities } from './capabilities.js';
+import type { ProtocolSection } from '../store/protocols.js';
 import { ProtocolStore } from '../store/protocols.js';
 
 /** The app under test, as the runner now addresses it: `<origin>~<name>`. */
@@ -910,5 +912,142 @@ describe('scripted sections', () => {
     const out = await runner.run({ subject: SUBJECT, try_n: 1 });
     expect(out.kind).toBe('verdict');
     expect(await readingFile()).toContain('badge: current');
+  });
+});
+
+/**
+ * The partition, on its own — the payoff of moving it out of `execute()`.
+ *
+ * `run_assay` now tells the operator which sections would run before the audit is over, and
+ * the thing that must never happen is a second copy of this decision living in a chat handler.
+ * These pin the four properties that are load-bearing and invisible from the types.
+ */
+describe('what a run would be made of', () => {
+  /** Two sections, ordered, one of which needs the world. */
+  function two(): ProtocolSection[] {
+    return [
+      { id: 'static', order: 1, requires: [], name: 'S' },
+      { id: 'functional', order: 2, requires: ['bench', 'browser'], name: 'F' },
+    ].map((s) => ({ ...s, phases: [], headings: [], requirements: [], executor: { kind: 'agent' }, scores: true, policy: {}, sha256: 'x', body: '' })) as ProtocolSection[];
+  }
+
+  const bench = [{ name: 'b1', url: 'https://b1.example', status: 'healthy', build: 'index-abc' }] as never;
+  const browser = [{ name: 'browser-1', kind: 'browser', url: 'http://browser:9746/mcp', status: 'healthy' }] as never;
+
+  it('runs everything when the world supplies everything', () => {
+    const plan = resolveCapabilities(two(), { benches: bench, browsers: browser });
+    expect(plan.run.map((s) => s.id)).toEqual(['static', 'functional']);
+    expect(plan.blocked).toEqual([]);
+    expect(plan.lease).toEqual({
+      benchHost: 'https://b1.example',
+      benchBuild: 'index-abc',
+      browserEndpoint: 'http://browser:9746/mcp',
+    });
+  });
+
+  /**
+   * `execute()` reads `blocked[0].reason` twice — as the run's `degraded_reason` and as the
+   * reason a fully-blocked run returns — so the order is what the strip ends up saying.
+   */
+  it('keeps input order in both arrays, so blocked[0] is the earliest-ordered section', () => {
+    const three = [...two(), { ...two()[1]!, id: 'later', order: 3 }];
+    const plan = resolveCapabilities(three, { benches: [], browsers: browser });
+    expect(plan.blocked.map((b) => b.section.id)).toEqual(['functional', 'later']);
+    expect(plan.blocked[0]!.reason).toBe('bench_unavailable');
+  });
+
+  /** Downstream reads `body`, `executor`, `sha256` off these. A projection would break it. */
+  it('hands back the same section objects, not copies', () => {
+    const input = two();
+    const plan = resolveCapabilities(input, { benches: bench, browsers: browser });
+    expect(plan.run[0]).toBe(input[0]);
+  });
+
+  /**
+   * The guard that makes a trial honest. Without it a bench host would reach the frontmatter
+   * of a trial the bench never installed — a report naming a box that had nothing to do with it.
+   */
+  it('leases no bench for an unservable trial, even with a full pool', () => {
+    const plan = resolveCapabilities(two(), {
+      benches: bench,
+      browsers: browser,
+      benchUnservable: 'store_url_unconfigured',
+    });
+    expect(plan.blocked[0]!.reason).toBe('store_url_unconfigured');
+    expect(plan.lease.benchHost).toBeUndefined();
+  });
+
+  /** Invariant 2: nothing here enumerates capabilities, so an unknown one is not a gate. */
+  it('runs a section requiring something nothing supplies', () => {
+    const gpu = [{ ...two()[0]!, id: 'gpu-thing', requires: ['gpu'] }];
+    expect(resolveCapabilities(gpu, { benches: [], browsers: [] }).run.map((s) => s.id)).toEqual([
+      'gpu-thing',
+    ]);
+  });
+
+  it('blocks only the sections that asked for what is missing', () => {
+    const plan = resolveCapabilities(two(), { benches: [], browsers: browser });
+    expect(plan.run.map((s) => s.id)).toEqual(['static']);
+    expect(plan.blocked.map((b) => b.section.id)).toEqual(['functional']);
+  });
+
+  /** An absent prober is a capability nothing can satisfy — the inverse of the scheduler's. */
+  it('treats an absent prober as no bench rather than as no opinion', () => {
+    expect(liveWorld({}).benches).toEqual([]);
+  });
+});
+
+/**
+ * The forecast `run_assay` gives the operator.
+ *
+ * The thing worth testing is not the shape but the *agreement*: a forecast that drifted from
+ * what the run then does would be worse than no forecast, because it would be believed.
+ */
+describe('forecasting a run before it starts', () => {
+  it('predicts exactly what a run against the same world then records', async () => {
+    const runner = make({ prober: proberOf([]) });
+    const forecast = await runner.forecast();
+
+    expect(forecast.run).toEqual(['static']);
+    expect(forecast.blocked).toEqual([{ section: 'functional', reason: 'bench_unavailable' }]);
+
+    // And now actually run it against that same world.
+    await runner.run({ subject: SUBJECT, try_n: 1 });
+    const written = await reportFiles();
+    expect(written.some((f) => f.endsWith('-static.md'))).toBe(true);
+    expect(written.some((f) => f.endsWith('-functional.md'))).toBe(true);
+  });
+
+  it('reports everything runnable when the world supplies everything', async () => {
+    const forecast = await make().forecast();
+    expect(forecast.run).toEqual(['static', 'functional']);
+    expect(forecast.blocked).toEqual([]);
+  });
+
+  /** Distinct from "no section would run" — one is an empty rubric, the other a dead pool. */
+  it('says there is no protocol rather than reporting an empty run', async () => {
+    const forecast = await make({ protocols: undefined }).forecast();
+    expect(forecast.noProtocol).toBe(true);
+    expect(forecast.run).toEqual([]);
+  });
+
+  /**
+   * The lease must not cross into a chat reply. This registry is also served by
+   * `routes/mcp-admin.ts`, which authenticates nobody, and `benchHost` is an internal address.
+   */
+  it('does not hand back the endpoints the run would use', async () => {
+    const forecast = await make().forecast();
+    expect(JSON.stringify(forecast)).not.toContain('http');
+  });
+
+  /**
+   * A read that wrote would be the corruption the protocol history exists to prevent: an
+   * `observed` revision row every time an operator asked a question.
+   */
+  it('writes no revision, because asking is not editing', async () => {
+    const swept: string[] = [];
+    const runner = make({ revisions: { sweep: async () => void swept.push('swept') } as never });
+    await runner.forecast();
+    expect(swept).toEqual([]);
   });
 });

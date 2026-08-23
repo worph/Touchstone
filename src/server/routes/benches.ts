@@ -25,6 +25,7 @@ const routes: FastifyPluginAsync<BenchRoutesOptions> = async (app, options) => {
     benches: options.prober?.list() ?? [],
     pool_up: options.prober?.poolUp ?? false,
     leasable: options.prober?.leasable().length ?? 0,
+    window: options.prober?.window() ?? 'no demo bench is configured',
     board_url: options.boardUrl || null,
     ports: options.ports?.list() ?? [],
   });

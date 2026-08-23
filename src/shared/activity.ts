@@ -139,9 +139,24 @@ export interface BenchesResponse {
    * answering but all expiring is up and unusable at the same time.
    */
   leasable: number;
+  /** The pool in one sentence, including when the answer changes. `describeWindow`. */
+  window: string;
   board_url: string | null;
   /** The agent and the browser sidecars, reported beside the benches — one picture. */
   ports: PortHealth[];
+}
+
+/**
+ * The pool, compact enough to ride the run-status poll.
+ *
+ * The full roster is `GET /benches`, which the Activity page fetches on its own loop. This is
+ * the two facts every *other* surface needs — can a functional section run, and if not when —
+ * carried on the endpoint the whole UI already polls, so the re-assay button's note cannot be
+ * an hour older than the strip above it.
+ */
+export interface BenchWindow {
+  leasable: number;
+  window: string;
 }
 
 // ── push ───────────────────────────────────────────────────────────────────────────────
@@ -243,6 +258,30 @@ export type RunOutcome =
  * finished run writes into the conversation must say the same thing about the same outcome.
  * `blocked` keeps its "infra, not the app" reading: it is a reason, never a verdict.
  */
+/**
+ * A blocked/failed reason code as a clause an operator reads.
+ *
+ * The codes are the archive's — `bench_unavailable` is what the frontmatter says and what
+ * every test pins — and there is exactly one source for them. The *wording* is per-audience by
+ * settled practice: `domain/assay.ts` writes for the app author in the blocked report,
+ * `web/lib/status.ts` for a table cell. This one is the operator register, shared by the push
+ * notification and the chat so the two cannot describe the same outage differently.
+ */
+export function blockedReasonClause(reason: string): string {
+  switch (reason) {
+    case 'bench_unavailable':
+      return 'no usable demo bench';
+    case 'browser_unavailable':
+      return 'no browser was answering';
+    case 'runner_disabled':
+      return 'the runner is switched off';
+    case 'runner_busy':
+      return 'another audit is already running';
+    default:
+      return reason.replace(/_/g, ' ');
+  }
+}
+
 export function outcomeClause(outcome: RunOutcome): string {
   switch (outcome.kind) {
     case 'verdict':
@@ -328,4 +367,11 @@ export interface RunStatus {
   last: LastRun | null;
   /** Null when nothing is running, or when the run predates the ledger. */
   progress: RunProgress | null;
+  /**
+   * The demo pool, so anything that offers to start a run can say what it would cover.
+   *
+   * Optional because a rig without a prober is a real configuration, not an error — the
+   * button then says nothing about the bench rather than guessing.
+   */
+  bench?: BenchWindow;
 }

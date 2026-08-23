@@ -245,10 +245,16 @@ from the report prose is precisely the mistake the archive was cleaned of in P1.
 - **`try N · trigger`** on each card, because "why did this run" and "how many attempts has it had"
   are questions the wiki table could only answer in emoji.
 - `re-assay` is **one button and no menu**, and calls `POST /api/v1/assays` with a subject and
-  nothing else. There is no depth to choose: a run audits every section of the protocol, and a
+  nothing else. Its bench note reads the **shared run-status poller** rather than a fetch of its
+  own — it used to call `GET /benches` once on mount, so the note was a snapshot from page load,
+  and on 2026-08-23 an operator acted on one five minutes after it stopped being true. There is no depth to choose: a run audits every section of the protocol, and a
   section whose prerequisites are missing is recorded blocked — which costs the app nothing and is
   the honest record of what happened. When no bench is leasable the button says so beneath itself
   rather than disabling anything: the audit is still worth running, it will simply be narrower.
+  It says **when** too — *"no bench — live sections will be recorded blocked · demostaging1 is 34
+  min from its wipe at ~15:00 UTC and inside the 60 min guard — usable again shortly after it"* —
+  because a note that names only the fault is the difference between a narrower audit and a dead
+  end.
   (Until 2026-08-20 this was a `▾` menu offering `static only` / `static + functional`, mirroring
   n8n's `depth`. The choice was never real — the only reason to pick `static` was a dead pool, and
   the runner already handles that by itself.)
@@ -380,6 +386,22 @@ not 49 rows. Keys: `bench.auth`, `bench.unreachable`, `agent.unavailable`, `brow
 An alert auto-resolves when its probe succeeds, and the resolution is itself worth pushing:
 *"bench pool recovered, functional queue resumed."* There is no ack and no mute.
 
+**Every alert carries an `impact` line, and it says when the condition lifts.** A card naming
+only the fault leaves the operator with nothing to do and nothing to wait for — which is what
+happened on 2026-08-23, when a bench alert sat open all day beside a pool that had recovered
+mid-morning. So `impact` is now always set (it used to be dropped whenever *anything* was still
+leasable, i.e. in the ordinary half-broken case) and always ends with the pool window:
+*"sections that need a bench will be recorded blocked · no try consumed · demostaging1 is
+mid-cleanup — usually back within minutes"*. It is composed once, in `services/bench.ts`
+(`describeWindow`), and quoted by the Activity card, the Store banner, the push notification
+and the chat — four surfaces, one sentence, no restatement.
+
+Note what the alert **cannot** tell you, and why the log has to: `bench.unreachable` is keyed on
+*a box being broken*, not on *whether a functional section can run*. With one bench wedged and
+another healthy it stays open, so its resolution never fires for a partial recovery. That gap is
+why the scheduler logs `TICK_BENCH_GATED` / `TICK_BENCH_UNGATED` as **transitions** — once when
+the gate closes, once when it opens, never once per tick.
+
 **Environment** sits on the same page because you look at it in the same moment. The line
 **`board says ✅ Ready`** next to a failing probe is deliberate: the management board is known not
 to detect this failure mode, and the UI should show the disagreement rather than trust either
@@ -492,17 +514,37 @@ a verdict that looks like the others but quietly means something else is worse t
 all.
 
 ```
+┌────────────────────────────────────────────────────────────────────────────┐
+│ TRIALS                                                                     │
+│ Store zip                                                                  │
+│ [https://github.com/Owner/AppStore/archive/…/pr-812.zip                  ] │
+│ App [Widget ]                                            [  Run trial  ]   │
+├────────────────────────────────────────────────────────────────────────────┤
+│  APP     STORE            STATIC   FUNCTIONAL  CURRENCY  VER.  RISK  START  │
+│  Widget  …/pr-812.zip     ▣ Major  ▨ no bench  118d      18/18   30  1h   ›│
+│  Ntfy    upload sess-9f2a ⬜        ⬜           —          —     —  24m   ›│
+│  └ not run — the agent was busy                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+        ↓  /trials/<slug>
 ┌──────────────────────────────────────────────────────────────┐
-│ TRIALS                                                       │
-│ Store zip                                                    │
-│ [https://github.com/Owner/AppStore/archive/…/pr-812.zip    ] │
-│ App [Widget ]                              [  Run trial  ]   │
-├──────────────────────────────────────────────────────────────┤
-│  Widget   from …/pr-812.zip         non-compliant   20:14    │
-├──────────────────────────────────────────────────────────────┤
+│ ‹ Widget                                     30 RISK [Remove]│
+│ Apps/Widget from …/pr-812.zip                                │
+│ [judged against Yundera/AppStore] [new app · nothing to      │
+│  compare] [Static Review Protocol 4f2a…] [finished 1h ago]   │
+├───────────────────────────┬──────────────────────────────────┤
+│ STATIC   ▣ Major risk 30  │ FUNCTIONAL  ▨ bench unavailable  │
+│ ran 2026-08-23 · 1h ago   │ no try used                      │
+├───────────────────────────┴──────────────────────────────────┤
+│  THIS STORE, AGAINST WHAT THE APP CARRIES NOW                │
 │  SECTION      THIS STORE          CURRENTLY                  │
 │  static       ⛔ non-compliant     ✅ compliant                │
-│  functional   ⛔ non-compliant     ✅ compliant                │
+│  functional   ▨ blocked           ✅ compliant                │
+├──────────────────────────────────────────────────────────────┤
+│  IMAGE CURRENCY  118d behind · read today   [table of rows]  │
+├──────────────────────────────────────────────────────────────┤
+│  REQUIREMENTS  18/18 verified   [failures first, passes fold]│
+├──────────────────────────────────────────────────────────────┤
+│  REPORT  [static|functional|currency] [rendered|raw] [dl]    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -511,6 +553,19 @@ all.
   belongs to, resolved from the configured origins, not something to retype per trial.
 - **A trial is a full audit.** Both sections run — Touchstone serves the exact archive it audited
   and the bench installs that. The functional row is a real verdict, not a permanent `blocked`.
+- **The list draws the Store page's columns, because they are the same facts.** A column per
+  section, a column per reading, coverage and risk — off the trial's own reports, composed by the
+  same function the Store page's rows come from. It used to be one `Result` cell taken from the
+  *record*, which says how the job ended and not what it found: a trial whose static section
+  failed and whose functional section was blocked showed one word, and the half nobody could
+  check looked like the half that passed. Two columns the Store page has are deliberately
+  absent — `Last`, because a trial is one-shot and `Started` already is that column, and the
+  audit button, because you do not re-run a trial, you run a new one against a new zip. So are
+  the summary strip and the filters: a population to triage is what a hallmark board is.
+- **A trial has its own address.** `/trials/<slug>`, so a result can be pasted into the PR it is
+  about and survive a reload. The detail is the subject page's furniture — section cards,
+  reading panels, the requirement list, the report viewer with a tab per section — around the one
+  panel that is this page's alone.
 - **Two columns, and the right one never changes.** The comparison is the whole point: a verdict
   on a branch means little until you know whether it is better or worse than the thing it would
   replace. `Currently` is the subject's existing hallmark, unaffected by anything on this page.
@@ -523,8 +578,15 @@ all.
 - **Uploads are not on this page.** The no-commit fix loop (`open_trial` → PUT files →
   `run_trial`) is MCP-only, because its caller is an agent fixing an app rather than an operator
   reviewing one. It produces a store zip like any other and lands in the same list.
-- **Quieter than the Overview, deliberately.** Styling a trial like a hallmark invites it to be
-  read as one.
+- **A row that produced no report says so under its own name.** The section columns are the
+  answer whenever the run wrote something down; a trial that errored before the first assay, or
+  that the agent was too busy to take, has nothing but empty cells, and the note is the only
+  place the row can say why.
+- **Told apart by words and structure, not by a downgraded cell.** The header says a trial moves
+  nothing, the comparison's third column is labelled `Currently`, and there is no summary strip.
+  Drawing a trial's `blocked` differently from the archive's would be two notations that
+  eventually disagree about what `blocked` means — which is the failure `SubjectTable` exists to
+  prevent.
 
 ---
 
@@ -690,7 +752,7 @@ These matter more than usual, because the system's normal condition includes "la
 | State | What the UI shows |
 | --- | --- |
 | No assays yet | The Store page lists every tracked subject as `⬜ not yet run`, each with its own **audit** button. Never an empty page — the registry alone fills it. |
-| Bench pool down | Banner + functional column uniformly `▨ blocked`. Functional re-assay disabled with the reason. Static work continues visibly. |
+| Bench pool down | The open alert's own `impact` as the banner's second line — what is stopped, that no try is consumed, and **when the pool is usable again**. Functional column uniformly `▨ blocked`. Re-assay stays **enabled** and says the same window beneath itself: the audit is still worth running, it will simply be narrower. Static work continues visibly. |
 | Assay running | The row shows `◴ running · 7/24`, the shell shows the strip, the tab title shows the clock, and both Activity and the subject's own page show the card. All of them come from `GET /assays/current` and none from a file: the runner writes a report when it has a verdict, so a run in progress has no record and must not be given a placeholder one. |
 | Subject parked | `⚠ parked ·3` with the date it is released. Not styled as an error. |
 | Agent busy | Log row and a `agent.unavailable` alert if it persists. The row is restored, not failed. |

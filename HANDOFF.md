@@ -2321,3 +2321,188 @@ assumed.
 - **No web surface for `via`.** `PROTOCOL_EDITED` now records whether an edit came from the
   editor, the chat or MCP; the Protocols history renders the reason but not yet the caller.
 - **Not deployed.** Source only.
+
+---
+
+## 5y. The pool says when it comes back — 2026-08-23
+
+### What went wrong, exactly
+
+An operator started an audit of `Suwayomi` from the chat on yunderalabs at 13:18:05Z and was
+told *"Not running functional — bench unavailable. That section will be recorded blocked, and
+no retry budget is spent on it."* Then: no path forward.
+
+The run itself was **correct**. `static` and `currency` ran, `functional` was written
+`blocked — bench_unavailable`, no try was burned. Invariants 3 and 4 did their job. What failed
+was everything around it:
+
+| Time (UTC) | What happened |
+| --- | --- |
+| 11:49:07 | Both benches unreachable, 3 ms apart — a shared failure, not two coincidences |
+| 12:00–13:22 | **19 identical `TICK_BENCH_GATED` warnings**, one every five minutes |
+| 13:18:05 | The audit runs; `functional` blocked. Correct, and a dead end |
+| 13:23:01 | `BENCH_RECOVERED` — demostaging1 claimable again. **Nothing said so** |
+| 13:27:44 | `get_status` still read `0 of 2 usable — demostaging1 healthy` — the pool API said `isProcessing` while the login probe answered 200 |
+
+Root cause of the environment fault was demostaging2: its 07:00 cleanup failed
+(`lastCleanupSuccess: false`) and left it wedged in `isProcessing` behind a 502 for six hours,
+reducing a pool of two to a pool of one. Fixed on the nasselle side the same afternoon.
+
+**The product fault was ours: Touchstone named the condition everywhere and the recovery
+nowhere.** Every surface said what was wrong; none said when it would be different — even
+though `remaining_min`, `processing` and `healthy_at` were already on every `BenchHealth` row.
+
+### What shipped
+
+**One sentence, one definition.** `describeWindow(rows, minRemainingMin, now)` in
+`services/bench.ts` — pure, beside `describeClaim`/`boardClaimsReady`. Five branches: usable
+with a countdown, mid-cleanup, healthy-but-inside-the-guard, no countdown, nothing answering.
+`BenchProber.window()` binds it to the prober's own `minRemainingMin`. The claim rule itself
+came out as `isLeasable()` so `leasable()` and the sentence describing it cannot drift.
+
+**It rides the poller everything already reads.** `RunStatus` gained `bench?: {leasable,
+window}`, filled by `GET /assays/current`. `ReassayButton` dropped its one-shot `getBenches()`
+and reads `useRunStatus()` — that fetch-on-mount was why an operator acted on a five-minute-old
+answer. `GET /benches` also carries `window`, for the Activity page's own loop.
+
+**`run_assay` describes the run it started.** The section partition came out of the private
+`Runner.execute()` into `runner/capabilities.ts` (`resolveCapabilities` pure + `liveWorld` as
+the single world-reader), and `Runner.forecast()` calls the same two. The reply now names which
+sections would run, which would not and why, when the missing capability returns, and — the
+clause that would have saved the incident — **that a blocked section is not retried
+automatically**. Worded as a forecast ("would", not "will"), because `execute()` re-resolves at
+dispatch.
+
+**The log stopped drowning.** `TICK_BENCH_GATED` is logged on the **transition** only, with a
+matching `TICK_BENCH_UNGATED` when the gate lifts — the 13:23 moment that had no row at all.
+
+**Alert `impact` is always set and always ends with the window.** It used to be `undefined`
+whenever anything was still leasable, i.e. in the ordinary half-broken case. The Store banner
+now renders `impact` instead of a hardcoded paragraph that duplicated it.
+
+### Four things `forecast()` must not do
+
+Written down in its doc comment, because the extraction makes each easy to get wrong:
+
+1. **No `revisions.sweep()`.** `execute()` sweeps before reading the protocol. A read tool that
+   swept would write an `observed` revision every time an operator asked a question — the exact
+   corruption `domain/protocoledit.ts` exists to prevent.
+2. **No lease in the answer.** `benchHost`/`browserEndpoint` are internal addresses and this
+   registry is served by `routes/mcp-admin.ts`, which authenticates nobody. Pinned by a test.
+3. **No events, no `note()`.** It is a read.
+4. **Section ids only** — no rubric bodies crossing into a chat turn.
+
+And it is called **after** `startAssay`, not before: there is no `await` between the busy check
+and the dispatch today, and inserting one would widen a zero-length race into a real one.
+
+### Also
+
+`describeReason` was promoted out of `services/notify.ts` into `shared/activity.ts` as
+`blockedReasonClause`, so the push notification and the chat cannot describe one outage two
+ways. `AuditButton.tsx`'s comment claimed the Store page fetched the bench pool; it never did,
+and the claim is now corrected.
+
+### Verified
+
+`yarn typecheck` clean, `yarn test` **773 passed** (was 741), `yarn build` green. Against the
+live pool on the dev stack at 14:05Z: `GET /benches` and `GET /assays/current` both returned
+*"demostaging2 is usable for another 1018 min, until its wipe at ~07:03 UTC"* — correctly naming
+demostaging2 rather than demostaging1, which had just crossed inside the 60-minute guard at 58
+minutes of runway.
+
+### Left undone
+
+- **Not deployed.** Source only; yunderalabs is unchanged.
+- **The chat reply is not exercised against a live agent.** Composition is unit-tested; the
+  end-to-end turn has not been run on the dev stack.
+- **Blocked sections still never come back on their own.** A run with a blocked section stamps
+  freshness (`scheduler/index.ts` `lastDoneAt`), so `Suwayomi` is fresh for 7 days carrying a
+  static-only hallmark. Fixing it needs a "waiting on infra" list plus a section-filtered
+  `resume` verb — deliberately out of scope here, since it changes scheduler behaviour.
+- **The alert still tracks the wrong thing.** `poolUp` is `healthy().length > 0`, not
+  `leasable()`, and there is a `BENCH_POOL_DOWN` with no `BENCH_POOL_UP`. `TICK_BENCH_UNGATED`
+  is the log-only half; the notification half belongs with the resume work above.
+
+---
+
+## 5z. A trial row says what it found, not how its job ended — 2026-08-23
+
+The Trials list drew one `Result` cell per row, derived from `TrialRecord.outcome` — which
+records how the **job** ended, not what the audit found. A trial whose static section failed and
+whose functional section was blocked showed a single word, and the half nobody managed to check
+was indistinguishable from the half that passed. Those are precisely the two states the status
+vocabulary exists to keep apart (invariant 4).
+
+### The list carries its sections now
+
+`GET /trials` composes each row with **`subjectHallmark`** — the same function the Store page's
+rows come from — over `trialsIndex(trialsRoot)`, one index over the whole trials tree rather than
+one per trial. The slug is the synthetic origin, so a record's subject key is already
+`<slug>~<subject>` and one walk separates a hundred trials without knowing anything about them.
+`TrialSummary extends TrialRecord { state: SubjectState }`; `state` is derived per request and
+never persisted.
+
+The alternative was denormalising the sections onto the record when the run finishes. Rejected:
+a second copy of what the report files already say, free to drift, and a trial's files can be
+deleted out from under it.
+
+Reusing `subjectHallmark` rather than writing a trial-shaped composer inherits invariant 12 for
+free — a `scores: false` reading stays out of the row's risk, and cannot stamp freshness. That is
+pinned by the new route test, along with the thing one shared index makes possible to get wrong:
+one trial's reports reaching another's row.
+
+### The columns, and the three that did not come over
+
+Same cells as `SubjectTable`: a column per section, a column per reading (`Currency` appears the
+moment one trial has such an assay), coverage, risk. Not copied:
+
+- **`Last`** — it is `age_days`, the freshness of a hallmark. A trial is one-shot and never
+  re-run; `Started` already is that column.
+- **the audit button** — you do not re-run a trial, you run a new one against a new zip.
+- **the summary strip and filters** — a population to triage is what a hallmark board is.
+
+`SubjectTable` itself is deliberately *not* reused: a trial row is not a `SubjectState` (no
+origin, no age, no hallmark, nowhere for the comparison), and forcing it in would mean either
+fake fields or new props on the component whose whole justification is that the operator and the
+public board render verdicts identically — with invariant 10 one prop away. The **cells** are
+shared, which is where the guarantee actually lives.
+
+A row whose run wrote no report at all — errored before the first assay, agent busy, or
+interrupted — carries a note under its name. Empty cells cannot say why, and `not yet run` twice
+is a row that has quietly lost its own failure.
+
+### `/trials/:slug`
+
+The detail was a panel under the list; it is a route now, so a result can be pasted into the PR
+it is about and survive a reload. `GET /trials/:slug` gained `state` alongside `comparison` —
+the comparison is five facts per cell and no body, which the cards, the requirement list and the
+report tabs cannot work from.
+
+The page is the subject page's furniture around the one panel that is its own. Three pieces came
+out of `pages/SubjectDetail.tsx` to make that literal rather than a copy: `components/LegCard.tsx`
+(`LegCard`, `StandardTag`, `verdictSections`), `RequirementsPanel` in `RequirementList.tsx`, and
+`lib/download.ts`. `LegCard` takes a `neverNote` — the archive's "this section has never been
+assayed" reads as a fact about the *app*, where on a trial what happened is that this one run did
+not get there.
+
+Two things fixed in passing: the header said `finished 1h ago ago` (`since()` already ends in
+"ago"), and the dead CSS for the old panel — `.trial-detail`, `.trial-head`, `.trial-ref`,
+`.trial-files`, `button.row-link`, the `tr[data-active]` selection rule — is gone.
+
+### Verified
+
+`yarn typecheck` clean, `yarn test` **774 passed** (was 773), `yarn build` green. Rendered on the
+dev stack against two fabricated trials (since removed): the list drew `▣ Major`,
+`▨ blocked · bench unavailable`, `118d behind`, `18/18`, `30`; the never-ran row drew its note
+and empty cells; `/trials/<slug>` drew the cards, the comparison with a real hallmark in
+`Currently`, the currency panel, 18/18 requirements and the report with three section tabs.
+
+### Left undone
+
+- **Not deployed.** Source only; yunderalabs is unchanged.
+- **The list is not sortable.** The Store table's headers sort; these do not — trials are ordered
+  newest-first, which is the order PR debris is read in. Trivial to add if it is ever wanted.
+- **`trialsIndex` walks the tree on every list request.** Uncached by construction
+  (`defaultCacheFile()` collides with the archive's `state/index.json`). At `MAX_TRIALS = 100`
+  small trees that is not measurable; if it ever is, memoise on the directory mtime rather than
+  reintroducing a cache file.

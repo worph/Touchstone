@@ -41,6 +41,7 @@ import { sectionsOf, type ExecutorRef, type ProtocolSection, type ProtocolStore 
 import type { RevisionStore } from '../store/revisions.js';
 import { coverageOf, type CanonicalRequirement, type RunLedger, type RunState } from '../services/ledger.js';
 import type { EventLog } from '../services/events.js';
+import { liveWorld, resolveCapabilities } from './capabilities.js';
 import { callAgent, type AgentOptions, type AgentOutcome } from './agent.js';
 import { runScript, type ScriptRun } from './exec.js';
 import { buildPrompt } from './prompt.js';
@@ -180,6 +181,16 @@ export interface RunnerStatus {
   last: LastRun | null;
 }
 
+/** What a run started now would cover. See `Runner.forecast()`. */
+export interface Forecast {
+  /** Section ids that would be attempted, in protocol order. */
+  run: Section[];
+  /** Those that would be recorded blocked, with the archive's own reason codes. */
+  blocked: { section: Section; reason: string }[];
+  /** No protocol on disk: the run would stop without writing anything. Not "nothing runs". */
+  noProtocol?: boolean;
+}
+
 export class Runner {
   private readonly opts: RunnerOptions;
   private running = false;
@@ -218,6 +229,43 @@ export class Runner {
    */
   status(): RunnerStatus {
     return { running: this.current, last: this.previous };
+  }
+
+  /**
+   * What a run started now would be made of — the answer `run_assay` gives the operator.
+   *
+   * A method on `Runner` rather than something the chat assembles from `ctx.prober` and
+   * `ctx.protocols`: those happen to be the same instances the runner holds today, but
+   * `ChatToolContext` takes them as four independent optional fields, so a free function could
+   * describe a world the run will not use and nothing would notice. Reading `this.opts` makes
+   * "the same collaborators" true by construction.
+   *
+   * **A forecast, not a promise.** `execute()` resolves capabilities again at dispatch, after
+   * its own `plan()` — deliberately, because an operator's protocol edit must reach the next
+   * audit — so the answer here can be overtaken. The wording it feeds says so.
+   *
+   * Four things it must not do, each of which the extraction made easy to get wrong:
+   *
+   * - **No `revisions.sweep()`.** `execute()` sweeps before reading the protocol. A read that
+   *   appended revision rows as a side effect would write an `observed` entry into the history
+   *   every time somebody asked a question, which is precisely the corruption the history
+   *   exists to make impossible.
+   * - **No lease in the answer.** `benchHost` and `browserEndpoint` are internal addresses,
+   *   and this reply is reachable from `routes/mcp-admin.ts`, which authenticates nobody.
+   * - **No events, no `note()`.** It is a read.
+   * - **Section ids only** — no rubric bodies crossing into a chat turn.
+   */
+  async forecast(job?: Pick<RunnerJob, 'trial'>): Promise<Forecast> {
+    const plan = await this.plan();
+    if (!plan || plan.sections.length === 0) return { run: [], blocked: [], noProtocol: true };
+    const { run, blocked } = resolveCapabilities(
+      plan.sections,
+      liveWorld({ ...this.opts, ...(job?.trial ? { trial: job.trial } : {}) }),
+    );
+    return {
+      run: run.map((s) => s.id as Section),
+      blocked: blocked.map((b) => ({ section: b.section.id as Section, reason: b.reason })),
+    };
   }
 
   async run(job: RunnerJob): Promise<RunOutcome> {
@@ -325,51 +373,18 @@ export class Runner {
     // `blocked` for the whole job made a dead demo pool cost the static verdict as well —
     // the very conflation §2.2 exists to complain about. The sections that can run, run; the
     // rest are *recorded* as blocked.
-    const wanted = new Set(plan.sections.flatMap((s) => s.requires));
-    let benchHost: string | undefined;
-    let benchBuild: string | undefined;
-    let browserEndpoint: string | undefined;
-    const missing = new Map<string, string>();
-
-    // A trial that cannot be served has nothing for a bench to install, and that falls out of
-    // the machinery that already exists rather than needing a branch of its own: declare the
-    // bench unavailable up front and the partition below records every section that wanted one
-    // as blocked, with this reason, while the rest of the run proceeds.
-    //
-    // This is now the *only* thing that makes a trial less than a full audit, and it is a fact
-    // about this box rather than about trials: `trials.public_base_url` is unset, so Touchstone
-    // does not know the address a bench on the public internet would fetch its store from. With
-    // it, a trial hands the bench the exact archive it audited and leases like any other run.
-    if (job.trial && !job.trial.store_url) missing.set('bench', 'store_url_unconfigured');
-
-    if (wanted.has('bench') && !missing.has('bench')) {
-      const leasable = this.opts.prober?.leasable() ?? [];
-      if (leasable.length === 0) missing.set('bench', 'bench_unavailable');
-      else {
-        // Read off the lease, not probed again here: the fingerprint has to describe the box
-        // this run is about to use, and the prober already took one on the cycle that
-        // declared it leasable. A second fetch would be a second answer.
-        benchHost = leasable[0]!.url;
-        benchBuild = leasable[0]!.build;
-      }
-    }
-    if (wanted.has('browser')) {
-      // A lease is `(bench, browser)` together. There is one run at a time — the scheduler's
-      // single-flight and this class's own guard both say so — so taking the first healthy
-      // sidecar *is* the lease, and no two assays can share a browser by construction. That is
-      // the whole point: the page-stealing race in §2.4 cannot occur.
-      const browsers = this.opts.ports?.healthy('browser') ?? [];
-      if (browsers.length === 0) missing.set('browser', 'browser_unavailable');
-      else browserEndpoint = browsers[0]!.url;
-    }
-
-    const runSections: ProtocolSection[] = [];
-    const skipped: { section: ProtocolSection; reason: string }[] = [];
-    for (const section of plan.sections) {
-      const unmet = section.requires.find((c) => missing.has(c));
-      if (unmet) skipped.push({ section, reason: missing.get(unmet)! });
-      else runSections.push(section);
-    }
+    // `capabilities.ts` holds the partition itself, so `Runner.forecast()` can tell the chat
+    // what a run would cover without a second copy of this decision. Destructured back into
+    // the same names the rest of this method already used: the point of the move is that
+    // nothing below it changed.
+    const {
+      run: runSections,
+      blocked: skipped,
+      lease: { benchHost, benchBuild, browserEndpoint },
+    } = resolveCapabilities(
+      plan.sections,
+      liveWorld({ ...this.opts, ...(job.trial ? { trial: job.trial } : {}) }),
+    );
 
     this.note({
       sections: runSections.map((s) => s.id),

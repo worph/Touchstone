@@ -573,13 +573,15 @@
 }
 
 /* ── the manual trigger ─────────────────────────────────────────────────────
-   A dropdown whose menu is positioned rather than a native <select>, because the
-   two choices carry a reason each — "no bench needed", "no bench" — and an option
-   element cannot say why it is disabled. */
+   A button and a note beside it. (It was a dropdown until 2026-08-20, offering
+   `static only` / `static + functional`; the choice was never real, since the
+   runner already records a section it cannot run as blocked.) Wraps, because the
+   note now carries a sentence rather than four words. */
 .reassay {
   position: relative;
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -616,10 +618,14 @@
   cursor: not-allowed;
 }
 
+/* Wraps, with a capped measure.
+   It was `white-space: nowrap` while the only thing it ever said was four words. It now also
+   carries when the bench comes back, which is a sentence — and a nowrap sentence pushes the
+   flex row sideways off a phone. Same capped measure as `.backlog-note__text`. */
 .reassay-note {
   font-size: 11.5px;
   color: var(--fg-2);
-  white-space: nowrap;
+  max-width: 52ch;
 }
 
 .reassay-note--bad { color: var(--crit); }
@@ -1352,26 +1358,6 @@
   font-size: 12px;
 }
 
-/* Which trial the detail below is showing. `:hover` already tints a row, so the selected one
-   is marked on its left edge as well — the two must not be tellable apart only by shade. */
-.tbl tbody tr[data-active] td { background: var(--bg-2); }
-.tbl tbody tr[data-active] td:first-child { box-shadow: inset 2px 0 0 var(--link); }
-
-/* `.row-link` is written for an anchor; the trial list selects rather than navigates, so the
-   same affordance has to sit on a button without bringing the UA's button chrome with it. */
-button.row-link {
-  background: none;
-  border: 0;
-  padding: 0;
-  cursor: pointer;
-  font: inherit;
-  font-weight: 550;
-  text-align: left;
-}
-
-.trial-detail { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
-.trial-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
-.trial-ref { font: 12px/1.5 var(--mono); color: var(--fg-1); word-break: break-all; }
 .trial-table { width: 100%; }
 .trial-section { font: 600 11px/1.6 var(--sans); text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-2); }
 
@@ -1379,8 +1365,10 @@ button.row-link {
    real verdict reads as one. */
 .trial-why { margin-top: 5px; max-width: 62ch; font-size: 11.5px; line-height: 1.55; color: var(--fg-2); }
 
-.trial-files { display: flex; flex-wrap: wrap; gap: 6px; }
-.trial-files .btn[data-active] { background: var(--bg-2); }
+/* The same sentence in a table row, where it is a footnote to the app's name rather than a
+   paragraph: a run that wrote no report at all has nothing in its section cells, and this is
+   the only place the row can say why. Narrower, so it cannot push the columns apart. */
+.trial-why--tight { max-width: 40ch; margin-top: 2px; font-size: 11px; }
 
 /* ------------------------------------------------------------ the public board
  * The chrome for `/public/*` — the read-only view an app author is sent to.

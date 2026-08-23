@@ -166,6 +166,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     scheduler: options.scheduler,
     ledger: options.ledger,
     store: options.store as never,
+    prober: options.prober,
   });
 
   /**

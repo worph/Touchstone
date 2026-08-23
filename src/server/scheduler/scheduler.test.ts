@@ -37,6 +37,18 @@ function proberOf(leasable: number, rows: unknown[] = []): BenchProber {
   } as unknown as BenchProber;
 }
 
+/** A pool that changes between ticks — an outage starting, or lifting, under a live scheduler. */
+function changingPool(leasable: number, rows: unknown[] = []): BenchProber & { set: (n: number, r?: unknown[]) => void } {
+  let now = { leasable, rows };
+  return {
+    leasable: () => new Array(now.leasable).fill({ name: 'demostaging1' }),
+    list: () => now.rows,
+    set: (n: number, r: unknown[] = now.rows) => {
+      now = { leasable: n, rows: r };
+    },
+  } as unknown as BenchProber & { set: (n: number, r?: unknown[]) => void };
+}
+
 function make(over: Partial<SchedulerOptions> = {}): Scheduler {
   return new Scheduler({
     constants: CONSTANTS,
@@ -153,6 +165,57 @@ describe('the bench gate', () => {
   it('does not gate when there is no prober wired', async () => {
     const s = make({ prober: undefined });
     expect((await s.tick()).action).toBe('audit');
+  });
+
+  /**
+   * One row per outage, not one per tick.
+   *
+   * On 2026-08-23 a dead pool wrote nineteen identical warnings between 12:00 and 13:22 — the
+   * repetition alerts exist to end, and the reason the recovery was invisible in the noise. The
+   * standing condition lives in the `bench.unreachable` alert; the log says when it began.
+   */
+  it('logs a gated tick once, not on every tick it stays gated', async () => {
+    const s = make({ prober: proberOf(0, [{ name: 'demostaging1', status: 'unreachable' }]) });
+    await s.tick();
+    await s.tick();
+    await s.tick();
+    await events.flush();
+
+    expect(events.query({ code: 'TICK_BENCH_GATED' })).toHaveLength(1);
+  });
+
+  /**
+   * The transition is tested on the gate *condition*, never on `reason` — `benchNote()`
+   * rewrites that every tick as the countdown ticks down, so a string comparison would report
+   * a fresh outage every five minutes and undo the whole point.
+   */
+  it('stays quiet even though the reason text changes as the countdown runs', async () => {
+    const pool = changingPool(0, [{ name: 'demostaging1', status: 'healthy', remaining_min: 30 }]);
+    const s = make({ prober: pool });
+    const first = await s.tick();
+    pool.set(0, [{ name: 'demostaging1', status: 'healthy', remaining_min: 20 }]);
+    const second = await s.tick();
+    await events.flush();
+
+    expect(first.reason).not.toBe(second.reason);
+    expect(events.query({ code: 'TICK_BENCH_GATED' })).toHaveLength(1);
+  });
+
+  /**
+   * The moment functional work becomes possible again — which had no row at all before, and
+   * was the half the operator most needed. The bench alert cannot supply it: it stays open
+   * while any *other* box is broken, so its resolution never fires for a partial recovery.
+   */
+  it('says so once when a bench becomes claimable again', async () => {
+    const pool = changingPool(0, [{ name: 'demostaging1', status: 'unreachable' }]);
+    const s = make({ prober: pool });
+    await s.tick();
+    pool.set(1, [{ name: 'demostaging1', status: 'healthy' }]);
+    await s.tick();
+    await s.tick();
+    await events.flush();
+
+    expect(events.query({ code: 'TICK_BENCH_UNGATED' })).toHaveLength(1);
   });
 });
 

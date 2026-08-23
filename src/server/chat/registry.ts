@@ -42,7 +42,7 @@
  */
 
 import { standardLabel } from '../../shared/standard.js';
-import { outcomeClause, type EventLevel, type EventRecord } from '../../shared/activity.js';
+import { blockedReasonClause, outcomeClause, type EventLevel, type EventRecord } from '../../shared/activity.js';
 import { lineDiff, type Diff } from '../../shared/linediff.js';
 import type { Revision } from '../../shared/standard.js';
 import { asSubjectKey, subjectName, subjectOrigin, type SubjectKey } from '../../shared/subject.js';
@@ -52,7 +52,7 @@ import { saveProtocol } from '../domain/protocoledit.js';
 import { hallmarks, LEGS, subjectHallmark, subjectNames, type LegState } from '../domain/hallmark.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
-import type { Runner } from '../runner/index.js';
+import type { Forecast, Runner } from '../runner/index.js';
 import type { Scheduler } from '../scheduler/index.js';
 import type { Protocol, ProtocolStore } from '../store/protocols.js';
 import type { SubjectRegistry } from '../store/registry.js';
@@ -141,6 +141,12 @@ export interface ChatTool {
     required?: string[];
   };
   handler: (input: Record<string, unknown>, ctx: ChatToolContext) => Promise<ChatToolResult>;
+}
+
+/** `a`, `a and b`, `a, b and c` — a run's sections read as a sentence, not an array. */
+function list(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? 'nothing';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
 function ok(text: string): ChatToolResult {
@@ -421,11 +427,15 @@ export const CHAT_TOOLS: ChatTool[] = [
         );
       }
 
+      // `impact` too, not just the title. `bench.ts` already composes what the condition is
+      // stopping and when it lifts; reducing an alert to its title threw that away and left
+      // the model to infer the consequence — which is how a turn came to report a dead pool
+      // without mentioning that audits still run and cost the app nothing.
       const open = ctx.alerts?.openAlerts() ?? [];
       lines.push(
         open.length === 0
           ? 'No open alerts.'
-          : `Open alerts: ${open.map((a) => a.title).join('; ')}.`,
+          : `Open alerts: ${open.map((a) => (a.impact ? `${a.title} — ${a.impact}` : a.title)).join('; ')}.`,
       );
 
       for (const p of ctx.ports?.list() ?? []) lines.push(`Port ${p.name} (${p.kind}): ${p.status}.`);
@@ -435,6 +445,9 @@ export const CHAT_TOOLS: ChatTool[] = [
           `Demo pool: ${ctx.prober?.leasable().length ?? 0} of ${benches.length} usable — ` +
             benches.map((b) => `${b.name} ${b.status}`).join(', ') +
             '.',
+          // When it changes, not only what it is. A turn that reports "0 of 2 usable" and
+          // stops there leaves the operator with no next step and no time to wait for.
+          `${ctx.prober?.window() ?? ''}.`,
         );
       }
       return ok(lines.join('\n'));
@@ -445,7 +458,7 @@ export const CHAT_TOOLS: ChatTool[] = [
     name: 'run_assay',
     writes: true,
     description:
-      'Start an audit of one app. It returns as soon as the audit has STARTED — a real audit takes minutes, far longer than this conversation will wait, so do not expect a verdict here and do not call this twice hoping for one. The operator is notified when it finishes. An audit covers every section of the protocol; a section that needs something unavailable — a demo instance, a browser — is not attempted and is recorded as blocked, which never counts against the app.',
+      'Start an audit of one app. It returns as soon as the audit has STARTED — a real audit takes minutes, far longer than this conversation will wait, so do not expect a verdict here and do not call this twice hoping for one. The operator is notified when it finishes. An audit covers every section of the protocol; a section that needs something unavailable — a demo instance, a browser — is not attempted and is recorded as blocked, which never counts against the app. The reply also forecasts which sections would run on the world as it stands, and when a missing one is expected back: that is a prediction made at dispatch, not the result, and the run may settle differently. Report it as a forecast; get_status says what it settled on.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -495,8 +508,52 @@ export const CHAT_TOOLS: ChatTool[] = [
       // asked for it. Without that the chat has no memory of work it started, and the
       // operator has to ask a second time to find out what it did.
       ctx.startAssay?.({ subject: key }, ctx.threadId ? { threadId: ctx.threadId } : undefined);
+
+      // Forecast *after* dispatching, deliberately.
+      //
+      // Between the busy check above and this line there is no `await`, and that is what makes
+      // "not busy, therefore mine" true. An await inserted before the dispatch would widen a
+      // zero-length window into a real one, during which `POST /assays` or a scheduler tick
+      // could take the runner — and the operator would be told an audit started that did not.
+      // Dispatching first is also the more honest order: `execute()` resolves capabilities
+      // after its own sweep and protocol read, so a forecast taken here is nearer that moment.
+      //
+      // Guarded twice over: a rig may hand the chat a runner without this method, and a
+      // forecast that cannot be made must never cost the operator the fact that the run began.
+      let forecast: Forecast | null = null;
+      try {
+        forecast = (await runner.forecast?.()) ?? null;
+      } catch {
+        forecast = null;
+      }
+
+      const started = `Started an audit of ${subjectName(key)}. It runs in the background; the operator gets a notification when it finishes.`;
+      if (!forecast) return ok(started);
+      if (forecast.noProtocol) {
+        return ok(
+          `Started an audit of ${subjectName(key)}, but there is no protocol on disk to audit against, so the run will stop without writing anything.`,
+        );
+      }
+
+      // Every reason names the same condition once, so a run blocked on two things does not
+      // read as two outages.
+      const why = [...new Set(forecast.blocked.map((b) => blockedReasonClause(b.reason)))].join(' and ');
+      const window = ctx.prober?.window();
+      const because = window ? `${why} (${window})` : why;
+
+      if (forecast.run.length === 0) {
+        return ok(
+          `Started an audit of ${subjectName(key)}, but on the world as it stands no section could run — ${because} — so the run will most likely record nothing at all. ` +
+            'That costs the app neither a try nor its place in the backlog. Fix that and start it again.',
+        );
+      }
+      if (forecast.blocked.length === 0) {
+        return ok(`${started} On the world as it stands, every section would run — ${list(forecast.run)}.`);
+      }
       return ok(
-        `Started an audit of ${subjectName(key)}. It runs in the background; the operator gets a notification when it finishes.`,
+        `${started} On the world as it stands, ${list(forecast.run)} would run and ${list(forecast.blocked.map((b) => b.section))} would be recorded blocked — ${because}. ` +
+          `That costs ${subjectName(key)} nothing and is not a statement about the app, but a blocked section is NOT retried automatically: re-run the audit once that is fixed. ` +
+          'The runner re-checks at dispatch, so this is a forecast rather than a promise — get_status reports what it settled on.',
       );
     },
   },

@@ -43,7 +43,7 @@
  * internet and Touchstone cannot infer its own external address from an internal request.
  */
 
-import type { AssayStatus, Severity, Verdict } from './types.js';
+import type { AssayStatus, Severity, SubjectState, Verdict } from './types.js';
 
 /** One recorded trial. The reports themselves live under `data/trials/<slug>/`. */
 export interface TrialRecord {
@@ -100,6 +100,32 @@ export interface TrialRecord {
   /** Paths relative to the trials root. */
   files?: string[];
   error?: string;
+}
+
+/**
+ * A trial as the **list** draws it: the record, plus what its own reports say per section.
+ *
+ * The record alone carries one aggregate `outcome`, which is how the *job* ended. That is not
+ * enough for a row: a trial whose static section failed and whose functional section was
+ * blocked has two different answers, and collapsing them into one word loses exactly the
+ * distinction the status vocabulary exists for — checked-and-failed against could-not-check.
+ *
+ * `state` is a `SubjectState` and is composed by `subjectHallmark`, the *same* function the
+ * Store page's rows come from, over an index rooted at the trials tree. Not a summary of it
+ * and not a parallel shape: a trial row and a store row then agree about what `blocked` looks
+ * like, what counts toward risk, and which sections are readings — including invariant 12,
+ * which drops a `scores: false` section out of the risk sum for free.
+ *
+ * Derived per request, never persisted. The report files are the record; a second copy of
+ * their verdicts on the row would be a second thing to keep in step, and a trial's files can
+ * be deleted out from under it.
+ */
+export interface TrialSummary extends TrialRecord {
+  /**
+   * Its sections, keyed as every other page keys them. `name` is `<slug>~<subject>` — the
+   * slug is the synthetic origin, so this needs no special case anywhere it is read.
+   */
+  state: SubjectState;
 }
 
 /**
@@ -162,4 +188,13 @@ export interface TrialComparison {
 export interface TrialResponse {
   trial: TrialRecord;
   comparison: TrialComparison[];
+  /**
+   * The trial's own sections, composed exactly as the list's are and as a subject's are.
+   *
+   * The comparison beside it is the page's own question — *this store, against what the app
+   * carries now* — and answers it in `TrialCell`s, which are five facts and no body. The cards,
+   * the requirement list and the report tabs need the records themselves, and they need them in
+   * the shape every other detail page reads.
+   */
+  state: SubjectState;
 }

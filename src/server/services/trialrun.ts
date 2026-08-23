@@ -354,3 +354,19 @@ export async function dispatchTrial(
 export function trialIndex(trialsRoot: string, slug: string): Promise<ReportIndex> {
   return buildIndex(path.join(trialsRoot, slug), { cacheFile: null });
 }
+
+/**
+ * Every trial's reports, in one index — what the list needs to draw a row per section.
+ *
+ * One walk rather than one per trial. The slug is the synthetic origin, so a record's subject
+ * key is already `<slug>~<subject>` and one index separates a hundred trials without knowing
+ * anything about them; `subjectHallmark` then composes each row exactly as the Store page's
+ * are composed. Denormalising the sections onto `TrialRecord` at write time was the other
+ * option and is a second copy of what the files already say.
+ *
+ * `cacheFile: null` for the reason above, and doubly so here: this root *is* `data/trials`,
+ * whose `defaultCacheFile()` collides with the archive's own `state/index.json`.
+ */
+export function trialsIndex(trialsRoot: string): Promise<ReportIndex> {
+  return buildIndex(trialsRoot, { cacheFile: null });
+}

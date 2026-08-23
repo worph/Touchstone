@@ -16,9 +16,11 @@
  * - **One agent means one enabled button.** While any audit is in flight every row is
  *   disabled — the row that owns it says `auditing…`, the rest say why they are not
  *   available on hover rather than failing on submit.
- * - **The bench warning is the page's, not the row's.** The Store page says it once, above
- *   the table; a run with no bench still starts and records those sections blocked, which
- *   costs the app nothing.
+ * - **The bench warning is the page's, not the row's.** The Store page says it once, above the
+ *   table — as the open alert's own `impact`, which is where the pool's state and the window
+ *   until it changes are already composed. A run with no bench still starts and records those
+ *   sections blocked, which costs the app nothing. (This comment claimed the page fetched the
+ *   pool itself until 2026-08-23; it never did, and the banner it describes is alert-driven.)
  */
 import { useCallback, useState } from 'react';
 

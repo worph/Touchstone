@@ -9,7 +9,7 @@
  * one copy of it.
  */
 import type { AssayRecord, SubjectState, ReportResponse } from '@shared/types';
-import type { TrialRecord, TrialRequest, TrialResponse } from '@shared/trials';
+import type { TrialRecord, TrialRequest, TrialResponse, TrialSummary } from '@shared/trials';
 import type {
   AlertsResponse,
   BenchesResponse,
@@ -388,8 +388,9 @@ export function getPublicFixReport(name: string): Promise<string> {
 // Auditing a ref without touching what a subject carries. See `shared/trials.ts` for why the
 // results live somewhere the archive does not look.
 
-export function getTrials(): Promise<{ trials: TrialRecord[] }> {
-  return get<{ trials: TrialRecord[] }>('/trials');
+/** Each row carries its own sections, so the list draws the same cells the Store page does. */
+export function getTrials(): Promise<{ trials: TrialSummary[] }> {
+  return get<{ trials: TrialSummary[] }>('/trials');
 }
 
 export function getTrial(slug: string): Promise<TrialResponse & { history: AssayRecord[] }> {

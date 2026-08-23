@@ -451,6 +451,104 @@ describe('a run started here reports back into the conversation', () => {
     expect(started).toEqual([{ subject: 'yundera~OpenClaw', threadId: thread.id }]);
   });
 
+  /**
+   * What `run_assay` says back, which until 2026-08-23 was only "Started an audit of X".
+   *
+   * An operator who started a run into a dead demo pool learned nothing from the reply and had
+   * to ask a second question; the answer they then acted on was already five minutes stale.
+   * These pin the three things the reply now has to carry: which sections would run, why the
+   * rest would not, and that a blocked one does not come back on its own.
+   */
+  async function replyTo(runner: Record<string, unknown>): Promise<string> {
+    const thread = await threads.forTurn();
+    await runTurn(TEMPLATE, {
+      threads,
+      threadId: thread.id,
+      message: 'review OpenClaw',
+      ctx: {
+        registry: { list: () => ['yundera~OpenClaw'] } as never,
+        runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }), ...runner } as never,
+        prober: { window: () => 'demostaging1 is mid-cleanup — usually back within minutes' } as never,
+        startAssay: () => {},
+      },
+      events,
+      ask: {
+        callImpl: scripted([
+          JSON.stringify({ say: '', call: { tool: 'run_assay', input: { subject: 'openclaw' } } }),
+          JSON.stringify({ say: 'Started it.', call: null }),
+        ]) as never,
+      },
+    });
+    return JSON.stringify(await threads.list(thread.id));
+  }
+
+  it('names the sections that would run, the one that would not, and why', async () => {
+    const text = await replyTo({
+      forecast: async () => ({
+        run: ['static', 'currency'],
+        blocked: [{ section: 'functional', reason: 'bench_unavailable' }],
+      }),
+    });
+    expect(text).toContain('static and currency');
+    expect(text).toContain('no usable demo bench');
+    // The window, so the operator has something to wait for rather than only a fault.
+    expect(text).toContain('mid-cleanup');
+  });
+
+  /** The clause that would have saved the incident: nothing brings a blocked section back. */
+  it('says a blocked section is not retried automatically', async () => {
+    const text = await replyTo({
+      forecast: async () => ({
+        run: ['static'],
+        blocked: [{ section: 'functional', reason: 'bench_unavailable' }],
+      }),
+    });
+    expect(text).toContain('NOT retried automatically');
+  });
+
+  /** A forecast is not a promise — `execute()` resolves the world again at dispatch. */
+  it('reads as a forecast rather than a commitment', async () => {
+    const text = await replyTo({
+      forecast: async () => ({ run: ['static'], blocked: [{ section: 'functional', reason: 'bench_unavailable' }] }),
+    });
+    expect(text).toContain('would');
+    expect(text).toContain('forecast');
+  });
+
+  /**
+   * The case today's reply hid completely: a run that will record nothing at all. It must not
+   * read as a refusal — the runner handles this correctly and the app is charged nothing.
+   */
+  it('says plainly when no section could run, and that it costs the app nothing', async () => {
+    const text = await replyTo({
+      forecast: async () => ({
+        run: [],
+        blocked: [{ section: 'static', reason: 'bench_unavailable' }],
+      }),
+    });
+    expect(text).toContain('no section could run');
+    expect(text).toContain('neither a try nor its place in the backlog');
+  });
+
+  /** The lease must not leak: this registry is also served to a surface authenticating nobody. */
+  it('never puts an internal endpoint in the reply', async () => {
+    const text = await replyTo({
+      forecast: async () => ({ run: ['static'], blocked: [] }),
+    });
+    expect(text).not.toContain('http://');
+  });
+
+  /** A forecast that cannot be made must not cost the operator the fact that the run started. */
+  it('still reports the run as started when the forecast throws', async () => {
+    const text = await replyTo({
+      forecast: async () => {
+        throw new Error('protocol directory is unreadable');
+      },
+    });
+    expect(text).toContain('Started an audit of OpenClaw');
+    expect(text).not.toContain('unreadable');
+  });
+
   it('carries the note into the next turn\'s history, as Touchstone rather than the operator', async () => {
     const thread = await threads.forTurn();
     await threads.append({

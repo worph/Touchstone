@@ -29,9 +29,9 @@ import { promises as fs } from 'node:fs';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 
 import { asSubjectKey, subjectKey } from '../../shared/subject.js';
-import type { TrialCell, TrialComparison } from '../../shared/trials.js';
+import type { TrialCell, TrialComparison, TrialSummary } from '../../shared/trials.js';
 import { renderMarkdown } from '../domain/markdown.js';
-import { latestDone } from '../domain/hallmark.js';
+import { latestDone, subjectHallmark } from '../domain/hallmark.js';
 import type { Runner } from '../runner/index.js';
 import type { EventLog } from '../services/events.js';
 import type { ReportIndex } from '../store/index.js';
@@ -40,6 +40,7 @@ import {
   buildSpec,
   dispatchTrial,
   trialIndex,
+  trialsIndex,
   trialsReady,
   type TrialRunDeps,
 } from '../services/trialrun.js';
@@ -93,7 +94,31 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
     onError: (err, slug) => app.log.error({ err, slug }, 'trial failed'),
   });
 
-  app.get('/trials', async () => ({ trials: options.trials?.list() ?? [] }));
+  /**
+   * The list, with each trial's own sections on it.
+   *
+   * The row used to carry the record alone — one aggregate `outcome` for the whole job — and
+   * the page drew it as a single `Result` cell. That threw away the answer a trial is run to
+   * get: static failing and functional blocked are two different facts, and one word cannot
+   * hold both. So the sections come along, composed by `subjectHallmark` over an index of the
+   * trials tree — the same function the Store page's rows come from, so the two tables cannot
+   * come to disagree about what `blocked` looks like or what counts toward risk.
+   *
+   * One index for the whole list rather than one per trial: `trialsIndex` walks the tree once
+   * and the slug-as-origin does the separating. A trial with no reports yet — still running,
+   * or blocked before it wrote one — composes a never-run row, which is what it is.
+   */
+  app.get('/trials', async () => {
+    const rows = options.trials?.list() ?? [];
+    if (rows.length === 0) return { trials: [] };
+    const index = await trialsIndex(options.trialsRoot ?? '');
+    const records = index.all();
+    const trials: TrialSummary[] = rows.map((trial) => ({
+      ...trial,
+      state: subjectHallmark(subjectKey(trial.slug, trial.subject), records).state,
+    }));
+    return { trials };
+  });
 
   app.post<{ Body?: Record<string, unknown> }>('/trials', async (req, reply) => {
     const deps = trialDeps();
@@ -215,7 +240,12 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
       current: shape(latestDone(current, trial.compare_to ?? '', section)),
     }));
 
-    return { trial, comparison, history: mine };
+    // The same composition the list and the Store page use, over this trial's own reports —
+    // so the cards and the tabs below the comparison read a trial exactly as they read a
+    // subject, and `scores: false` stays out of the risk figure without this route knowing why.
+    const state = subjectHallmark(key, index.all()).state;
+
+    return { trial, comparison, state, history: mine };
   });
 
   /** The trial's own report file, rendered — the same viewer the archive uses. */

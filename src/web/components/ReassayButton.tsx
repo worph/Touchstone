@@ -8,18 +8,23 @@
  *   seconds, so it counts up.
  * - **Some sections need a bench.** The audit still starts without one — those sections are
  *   recorded blocked, which costs the app nothing — so the button says so rather than
- *   offering a choice nobody has to make. There is no depth to pick: a run is a run.
+ *   offering a choice nobody has to make. There is no depth to pick: a run is a run. It also
+ *   says *when the bench comes back*, which is the half that was missing: a note that names
+ *   only the fault leaves the operator with nothing to do and nothing to wait for.
  * - **One agent.** If a run is already going — a scheduled one, or someone else's — the
  *   button says which app has it rather than failing on submit.
  *
  * It used to own a poll of its own. It reads `data/runStatus.ts` now, along with the strip in
  * the shell and the card on Activity: four components polling the same endpoint on four
- * timers meant four slightly different ideas of what was happening.
+ * timers meant four slightly different ideas of what was happening. The bench pool followed it
+ * there on 2026-08-23 — it had been a one-shot `getBenches()` on mount, which made this note a
+ * snapshot from page load and, that day, one an operator acted on five minutes after it stopped
+ * being true.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getBenches, startAssay } from '../data/client';
+import { startAssay } from '../data/client';
 import { refreshRunStatus, useRunStatus } from '../data/runStatus';
 import { useElapsed } from '../hooks/useElapsed';
 import { describeLast, mmss } from '../lib/run';
@@ -32,19 +37,19 @@ interface Props {
 
 export default function ReassayButton({ subject, onFinished, label = 're-assay' }: Props) {
   const status = useRunStatus();
-  const [poolUp, setPoolUp] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const wasRunning = useRef(false);
+
+  // The pool comes off the shared poller rather than a fetch of our own. It used to be a
+  // one-shot `getBenches()` on mount, so this note was a snapshot from page load — and on
+  // 2026-08-23 an operator acted on one that had been false for five minutes. Undefined means
+  // no prober is wired, which is not the same as a dead pool: say nothing rather than guess.
+  const bench = status?.bench;
+  const poolUp = bench ? bench.leasable > 0 : null;
 
   const ours = status?.running?.subject === subject;
   const running = Boolean(status?.running);
   const elapsed = useElapsed(status?.running?.started_at);
-
-  useEffect(() => {
-    void getBenches()
-      .then((b) => setPoolUp(b.leasable > 0))
-      .catch(() => setPoolUp(null));
-  }, []);
 
   // The moment a run of *ours* stops, pull the new report in.
   useEffect(() => {
@@ -112,8 +117,14 @@ export default function ReassayButton({ subject, onFinished, label = 're-assay' 
       </button>
 
       {error ? <span className="reassay-note reassay-note--bad">{error}</span> : null}
+      {/* The condition *and* when it lifts. Naming only the fault is what left an operator
+          with nowhere to go: the audit is still worth running, and the window says how long
+          until the rest of it can be. */}
       {!error && poolUp === false ? (
-        <span className="reassay-note">no bench — live sections will be recorded blocked</span>
+        <span className="reassay-note">
+          no bench — live sections will be recorded blocked
+          {bench?.window ? ` · ${bench.window}` : ''}
+        </span>
       ) : null}
       {!error && poolUp !== false && last ? (
         <span className="reassay-note">{describeLast(last)}</span>

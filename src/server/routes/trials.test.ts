@@ -223,6 +223,105 @@ describe('GET and DELETE /trials/:slug', () => {
   });
 
   /**
+   * The list carries what each trial *found*, not merely how its job ended.
+   *
+   * The row used to be the record alone — one aggregate outcome — so a trial whose static
+   * section failed and whose functional section was blocked showed one word, and the half
+   * nobody managed to check was indistinguishable from the half that passed. Those are the two
+   * states the whole status vocabulary exists to keep apart.
+   *
+   * Three things are asserted together because they are one claim: the sections are composed
+   * from the trial's own reports, one trial's reports never reach another's row (the list
+   * builds **one** index over the whole trials tree, and the slug-as-origin is the only thing
+   * separating them), and a `scores: false` section stays out of the risk figure — invariant
+   * 12, inherited rather than re-implemented, because this is `subjectHallmark`.
+   */
+  it("carries each trial's own sections on its row, and nobody else's", async () => {
+    const { runner } = runnerOf();
+    const trialsRoot = path.join(dir, 'trials');
+    app = await serve({ runner, trials, trialsRoot, events, fetchImpl: fetchOf() });
+
+    const at = (t: string) => ({
+      repo: 'A/B',
+      source_url: 'https://github.com/A/B/archive/main.zip',
+      apps_path: 'Apps',
+      subject: 'Widget',
+      started_at: t,
+    });
+    await trials.add({ slug: 'A@judged', ...at('2026-08-22T09:00:00.000Z') });
+    await trials.add({ slug: 'A@empty', ...at('2026-08-22T10:00:00.000Z') });
+
+    const write = async (slug: string, file: string, lines: string[]) => {
+      const reports = path.join(trialsRoot, slug, slug, 'Widget');
+      await fs.mkdir(reports, { recursive: true });
+      await fs.writeFile(path.join(reports, file), ['---', ...lines, '---', '', 'body', ''].join('\n'), 'utf8');
+    };
+    const head = (slug: string, section: string) => [
+      'subject: Widget',
+      `origin: '${slug}'`,
+      `section: ${section}`,
+      'standard: Protocol',
+      'standard_version: 6',
+      "started_at: '2026-08-22T09:00:00Z'",
+      "finished_at: '2026-08-22T09:05:00Z'",
+      'findings: []',
+    ];
+
+    await write('A@judged', '2026-08-22T09-00-00Z-static.md', [
+      ...head('A@judged', 'static'),
+      'status: done',
+      'verdict: non-compliant',
+      'top_severity: major',
+      'risk_score: 7',
+    ]);
+    await write('A@judged', '2026-08-22T09-00-00Z-functional.md', [
+      ...head('A@judged', 'functional'),
+      'status: blocked',
+      'verdict: null',
+      'top_severity: none',
+      'risk_score: 0',
+      'blocked_reason: bench_unavailable',
+    ]);
+    // A section that measures rather than judges. Its score must not move the row's risk, or
+    // a six-second reading re-ranks a list by something that is not non-compliance.
+    await write('A@judged', '2026-08-22T09-00-00Z-currency.md', [
+      ...head('A@judged', 'currency'),
+      'status: done',
+      'verdict: compliant',
+      'top_severity: none',
+      'risk_score: 5',
+      'scores: false',
+      'badge: 400d behind',
+    ]);
+
+    const body = (await app.inject({ method: 'GET', url: '/trials' })).json() as {
+      trials: {
+        slug: string;
+        state: {
+          name: string;
+          risk: number;
+          sections: Record<string, { meta: { status: string; verdict: string | null; blocked_reason?: string } } | null>;
+        };
+      }[];
+    };
+    const judged = body.trials.find((t) => t.slug === 'A@judged')!;
+    const empty = body.trials.find((t) => t.slug === 'A@empty')!;
+
+    expect(judged.state.name).toBe('A@judged~Widget');
+    expect(judged.state.sections.static?.meta.verdict).toBe('non-compliant');
+    expect(judged.state.sections.functional?.meta.status).toBe('blocked');
+    expect(judged.state.sections.functional?.meta.blocked_reason).toBe('bench_unavailable');
+    // 7, not 12: the reading is invisible to the hallmark, both halves.
+    expect(judged.state.risk).toBe(7);
+    expect(judged.state.sections.currency?.meta.status).toBe('done');
+
+    // The trial that wrote nothing gets a never-run row, and none of its neighbour's verdicts.
+    expect(empty.state.sections.static).toBeNull();
+    expect(empty.state.sections.functional).toBeNull();
+    expect(empty.state.risk).toBe(0);
+  });
+
+  /**
    * A comparison cell carries **which** condition blocked it, not merely that one did.
    *
    * This shape used to be four fields wide — status, verdict, severity, risk — and the page

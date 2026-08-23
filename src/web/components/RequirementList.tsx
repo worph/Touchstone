@@ -13,7 +13,9 @@
 
 import { useState } from 'react';
 
-import type { RecordedRequirement, Severity } from '@shared/types';
+import type { AssayRecord, RecordedRequirement, Severity } from '@shared/types';
+
+import CoverageCell from './CoverageCell';
 
 const VERDICT_RANK: Record<string, number> = { fail: 0, unverified: 1, 'n-a': 2, pass: 3 };
 const SEVERITY_RANK: Record<string, number> = { critical: 0, major: 1, minor: 2, none: 3 };
@@ -67,4 +69,47 @@ function label(r: { verdict: string; severity?: Severity }): string {
   if (r.verdict === 'unverified') return 'not checked';
   if (r.verdict === 'n-a') return 'n-a';
   return 'pass';
+}
+
+/**
+ * The list with its heading and its coverage figure — the panel two pages draw identically.
+ *
+ * Coverage sits beside the items rather than above the verdict because it answers a different
+ * question and must never be read as one: a run can be 16/16 and non-compliant, or 3/16 and
+ * carry no failures at all. `CoverageCell` says the rest.
+ *
+ * Renders nothing when the record has no recorded requirements — everything imported before
+ * the ledger existed has a verdict and no items, and an empty panel headed "requirements" is
+ * a page implying the audit checked nothing.
+ */
+export function RequirementsPanel({ rec }: { rec: AssayRecord | null }) {
+  const items = rec?.meta.requirements ?? [];
+  if (!rec || items.length === 0) return null;
+  return (
+    <section className="panel" style={{ marginTop: 14 }}>
+      <div className="pane-head">
+        <span className="section-title">requirements</span>
+        {rec.meta.coverage ? (
+          <span className="dim" style={{ fontSize: 11.5 }}>
+            <CoverageCell coverage={rec.meta.coverage} /> verified
+            {rec.meta.risk_score_computed !== undefined ? (
+              // The agent's own score and the sum of its items came apart. Both are kept;
+              // saying so is better than picking one and looking certain.
+              //
+              // Both halves are read off the record, and both are run-wide. This used to
+              // print `coverage.risk` as "its items sum to", which is *this section's*
+              // items — while the mismatch that raised the line was measured across the
+              // whole run. So the line could fire on a genuine disagreement and then
+              // display two numbers that were never the two being compared.
+              <span className="req-mismatch">
+                {' '}· the audit declared risk {rec.meta.risk_score}, its items sum to{' '}
+                {rec.meta.risk_score_computed}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
+      </div>
+      <RequirementList items={items} />
+    </section>
+  );
 }
