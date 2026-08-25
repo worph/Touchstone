@@ -19,6 +19,7 @@ import FixReportPanel, { FixReportButton } from '../components/FixReport';
 import LegCard, { StandardTag, verdictSections } from '../components/LegCard';
 import { RequirementsPanel } from '../components/RequirementList';
 import RunCard from '../components/RunCard';
+import StandardChip from '../components/StandardChip';
 import { ReadingPanel } from '../components/Reading';
 import { readingOf, readingSections } from '../lib/reading';
 import { num, stamp } from '../lib/format';
@@ -111,6 +112,9 @@ export default function SubjectDetail() {
               <Link to="/store" className="back-link" aria-label="Back to the store">‹</Link>
               {subject.label}
             </h1>
+            {/* The same caveat the Store row carried, so clicking the chip does not land on a
+                page that has forgotten about it. */}
+            <StandardChip standard={subject.standard} />
             <div style={{ flex: 1 }} />
             <div style={{ textAlign: 'right' }}>
               <div className="num" style={{ fontSize: 18, fontWeight: 600 }}>

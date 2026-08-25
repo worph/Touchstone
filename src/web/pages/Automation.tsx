@@ -268,5 +268,9 @@ function note(row: QueueRow, maxTries: number): string {
   if (row.state === 'never') return 'no result on file';
   const last = row.last_done_at ? `last ${stamp(row.last_done_at)}` : '';
   if (row.state === 'retry') return `try ${row.try_n + 1} of ${maxTries} · ${last}`;
+  // Otherwise a row audited yesterday reads as `due` with a recent date beside it and no
+  // account of itself. This is the whole of the explanation: the calendar did not make it
+  // due, an edit to the rubric did.
+  if (row.standard_moved) return last ? `${last} · standard revised since` : 'standard revised since';
   return last;
 }

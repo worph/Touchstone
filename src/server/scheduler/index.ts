@@ -32,6 +32,7 @@ import {
   decide,
   queue,
   stateLine,
+  type PolicyInput,
   type SchedulerConstants,
   type SubjectSchedule,
   type TickDecision,
@@ -106,6 +107,15 @@ export interface SchedulerOptions {
   registry: SubjectRegistry;
   events: EventLog;
   prober?: BenchProber;
+  /**
+   * When the standard last moved — `readStandards().moved_at`, read fresh each tick.
+   *
+   * A function rather than a value because the protocol directory is a volume an operator
+   * edits over SSH: a snapshot taken at boot would be exactly as wrong as the rubric held in
+   * memory since boot that `runner.plan()` already re-reads to avoid. Absent, or resolving
+   * to `undefined`, leaves the eligibility rule inert.
+   */
+  standardMovedAt?: () => Promise<string | undefined>;
   /**
    * Called when an armed scheduler has claimed a subject. Absent until the runner lands
    * (P4), which is why an armed scheduler with no dispatcher still only claims.
@@ -229,10 +239,25 @@ export class Scheduler {
   }
 
   async previewQueue(now = new Date()): Promise<QueueRow[]> {
-    return queue(this.buildInput({ now }));
+    return queue(await this.buildInput({ now }));
   }
 
 
+
+  private async standardMovedAt(): Promise<string | undefined> {
+    if (!this.opts.standardMovedAt) return undefined;
+    try {
+      return await this.opts.standardMovedAt();
+    } catch (err) {
+      this.opts.events.log({
+        level: 'warn',
+        code: 'STANDARD_UNREADABLE',
+        message: 'The standard in force could not be read; scheduling by freshness alone',
+        detail: { error: err instanceof Error ? err.message : String(err) },
+      });
+      return undefined;
+    }
+  }
 
   /** When we last finished an audit. Ours alone now that nothing else feeds this. */
   private lastFinishedAt(): string | undefined {
@@ -267,6 +292,30 @@ export class Scheduler {
   }
 
   /**
+   * Newest assay of **any status** per subject — a blocked or errored attempt counts.
+   *
+   * The sibling of `lastDoneAt`, and it exists because the two answer different questions.
+   * Freshness and backlog order want the last *result*; "have we pointed the current standard
+   * at this app" wants the last *look*, and a run that blocked every section still looked.
+   * Without that distinction a permanently blocked section would keep a subject eligible for
+   * ever — see `standardMoved` in `policy.ts`.
+   */
+  private lastAttemptAt(subjects: string[]): Record<string, string | undefined> {
+    const out: Record<string, string | undefined> = {};
+    for (const subject of subjects) {
+      let newest: string | undefined;
+      for (const section of this.opts.index.sections()) {
+        const rec = this.opts.index.latestAny(subject, section);
+        // A blocked assay may carry no finish time; `started_at` is when we looked.
+        const at = rec ? String(rec.meta.finished_at || rec.meta.started_at || '') : '';
+        if (at && (!newest || at > newest)) newest = at;
+      }
+      out[subject] = newest;
+    }
+    return out;
+  }
+
+  /**
    * One tick. Safe to call by hand — the timer and a hand-run tick coalesce, because two
    * ticks racing could both claim under single-flight.
    */
@@ -292,7 +341,7 @@ export class Scheduler {
    * The world, as the policy wants it. One reader, so a tick and the queue the page renders
    * cannot disagree about who is stale.
    */
-  private buildInput(opts: { forced?: string[]; now: Date }) {
+  private async buildInput(opts: { forced?: string[]; now: Date }): Promise<PolicyInput> {
     const subjects = this.opts.registry.list();
     const leasable = this.opts.prober?.leasable() ?? [];
     const benchAvailable = this.opts.prober ? leasable.length > 0 : true;
@@ -301,6 +350,10 @@ export class Scheduler {
       constants: this.opts.constants,
       subjects,
       lastDoneAt: this.lastDoneAt(subjects),
+      lastAttemptAt: this.lastAttemptAt(subjects),
+      // A protocol directory that cannot be read must not stop a tick: the standard clause
+      // goes quiet and every other rule decides exactly as it did before it existed.
+      standardMovedAt: await this.standardMovedAt(),
       schedule: this.subjects,
       lastFinishedAt: this.lastFinishedAt(),
       forced: opts.forced,
@@ -311,7 +364,7 @@ export class Scheduler {
 
   private async runTick(opts: { forced?: string[]; now?: Date }): Promise<TickDecision> {
     const now = opts.now ?? new Date();
-    const decision = decide(this.buildInput({ now, forced: opts.forced }));
+    const decision = decide(await this.buildInput({ now, forced: opts.forced }));
 
     // Reclaims and unparks are state changes the decision already made; apply them whether
     // or not we are armed, because they are bookkeeping about *our own* claims. In dry-run

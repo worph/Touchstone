@@ -12,12 +12,17 @@
 
 import { DEFAULT_ORIGIN } from '../../shared/subject.js';
 import { recordFor } from '../store/reports.js';
-import type { AssayMeta, AssayRecord, Leg, Severity, Verdict } from '../../shared/types.js';
+import type { AssayMeta, AssayRecord, Section, Severity, Verdict } from '../../shared/types.js';
 import type { AssayStore, StoredReport } from './store.js';
 
 export interface Draft {
   subject: string;
-  leg: Leg;
+  /**
+   * Any section id, not the deprecated two-value `Leg`. Invariant 2: nothing enumerates the
+   * sections, so a fixture that could only be `static` or `functional` could not stand in for
+   * a reading, or for a section the protocol directory has since dropped.
+   */
+  leg: Section;
   at: string;
   status?: AssayMeta['status'];
   verdict?: Verdict | null;

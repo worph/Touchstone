@@ -22,6 +22,7 @@ let app: FastifyInstance;
 const index = {
   sections: () => ['static'],
   latest: () => null,
+  latestAny: () => null,
   subjects: () => [],
 } as unknown as ReportIndex;
 

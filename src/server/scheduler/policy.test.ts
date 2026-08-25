@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { decide, stateLine, type PolicyInput, type SchedulerConstants, type SubjectSchedule } from './policy.js';
+import {
+  decide,
+  queue,
+  stateLine,
+  type PolicyInput,
+  type SchedulerConstants,
+  type SubjectSchedule,
+} from './policy.js';
 
 /** n8n's constants as they run today. A test that changed one would be testing a fiction. */
 const CONSTANTS: SchedulerConstants = {
@@ -246,5 +253,95 @@ describe('purity', () => {
     const before = JSON.stringify(schedule);
     decide(input({ subjects: ['Alpha'], schedule }));
     expect(JSON.stringify(schedule)).toBe(before);
+  });
+});
+
+
+/**
+ * The standard moving is the one thing besides an error that makes a *recently audited* app
+ * eligible again. It is deliberately the smallest possible lever: it adds a subject to the
+ * backlog and does nothing else — no priority, no forced run, no bypass of the cooldown or
+ * the bench gate. In practice the loop is saturated anyway, so what it really says is
+ * "re-judge it with the spare hour rather than waiting out the week".
+ */
+describe('when the standard moves under a subject', () => {
+  const MOVED = daysAgo(1);
+
+  /** Audited two days ago, well inside `fresh_days`; the rubric changed yesterday. */
+  function moved(over: Partial<PolicyInput> = {}): PolicyInput {
+    return input({
+      subjects: ['Alpha'],
+      lastDoneAt: { Alpha: daysAgo(2) },
+      lastAttemptAt: { Alpha: daysAgo(2) },
+      standardMovedAt: MOVED,
+      ...over,
+    });
+  }
+
+  it('makes a subject eligible that the freshness window would have skipped', () => {
+    const d = decide(moved());
+    expect(d.action).toBe('audit');
+    expect(d.subject).toBe('Alpha');
+    expect(d.backlog).toBe(1);
+  });
+
+  it('says so in the reason, because n8n has no such rule to diff against', () => {
+    expect(decide(moved()).reason).toContain('standard revised 2026-08-18');
+  });
+
+  it('does nothing at all when no revision has been recorded', () => {
+    const d = decide(moved({ standardMovedAt: undefined }));
+    expect(d.action).toBe('idle');
+    expect(d.reason).toContain('backlog empty');
+  });
+
+  /**
+   * The comparison is against the last *attempt*, not the last verdict. A section that is
+   * permanently blocked keeps its old `done` record for ever, so a rule reading verdicts
+   * would re-pick that subject on every tick until somebody fixed the bench.
+   */
+  it('is settled by an attempt, even one that produced no verdict', () => {
+    const d = decide(moved({ lastAttemptAt: { Alpha: daysAgo(0) } }));
+    expect(d.action).toBe('idle');
+    expect(d.reason).toContain('backlog empty');
+  });
+
+  it('does not jump the queue — a never-audited app still goes first', () => {
+    const rows = queue(
+      moved({
+        subjects: ['Alpha', 'Beta'],
+        lastDoneAt: { Alpha: daysAgo(2) },
+        lastAttemptAt: { Alpha: daysAgo(2) },
+      }),
+    );
+    expect(rows.map((r) => r.subject)).toEqual(['Beta', 'Alpha']);
+    expect(rows[0]?.state).toBe('never');
+  });
+
+  /** It is due, and the note is where the reason lives — not in a seventh state word. */
+  it('reads as due rather than fresh, and carries why', () => {
+    const row = queue(moved()).find((r) => r.subject === 'Alpha');
+    expect(row?.state).toBe('due');
+    expect(row?.position).toBe(1);
+    expect(row?.standard_moved).toBe(true);
+  });
+
+  it('leaves an ordinary due row unmarked', () => {
+    const row = queue(
+      moved({ lastDoneAt: { Alpha: daysAgo(30) }, lastAttemptAt: { Alpha: daysAgo(30) } }),
+    ).find((r) => r.subject === 'Alpha');
+    expect(row?.state).toBe('due');
+    expect(row?.standard_moved).toBeUndefined();
+  });
+
+  it('is still subject to the cooldown and the bench gate', () => {
+    expect(decide(moved({ lastFinishedAt: minutesAgo(5) })).action).toBe('idle');
+    expect(decide(moved({ benchAvailable: false })).reason).toContain('no usable demo bench');
+  });
+
+  /** A park is about repeated failure, and a rubric edit is not an answer to that. */
+  it('does not release a parked subject', () => {
+    const d = decide(moved({ schedule: { Alpha: { try_n: 3, parked_at: daysAgo(1) } } }));
+    expect(d.action).toBe('idle');
   });
 });

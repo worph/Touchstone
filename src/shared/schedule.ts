@@ -69,7 +69,7 @@ export interface TickDecision {
  * | `running` | this subject holds the claim — the reason nothing else starts |
  * | `retry` | a previous attempt errored; retried on the next tick, no freshness wait |
  * | `never` | no completed assay on file |
- * | `due` | last result is older than `fresh_days` |
+ * | `due` | last result is older than `fresh_days`, or the standard moved under it |
  * | `fresh` | audited recently enough to be skipped |
  * | `parked` | too many consecutive errors; left alone until `stuck_days` pass |
  */
@@ -84,6 +84,14 @@ export interface QueueRow {
   last_done_at?: string;
   /** Days since `last_done_at`; absent when never run, rather than a fake infinity. */
   days?: number;
+  /**
+   * Due because the standard moved under it rather than because a week passed.
+   *
+   * Not a `QueueState` of its own: the row *is* `due`, and the only extra thing to say is
+   * what made it due. A seventh state word would have to be handled by every reader of this
+   * type to say something the note says better.
+   */
+  standard_moved?: boolean;
   try_n: number;
   parked_at?: string;
   claim_since?: string;

@@ -47,6 +47,22 @@ export interface PolicyInput {
   lastFinishedAt?: string;
   /** A forced run bypasses freshness and cooldown, exactly as n8n's form trigger does. */
   forced?: string[];
+  /**
+   * Newest assay of **any status** per subject, ISO — a blocked or errored attempt counts.
+   *
+   * Only the standard clause below reads this. `lastDoneAt` is the freshness and ordering
+   * signal and stays what it always was; this one answers a different question — *have we
+   * pointed the current standard at this app at all* — and a blocked attempt answers it yes.
+   * See `domain/standards.ts` for why the two cannot be one field.
+   */
+  lastAttemptAt?: Record<string, string | undefined>;
+  /**
+   * When the standard last moved — `StandardSnapshot.moved_at`.
+   *
+   * Absent means the question is not being asked (no revision history, or nothing recorded
+   * yet), and the eligibility rule below is then a no-op.
+   */
+  standardMovedAt?: string;
   /** Whether a bench may be claimed right now — `BenchProber.leasable().length > 0`. */
   benchAvailable: boolean;
   /** Why not, for the reason string. Never an error object; one clause a human reads. */
@@ -60,6 +76,24 @@ function daysSince(iso: string | undefined, now: Date): number {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return Number.POSITIVE_INFINITY;
   return (now.getTime() - t) / DAY_MS;
+}
+
+/**
+ * Whether this subject has been looked at since the standard moved.
+ *
+ * The comparison is against the last **attempt**, not the last verdict, and the difference
+ * is load-bearing: a section that is permanently blocked keeps its old `done` record for
+ * ever, so a rule reading verdicts would find that subject eligible on every tick until
+ * somebody fixed the bench — one app pinned in the backlog, re-audited every cooldown, for a
+ * section it cannot run. Attempting settles it; the badge on the Store page goes on saying
+ * `older`, because the verdict on display really was reached under an older revision.
+ */
+function standardMoved(input: PolicyInput, subject: string): boolean {
+  if (!input.standardMovedAt) return false;
+  const moved = Date.parse(input.standardMovedAt);
+  if (Number.isNaN(moved)) return false;
+  const attempted = Date.parse(input.lastAttemptAt?.[subject] ?? '');
+  return Number.isNaN(attempted) || attempted < moved;
 }
 
 function minutesSince(iso: string | undefined, now: Date): number {
@@ -132,6 +166,8 @@ function plan(input: PolicyInput): {
   busy?: { subject: string; since: string };
   unparked: string[];
   eligible: string[];
+  /** Of those, the ones that are only eligible because the standard moved under them. */
+  restandard: Set<string>;
 } {
   const { constants, now } = input;
   const { schedule, reclaimed, busy } = reclaimExpired(input.schedule, input);
@@ -148,6 +184,7 @@ function plan(input: PolicyInput): {
   }
 
   const eligible: string[] = [];
+  const restandard = new Set<string>();
   for (const subject of input.subjects) {
     const row = schedule[subject];
     if (row?.claim) continue;
@@ -163,7 +200,20 @@ function plan(input: PolicyInput): {
       eligible.push(subject);
       continue;
     }
-    if (daysSince(last, now) >= constants.fresh_days) eligible.push(subject);
+    if (daysSince(last, now) >= constants.fresh_days) {
+      eligible.push(subject);
+      continue;
+    }
+    // Still fresh by the calendar, but judged by a rubric that has since been edited. It
+    // joins the backlog and nothing else: no jump, no forced run, no bypass of the cooldown
+    // or the bench gate. The loop is already saturated most of the time, so in practice this
+    // says "re-judge it with the spare hour rather than waiting out the week", which is
+    // exactly as much as it should say. It sorts last among the eligible — by `lastDoneAt`,
+    // and it is the freshest thing in the list — so a never-audited app still goes first.
+    if (standardMoved(input, subject)) {
+      eligible.push(subject);
+      restandard.add(subject);
+    }
   }
   eligible.sort((a, b) => {
     const d = daysSince(input.lastDoneAt[b], now) - daysSince(input.lastDoneAt[a], now);
@@ -176,7 +226,7 @@ function plan(input: PolicyInput): {
     return input.subjects.indexOf(a) - input.subjects.indexOf(b);
   });
 
-  return { schedule, reclaimed, busy, unparked, eligible };
+  return { schedule, reclaimed, busy, unparked, eligible, restandard };
 }
 
 /**
@@ -187,7 +237,7 @@ function plan(input: PolicyInput): {
  */
 export function decide(input: PolicyInput): TickDecision {
   const { constants, now } = input;
-  const { schedule, reclaimed, busy, unparked, eligible } = plan(input);
+  const { schedule, reclaimed, busy, unparked, eligible, restandard } = plan(input);
 
   const base = {
     backlog: eligible.length,
@@ -223,6 +273,12 @@ export function decide(input: PolicyInput): TickDecision {
     reason = Number.isFinite(stale)
       ? `last run ${String(input.lastDoneAt[subject!]).slice(0, 10)}, ${Math.floor(stale)}d ago`
       : 'never run';
+    // Said out loud, because this is the second place after the bench gate where the pick is
+    // *expected* to differ from n8n's: n8n has no notion of the standard moving, so a shadow
+    // diff on this tick is the feature working rather than a divergence to chase.
+    if (restandard.has(subject!)) {
+      reason += ` · standard revised ${String(input.standardMovedAt).slice(0, 10)}`;
+    }
   }
 
   // ── the bench gate — row D7, which n8n does not have ──────────────────────────────────
@@ -260,7 +316,7 @@ export function decide(input: PolicyInput): TickDecision {
  */
 export function queue(input: PolicyInput): QueueRow[] {
   const { constants, now } = input;
-  const { schedule, eligible } = plan(input);
+  const { schedule, eligible, restandard } = plan(input);
   const position = new Map(eligible.map((subject, i) => [subject, i + 1]));
 
   const rows = input.subjects.map((subject): QueueRow => {
@@ -273,7 +329,10 @@ export function queue(input: PolicyInput): QueueRow[] {
     else if (row?.parked_at) state = 'parked';
     else if ((row?.try_n ?? 0) > 0) state = 'retry';
     else if (!last) state = 'never';
-    else state = daysSince(last, now) >= constants.fresh_days ? 'due' : 'fresh';
+    else if (daysSince(last, now) >= constants.fresh_days) state = 'due';
+    // A restandard row carries a queue position, so calling it `fresh` would put a
+    // contradiction on one line. It is due; the note says what made it due.
+    else state = restandard.has(subject) ? 'due' : 'fresh';
 
     return {
       subject,
@@ -282,6 +341,9 @@ export function queue(input: PolicyInput): QueueRow[] {
       ...(last ? { last_done_at: last } : {}),
       ...(days !== undefined && Number.isFinite(days) ? { days: Math.round(days * 10) / 10 } : {}),
       try_n: row?.try_n ?? 0,
+      // `due` and not a state of its own: it *is* due, and the only extra thing to say is
+      // why — which the Automation page appends to the note rather than to the status word.
+      ...(restandard.has(subject) ? { standard_moved: true } : {}),
       ...(row?.parked_at ? { parked_at: row.parked_at } : {}),
       ...(row?.claim ? { claim_since: row.claim.since } : {}),
     };

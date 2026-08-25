@@ -30,12 +30,23 @@ import type { FastifyPluginAsync, FastifyReply, RouteOptions } from 'fastify';
 import type { SubjectState } from '../../shared/types.js';
 import { buildFixReport, fixReportFilename } from '../domain/fixreport.js';
 import { hallmarks, subjectHallmark, subjectNames } from '../domain/hallmark.js';
+import { readStandards } from '../domain/standards.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
+import type { ProtocolStore } from '../store/protocols.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 
 export interface PublicRoutesOptions {
   /** The archive. Same instance the operator routes read — one composition, one answer. */
   store: AssayStore;
+  /**
+   * The rubric, read for one thing only: which revision judged each verdict on display.
+   *
+   * An app author is the person most entitled to know that the pass they are looking at was
+   * reached under a rubric that has since been edited — it is the difference between "you
+   * are done" and "this will be looked at again". Read-only, like everything here, and the
+   * `onRoute` guard above is what keeps that true rather than this comment.
+   */
+  protocols?: ProtocolStore;
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
@@ -71,6 +82,16 @@ const routes: FastifyPluginAsync<PublicRoutesOptions> = async (app, options) => 
    * what it intends to audit, and a public board should show what has been assayed, not what
    * is on a backlog.
    */
+  /** The same read the operator routes make, and for the same reason. */
+  async function currentStandards() {
+    if (!options.protocols) return undefined;
+    try {
+      return (await readStandards(options.protocols)).sections;
+    } catch {
+      return undefined;
+    }
+  }
+
   function resolve(input: string) {
     const resolved = resolveSubjectKey(input, subjectNames(store.all()));
     if (resolved.kind !== 'ok') return resolved;
@@ -84,7 +105,8 @@ const routes: FastifyPluginAsync<PublicRoutesOptions> = async (app, options) => 
   // GET /public/subjects — the board. Byte-for-byte the operator table's rows, because it is
   // the same call: a public verdict that differs from the internal one is the bug this
   // namespace would otherwise invite.
-  app.get('/public/subjects', async (): Promise<SubjectState[]> => hallmarks(store.all()));
+  app.get('/public/subjects', async (): Promise<SubjectState[]> =>
+    hallmarks(store.all(), { standards: await currentStandards() }));
 
   // GET /public/subjects/:name — one app. The current assay per section and what each
   // recorded; no history, no report paths to follow, no run state.
@@ -94,7 +116,9 @@ const routes: FastifyPluginAsync<PublicRoutesOptions> = async (app, options) => 
       return fail(reply, 400, ambiguousMessage(request.params.name, resolved.candidates));
     }
     if (resolved.kind !== 'ok') return fail(reply, 404, `unknown subject: ${request.params.name}`);
-    return subjectHallmark(resolved.name, resolved.records).state;
+    return subjectHallmark(resolved.name, resolved.records, {
+      standards: await currentStandards(),
+    }).state;
   });
 
   /**

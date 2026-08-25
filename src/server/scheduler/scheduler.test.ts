@@ -14,14 +14,20 @@ const CONSTANTS = { fresh_days: 7, stuck_days: 7, lease_min: 120, cooldown_min: 
 let dir: string;
 let events: EventLog;
 
-/** Just enough index: the scheduler only ever asks which sections exist and their latest. */
+/**
+ * Just enough index: which sections exist, their latest completion, and their latest
+ * attempt. `latestAny` answers the same record here — these fixtures hold nothing blocked,
+ * and the two only diverge where a test is specifically about that.
+ */
 function indexOf(lastDone: Record<string, string>): ReportIndex {
+  const latest = (subject: string, section: string) =>
+    section === 'static' && lastDone[subject]
+      ? ({ meta: { finished_at: lastDone[subject] } } as never)
+      : null;
   return {
     sections: () => ['static', 'functional'],
-    latest: (subject: string, section: string) =>
-      section === 'static' && lastDone[subject]
-        ? ({ meta: { finished_at: lastDone[subject] } } as never)
-        : null,
+    latest,
+    latestAny: latest,
     subjects: () => Object.keys(lastDone),
   } as unknown as ReportIndex;
 }
@@ -275,9 +281,12 @@ describe('freshness reads completed assays only', () => {
  */
 describe('whose date counts as the last run', () => {
   function indexWith(meta: Record<string, unknown>): ReportIndex {
+    const latest = (_s: string, section: string) =>
+      section === 'static' ? ({ meta } as never) : null;
     return {
       sections: () => ['static', 'functional'],
-      latest: (_s: string, section: string) => (section === 'static' ? ({ meta } as never) : null),
+      latest,
+      latestAny: latest,
       subjects: () => ['Alpha'],
     } as unknown as ReportIndex;
   }

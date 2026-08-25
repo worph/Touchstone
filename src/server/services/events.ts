@@ -81,6 +81,7 @@ export const EVENT_CODES = {
   TICK_BENCH_GATED: { category: 'scheduler', label: 'tick refused for want of a bench' },
   TICK_BENCH_UNGATED: { category: 'scheduler', label: 'a demo bench is claimable again' },
   TICK_FAILED: { category: 'scheduler', label: 'tick could not run' },
+  STANDARD_UNREADABLE: { category: 'scheduler', label: 'standard in force unreadable' },
   CLAIM_OPENED: { category: 'scheduler', label: 'subject claimed' },
   CLAIM_RECLAIMED: { category: 'scheduler', label: 'expired claim released' },
   CLAIM_PARKED: { category: 'scheduler', label: 'subject parked' },
@@ -185,6 +186,7 @@ interface EventDetails {
   TICK_BENCH_GATED: { reason: string; backlog: number };
   TICK_BENCH_UNGATED: { reason: string; backlog: number };
   TICK_FAILED: { error: string };
+  STANDARD_UNREADABLE: { error: string };
   CLAIM_OPENED: { subject: string; try_n: number; since: string };
   CLAIM_RECLAIMED: { subject: string; try_n: number; outcome: 'retry' | 'parked' };
   CLAIM_PARKED: { subject: string; try_n: number; until_days: number };

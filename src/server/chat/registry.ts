@@ -50,6 +50,7 @@ import type { AssayRecord, Section, SubjectState } from '../../shared/types.js';
 import { buildFixReport } from '../domain/fixreport.js';
 import { saveProtocol } from '../domain/protocoledit.js';
 import { hallmarks, LEGS, subjectHallmark, subjectNames, type LegState } from '../domain/hallmark.js';
+import { readStandards } from '../domain/standards.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import type { Forecast, Runner } from '../runner/index.js';
@@ -282,6 +283,22 @@ function sectionIds(state: SubjectState): Section[] {
  * away is invariant 4: a blocked section is spelled as infra here exactly as it is there, so a
  * model scanning the board cannot read `functional blocked` as a second failure of the app.
  */
+/**
+ * The rubric in force, when there is a protocol store to ask — `domain/standards.ts`.
+ *
+ * Never fatal: a board that cannot read the rubric is still a board, it just has nothing to
+ * qualify its rows with. The revision log is not consulted, because the caveat only needs
+ * each section's current hash.
+ */
+async function currentStandards(ctx: ChatToolContext) {
+  if (!ctx.protocols) return undefined;
+  try {
+    return (await readStandards(ctx.protocols)).sections;
+  } catch {
+    return undefined;
+  }
+}
+
 function boardRow(state: SubjectState): string {
   const cells = sectionIds(state).map((id) => {
     const record = state.sections[id];
@@ -294,7 +311,16 @@ function boardRow(state: SubjectState): string {
     return `${id} ${meta.verdict ?? 'no verdict'}/${meta.top_severity}`;
   });
   const age = state.age_days === null ? 'never assayed' : `${state.age_days}d old`;
-  return `${state.label} (${state.origin}) · risk ${state.risk} · ${cells.join(' · ')} · ${age}`;
+  // Said in words rather than left to be inferred: "are these verdicts still current against
+  // the rubric?" was the question that could not be answered from this board at all, and a
+  // model that cannot see the caveat will confidently report a pass as settled.
+  const standard =
+    state.standard === 'older'
+      ? ' · judged by an older revision of the standard'
+      : state.standard === 'unknown'
+        ? ' · names no standard revision'
+        : '';
+  return `${state.label} (${state.origin}) · risk ${state.risk} · ${cells.join(' · ')} · ${age}${standard}`;
 }
 
 function describeEvent(event: EventRecord): string {
@@ -375,7 +401,7 @@ export const CHAT_TOOLS: ChatTool[] = [
       // The same composition the Overview and the public board read. A second one here would
       // be a second answer to "what does this app carry", which is the failure a separate
       // surface invites — `routes/public.ts` refuses it for the same reason.
-      const rows = hallmarks(store.all());
+      const rows = hallmarks(store.all(), { standards: await currentStandards(ctx) });
       if (rows.length === 0) {
         return failed('Nothing has been audited yet, so the board is empty. list_subjects has the names.');
       }
