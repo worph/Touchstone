@@ -28,7 +28,10 @@ by the report index, so it cannot move a hallmark), **board** (the read-only pub
 every subject's hallmark, at `/public`, addressed to app authors rather than to the operator),
 **executor** (who performs a section — `agent`, or a `*.sh` beside the protocol that declared it),
 **reading** (what a section that *measures* produces rather than judging: `scores: false` in its
-frontmatter, a badge and a table, invisible to the hallmark — `currency` is the first).
+frontmatter, a badge and a table, invisible to the hallmark — `currency` is the first),
+**standard in force** (the revision of each rubric that would judge a subject *today*, and when
+that last changed — `domain/standards.ts`; a verdict reached under an older one carries an
+`older standard` chip and stops waiting out `fresh_days`).
 
 A subject's identity is `<origin>~<name>` — `yundera~FileBrowser`. The separator is `~` because
 it is unreserved in `encodeURIComponent` and therefore survives a URL untouched, which is what
@@ -172,6 +175,19 @@ because its data access was smeared through two 200-line n8n Code nodes.
   served as markdown by `GET /subjects/:name/fix.md`. It **quotes**: findings, severities,
   evidence and remedies all come out of the frontmatter, and where the agent proposed no remedy
   the report says so rather than inventing one.
+- **`domain/standards.ts`** — the standard **in force**, and the one place the recorded
+  `standard_sha256` is read back. It answers two questions from one read, and keeping them
+  apart is the whole design: `sections` (each rubric's hash now) is compared against the sha
+  the last **verdict** carries, which is what puts an `older standard` chip on a row; `moved_at`
+  (when the judging set last changed) is compared against the subject's last **attempt**, which
+  is what makes it eligible for re-audit without waiting out `fresh_days`. They cannot be one
+  predicate: a permanently blocked section keeps its old `done` record for ever, so a scheduler
+  reading verdicts would re-pick that subject every cooldown until somebody fixed the bench —
+  attempting has to settle the scheduling question even when the attempt blocked, while the chip
+  goes on qualifying the verdict on display. `scores: false` sections cannot move `moved_at`
+  (invariant 12) and a `seed` revision is not an edit, so a first boot does not re-eligible the
+  archive. The orchestrator counts and carries no chip: its prose is in the prompt, but no assay
+  records its hash, so re-eligibility is derivable and a badge would be invented.
 - **`store/registry.ts`** — one list per configured origin, so one store's GitHub outage cannot
   empty another's. `reachable()` means *the last fetch succeeded*, and the runner asks it before
   dispatching: auditing against a store we cannot read would error and burn the subject's try
@@ -329,10 +345,14 @@ because its data access was smeared through two 200-line n8n Code nodes.
     recorded `blocked`, never downgraded to the agent: a typo in one character would otherwise
     turn a deterministic check into a model guessing at the same question, and the archive would
     look identical.
-12. **`scores: false` means invisible to the hallmark — both halves.** Not summed into risk, and
-    not allowed to set `age_days`. The second is the subtle one: a currency reading takes six
-    seconds and rides every audit, so if it could stamp freshness then every app would read as
-    recently *audited* the moment it was *measured*.
+12. **`scores: false` means invisible to the hallmark, in all three senses.** Not summed into
+    risk, not allowed to set `age_days`, and not allowed to move the backlog. The second is the
+    subtle one: a currency reading takes six seconds and rides every audit, so if it could stamp
+    freshness then every app would read as recently *audited* the moment it was *measured*. The
+    third followed it — an edit to a reading's rubric or script does not make subjects eligible
+    for re-audit (`domain/standards.ts`), or a threshold change in `currency.sh` would spend
+    three days of agent time re-running full audits to re-measure something the next ordinary
+    run re-measures for free.
 
 ## Safety switches (both default off)
 
@@ -377,12 +397,11 @@ approved and is documented in HANDOFF.md §5c.
 | File | What it is for |
 | --- | --- |
 | `README.md` | what Touchstone is, what it replaces, why |
-| `ARCHITECTURE.md` | **the parity matrix (§1.4), domain model, principles, decisions** |
-| `MVP.md` | scope, the frontmatter contract (§5), the M1–M7 milestone order (§8) |
-| `IMPLEMENTATION.md` | stack, storage, config, packaging — layout section is stale |
+| `docs/architecture.md` | **the parity matrix (§1.4), domain model, principles, decisions, packaging, phases** |
+| `docs/requirements.md` | operator requirements **beyond** parity and their status |
 | `UX.md` | the pages and their degraded states |
-| `REQUIREMENTS.md` | operator requirements **beyond** parity (R1–R8) and their status |
-| `HANDOFF.md` | session state: what each phase delivered, open items, live-system facts |
 
-`HANDOFF.md` is session state, not design. When work lands, update it; when a design decision
-changes, update the design doc that owns it.
+The docs were consolidated into those four; `MVP.md`, `IMPLEMENTATION.md` and `HANDOFF.md` are
+gone, and cross-references to `ARCHITECTURE.md` (including inside the remaining files and in the
+source comments) mean `docs/architecture.md`. When a design decision changes, update the doc that
+owns it.

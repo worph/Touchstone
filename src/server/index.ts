@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
 import registerRoutes from './routes/index.js';
+import { readStandards } from './domain/standards.js';
 import { buildIndex } from './store/index.js';
 import { logArchiveMigration, migrateArchiveLayout } from './store/migrate.js';
 import { splitSubjectKey } from '../shared/subject.js';
@@ -303,6 +304,9 @@ const scheduler = new Scheduler({
   registry,
   events,
   prober,
+  // Read per tick, not captured at boot: `data/protocols/` is a volume somebody edits over
+  // SSH, and the sweep that records such an edit runs before the answer is asked for.
+  standardMovedAt: async () => (await readStandards(protocols, revisions)).moved_at,
   // The seam between the two halves: the scheduler claims, the runner audits, and the
   // outcome comes back through `record` — which is where E5's "a busy agent costs nothing"
   // is actually applied.

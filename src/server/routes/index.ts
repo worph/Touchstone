@@ -22,6 +22,7 @@ import { fixtureStore } from '../domain/fixtures.js';
 import { buildFixReport, fixReportFilename } from '../domain/fixreport.js';
 import { hallmarks, sortNewestFirst, subjectHallmark, subjectNames } from '../domain/hallmark.js';
 import { renderMarkdown } from '../domain/markdown.js';
+import { readStandards } from '../domain/standards.js';
 import { recordsForSubject, type AssayStore } from '../domain/store.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import type { TrialRoutesOptions } from './trials.js';
@@ -160,7 +161,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
    * `routes/public.ts`. Registered from the same `store`, so the board and the operator
    * table cannot disagree, and read-only by a boot-time check rather than by convention.
    */
-  await app.register(publicRoutes, { store });
+  await app.register(publicRoutes, { store, ...(options.protocols ? { protocols: options.protocols } : {}) });
   await app.register(assayRoutes, {
     runner: options.runner,
     scheduler: options.scheduler,
@@ -174,6 +175,29 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
    * bookmarked before stores existed, or a person typing an app name. `resolveSubjectKey` is
    * the one matcher; `ambiguous` only becomes reachable with a second origin configured.
    */
+  /**
+   * The rubric in force, per section — what the `standard` badge on a row is measured
+   * against.
+   *
+   * Read per request rather than captured, because the protocol directory is a volume: an
+   * edit made over SSH has to show up on the next page load, not on the next restart. The
+   * revision log is deliberately **not** consulted here — the badge only needs each section's
+   * current hash, and `moved_at` (which does read the log) is the scheduler's half.
+   *
+   * Undefined when there is no protocol store to ask, and every row then comes back without a
+   * `standard` at all rather than with a guess.
+   */
+  async function currentStandards() {
+    if (!options.protocols) return undefined;
+    try {
+      return (await readStandards(options.protocols)).sections;
+    } catch {
+      // A page that cannot read the rubric still has verdicts worth rendering; it just has
+      // nothing to qualify them with. Invariant 7's rule, applied one surface down.
+      return undefined;
+    }
+  }
+
   function resolveSubject(input: string) {
     const resolved = resolveSubjectKey(input, subjectNames(store.all()));
     if (resolved.kind !== 'ok') return resolved;
@@ -195,7 +219,10 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
    * good list, and a subject that drops out of the store keeps its row through the archive.
    */
   app.get('/subjects', async (): Promise<SubjectState[]> =>
-    hallmarks(store.all(), { include: options.registry?.list() ?? [] }));
+    hallmarks(store.all(), {
+      include: options.registry?.list() ?? [],
+      standards: await currentStandards(),
+    }));
 
   // GET /subjects/:name — the subject detail page: the composed row plus full history.
   app.get<{ Params: { name: string } }>('/subjects/:name', async (request, reply) => {
@@ -205,7 +232,9 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     }
     if (resolved.kind === 'ok') {
       return {
-        subject: subjectHallmark(resolved.name, resolved.records).state,
+        subject: subjectHallmark(resolved.name, resolved.records, {
+          standards: await currentStandards(),
+        }).state,
         history: sortNewestFirst(resolved.records), // newest first, both legs interleaved
       };
     }

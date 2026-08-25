@@ -15,7 +15,14 @@
  */
 
 import { asSubjectKey, splitSubjectKey, type SubjectKey } from '../../shared/subject.js';
-import type { AssayMeta, AssayRecord, Section, SubjectState } from '../../shared/types.js';
+import type {
+  AssayMeta,
+  AssayRecord,
+  Section,
+  StandardState,
+  SubjectState,
+} from '../../shared/types.js';
+import type { Standards } from './standards.js';
 
 /**
  * The two sections the Overview still draws a column for.
@@ -85,6 +92,47 @@ export interface SubjectHallmark {
 export interface HallmarkOptions {
   /** Reference point for `age_days`. Defaults to now; tests pin it. */
   now?: Date | number;
+  /**
+   * The standard in force, per section — `domain/standards.ts`.
+   *
+   * Passed in rather than read, because this file is pure over records and has to stay that
+   * way: the tests pin an archive and a clock, and a composer that opened the protocol
+   * directory could not be one of them. Absent means the question is not being asked, and
+   * every row comes back with no `standard` at all rather than with a guess.
+   */
+  standards?: Standards;
+}
+
+/**
+ * How one section's last verdict relates to the standard in force.
+ *
+ * Reads the **`done`** record, never `current`: the badge qualifies the verdict a person is
+ * looking at, and a blocked assay has no verdict to qualify. Null when there is nothing to
+ * say — no verdict yet, no rubric under that name any more (a retired section must not
+ * strand a row as permanently out of date), or a reading rather than a judgement.
+ */
+export function standardStateOf(state: LegState, standards: Standards): StandardState | null {
+  const done = state.hallmark;
+  if (!done) return null;
+  if (done.meta.scores === false) return null;
+  const want = standards[state.leg];
+  if (!want) return null;
+  const had = done.meta.standard_sha256;
+  if (typeof had !== 'string' || had === '') return 'unknown';
+  if (had !== want.sha256) return 'older';
+  // A scripted section has two versions and one of them is the procedure. An operator who
+  // moves a threshold in the `.sh` has changed what the reading means just as surely as an
+  // edit to the prose beside it, and the assay records both hashes for this comparison.
+  if (done.meta.executor && done.meta.executor_sha256 !== want.executor_sha256) return 'older';
+  return 'current';
+}
+
+/** Worst wins: one section judged by an older rubric qualifies the whole row. */
+function rollUp(states: readonly StandardState[]): StandardState | undefined {
+  if (states.length === 0) return undefined;
+  if (states.includes('older')) return 'older';
+  if (states.includes('unknown')) return 'unknown';
+  return 'current';
 }
 
 /**
@@ -117,9 +165,14 @@ export function subjectHallmark(
   let risk = 0;
   let newestDone: number | null = null;
   const current: Record<Section, AssayRecord | null> = {};
+  const standardStates: StandardState[] = [];
   for (const id of ids) {
     const state = legs[id]!;
     current[id] = state.current;
+    if (options.standards) {
+      const standard = standardStateOf(state, options.standards);
+      if (standard) standardStates.push(standard);
+    }
     const done = state.hallmark;
     if (!done) continue;
     // A section that measures rather than judges is invisible here, and both halves matter.
@@ -147,6 +200,7 @@ export function subjectHallmark(
       functional: legs.functional?.current ?? null,
       risk,
       age_days: newestDone === null ? null : Math.max(0, Math.floor((now - newestDone) / DAY_MS)),
+      ...(rollUp(standardStates) ? { standard: rollUp(standardStates) } : {}),
     },
   };
 }

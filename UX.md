@@ -125,6 +125,16 @@ the board's DOM rather than merely hidden (invariant 10). And it does not warn a
 pool per row: one open alert above the table says it once, because an audit with no bench still
 runs and records those sections blocked, which costs the app nothing.
 
+**The `older standard` chip** (2026-08-25) sits beside a subject's name when the last verdict on
+that row was reached under a rubric that has since been edited, and `standard unknown` when the
+assay predates revision tracking and names none. It is a caveat about the *question*, not a
+finding about the app — the verdict is exactly as true as it was the day it was reached — so it
+is a quiet warm chip rather than a column or a severity colour, and an up-to-date row draws
+nothing at all. Clicking through keeps it: the same chip is on the subject page and on both
+public pages, because a caveat that vanished on the way would read as having been withdrawn.
+Behind it, the subject stops waiting out the seven-day freshness window and joins the backlog at
+its ordinary position — Automation's queue says `standard revised since` on that row.
+
 `/overview` redirects here.
 
 ```

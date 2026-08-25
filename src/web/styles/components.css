@@ -279,6 +279,29 @@
 .tag--link { color: var(--link); text-decoration: none; }
 .tag--link:hover { text-decoration: underline; text-underline-offset: 2px; }
 
+/* The caveat beside a subject's name: the verdict on this row was reached under a rubric
+   that has since been edited (`older`), or under one the record cannot name (`unknown`).
+   Warm rather than red — it is a note about the question, not a finding about the app, and
+   the severity colours are spoken for. `current` renders nothing, so this only ever appears
+   on rows that have something to say. */
+.standard-tag {
+  margin-left: 7px;
+  font: 500 10px/1.5 var(--sans);
+  letter-spacing: 0.03em;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.standard-tag[data-standard='older'] {
+  color: var(--major);
+  border-color: var(--major-dim);
+  background: var(--major-dim);
+}
+.standard-tag[data-standard='unknown'] {
+  color: var(--fg-2);
+  border-color: var(--border);
+  background: var(--bg-2);
+}
+
 /* The store a subject came from, beside its name. Only rendered when more than one store is
    configured — see Overview's `showOrigin`. Quiet on purpose: it disambiguates a row, it is
    not a status. */

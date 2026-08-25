@@ -221,3 +221,109 @@ describe('hallmarks({ include })', () => {
     expect(rows.filter((r) => r.risk > 0).every((r) => rows.indexOf(r) < at)).toBe(true);
   });
 });
+
+
+/**
+ * The badge that qualifies a verdict — "this was reached under a rubric that has since been
+ * edited". It reads the **done** record, never the current one: a blocked assay has no
+ * verdict to qualify, and the caveat has to keep standing for as long as the verdict on
+ * display is the older one. The scheduler's rule is the other way round on purpose (it reads
+ * the last attempt), and `domain/standards.ts` explains why they cannot be one predicate.
+ */
+describe('the standard a verdict was reached under', () => {
+  const CURRENT = { static: { sha256: 'aaa' }, functional: { sha256: 'bbb' } };
+
+  function judgedBy(sha: string | undefined, over: Parameters<typeof makeRecord>[0] = { subject: 'App', leg: 'static', at: '2026-08-01T00:00:00Z' }) {
+    const rec = makeRecord(over);
+    return { ...rec, meta: { ...rec.meta, ...(sha ? { standard_sha256: sha } : {}) } };
+  }
+
+  it('says nothing at all when the question is not being asked', () => {
+    expect(subjectHallmark(APP, [judgedBy('aaa')], { now: NOW }).state.standard).toBeUndefined();
+  });
+
+  it('is current when the hash matches the rubric in force', () => {
+    const { state } = subjectHallmark(APP, [judgedBy('aaa')], { now: NOW, standards: CURRENT });
+    expect(state.standard).toBe('current');
+  });
+
+  it('is older when the rubric has been edited since', () => {
+    const { state } = subjectHallmark(APP, [judgedBy('zzz')], { now: NOW, standards: CURRENT });
+    expect(state.standard).toBe('older');
+  });
+
+  /**
+   * "Judged by something else" and "we cannot tell what judged this" are different claims.
+   * Every assay written before 2026-08-23 makes the second one.
+   */
+  it('is unknown when the assay names no revision', () => {
+    const { state } = subjectHallmark(APP, [judgedBy(undefined)], { now: NOW, standards: CURRENT });
+    expect(state.standard).toBe('unknown');
+  });
+
+  it('rolls up worst-first across sections', () => {
+    const records = [
+      judgedBy('aaa'),
+      judgedBy('stale', { subject: 'App', leg: 'functional', at: '2026-08-02T00:00:00Z' }),
+    ];
+    expect(subjectHallmark(APP, records, { now: NOW, standards: CURRENT }).state.standard).toBe('older');
+  });
+
+  it('has nothing to say about a subject with no verdict yet', () => {
+    expect(subjectHallmark(APP, [], { now: NOW, standards: CURRENT }).state.standard).toBeUndefined();
+  });
+
+  /**
+   * A blocked assay is newer than the verdict on display, and the verdict on display is what
+   * the badge is about. `legState.hallmark` is the record either way.
+   */
+  it('qualifies the last verdict even when a newer attempt blocked', () => {
+    const records = [
+      judgedBy('zzz'),
+      makeRecord({
+        subject: 'App',
+        leg: 'static',
+        at: '2026-08-04T00:00:00Z',
+        status: 'blocked',
+        blocked_reason: 'bench_unavailable',
+      }),
+    ];
+    expect(subjectHallmark(APP, records, { now: NOW, standards: CURRENT }).state.standard).toBe('older');
+  });
+
+  /** Invariant 12: a reading is invisible to the hallmark, and this is part of the hallmark. */
+  it('ignores a section that measures rather than judges', () => {
+    const rec = makeRecord({ subject: 'App', leg: 'currency', at: '2026-08-03T00:00:00Z' });
+    const reading = { ...rec, meta: { ...rec.meta, scores: false, standard_sha256: 'stale' } };
+    const { state } = subjectHallmark(APP, [judgedBy('aaa'), reading], {
+      now: NOW,
+      standards: { ...CURRENT, currency: { sha256: 'ccc' } },
+    });
+    expect(state.standard).toBe('current');
+  });
+
+  /** A rubric that no longer exists must not strand a row as permanently out of date. */
+  it('ignores a section the protocol directory no longer declares', () => {
+    const rec = makeRecord({ subject: 'App', leg: 'retired', at: '2026-08-03T00:00:00Z' });
+    const gone = { ...rec, meta: { ...rec.meta, standard_sha256: 'stale' } };
+    const { state } = subjectHallmark(APP, [judgedBy('aaa'), gone], { now: NOW, standards: CURRENT });
+    expect(state.standard).toBe('current');
+  });
+
+  /**
+   * A scripted section has two versions and one of them is the procedure. Moving a threshold
+   * in the `.sh` changes what the reading means as surely as an edit to the prose beside it.
+   */
+  it('counts the executor as part of the standard', () => {
+    const rec = makeRecord({ subject: 'App', leg: 'static', at: '2026-08-01T00:00:00Z' });
+    const scripted = {
+      ...rec,
+      meta: { ...rec.meta, standard_sha256: 'aaa', executor: 'check.sh', executor_sha256: 'old' },
+    };
+    const { state } = subjectHallmark(APP, [scripted], {
+      now: NOW,
+      standards: { static: { sha256: 'aaa', executor_sha256: 'new' } },
+    });
+    expect(state.standard).toBe('older');
+  });
+});

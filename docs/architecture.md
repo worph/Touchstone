@@ -97,6 +97,7 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 | B7 | Parking | `stuck after 3 tries`, released after `STUCK_DAYS` | ✅ |
 | B8 | Single-flight | one in-progress app at a time | ✅ one claim, and it is what blocks the next tick |
 | B9 | Re-derive the backlog every tick — **no queue** | by construction | ✅ by construction, as n8n does |
+| B10 | **Re-eligible when the standard moves** | — (n8n has no notion of a rubric revision) | ➕ a subject not *attempted* since the last recorded edit to a scoring rubric is eligible regardless of `FRESH_DAYS`. Like D7, a Touchstone-only rule, and the second place a shadow diff is expected to differ — the tick says `· standard revised <date>` when it fires |
 
 #### C. Claim — `Mark in-progress`
 
@@ -431,6 +432,22 @@ the runner decides which sections that subject's audit can actually run. A subje
 its most recently completed section (`ReportIndex.sections()`), which is why a protocol gaining a
 section does not silently make every subject look stale.
 
+**Freshness is not the only way in (row B10, 2026-08-25).** A subject whose last *attempt*
+predates the last recorded edit to a scoring rubric is eligible too, however recently it was
+audited — an assay judged by a rubric nobody uses any more is the one case where the calendar
+says the wrong thing. It is the smallest lever that could work: the subject joins the backlog and
+gets no other treatment. No priority (it sorts by `lastDoneAt` like everything else, and it is
+the freshest thing in the list, so a never-audited app still goes first), no forced run, no bypass
+of the cooldown, the park or the bench gate. Because the backlog is rarely empty, what it really
+buys is "re-judge it with the spare hour rather than waiting out the week".
+
+Two details carry the design, both in `domain/standards.ts`. It compares against the last
+**attempt**, not the last verdict: a permanently blocked section keeps its old `done` record for
+ever, and a rule reading verdicts would re-pick that subject every cooldown until somebody fixed
+the bench. And a `scores: false` section cannot move it — invariant 12's third clause, without
+which a threshold edit in `currency.sh` would spend three days of agent time re-measuring
+something that re-measures itself for free on the next run.
+
 ### 5.2 Runner
 
 Rows D1–D5. Prompt assembly from the standard, the agent call, response extraction, and the
@@ -634,9 +651,16 @@ Three properties that are not incidental:
 - **The whole text is embedded in the prompt**, not fetched. That removes an entire class of
   failure — an audit can no longer error because a wiki was slow — and it is what makes the
   rubric editable at all.
-- **Saving bumps the version.** Every assay records the standard and version it was graded
-  against, so an edit that left the number alone would make two different rubrics
-  indistinguishable in the archive.
+- **The revision is the sha256 of the file** (2026-08-23; it was an integer in the frontmatter
+  before that). Every assay records the hash it was judged under, `data/protocols/.history/`
+  keeps the bytes, and so the archive's claim about which rubric reached a verdict resolves to
+  text. An integer only moved when somebody used the editor, moved whether or not the content
+  changed, and named a revision nothing had kept.
+- **An edit reaches forward, in two ways** (2026-08-25). Verdicts reached under an older
+  revision carry an `older standard` chip wherever a subject is listed — a caveat about the
+  question, not a finding about the app — and their subjects stop waiting out `FRESH_DAYS`
+  (row B10, §5.1). It moves nothing that has already run: `edit_protocol` and the editor change
+  what the *next* audit is judged by and nothing else.
 - **`requires_bench` is where genericity starts.** "Static" and "functional" are currently an
   axis hardcoded through the whole system; expressed as a property of a protocol it is one
   step from being a property of a *requirement*, which is what the generic model needs.

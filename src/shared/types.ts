@@ -247,7 +247,29 @@ export interface SubjectState {
   risk: number;
   /** Age in days of the most recent assay of any section; null if never assayed. */
   age_days: number | null;
+  /**
+   * Whether the standard that reached this row's verdicts is the one in force now.
+   *
+   * Absent on a subject with no verdict to qualify — a never-run row has nothing to be
+   * out of date. See {@link StandardState}.
+   */
+  standard?: StandardState;
 }
+
+/**
+ * How a verdict on display relates to the standard in force.
+ *
+ * - `current` — judged by the revision that would judge it again today.
+ * - `older` — the rubric (or the script performing it) has changed since. The verdict is
+ *   not wrong; it answers a question that has since been re-worded, which is a caveat and
+ *   not a finding. The subject becomes eligible for re-audit without waiting out
+ *   `fresh_days`, at its usual place in the backlog.
+ * - `unknown` — the assay predates `standard_sha256` (2026-08-23) and names no revision, so
+ *   there is nothing to compare. Deliberately not folded into `older`: "judged by something
+ *   else" and "we cannot tell what judged this" are different claims, and the archive is
+ *   entitled to say which one it is making.
+ */
+export type StandardState = 'current' | 'older' | 'unknown';
 
 export interface ReportResponse {
   meta: AssayMeta;
