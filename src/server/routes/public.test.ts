@@ -91,7 +91,10 @@ describe('GET /public/subjects', () => {
     await withRegistry.register(routes, {
       prefix: '/api/v1',
       store: fixtureStore(),
-      registry: { list: () => [subjectKey(DEFAULT_ORIGIN, 'NeverAudited')] } as never,
+      registry: {
+        list: () => [subjectKey(DEFAULT_ORIGIN, 'NeverAudited')],
+        versions: () => ({}),
+      } as never,
     });
     await withRegistry.ready();
 

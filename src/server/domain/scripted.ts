@@ -40,6 +40,11 @@ export interface ScriptedAssayInput {
   startedAt: string;
   finishedAt: string;
   subjectRef?: string;
+  /**
+   * The git blob sha of the app's compose at the audited ref — `AssayMeta.subject_sha`.
+   * Absent when the store offered none, which reads as "no version to compare".
+   */
+  subjectSha?: string;
   /** Which section carries the run's score, named so a blocked record can point at it. */
   scoredOn?: Section;
 }
@@ -123,6 +128,7 @@ export function assayFromScript(input: ScriptedAssayInput): { meta: AssayMeta; b
     // existed — the default has to be the one that leaves the archive's meaning unchanged.
     ...(scores ? {} : { scores: false }),
     subject_ref: input.subjectRef ?? `Yundera/AppStore@main:Apps/${subject}`,
+    ...(input.subjectSha ? { subject_sha: input.subjectSha } : {}),
     started_at: input.startedAt,
     finished_at: input.finishedAt,
     produced_by: 'touchstone-runner',

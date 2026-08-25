@@ -21,6 +21,7 @@ import type {
   Section,
   StandardState,
   SubjectState,
+  SubjectVersionState,
 } from '../../shared/types.js';
 import type { Standards } from './standards.js';
 
@@ -101,6 +102,15 @@ export interface HallmarkOptions {
    * every row comes back with no `standard` at all rather than with a guess.
    */
   standards?: Standards;
+  /**
+   * The version of each subject the store offers now — `SubjectRegistry.versions()`, keyed by
+   * `<origin>~<name>`.
+   *
+   * Passed in for the same reason `standards` is: this file stays pure over records, and a
+   * composer that reached for the registry could not be replayed from a fixture. Absent means
+   * the question is not being asked and no row comes back with a `subject_version`.
+   */
+  versions?: Record<string, string>;
 }
 
 /**
@@ -125,6 +135,28 @@ export function standardStateOf(state: LegState, standards: Standards): Standard
   // edit to the prose beside it, and the assay records both hashes for this comparison.
   if (done.meta.executor && done.meta.executor_sha256 !== want.executor_sha256) return 'older';
   return 'current';
+}
+
+/**
+ * How the app a subject's verdicts were reached about relates to the app on offer now.
+ *
+ * Reads the newest **`done`** record of any section — the verdicts on display were all
+ * reached in one run against one version, so one comparison answers for the row. Null when
+ * there is nothing to say, and `unknown` rather than `changed` whenever either side is
+ * missing: an app the store offers no compose for, or an assay written before this was
+ * recorded, is not evidence that anything moved. That asymmetry is the whole safeguard —
+ * `unknown` must never make a subject eligible, or every app in the archive would go eligible
+ * the day this ships and stay so until audited.
+ */
+export function subjectVersionOf(
+  records: readonly AssayRecord[],
+  offered: string | undefined,
+): SubjectVersionState | null {
+  const done = sortNewestFirst(records.filter(isDone))[0];
+  if (!done) return null;
+  const had = done.meta.subject_sha;
+  if (typeof had !== 'string' || had === '' || !offered) return 'unknown';
+  return had === offered ? 'current' : 'changed';
 }
 
 /** Worst wins: one section judged by an older rubric qualifies the whole row. */
@@ -201,6 +233,12 @@ export function subjectHallmark(
       risk,
       age_days: newestDone === null ? null : Math.max(0, Math.floor((now - newestDone) / DAY_MS)),
       ...(rollUp(standardStates) ? { standard: rollUp(standardStates) } : {}),
+      ...(options.versions
+        ? (() => {
+            const v = subjectVersionOf(mine, options.versions![name]);
+            return v ? { subject_version: v } : {};
+          })()
+        : {}),
     },
   };
 }

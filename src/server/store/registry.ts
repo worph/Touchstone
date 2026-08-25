@@ -48,6 +48,38 @@ export function appsUrlFor(origin: { repo: string; ref: string; apps_path: strin
 }
 
 /**
+ * The whole tree of one origin at its pinned ref, in **one** request.
+ *
+ * This is the only affordable way to know what version of each app the store is offering.
+ * The obvious implementation — `commits?path=Apps/<App>/docker-compose.yml` per app — is one
+ * request per app, and there are 69 of them against an unauthenticated ceiling of 60 an hour
+ * that `services/storedoc.ts` also spends from. It would drive the origin unreachable, and
+ * `reachable()` is what gates dispatch, so the feature would *stop* auditing rather than
+ * sharpen it (invariant 3). The recursive tree answers for every app at once.
+ *
+ * `?recursive=1` can be truncated on a very large repo, and the response says so; a truncated
+ * tree is discarded rather than half-believed, because a missing entry is indistinguishable
+ * from an app with no compose and would read as "nothing to compare".
+ */
+export function treeUrlFor(origin: { repo: string; ref: string }): string {
+  return (
+    `https://api.github.com/repos/${origin.repo}/git/trees/` +
+    `${encodeURIComponent(origin.ref)}?recursive=1`
+  );
+}
+
+/**
+ * The file whose bytes decide whether an app has changed.
+ *
+ * A constant rather than a config knob: the AppStore requires this name, and the whole point
+ * of keying on one file is that it is the one the audit actually reads. The **directory**
+ * sha is right there in the contents listing for free, and is deliberately not used — an app
+ * directory is the compose plus around 3 MB of icon and screenshots, so a screenshot refresh
+ * would re-audit the app.
+ */
+export const SUBJECT_FILE = 'docker-compose.yml';
+
+/**
  * n8n's cold-start list, verbatim as of 2026-08-19. Deliberately not sorted or tidied: it is
  * a copy of what the other system falls back to, and a difference here is a difference in
  * what the two systems audit.
@@ -76,6 +108,14 @@ interface OriginState {
   fetched_at?: string;
   /** The last fetch failed. Reported per store, and what gates dispatching to it. */
   failed?: string;
+  /**
+   * App name → the git blob sha of its `docker-compose.yml` at this origin's ref.
+   *
+   * Best-effort and **separate from `failed`**: the app list is what gates dispatch, so a
+   * tree fetch that fails must not make the store unreachable. It keeps whatever it had,
+   * and a subject with no entry simply has no version to compare — never "changed".
+   */
+  versions?: Record<string, string>;
 }
 
 interface RegistryFile {
@@ -90,6 +130,8 @@ export interface SubjectRegistryOptions {
   events?: EventLog;
   /** Overrides the URL built from the origin. Tests only. */
   url?: string;
+  /** Overrides the tree URL built from the origin. Tests only. */
+  treeUrl?: string;
   fetchTimeoutMs?: number;
   /** Every store to read. Order is render order. */
   origins?: OriginEntry[];
@@ -274,6 +316,82 @@ export class SubjectRegistry {
     return this.list();
   }
 
+  /**
+   * One request: every app's `docker-compose.yml` blob sha at this origin's ref.
+   *
+   * Returns `undefined` on any doubt — a failed request, a truncated tree, a shape that is
+   * not the tree API's — and the caller then keeps whatever it had. Never throws: this runs
+   * inside the refresh that decides whether a store can be audited at all, and a version
+   * lookup is not allowed to be the thing that stops an audit.
+   */
+  private async fetchVersions(origin: OriginEntry): Promise<Record<string, string> | undefined> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.opts.fetchTimeoutMs ?? 30_000);
+    try {
+      const res = await fetch(this.opts.treeUrl ?? treeUrlFor(origin), {
+        signal: controller.signal,
+        headers: { 'user-agent': 'touchstone-registry', accept: 'application/vnd.github+json' },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body: unknown = await res.json();
+      const tree = (body as { tree?: unknown; truncated?: unknown })?.tree;
+      // A truncated tree is discarded rather than half-believed: a missing entry looks exactly
+      // like an app with no compose, and would silently read as "nothing to compare".
+      if ((body as { truncated?: unknown })?.truncated === true) {
+        throw new Error('tree truncated');
+      }
+      if (!Array.isArray(tree)) throw new Error('not a tree');
+
+      const prefix = `${origin.apps_path.replace(/^\/+|\/+$/g, '')}/`;
+      const suffix = `/${SUBJECT_FILE}`;
+      const out: Record<string, string> = {};
+      for (const entry of tree as { path?: unknown; type?: unknown; sha?: unknown }[]) {
+        if (entry?.type !== 'blob') continue;
+        const p = typeof entry.path === 'string' ? entry.path : '';
+        if (!p.startsWith(prefix) || !p.endsWith(suffix)) continue;
+        // Exactly `<apps_path>/<App>/docker-compose.yml` — not one nested deeper, which would
+        // key the app to a file the audit never reads.
+        const name = p.slice(prefix.length, p.length - suffix.length);
+        if (name === '' || name.includes('/')) continue;
+        if (typeof entry.sha === 'string' && entry.sha !== '') out[name] = entry.sha;
+      }
+      return out;
+    } catch (err) {
+      this.opts.events?.log({
+        level: 'warn',
+        code: 'REGISTRY_VERSIONS_FAILED',
+        message: `Could not read app versions from ${origin.repo}; the last known ones stand`,
+        detail: { error: err instanceof Error ? err.message : String(err), origin: origin.id },
+      });
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * The version of every app the stores currently offer, as `<origin>~<name>` keys.
+   *
+   * A git **blob sha1**, not a sha256 — it is GitHub's identity for those bytes, and the only
+   * thing it is ever compared against is another one of the same kind. An app with no entry is
+   * absent rather than empty-string: "we do not know" and "it changed" must not collapse.
+   */
+  versions(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const origin of this.origins) {
+      for (const [name, sha] of Object.entries(this.state.get(origin.id)?.versions ?? {})) {
+        out[subjectKey(origin.id, name)] = sha;
+      }
+    }
+    return out;
+  }
+
+  /** The version of one subject, or undefined when the store has not offered one. */
+  versionOf(key: string): string | undefined {
+    const { origin, name } = splitSubjectKey(key as SubjectKey);
+    return this.state.get(origin)?.versions?.[name];
+  }
+
   private async refreshOne(origin: OriginEntry): Promise<void> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.opts.fetchTimeoutMs ?? 30_000);
@@ -293,7 +411,15 @@ export class SubjectRegistry {
 
       const before = previous?.names ?? [];
       const changed = names.length !== before.length || names.some((n, i) => n !== before[i]);
-      this.state.set(origin.id, { names, fetched_at: new Date().toISOString() });
+      // The app list is authoritative for `reachable()`; the versions are a bonus on top of
+      // it, so they are fetched after and cannot fail the refresh. Keeping the previous map
+      // on failure is the same instinct as keeping the previous names.
+      const versions = (await this.fetchVersions(origin)) ?? previous?.versions;
+      this.state.set(origin.id, {
+        names,
+        fetched_at: new Date().toISOString(),
+        ...(versions ? { versions } : {}),
+      });
       if (changed) {
         this.opts.events?.log({
           level: 'info',
@@ -317,7 +443,12 @@ export class SubjectRegistry {
       // would report "backlog empty" and idle, which looks exactly like success.
       const error = err instanceof Error ? err.message : String(err);
       const live = (previous?.names.length ?? 0) > 0;
-      this.state.set(origin.id, { names: previous?.names ?? [], ...(previous?.fetched_at ? { fetched_at: previous.fetched_at } : {}), failed: error });
+      this.state.set(origin.id, {
+        names: previous?.names ?? [],
+        ...(previous?.fetched_at ? { fetched_at: previous.fetched_at } : {}),
+        ...(previous?.versions ? { versions: previous.versions } : {}),
+        failed: error,
+      });
       this.opts.events?.log({
         level: 'warn',
         code: 'REGISTRY_FAILED',

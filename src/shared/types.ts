@@ -141,6 +141,21 @@ export interface AssayMeta {
   risk_score: number;
   blocked_reason?: string | null;
   subject_ref?: string;
+  /**
+   * **Which version of the subject this judged** — the git blob sha of the app's
+   * `docker-compose.yml` in its origin, at the ref the audit read.
+   *
+   * The counterpart of `standard_sha256`: that one says which *rubric* reached the verdict,
+   * this one says which *app* it was reached about. Without it the archive records the ref an
+   * app came from (`subject_ref`) but not the version, so a verdict about a compose that has
+   * since been rewritten is indistinguishable from a current one.
+   *
+   * A git blob **sha1**, GitHub's own identity for those bytes, and only ever compared
+   * against another of the same kind — hence not `_sha256`, which would be a lie about what
+   * it is. Absent on anything written before 2026-08-25, and on an app whose store offers no
+   * compose at that path.
+   */
+  subject_sha?: string;
   commit?: string;
   images?: string[];
   /**
@@ -254,7 +269,28 @@ export interface SubjectState {
    * out of date. See {@link StandardState}.
    */
   standard?: StandardState;
+  /**
+   * Whether the app this row judged is the app the store offers now.
+   *
+   * Deliberately a **second** field rather than a widened `standard`. The two say different
+   * things to the person reading the board: `older` means *we will look at this again*, and
+   * `changed` means *you changed this since we looked*. Collapsing them into one warning
+   * would lose exactly the distinction an app author cares about.
+   */
+  subject_version?: SubjectVersionState;
 }
+
+/**
+ * How the app a verdict was reached about relates to the app the store offers now.
+ *
+ * - `current` — the compose is byte-for-byte what was judged.
+ * - `changed` — it has been edited since. Unlike `older`, this is not a caveat about the
+ *   wording of the question: the thing judged is not the thing shipping, so the verdict may
+ *   be about a problem already fixed, or miss one just introduced.
+ * - `unknown` — the assay predates version recording (2026-08-25), or the store offers no
+ *   compose at that path, so there is nothing to compare. Never a trigger.
+ */
+export type SubjectVersionState = 'current' | 'changed' | 'unknown';
 
 /**
  * How a verdict on display relates to the standard in force.

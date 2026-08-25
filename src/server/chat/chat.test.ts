@@ -24,6 +24,8 @@ import { RevisionStore } from '../store/revisions.js';
 import { StoreDocReader } from '../services/storedoc.js';
 import { TrialStore } from '../store/trials.js';
 import { UploadStore } from '../store/uploads.js';
+import { ControlStore } from '../store/controls.js';
+import { Scheduler } from '../scheduler/index.js';
 
 let dir: string;
 let events: EventLog;
@@ -282,7 +284,12 @@ describe('the catalogue', () => {
  * is the one thing a restart empties.
  */
 describe('reading what was written down', () => {
-  const registry = { list: () => ['yundera~OpenClaw', 'yundera~NeverAssayed'] } as never;
+  // `versions` as well as `list`: `get_board` asks for both, and a stub missing one turns a
+  // wiring bug into a passing test.
+  const registry = {
+    list: () => ['yundera~OpenClaw', 'yundera~NeverAssayed'],
+    versions: () => ({}),
+  } as never;
   const archive = { store: memoryStore(), registry };
 
   it('answers about a finished audit that the live status has forgotten', async () => {
@@ -436,7 +443,7 @@ describe('a run started here reports back into the conversation', () => {
       threadId: thread.id,
       message: 'review OpenClaw',
       ctx: {
-        registry: { list: () => ['yundera~OpenClaw'] } as never,
+        registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}) } as never,
         runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }) } as never,
         startAssay: (job, opts) => started.push({ subject: job.subject, threadId: opts?.threadId }),
       },
@@ -466,7 +473,7 @@ describe('a run started here reports back into the conversation', () => {
       threadId: thread.id,
       message: 'review OpenClaw',
       ctx: {
-        registry: { list: () => ['yundera~OpenClaw'] } as never,
+        registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}) } as never,
         runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }), ...runner } as never,
         prober: { window: () => 'demostaging1 is mid-cleanup — usually back within minutes' } as never,
         startAssay: () => {},
@@ -669,7 +676,7 @@ describe('trialling supplied files', () => {
       trials,
       ctx: {
         store: memoryStore(),
-        registry: { list: () => ['yundera~OpenClaw'] },
+        registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}) },
         originRepo: (origin: string) => (origin === 'yundera' ? 'Yundera/AppStore' : undefined),
         trials: {
           runner: busyRunner(opts.busy ?? false),
@@ -1022,5 +1029,75 @@ Declare D1 to D5 with a rationale.
     expect(res.ok).toBe(false);
     expect(res.text).toContain('yundera');
     expect(res.text).toContain('other');
+  });
+});
+
+/**
+ * The settings of the instance, by conversation.
+ *
+ * The question that used to be unanswerable: asked to make the re-audit window a fortnight,
+ * the chat could read the window and then had to send the operator to a page. What is worth
+ * pinning is that the write reaches the *live* scheduler — a tool that only edited a file
+ * would look identical in the transcript and change nothing about the next decision.
+ */
+describe('changing what this instance is set to', () => {
+  async function controlCtx() {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'touchstone-chat-controls-'));
+    const log = new EventLog(stateDir);
+    const controls = new ControlStore({ stateDir });
+    await controls.load();
+    const scheduler = new Scheduler({
+      constants: { fresh_days: 7, stuck_days: 7, lease_min: 120, cooldown_min: 55, max_tries: 3 },
+      armed: false,
+      tickMin: 60,
+      stateDir,
+      index: { sections: () => ['static'], latest: () => null, latestAny: () => null, subjects: () => [] } as never,
+      registry: { list: () => [], isLive: true } as never,
+      events: log,
+    });
+    return {
+      stateDir,
+      scheduler,
+      ctx: { controls: { controls, scheduler, events: log } } as never,
+    };
+  }
+
+  it('lists what is settable, with what it means', async () => {
+    const { ctx, stateDir } = await controlCtx();
+    const res = await dispatch({ tool: 'get_controls', input: {} }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain('scheduler.fresh_days = 7 days');
+    expect(res.text).toContain('set_control');
+    await fs.rm(stateDir, { recursive: true, force: true });
+  });
+
+  it('changes the re-audit window, and the scheduler is running on it', async () => {
+    const { ctx, scheduler, stateDir } = await controlCtx();
+    const res = await dispatch(
+      { tool: 'set_control', input: { key: 'scheduler.fresh_days', value: 14 } },
+      ctx,
+    );
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain('14 days');
+    expect(scheduler.constants.fresh_days).toBe(14);
+    await fs.rm(stateDir, { recursive: true, force: true });
+  });
+
+  it('refuses a value it cannot use, and says what it would take', async () => {
+    const { ctx, scheduler, stateDir } = await controlCtx();
+    const res = await dispatch(
+      { tool: 'set_control', input: { key: 'scheduler.fresh_days', value: 900 } },
+      ctx,
+    );
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('365');
+    expect(scheduler.constants.fresh_days).toBe(7);
+    await fs.rm(stateDir, { recursive: true, force: true });
+  });
+
+  /** Invariant 6: nothing a model calls may write a verdict. Neither of these can. */
+  it('is marked as a write, so read_only drops it', () => {
+    expect(CHAT_TOOLS.find((t) => t.name === 'set_control')?.writes).toBe(true);
+    expect(CHAT_TOOLS.find((t) => t.name === 'get_controls')?.writes).toBeUndefined();
   });
 });

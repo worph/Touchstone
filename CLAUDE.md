@@ -29,7 +29,11 @@ every subject's hallmark, at `/public`, addressed to app authors rather than to 
 **executor** (who performs a section — `agent`, or a `*.sh` beside the protocol that declared it),
 **reading** (what a section that *measures* produces rather than judging: `scores: false` in its
 frontmatter, a badge and a table, invisible to the hallmark — `currency` is the first),
-**standard in force** (the revision of each rubric that would judge a subject *today*, and when
+**control** (one configuration value that can be changed while Touchstone is *running* —
+`domain/controls.ts` — as opposed to the rest of `config.yaml`, which is read once at boot; the
+bar is mechanical, something live has to re-read the value, and the override lives in
+`state/controls.json` so the file stays the default), **standard in force** (the revision of each
+rubric that would judge a subject *today*, and when
 that last changed — `domain/standards.ts`; a verdict reached under an older one carries an
 `older standard` chip and stops waiting out `fresh_days`).
 
@@ -111,6 +115,7 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | `trials/<slug>/store.zip` | that trial's own copy of the archive it audited, re-served at `/api/v1/trialstore/<store_token>.zip` for the bench to install. Inside the trial's directory because the index only ever picks up `*.md`, so it is invisible to it and dies with the trial |
 | `uploads/<id>/` | a session's files, which a trial zips into a store. A sibling of `trials/`, never inside it: a trial's own directory is scanned as a report tree |
 | `state/*.json`, `events.jsonl` | small mutable runtime state and the append-only log |
+| `state/controls.json` | **what somebody changed while it was running** — the override for each *control*, re-applied at boot. `config.yaml` stays what a fresh install boots into, so deleting this one file puts every setting back. `scheduler.armed` is deliberately **not** here: the scheduler has kept that switch in `state/schedule.json` since the Automation page had a button, and two files claiming one switch is how they come to disagree |
 | `state/index.json` | cache only — deleting it must always be safe |
 
 `data/reports/`, `data/trials/`, `data/state/` and `data/config.yaml` are gitignored;
@@ -159,14 +164,15 @@ because its data access was smeared through two 200-line n8n Code nodes.
   requirement *as it settles it*, so a run that dies at requirement 12 of 16 keeps twelve results.
   It also resolves each record's **section** from the canonical list, which is what lets one
   agent response become one assay per section without parsing the prose for headings.
-- **`routes/mcp-admin.ts`** — the *same* fifteen tools, served as an MCP server at
+- **`routes/mcp-admin.ts`** — the *same* seventeen tools, served as an MCP server at
   `POST /api/v1/mcp/admin` so an agent can ask them: it renders `CHAT_TOOLS` into `tools/list`
   and hands `tools/call` to the same handlers with the chat's own `ChatToolContext`. There is
   no second definition of what an agent may ask this app, which is the point — a second one
   would be a second thing to keep in step with invariant 6. **Off unless `admin_mcp.enabled`**,
   and disabled it registers no route at all: it is meant to be beaconified into an aggregator
   that authenticates nobody, so turning it on is a statement about the box. `read_only` drops
-  every tool marked `writes` (`run_assay`, `open_trial`, `run_trial`) from the list *and*
+  every tool marked `writes` (`run_assay`, `open_trial`, `run_trial`, `edit_protocol`,
+  `set_control`) from the list *and*
   refuses them if asked for anyway — the filter reads the mark rather than a list of names,
   so a new write tool is covered the day it lands; `token` is a bearer a beaconify sidecar can inject. `routes/rpc.ts` is the MCP
   envelope both surfaces share — `initialize`, `tools/list`, `tools/call`, and a `202` for the
@@ -224,6 +230,18 @@ because its data access was smeared through two 200-line n8n Code nodes.
   the script said so or died saying nothing. It knows a section produced rows and a badge; it does
   not know what an image is, which is what lets the next deterministic check be two files on the
   volume. `data/protocols/currency.{md,sh}` is the first one — REQUIREMENTS §14.
+- **`domain/controls.ts` + `store/controls.ts` + `routes/controls.ts`** — **the configuration an
+  administrator may change without a restart.** `domain/controls.ts` is the only place that knows
+  what a control *means* — its label, range, live setter and the sentence saying what changing it
+  does — and the routes, the chat's two tools and the Automation page all render that one array,
+  so a new control appears on three surfaces with no edit to any of them. The bar for being a
+  control is mechanical: **something live has to read the value again later.**
+  `scheduler.fresh_days` is read every tick and qualifies; `runner.agent_url` is captured when the
+  Runner is built and does not, which is why it is not on the list and why putting it there would
+  recreate exactly the lie `routes/settings.ts` refuses to tell. A write goes to the *live object*
+  first and the file second — a setter that threw must not leave a stored value the next boot
+  would apply. Every change is a `CONTROL_CHANGED` row naming the key, both values and the `by`;
+  `set_control` is marked `writes`, so an admin MCP under `read_only` cannot disarm the loop.
 - **`store/context.ts` + `routes/settings.ts`** — the two things about *this instance* the app
   shows you. The context prompt is the half Touchstone owns and a page may write; `config.yaml`
   is the half a person edits on the volume and is **read-only here on purpose** — it is loaded
@@ -238,9 +256,9 @@ because its data access was smeared through two 200-line n8n Code nodes.
   authoritative; alerts dedup an environment condition to one row; outlets and push are
   best-effort.
 - **`src/server/chat/`** — the administrator chat: a bounded turn loop (`loop.ts`, 8 calls and
-  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), fifteen tools wrapping the
+  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), seventeen tools wrapping the
   API (`registry.ts`), and the agent call (`driver.ts`) reusing `postToAgent` from the runner.
-  Eleven of the fifteen **read**, and most of those read what is *written down* — the board, the
+  Twelve of the seventeen **read**, and most of those read what is *written down* — the board, the
   archive, a report file, the fix brief, the log, the backlog — not the live process, which a
   `tsx watch` restart empties while the operator is still waiting for the run it started
   (HANDOFF §5k). Four of them are the same question at four depths, which is why their
@@ -363,10 +381,15 @@ because its data access was smeared through two 200-line n8n Code nodes.
   nothing further" and deliberately leaves the audit in flight alone.
 - `runner.enabled: false` — refuses every job and says so. Validation is a **single hand-run assay**
   through `POST /api/v1/assays`, never a loop: `AppStore PR Review` is still in n8n on the same
-  agent endpoint and two systems auditing at once contend for it.
+  agent endpoint and two systems auditing at once contend for it. Since 2026-08-25 it is settable
+  at runtime too, as a **control** — the override is `state/controls.json`'s, the config value is
+  still what a fresh boot falls back to, and the flag is read when a job arrives, so turning it off
+  leaves the audit in flight alone.
 
-Because n8n is still driving, **do not arm either without the user's say-so**, and do not edit the
-live n8n workflows — the one sanctioned waiver (the login preflight, 2026-08-19) was explicitly
+Both are therefore reachable from the Automation page, from the chat (`set_control`) and — unless
+`admin_mcp.read_only` — over the admin MCP. That is deliberate, and it does not change the rule
+below: **do not arm either without the user's say-so** while n8n is still driving. Do not edit the
+live n8n workflows either — the one sanctioned waiver (the login preflight, 2026-08-19) was explicitly
 approved and is documented in HANDOFF.md §5c.
 
 ## Gotchas

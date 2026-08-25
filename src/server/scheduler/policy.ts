@@ -63,6 +63,21 @@ export interface PolicyInput {
    * yet), and the eligibility rule below is then a no-op.
    */
   standardMovedAt?: string;
+  /**
+   * The version of each subject the store offers now — a git blob sha of its compose.
+   *
+   * Absent for a subject means the store offered none, and the rule below then does nothing
+   * for it. That is the safe direction: "we do not know" must not read as "it changed".
+   */
+  currentVersion?: Record<string, string | undefined>;
+  /**
+   * The version each subject's last **attempt** recorded, from `AssayMeta.subject_sha`.
+   *
+   * The same last-attempt reasoning as `lastAttemptAt`: a run that blocked every section
+   * still looked at that version, and must settle the question rather than leave the subject
+   * eligible for ever.
+   */
+  auditedVersion?: Record<string, string | undefined>;
   /** Whether a bench may be claimed right now — `BenchProber.leasable().length > 0`. */
   benchAvailable: boolean;
   /** Why not, for the reason string. Never an error object; one clause a human reads. */
@@ -94,6 +109,21 @@ function standardMoved(input: PolicyInput, subject: string): boolean {
   if (Number.isNaN(moved)) return false;
   const attempted = Date.parse(input.lastAttemptAt?.[subject] ?? '');
   return Number.isNaN(attempted) || attempted < moved;
+}
+
+/**
+ * Whether the app has changed since we last looked at it.
+ *
+ * Both sides must be present. A subject the store offers no compose for, and an assay written
+ * before versions were recorded, are both **unknown** — and unknown is not a trigger. Without
+ * that asymmetry every subject in the archive would become eligible the day this shipped and
+ * stay eligible until audited, which is the same flood the `seed` rule avoids for rubrics.
+ */
+function subjectChanged(input: PolicyInput, subject: string): boolean {
+  const now = input.currentVersion?.[subject];
+  const then = input.auditedVersion?.[subject];
+  if (!now || !then) return false;
+  return now !== then;
 }
 
 function minutesSince(iso: string | undefined, now: Date): number {
@@ -168,6 +198,8 @@ function plan(input: PolicyInput): {
   eligible: string[];
   /** Of those, the ones that are only eligible because the standard moved under them. */
   restandard: Set<string>;
+  /** Of those, the ones that are only eligible because the app itself changed. */
+  rechanged: Set<string>;
 } {
   const { constants, now } = input;
   const { schedule, reclaimed, busy } = reclaimExpired(input.schedule, input);
@@ -185,6 +217,7 @@ function plan(input: PolicyInput): {
 
   const eligible: string[] = [];
   const restandard = new Set<string>();
+  const rechanged = new Set<string>();
   for (const subject of input.subjects) {
     const row = schedule[subject];
     if (row?.claim) continue;
@@ -210,10 +243,15 @@ function plan(input: PolicyInput): {
     // says "re-judge it with the spare hour rather than waiting out the week", which is
     // exactly as much as it should say. It sorts last among the eligible — by `lastDoneAt`,
     // and it is the freshest thing in the list — so a never-audited app still goes first.
-    if (standardMoved(input, subject)) {
-      eligible.push(subject);
-      restandard.add(subject);
-    }
+    // Two ways past the freshness window, and they are independent: the question changed, or
+    // the subject did. Both merely add to the backlog — no jump, no forced run, no bypass of
+    // the cooldown, the park or the bench gate.
+    const moved = standardMoved(input, subject);
+    const changed = subjectChanged(input, subject);
+    if (!moved && !changed) continue;
+    eligible.push(subject);
+    if (moved) restandard.add(subject);
+    if (changed) rechanged.add(subject);
   }
   eligible.sort((a, b) => {
     const d = daysSince(input.lastDoneAt[b], now) - daysSince(input.lastDoneAt[a], now);
@@ -226,7 +264,7 @@ function plan(input: PolicyInput): {
     return input.subjects.indexOf(a) - input.subjects.indexOf(b);
   });
 
-  return { schedule, reclaimed, busy, unparked, eligible, restandard };
+  return { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged };
 }
 
 /**
@@ -237,7 +275,7 @@ function plan(input: PolicyInput): {
  */
 export function decide(input: PolicyInput): TickDecision {
   const { constants, now } = input;
-  const { schedule, reclaimed, busy, unparked, eligible, restandard } = plan(input);
+  const { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged } = plan(input);
 
   const base = {
     backlog: eligible.length,
@@ -279,6 +317,7 @@ export function decide(input: PolicyInput): TickDecision {
     if (restandard.has(subject!)) {
       reason += ` · standard revised ${String(input.standardMovedAt).slice(0, 10)}`;
     }
+    if (rechanged.has(subject!)) reason += ' · app changed in the store';
   }
 
   // ── the bench gate — row D7, which n8n does not have ──────────────────────────────────
@@ -316,7 +355,7 @@ export function decide(input: PolicyInput): TickDecision {
  */
 export function queue(input: PolicyInput): QueueRow[] {
   const { constants, now } = input;
-  const { schedule, eligible, restandard } = plan(input);
+  const { schedule, eligible, restandard, rechanged } = plan(input);
   const position = new Map(eligible.map((subject, i) => [subject, i + 1]));
 
   const rows = input.subjects.map((subject): QueueRow => {
@@ -332,7 +371,7 @@ export function queue(input: PolicyInput): QueueRow[] {
     else if (daysSince(last, now) >= constants.fresh_days) state = 'due';
     // A restandard row carries a queue position, so calling it `fresh` would put a
     // contradiction on one line. It is due; the note says what made it due.
-    else state = restandard.has(subject) ? 'due' : 'fresh';
+    else state = restandard.has(subject) || rechanged.has(subject) ? 'due' : 'fresh';
 
     return {
       subject,
@@ -344,6 +383,7 @@ export function queue(input: PolicyInput): QueueRow[] {
       // `due` and not a state of its own: it *is* due, and the only extra thing to say is
       // why — which the Automation page appends to the note rather than to the status word.
       ...(restandard.has(subject) ? { standard_moved: true } : {}),
+      ...(rechanged.has(subject) ? { subject_changed: true } : {}),
       ...(row?.parked_at ? { parked_at: row.parked_at } : {}),
       ...(row?.claim ? { claim_since: row.claim.since } : {}),
     };

@@ -29,6 +29,8 @@ import { outcomeClause, type RunOutcome } from '../shared/activity.js';
 import { subjectName } from '../shared/subject.js';
 import { ChatThreads } from './chat/thread.js';
 import { ContextStore } from './store/context.js';
+import { ControlStore } from './store/controls.js';
+import { applyStoredControls, type ControlPorts } from './domain/controls.js';
 import { CHAT_TOOLS } from './chat/registry.js';
 
 const PORT = Number(process.env.TOUCHSTONE_PORT ?? 8080);
@@ -219,6 +221,9 @@ const runner = new Runner({
   origins: cfg.origins,
   storeReachable: (id) => registry.reachable(id),
   storeFailure: (id) => registry.failureOf(id),
+  // Recorded onto every assay this run writes, so the archive can later say whether a verdict
+  // is about the app as it currently stands.
+  subjectVersion: (key) => registry.versionOf(key),
   events,
   index: store,
   prober,
@@ -299,6 +304,9 @@ if (!chatPrompt) {
 const scheduler = new Scheduler({
   constants: cfg.scheduler,
   armed: cfg.scheduler.armed,
+  // The cadence is the object's own, so a `scheduler.tick_min` control restored below has
+  // somewhere to land before `start()` arms the timer at whatever it ended up being.
+  tickMin: cfg.scheduler.tick_min,
   stateDir: cfg.stateDir,
   index: store,
   registry,
@@ -307,6 +315,10 @@ const scheduler = new Scheduler({
   // Read per tick, not captured at boot: `data/protocols/` is a volume somebody edits over
   // SSH, and the sweep that records such an edit runs before the answer is asked for.
   standardMovedAt: async () => (await readStandards(protocols, revisions)).moved_at,
+  // The registry's own cached map — the tree fetch rides its refresh, so a tick costs no
+  // GitHub request of its own. That matters: the budget is 60 an hour and an origin driven
+  // unreachable stops the runner dispatching (invariant 3).
+  subjectVersions: () => registry.versions(),
   // The seam between the two halves: the scheduler claims, the runner audits, and the
   // outcome comes back through `record` — which is where E5's "a busy agent costs nothing"
   // is actually applied.
@@ -325,6 +337,30 @@ const scheduler = new Scheduler({
   },
 });
 await scheduler.load();
+
+/**
+ * The configuration that can be changed while this is running — `domain/controls.ts`.
+ *
+ * Loaded and applied here, after every object a control drives exists and before the first
+ * tick: an override is a value the process is supposed to be running on, so a boot that
+ * decided once on the config file's figure and then switched would be reporting a decision
+ * nobody could reproduce. `config.yaml` remains the default in the only sense that matters —
+ * delete `state/controls.json` and the instance is back to what the file asks for.
+ */
+const controlStore = new ControlStore({ stateDir: cfg.stateDir });
+await controlStore.load();
+const controlPorts: ControlPorts = {
+  controls: controlStore,
+  defaults: { scheduler: cfg.scheduler, runner: cfg.runner, bench: cfg.bench },
+  scheduler,
+  runner,
+  prober,
+  events,
+};
+const restored = await applyStoredControls(controlPorts);
+if (restored.applied.length > 0) {
+  app.log.info({ controls: restored.applied }, 'restored settings changed since boot config');
+}
 
 /**
  * Liveness, for the container healthcheck and nothing else.
@@ -378,6 +414,8 @@ await app.register(registerRoutes, {
   // This instance about itself: the context prompt the chat is handed, and the config this
   // process booted with — redacted on the way out, `routes/settings.ts`.
   settings: { context: chatContext, config: cfg },
+  /** The same bundle the chat's `set_control` is given, so both surfaces move one instance. */
+  controls: controlPorts,
   /**
    * The chat's tools over MCP, for an agent rather than for a person. Off unless the operator
    * said otherwise; it takes the `chat.ctx` below rather than a context of its own.
@@ -417,6 +455,15 @@ await app.register(registerRoutes, {
       protocols,
       revisions,
       storedoc,
+      /**
+       * The instance's own settings — the cadence, the two safety switches, the bench guard.
+       *
+       * The same `ControlPorts` the routes take, so "change the re-audit window to 14 days"
+       * asked in the chat and typed on the Automation page are the same write, logged the
+       * same way. What it cannot reach is anything read once at boot: the set is
+       * `domain/controls.ts`'s, and a value with no live reader is deliberately not in it.
+       */
+      controls: controlPorts,
       /**
        * The same bundle `POST /trials` uses, so a trial started by conversation is written,
        * logged and dispatched identically to one started over HTTP. `onError` is the only
@@ -598,10 +645,12 @@ registry.start(60 * 60_000);
 setTimeout(() => {
   void scheduler.tick().catch((err) => app.log.error({ err }, 'first tick failed'));
 }, 15_000).unref?.();
-scheduler.start(cfg.scheduler.tick_min * 60_000);
+// No argument: the cadence is the scheduler's, and a restored `tick_min` control has
+// already changed it.
+scheduler.start();
 app.log.info(
-  { armed: cfg.scheduler.armed, tick_min: cfg.scheduler.tick_min, runner: cfg.runner.enabled },
-  cfg.scheduler.armed ? 'scheduler ARMED' : 'scheduler in dry-run',
+  { armed: scheduler.armed, tick_min: scheduler.tickMinutes, runner: runner.enabled },
+  scheduler.armed ? 'scheduler ARMED' : 'scheduler in dry-run',
 );
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

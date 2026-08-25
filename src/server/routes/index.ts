@@ -39,6 +39,7 @@ import type { PushService } from '../services/push.js';
 import type { Runner } from '../runner/index.js';
 import type { Scheduler } from '../scheduler/index.js';
 import type { ChatRoutesOptions } from './chat.js';
+import type { ControlsRoutesOptions } from './controls.js';
 import type { SettingsRoutesOptions } from './settings.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import alertRoutes from './alerts.js';
@@ -53,6 +54,7 @@ import protocolRoutes from './protocols.js';
 import publicRoutes from './public.js';
 import browserRoutes, { registerBrowserProxy } from './browser.js';
 import scheduleRoutes from './schedule.js';
+import controlsRoutes from './controls.js';
 import settingsRoutes from './settings.js';
 import trialRoutes from './trials.js';
 import uploadRoutes from './uploads.js';
@@ -89,6 +91,14 @@ export interface RoutesOptions {
    * config it booted with. Absent, both answer rather than 404 — see `routes/settings.ts`.
    */
   settings?: SettingsRoutesOptions;
+  /**
+   * The configuration that can be changed while the app is running — `routes/controls.ts`.
+   *
+   * Absent, `GET /controls` still answers: it lists what exists and marks each row
+   * unsettable, which is the honest thing to say in a build where the scheduler and the
+   * runner were never constructed.
+   */
+  controls?: ControlsRoutesOptions;
   /** The administrator chat. Absent means the page renders and says it is not wired. */
   chat?: ChatRoutesOptions;
   /**
@@ -139,6 +149,10 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     revisions: options.revisions,
     events: options.events,
   });
+  await app.register(controlsRoutes, {
+    ...(options.controls ?? {}),
+    ...(options.events ? { events: options.events } : {}),
+  });
   await app.register(settingsRoutes, {
     ...(options.settings ?? {}),
     ...(options.events ? { events: options.events } : {}),
@@ -161,7 +175,11 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
    * `routes/public.ts`. Registered from the same `store`, so the board and the operator
    * table cannot disagree, and read-only by a boot-time check rather than by convention.
    */
-  await app.register(publicRoutes, { store, ...(options.protocols ? { protocols: options.protocols } : {}) });
+  await app.register(publicRoutes, {
+    store,
+    ...(options.protocols ? { protocols: options.protocols } : {}),
+    ...(options.registry ? { registry: options.registry } : {}),
+  });
   await app.register(assayRoutes, {
     runner: options.runner,
     scheduler: options.scheduler,
@@ -222,6 +240,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     hallmarks(store.all(), {
       include: options.registry?.list() ?? [],
       standards: await currentStandards(),
+      ...(options.registry ? { versions: options.registry.versions() } : {}),
     }));
 
   // GET /subjects/:name — the subject detail page: the composed row plus full history.
@@ -234,6 +253,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
       return {
         subject: subjectHallmark(resolved.name, resolved.records, {
           standards: await currentStandards(),
+          ...(options.registry ? { versions: options.registry.versions() } : {}),
         }).state,
         history: sortNewestFirst(resolved.records), // newest first, both legs interleaved
       };

@@ -457,9 +457,10 @@ be *"the demo pool is down"* rather than *"your app is broken"*.
 
 ### 2.4 Automation — the loop, and the switch
 
-The scheduler has driven the backlog since P3, decided every hour, and been steerable only by
-editing `config.yaml` and restarting. This page is the control surface for it. Three blocks, in
-the order the questions arrive.
+The scheduler has driven the backlog since P3 and decided every hour. This page is the control
+surface for it: since 2026-08-25 nothing about the loop needs `config.yaml` and a restart. Four
+blocks, in the order the questions arrive — is it on, what did it decide, what is it deciding by,
+and what does that make the queue.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -475,6 +476,18 @@ the order the questions arrive.
 │ │BACKLOG │ NEXT UP │ COOLDOWN │ CHECKS │ RE-AUD │ GIVES UP │ │
 │ │66 of 69│AIOStream│ clear    │  60m   │   7d   │ 3 tries  │ │
 │ └────────┴─────────┴──────────┴────────┴────────┴──────────┘ │
+├──────────────────────────────────────────────────────────────┤
+│ SETTINGS                                                     │
+│ ┌ AUTOMATED MODE ────────────────────────────────────────┐   │
+│ │ Decides every        scheduler.tick_min   [  60 ] min  │   │
+│ │   How often the loop looks at the backlog…      [Save] │   │
+│ ┃ Re-audits after      scheduler.fresh_days [  14 ] days │   │
+│ │   How old a result may be before an app…        [Save] │   │
+│ │   Changed here. config.yaml says 7. use that instead    │   │
+│ └────────────────────────────────────────────────────────┘   │
+│ ┌ THE RUNNER ────────────────────────────────────────────┐   │
+│ │ Runner               runner.enabled            [ Off ] │   │
+│ └────────────────────────────────────────────────────────┘   │
 ├──────────────────────────────────────────────────────────────┤
 │ QUEUE  69                                                    │
 │  1  AIOStreams      never audited      no result on file     │
@@ -497,7 +510,8 @@ the ledger token the agent is still writing against, and holds the claim until `
 claims a subject and is told the runner is off — a real state, and the page names it rather than
 letting someone press Start and watch nothing happen. Start does not turn the runner on, because
 that switch also gates hand-run audits and a start button that quietly enabled the manual path
-would be doing something nobody asked for.
+would be doing something nobody asked for. It is settable in the Settings block below, next to the
+sentence saying what it gates — which is the point of it being there rather than beside Start.
 
 **The queue lists every app, not just the backlog.** "Why is my app not being tested" is the
 question this page exists to answer, and an app missing from the list answers nothing: a subject
@@ -508,10 +522,21 @@ The order is the pick's own, derived from the same `plan()` the scheduler decide
 **Pressing Start decides immediately** rather than waiting for the top of the hour, so the button
 either produces a claim or says in one clause why it did not. An hour of silence is not an answer.
 
-**Cadence is shown, not editable.** The six facts come from `config.yaml`, and the note under them
-says the one thing the numbers do not: a full pass is *n* apps at `cooldown_min` apart, and the
-loop idles once everything is fresher than `fresh_days`. Wanting a perpetual carousel means
+**Cadence is shown as facts and changed underneath.** The six facts read at a glance; the
+**Settings** block below them is the same numbers with a box beside each one. The note under the
+facts still says the thing the numbers do not: a full pass is *n* apps at `cooldown_min` apart, and
+the loop idles once everything is fresher than `fresh_days`. Wanting a perpetual carousel means
 lowering `fresh_days`, not adding a mode — the pick stays the pure n8n port it is diffed against.
+
+**The Settings block is rendered from what the API returned**, never from a list in the page: the
+label, the unit, the range and the sentence explaining what changing it does all arrive on the row,
+because `domain/controls.ts` is the only place allowed to know them. A number commits on **Save**
+rather than on each keystroke — typing `14` over `7` passes through `1`, and applying that would
+put the timer on a cadence nobody asked for. A row differing from `config.yaml` is marked on its
+left edge, says what the file asks for, and offers the way back; the alternative is an instance
+quietly running on something the file does not mention. `scheduler.armed` is deliberately absent
+from the list — it is the switch at the top of this page, and a second copy of it would be two
+places to press, one of them further from the sentence explaining what stopping does.
 
 ---
 
@@ -784,10 +809,13 @@ These matter more than usual, because the system's normal condition includes "la
 - **No Standards page.** The rubric is versioned content owned elsewhere.
 - **No PR or gate surface.** That workflow stays in n8n.
 - **No editing of `config.yaml` in the UI.** It is read at boot and handed to the services as
-  values; a form that wrote it would be a control that appears to do something until a restart.
-  It is displayed (§2.8), never posted.
+  values; a form that wrote it would be a switch that appears to do something until a restart.
+  It is displayed (§2.8), never posted. What *is* editable is the closed list of **controls** —
+  values something live re-reads, kept as an override in `state/controls.json` beside the file
+  rather than written into it (§2.4, requirements §16). A value with no live reader is not on
+  that list, which is what keeps the distinction honest rather than gradual.
 - **No tool for the administrator to read or write its own context.** The chat's registry has
-  twelve tools and none of them touch `data/context.md`. Standing instructions a model can
+  seventeen tools and none of them touch `data/context.md`. Standing instructions a model can
   rewrite are not standing instructions, and invariant 6 is the general form of that.
 - **No per-user accounts or roles.** AppShield already authenticated the visitor, and the trusted
   gate makes that count. One shared authenticated view — plus `/public` (§2.6), which is

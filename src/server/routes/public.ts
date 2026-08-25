@@ -47,6 +47,14 @@ export interface PublicRoutesOptions {
    * `onRoute` guard above is what keeps that true rather than this comment.
    */
   protocols?: ProtocolStore;
+  /**
+   * The versions the stores offer, for the `app changed` badge.
+   *
+   * The board's readers are the app authors, and "this verdict is about a compose you have
+   * since rewritten" is the single most useful thing it can tell them. Read-only, like
+   * everything here.
+   */
+  registry?: { versions: () => Record<string, string> };
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
@@ -106,7 +114,10 @@ const routes: FastifyPluginAsync<PublicRoutesOptions> = async (app, options) => 
   // the same call: a public verdict that differs from the internal one is the bug this
   // namespace would otherwise invite.
   app.get('/public/subjects', async (): Promise<SubjectState[]> =>
-    hallmarks(store.all(), { standards: await currentStandards() }));
+    hallmarks(store.all(), {
+      standards: await currentStandards(),
+      ...(options.registry ? { versions: options.registry.versions() } : {}),
+    }));
 
   // GET /public/subjects/:name — one app. The current assay per section and what each
   // recorded; no history, no report paths to follow, no run state.
@@ -118,6 +129,7 @@ const routes: FastifyPluginAsync<PublicRoutesOptions> = async (app, options) => 
     if (resolved.kind !== 'ok') return fail(reply, 404, `unknown subject: ${request.params.name}`);
     return subjectHallmark(resolved.name, resolved.records, {
       standards: await currentStandards(),
+      ...(options.registry ? { versions: options.registry.versions() } : {}),
     }).state;
   });
 

@@ -100,6 +100,16 @@ interface ScheduleFile {
 
 export interface SchedulerOptions {
   constants: SchedulerConstants;
+  /**
+   * How often the timer fires, in minutes — `config.yaml`'s `scheduler.tick_min`.
+   *
+   * Not one of `constants`: those five are what `policy.decide` is given, and the cadence is
+   * not an input to the decision, it is how often the decision is taken. It is held here so
+   * the object knows its own period before `start()` arms it — a `tick_min` control restored
+   * at boot has somewhere to land, and `start()` then arms the timer at whatever the cadence
+   * ended up being rather than at whatever the caller remembered.
+   */
+  tickMin?: number;
   /** False means decide and log; never claim, never dispatch. */
   armed: boolean;
   stateDir: string;
@@ -117,6 +127,13 @@ export interface SchedulerOptions {
    */
   standardMovedAt?: () => Promise<string | undefined>;
   /**
+   * What version of each subject the stores currently offer — `SubjectRegistry.versions()`.
+   *
+   * Read per tick from the registry's own cached map, so this costs no request of its own:
+   * the tree fetch rides the registry refresh that already happens.
+   */
+  subjectVersions?: () => Record<string, string | undefined>;
+  /**
    * Called when an armed scheduler has claimed a subject. Absent until the runner lands
    * (P4), which is why an armed scheduler with no dispatcher still only claims.
    */
@@ -130,6 +147,16 @@ export class Scheduler {
   private lastFinished?: string;
   private lastTick?: ScheduleFile['last_tick'];
   private armedOverride?: boolean;
+  /**
+   * The cadence numbers someone has changed at runtime — `domain/controls.ts`.
+   *
+   * Held here rather than persisted here, which is the opposite of `armedOverride` and
+   * deliberate: `ControlStore` owns the file every control's override lives in, and a second
+   * writer for these six would put the same numbers in two files with no rule about which
+   * wins. The composition root re-applies what was stored after `load()`, so a restart comes
+   * back up on them.
+   */
+  private constantsOverride: Partial<SchedulerConstants> = {};
   private tickMs?: number;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
@@ -137,6 +164,7 @@ export class Scheduler {
   constructor(opts: SchedulerOptions) {
     this.opts = opts;
     this.file = path.join(opts.stateDir, 'schedule.json');
+    if (opts.tickMin) this.tickMs = opts.tickMin * 60_000;
   }
 
   async load(): Promise<void> {
@@ -175,6 +203,90 @@ export class Scheduler {
     await this.persist();
   }
 
+  /**
+   * Forget the runtime switch, back to what `config.yaml` asks for.
+   *
+   * The reset half of the same control. It logs only when the effective value actually
+   * moves: reverting an override that already agreed with the file changes nothing anybody
+   * needs to be told about, and a log that reports non-events is one nobody reads.
+   */
+  async clearArmed(by = 'operator'): Promise<void> {
+    if (this.armedOverride === undefined) return;
+    const before = this.armed;
+    this.armedOverride = undefined;
+    if (this.armed !== before) {
+      this.opts.events.log({
+        level: 'info',
+        code: this.armed ? 'SCHEDULER_ARMED' : 'SCHEDULER_DISARMED',
+        message: this.armed
+          ? 'Automated mode is on again — config.yaml asks for it'
+          : 'Automated mode is off again — config.yaml asks for it',
+        detail: { armed: this.armed, by, config_default: this.opts.armed },
+      });
+    }
+    await this.persist();
+  }
+
+  /**
+   * The five constants of `Pick next target` as they stand now — the config file's, with any
+   * runtime override laid over the top.
+   *
+   * Every read inside the scheduler goes through this rather than `opts.constants`, so a
+   * changed cooldown applies to the countdown a page is already showing and to the next
+   * decision, not only to the next boot.
+   */
+  get constants(): SchedulerConstants {
+    return { ...this.opts.constants, ...this.constantsOverride };
+  }
+
+  /** What `config.yaml` asked for, which is what a fresh boot falls back to. */
+  get constantsDefault(): SchedulerConstants {
+    return { ...this.opts.constants };
+  }
+
+  /**
+   * Change one or more of them at runtime — `domain/controls.ts`.
+   *
+   * Nothing else to do: every one of the five is read afresh out of `this.constants` on each
+   * tick, so the next decision is made on the new number. `tick_min` is not among them —
+   * it is not a policy constant but the timer's own period, and it has `setTickMinutes`.
+   */
+  setConstants(patch: Partial<SchedulerConstants>): void {
+    this.constantsOverride = { ...this.constantsOverride, ...patch };
+  }
+
+  /** Forget a runtime override, back to the config file's value. */
+  clearConstant(key: keyof SchedulerConstants): void {
+    if (!(key in this.constantsOverride)) return;
+    const next = { ...this.constantsOverride };
+    delete next[key];
+    this.constantsOverride = next;
+  }
+
+  /** How often the loop decides, in minutes. 0 before `start()`. */
+  get tickMinutes(): number {
+    return (this.tickMs ?? 0) / 60_000;
+  }
+
+  /**
+   * Change the cadence while it is running.
+   *
+   * The only control with machinery behind it: `setInterval` fires at the period it was
+   * created with, so a new `tick_min` that merely updated a number would take effect at the
+   * next restart while the page said otherwise. Before `start()` — a control restored at
+   * boot — remembering the interval is enough, because `start()` is called with it.
+   */
+  setTickMinutes(minutes: number): void {
+    const ms = minutes * 60_000;
+    if (this.tickMs === ms) return;
+    if (this.timer) {
+      this.stop();
+      this.start(ms);
+    } else {
+      this.tickMs = ms;
+    }
+  }
+
   snapshot(): {
     armed: boolean;
     armed_default: boolean;
@@ -196,7 +308,7 @@ export class Scheduler {
       ...(this.nextTickAt() ? { next_tick_at: this.nextTickAt() } : {}),
       cooldown_left_min: cooldownLeftMin({
         now: new Date(),
-        cooldown_min: this.opts.constants.cooldown_min,
+        cooldown_min: this.constants.cooldown_min,
         lastFinishedAt: this.lastFinishedAt(),
       }),
       // Named one by one rather than spread: `config.yaml`'s scheduler block carries
@@ -204,11 +316,11 @@ export class Scheduler {
       // numbers describing the cadence.
       constants: {
         tick_min: (this.tickMs ?? 0) / 60_000,
-        fresh_days: this.opts.constants.fresh_days,
-        stuck_days: this.opts.constants.stuck_days,
-        lease_min: this.opts.constants.lease_min,
-        cooldown_min: this.opts.constants.cooldown_min,
-        max_tries: this.opts.constants.max_tries,
+        fresh_days: this.constants.fresh_days,
+        stuck_days: this.constants.stuck_days,
+        lease_min: this.constants.lease_min,
+        cooldown_min: this.constants.cooldown_min,
+        max_tries: this.constants.max_tries,
       },
     };
   }
@@ -292,6 +404,31 @@ export class Scheduler {
   }
 
   /**
+   * The version each subject's last **attempt** was judged against.
+   *
+   * The sibling of `lastAttemptAt`, and it reads the same record for the same reason: a run
+   * that blocked still looked at that version of the app, and must settle the question.
+   * Absent for every assay written before 2026-08-25, which reads as unknown, never changed.
+   */
+  private auditedVersion(subjects: string[]): Record<string, string | undefined> {
+    const out: Record<string, string | undefined> = {};
+    for (const subject of subjects) {
+      let newest: string | undefined;
+      let at = '';
+      for (const section of this.opts.index.sections()) {
+        const rec = this.opts.index.latestAny(subject, section);
+        if (!rec) continue;
+        const stamp = String(rec.meta.finished_at || rec.meta.started_at || '');
+        if (stamp <= at) continue;
+        at = stamp;
+        newest = typeof rec.meta.subject_sha === 'string' ? rec.meta.subject_sha : undefined;
+      }
+      out[subject] = newest;
+    }
+    return out;
+  }
+
+  /**
    * Newest assay of **any status** per subject — a blocked or errored attempt counts.
    *
    * The sibling of `lastDoneAt`, and it exists because the two answer different questions.
@@ -347,13 +484,16 @@ export class Scheduler {
     const benchAvailable = this.opts.prober ? leasable.length > 0 : true;
     return {
       now: opts.now,
-      constants: this.opts.constants,
+      constants: this.constants,
       subjects,
       lastDoneAt: this.lastDoneAt(subjects),
       lastAttemptAt: this.lastAttemptAt(subjects),
       // A protocol directory that cannot be read must not stop a tick: the standard clause
       // goes quiet and every other rule decides exactly as it did before it existed.
       standardMovedAt: await this.standardMovedAt(),
+      ...(this.opts.subjectVersions
+        ? { currentVersion: this.opts.subjectVersions(), auditedVersion: this.auditedVersion(subjects) }
+        : {}),
       schedule: this.subjects,
       lastFinishedAt: this.lastFinishedAt(),
       forced: opts.forced,
@@ -513,7 +653,7 @@ export class Scheduler {
   async record(subject: string, outcome: Outcome, now = new Date()): Promise<void> {
     const result = recordResult({
       now,
-      constants: this.opts.constants,
+      constants: this.constants,
       subject,
       outcome,
       schedule: this.subjects[subject],
@@ -529,19 +669,22 @@ export class Scheduler {
         detail: {
           subject,
           try_n: result.schedule.try_n,
-          until_days: this.opts.constants.stuck_days,
+          until_days: this.constants.stuck_days,
         },
       });
     }
     await this.persist();
   }
 
-  start(intervalMs: number): void {
-    this.tickMs = intervalMs;
+  /** Arm the timer. With no argument it runs at whatever cadence the object already holds. */
+  start(intervalMs?: number): void {
+    const ms = intervalMs ?? this.tickMs;
+    if (!ms) return;
+    this.tickMs = ms;
     if (this.timer) return;
     this.timer = setInterval(() => {
       void this.tick().catch((err) => console.error('scheduler tick failed', err));
-    }, intervalMs);
+    }, ms);
     this.timer.unref?.();
   }
 

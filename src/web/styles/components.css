@@ -302,6 +302,21 @@
   background: var(--bg-2);
 }
 
+/* The second caveat: the app's compose moved, not the rubric. Distinct from `older standard`
+   by colour as well as wording — a row can carry both, and two identical-looking chips would
+   read as one warning stuttered rather than as two different things having happened. Blue
+   rather than warm: this is information about the subject, not a shortfall in it. */
+.version-tag {
+  margin-left: 7px;
+  font: 500 10px/1.5 var(--sans);
+  letter-spacing: 0.03em;
+  vertical-align: 1px;
+  white-space: nowrap;
+  color: var(--link);
+  border-color: var(--bg-2);
+  background: var(--bg-2);
+}
+
 /* The store a subject came from, beside its name. Only rendered when more than one store is
    configured — see Overview's `showOrigin`. Quiet on purpose: it disambiguates a row, it is
    not a status. */
@@ -1304,6 +1319,78 @@
 .auto-fact-value { margin-top: 2px; font-size: 13px; color: var(--fg); }
 
 .auto-foot { margin-top: 10px; font-size: 12px; color: var(--fg-1); max-width: 78ch; }
+
+/* -- the settings ---------------------------------------------------------
+ *
+ * One row per control, rendered from what the API returned rather than from a list here.
+ * The number and its unit sit to the right of the sentence explaining what it does, because
+ * the question is always "what does this one mean" before "what should it be".
+ *
+ * An overridden row is marked on its left edge, in `--running` — it is not a fault, it is
+ * the instance doing what somebody told it, and the note underneath says what the file asks
+ * for and offers the way back.
+ */
+.ctl-groups { display: flex; flex-direction: column; gap: 14px; }
+
+.ctl-group {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
+  background: var(--bg-1);
+}
+
+.ctl-group-name {
+  padding: 7px 12px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-2);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.ctl-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
+}
+.ctl-row:last-child { border-bottom: 0; }
+.ctl-row[data-source='override'] { border-left-color: var(--running); }
+
+.ctl-main { min-width: 0; }
+.ctl-label { font-size: 13px; font-weight: 550; color: var(--fg); }
+.ctl-key { margin-left: 8px; font-size: 11px; color: var(--fg-3); font-weight: 400; }
+.ctl-desc { margin-top: 2px; font-size: 12px; color: var(--fg-1); max-width: 72ch; }
+.ctl-note { margin-top: 4px; font-size: 11.5px; color: var(--fg-2); }
+.ctl-error { margin-top: 4px; font-size: 11.5px; color: var(--crit); }
+
+.ctl-undo {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-1);
+  font-size: 11.5px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.ctl-undo:hover { color: var(--fg); }
+.ctl-undo:disabled { color: var(--fg-3); cursor: default; text-decoration: none; }
+
+.ctl-set { flex: none; display: flex; align-items: center; gap: 6px; }
+.ctl-input { width: 82px; text-align: right; font-family: var(--mono); }
+.ctl-unit { font-size: 11.5px; color: var(--fg-2); min-width: 52px; }
+.ctl-toggle { min-width: 62px; font-weight: 600; }
+.ctl-toggle--on { border-color: var(--running); color: var(--running); }
+
+@media (max-width: 720px) {
+  /* The control belongs under the sentence it changes, not squeezed beside it. */
+  .ctl-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  .ctl-set { justify-content: flex-end; }
+}
 
 /* The queue reuses the environment row so the two lists read the same way; the position
  * column is the only thing it adds. */

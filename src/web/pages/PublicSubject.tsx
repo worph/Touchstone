@@ -28,7 +28,7 @@ import CoverageCell from '../components/CoverageCell';
 import { ReadingPanel } from '../components/Reading';
 import { isReading, readingOf, readingSections } from '../lib/reading';
 import RequirementList from '../components/RequirementList';
-import StandardChip from '../components/StandardChip';
+import StandardChip, { VersionChip } from '../components/StandardChip';
 import StatusCell from '../components/StatusCell';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getPublicFixReport, getPublicSubject } from '../data/client';
@@ -76,6 +76,7 @@ export default function PublicSubject() {
                 arriving from a deep link has no table beside them to infer it from. */}
             <span className="tag store-tag">{subject.origin}</span>
             <StandardChip standard={subject.standard} />
+            <VersionChip version={subject.subject_version} />
             <div style={{ flex: 1 }} />
             <div style={{ textAlign: 'right' }}>
               <div className="num" style={{ fontSize: 18, fontWeight: 600 }}>

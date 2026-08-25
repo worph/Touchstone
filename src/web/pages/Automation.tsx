@@ -14,9 +14,18 @@ import { subjectName } from '@shared/subject';
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import type { ControlsResponse } from '@shared/controls';
 import type { QueueRow, QueueState, ScheduleResponse } from '@shared/schedule';
+import ControlList from '../components/ControlList';
 import { ErrorState, Loading, Notice } from '../components/Ui';
-import { getSchedule, setArmed, tickNow } from '../data/client';
+import {
+  getControls,
+  getSchedule,
+  resetControl,
+  setArmed,
+  setControl,
+  tickNow,
+} from '../data/client';
 import { since, stamp, until } from '../lib/format';
 
 const REFRESH_MS = 15_000;
@@ -36,9 +45,10 @@ const STATE_LABEL: Record<QueueState, string> = {
 
 export default function Automation() {
   const [data, setData] = useState<ScheduleResponse | null>(null);
+  const [controls, setControls] = useState<ControlsResponse | null>(null);
   const [error, setError] = useState<Error | null>(null);
   /** Set while a button is in flight, so the switch cannot be pressed twice. */
-  const [busy, setBusy] = useState<'arm' | 'tick' | null>(null);
+  const [busy, setBusy] = useState<'arm' | 'tick' | 'control' | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -46,6 +56,14 @@ export default function Automation() {
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err : new Error(String(err)));
+    }
+    // Its own request and its own failure: the settings are worth showing when the queue
+    // cannot be read, and a settings endpoint that is not wired up must not blank the page
+    // about whether the loop is running.
+    try {
+      setControls(await getControls());
+    } catch {
+      setControls(null);
     }
   }, []);
 
@@ -67,6 +85,28 @@ export default function Automation() {
       setBusy(null);
     }
   }, []);
+
+  /**
+   * A setting is written, and then the schedule is re-read.
+   *
+   * Both halves matter: the response carries the new settings, and the queue is derived from
+   * them — change the re-audit window and rows move in or out of the backlog immediately, so
+   * a page that only updated the number would be showing a backlog computed against the old
+   * one until the next poll.
+   */
+  const writeControl = useCallback(
+    async (run: () => Promise<ControlsResponse>) => {
+      setBusy('control');
+      try {
+        setControls(await run());
+        setData(await getSchedule());
+        setError(null);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [],
+  );
 
   if (!data && error) return <ErrorState error={error} what="automated mode" />;
   if (!data) return <Loading what="automated mode" />;
@@ -135,8 +175,8 @@ export default function Automation() {
         {runnerOff ? (
           <Notice tone="warn" title="The runner is switched off">
             The scheduler will pick an app and then be told the runner is disabled, so no
-            audit happens. Set <code>runner.enabled: true</code> in <code>config.yaml</code>{' '}
-            and restart. It is a separate switch on purpose: it also gates hand-run audits.
+            audit happens. Turn it on under Settings below — it is a separate switch on
+            purpose, because it also gates audits you start by hand.
           </Notice>
         ) : null}
 
@@ -210,6 +250,47 @@ export default function Automation() {
         </div>
       </section>
 
+      {/* ── what it has been told ─────────────────────────────────────────── */}
+      {/*
+        The numbers the block above reports as facts, made editable. They sit between the
+        decision and the queue because that is the order the questions arrive in: what did it
+        decide, what is it deciding by, and what does that make the queue.
+
+        `scheduler.armed` is deliberately not in this list even though it is a control like
+        the others — it is the switch at the top of the page, and a second copy of it here
+        would be two places to press with one of them further from the sentence explaining
+        what stopping does.
+      */}
+      <section className="act-section">
+        <h2 className="act-h">Settings</h2>
+
+        {controls ? (
+          <>
+            <ControlList
+              rows={controls.controls.filter((row) => row.key !== 'scheduler.armed')}
+              busy={busy !== null}
+              onSet={async (key, value) => {
+                await writeControl(() => setControl(key, value));
+              }}
+              onReset={async (key) => {
+                await writeControl(() => resetControl(key));
+              }}
+            />
+            <div className="auto-foot">
+              These take effect without a restart. <code>config.yaml</code> stays the value a
+              fresh install boots into; a change is kept in{' '}
+              <code>{controls.file ?? 'state/controls.json'}</code>, and deleting that file
+              puts every one of them back.
+            </div>
+          </>
+        ) : (
+          <div className="act-quiet">
+            Settings are not available from this build, so the numbers above are whatever{' '}
+            <code>config.yaml</code> asked for.
+          </div>
+        )}
+      </section>
+
       {/* ── the queue ─────────────────────────────────────────────────────── */}
       <section className="act-section">
         <h2 className="act-h">
@@ -271,6 +352,11 @@ function note(row: QueueRow, maxTries: number): string {
   // Otherwise a row audited yesterday reads as `due` with a recent date beside it and no
   // account of itself. This is the whole of the explanation: the calendar did not make it
   // due, an edit to the rubric did.
-  if (row.standard_moved) return last ? `${last} · standard revised since` : 'standard revised since';
+  // Two independent reasons a fresh-looking row is in the backlog, and a row can carry both.
+  const why = [
+    row.standard_moved ? 'standard revised since' : '',
+    row.subject_changed ? 'app changed in the store' : '',
+  ].filter(Boolean);
+  if (why.length > 0) return [last, ...why].filter(Boolean).join(' · ');
   return last;
 }

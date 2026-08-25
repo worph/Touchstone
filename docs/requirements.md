@@ -36,6 +36,7 @@ surprise.
 | **R11** | A ref can be audited without moving the subject's hallmark — a *trial* | ✅ built 2026-08-20 — §12 |
 | **R12** | How far behind its own upstream each app is, and for how long | ✅ built 2026-08-22 — §14 |
 | **R13** | What the standard said when it judged, and what changed since | ✅ built 2026-08-23 — §15 |
+| **R14** | The administrator can change how this instance behaves, from inside it | ✅ built 2026-08-25 — §16 |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -831,3 +832,106 @@ hashes would claim those runs were judged by bytes we cannot produce.
   fifteen edits in the project's life; revisit if that ever stops being true.
 - **The public frame shows the hash but does not link it.** There is no protocol page under
   `/public`, and a link into the operator frame is a dead end for somebody with no account.
+
+
+---
+
+## 16. R14 — The administrator can change how this instance behaves — 2026-08-25
+
+### 16.1 What was true before
+
+Asked to make the re-audit window a fortnight, the chat answered:
+
+> The cooldown lives on the Automation page, not in anything I can change from here — none of
+> my tools write scheduler settings, they only read the schedule.
+
+Half of that was wrong and the half that was right was worse. The Automation page could not
+change it either: it had one switch — start and stop — and six read-only facts. Every number
+that decides *when* Touchstone does anything lived in `data/config.yaml`, was read once at
+boot, and changing one meant an SSH session, an edit and a restart, on a box whose whole
+purpose is running unattended. The operator was being sent to a page that could not do it,
+to change a file the app deliberately refuses to write.
+
+That refusal was, and remains, right about `config.yaml`: `routes/settings.ts` serves it
+read-only because it is handed to the services as values at boot, so a save button there
+would change a file without changing behaviour. What was missing was the distinction between
+a value nothing re-reads and a value something re-reads on every tick.
+
+### 16.2 The requirement
+
+An administrator — at the page, or in the chat, or over the admin MCP — can change what this
+instance does, without editing a file on the volume and without a restart.
+
+### 16.3 What it took: the **control**
+
+A *control* is one configuration value that can be changed while Touchstone is running. The
+bar for being one is mechanical rather than editorial: **something live has to read the value
+again later.** `scheduler.fresh_days` is read on every tick and qualifies; `runner.agent_url`
+is captured when the Runner is constructed and does not — which is why R5/R6 (§7) is still
+open, and why this did not quietly close it.
+
+Ten of them, in three groups:
+
+| Key | What it decides |
+| --- | --- |
+| `scheduler.armed` | whether the loop claims and dispatches, or only decides and logs |
+| `scheduler.tick_min` | how often it decides |
+| `scheduler.cooldown_min` | how long it waits between audits |
+| `scheduler.fresh_days` | how old a result may get before its app is due again |
+| `scheduler.stuck_days` | how long a parked app is left alone |
+| `scheduler.lease_min` | when a claim is assumed dead and reclaimed |
+| `scheduler.max_tries` | consecutive errors before an app is parked |
+| `runner.enabled` | whether audits run at all — the second safety switch |
+| `runner.busy_backoff_min` | how long to wait before the one retry of a busy agent |
+| `bench.min_remaining_min` | runway a demo instance needs before a functional audit claims it |
+
+`domain/controls.ts` is the only place that knows what any of them means — the label, the
+range, the sentence explaining what changing it does, and the live setter it drives. The
+routes, the two chat tools and the page all render that array, so a new control is one entry
+and appears on all three surfaces at once. It is the same bargain the chat's catalogue makes
+with `CHAT_TOOLS`, and for the same reason: a list in two places is a list that will disagree.
+
+Four rules hold it together.
+
+1. **`config.yaml` stays the default.** An override is kept in `state/controls.json` and is
+   re-applied at boot. Every row carries both values and which one is in force, because "why
+   is this 14 when the file says 7" has to be answerable from the page. Deleting that one file
+   returns the instance to what the file asks for.
+2. **It applies to the live object, not only to the file.** A changed `tick_min` replaces the
+   running timer; a changed `fresh_days` is read by the next decision. A setting that took
+   effect at the next restart while the page said otherwise is the failure this replaces.
+3. **A control is not a verdict.** Invariant 6 is about who may write an outcome, and nothing
+   here writes one: these change *when* and *whether* audits happen, never what one concluded.
+   `set_control` is marked `writes`, so an admin MCP under `read_only` does not serve it —
+   which matters more here than for `run_assay`: an aggregator that authenticates nobody must
+   not be able to disarm the loop.
+4. **Every change is a row in the log** — `CONTROL_CHANGED`, naming the key, both values and
+   the `by` that made it. `scheduler.armed` is the one exception to the write path: the
+   scheduler has persisted that switch in `state/schedule.json` since the Automation page's
+   button existed, so this layer drives it and lets the scheduler keep it, and does not log a
+   second row on top of `SCHEDULER_ARMED`.
+
+### 16.4 The surfaces
+
+- `GET /controls`, `PUT /controls/:key`, `DELETE /controls/:key` — its own prefix rather than
+  a branch of `/settings`, which already has a static `/settings/context` of the same shape.
+- **Automation § Settings** — the numbers that page already reported as facts, made editable,
+  rendered from the response. A number commits on Save rather than on each keystroke: typing
+  `14` over `7` passes through `1`, and a control that applied it would put the timer on a
+  cadence nobody asked for. `scheduler.armed` is excluded from that list because it is the
+  switch at the top of the same page.
+- **`get_controls` and `set_control`** in the chat, and therefore over the admin MCP. Seventeen
+  tools now, twelve reading and five acting.
+
+### 16.5 Not done, deliberately
+
+- **The endpoints are still not controls.** `runner.agent_url`, `agent_tool`, `agent_via` and
+  the `browsers:` list are read at construction, so putting them on this list would be exactly
+  the lie the settings page refuses to tell. R5/R6 needs the Runner to re-read them per call —
+  the mechanism to expose them afterwards now exists.
+- **No control writes `config.yaml`.** An override sits beside it, and the file stays the thing
+  a person edits and a fresh install boots into. Two writers for one value is how they come to
+  disagree.
+- **No per-control permissions.** There is one authenticated audience (UX §5), and the two
+  safety switches are as reachable as the cadence. What separates them from the read surface
+  is the `writes` mark that `read_only` filters on, not a role.

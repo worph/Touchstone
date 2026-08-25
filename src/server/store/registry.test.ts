@@ -22,23 +22,48 @@ const ACME: OriginEntry = { id: 'acme', repo: 'Acme/AppStore', ref: 'main', apps
 let dir: string;
 let events: EventLog;
 
-/** A fetch that answers per repo, so one store can fail while the other succeeds. */
-function fetcher(answers: Record<string, string[] | Error>): typeof fetch {
+/**
+ * A fetch that answers per repo, so one store can fail while the other succeeds.
+ *
+ * It answers **both** calls a refresh makes: the contents listing that decides which apps
+ * exist, and the recursive tree that carries each app's compose blob sha. The tree answer is
+ * derived from the same list so the two cannot disagree; `versions` overrides a sha per app
+ * where a test cares about the value.
+ */
+function fetcher(
+  answers: Record<string, string[] | Error>,
+  versions: Record<string, string> = {},
+): typeof fetch {
   return (async (url: string) => {
     const repo = Object.keys(answers).find((r) => String(url).includes(r));
     const answer = repo ? answers[repo]! : new Error('unknown repo');
     if (answer instanceof Error) throw answer;
+    const tree = String(url).includes('/git/trees/');
     return {
       ok: true,
       status: 200,
-      json: async () => answer.map((name) => ({ type: 'dir', name })),
+      json: async () =>
+        tree
+          ? {
+              truncated: false,
+              tree: answer.map((name) => ({
+                path: `Apps/${name}/docker-compose.yml`,
+                type: 'blob',
+                sha: versions[name] ?? `sha-${name}`,
+              })),
+            }
+          : answer.map((name) => ({ type: 'dir', name })),
     };
   }) as unknown as typeof fetch;
 }
 
-function make(origins: OriginEntry[], answers: Record<string, string[] | Error>): SubjectRegistry {
+function make(
+  origins: OriginEntry[],
+  answers: Record<string, string[] | Error>,
+  versions: Record<string, string> = {},
+): SubjectRegistry {
   const realFetch = globalThis.fetch;
-  globalThis.fetch = fetcher(answers);
+  globalThis.fetch = fetcher(answers, versions);
   const reg = new SubjectRegistry({ stateDir: dir, events, origins });
   // Restored in afterEach; the constructor does not fetch.
   void realFetch;

@@ -15,7 +15,7 @@ import { Link } from 'react-router-dom';
 
 import type { Leg, SubjectState } from '@shared/types';
 import CoverageCell from './CoverageCell';
-import StandardChip from './StandardChip';
+import StandardChip, { VersionChip } from './StandardChip';
 import StatusCell from './StatusCell';
 import { ReadingBadge } from './Reading';
 import { readingOf, readingSections } from '../lib/reading';
@@ -118,6 +118,7 @@ function Row({
             app name — at which point the label alone stops identifying the row. */}
         {showOrigin ? <span className="tag store-tag">{s.origin}</span> : null}
         <StandardChip standard={s.standard} />
+        <VersionChip version={s.subject_version} />
       </td>
       {/* The state comes from `legState`, not from the record, so a leg being audited right
           now says so in the same cell that will hold its verdict in four minutes. */}

@@ -143,6 +143,11 @@ export function blockedSectionAssay(input: {
   startedAt: string;
   finishedAt: string;
   subjectRef?: string;
+  /**
+   * The git blob sha of the app's compose at the audited ref — `AssayMeta.subject_sha`.
+   * Absent when the store offered none, which reads as "no version to compare".
+   */
+  subjectSha?: string;
   /** Which section carries the run's score, so this one can say where it went. */
   scoredOn?: Section;
 }): { meta: AssayMeta; body: string } {
@@ -179,6 +184,7 @@ export function blockedSectionAssay(input: {
       blocked_detail: why,
       ...(input.scoredOn ? { combined_score_on: input.scoredOn } : {}),
       subject_ref: input.subjectRef ?? `Yundera/AppStore@main:Apps/${subject}`,
+      ...(input.subjectSha ? { subject_sha: input.subjectSha } : {}),
       started_at: input.startedAt,
       finished_at: input.finishedAt,
       produced_by: 'touchstone-runner',
@@ -240,6 +246,11 @@ export interface AgentAssayInput {
   requirements?: RecordedRequirement[];
   phases?: RecordedPhase[];
   subjectRef?: string;
+  /**
+   * The git blob sha of the app's compose at the audited ref — `AssayMeta.subject_sha`.
+   * Absent when the store offered none, which reads as "no version to compare".
+   */
+  subjectSha?: string;
   /** Which store the subject came from — decides the folder every report lands in. */
   origin?: string;
 }
@@ -324,6 +335,7 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
   const common = {
     ...(input.origin ? { origin: input.origin } : {}),
     subject_ref: input.subjectRef ?? `Yundera/AppStore@main:Apps/${subject}`,
+    ...(input.subjectSha ? { subject_sha: input.subjectSha } : {}),
     started_at: input.startedAt,
     finished_at: input.finishedAt,
     ...(input.benchHost ? { bench_host: input.benchHost } : {}),
@@ -431,6 +443,7 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
         startedAt: input.startedAt,
         finishedAt: input.finishedAt,
         ...(input.subjectRef ? { subjectRef: input.subjectRef } : {}),
+        ...(input.subjectSha ? { subjectSha: input.subjectSha } : {}),
         ...(primary ? { scoredOn: primary.id } : {}),
       }),
     );

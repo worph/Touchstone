@@ -413,10 +413,35 @@ export class BenchProber {
   private inFlight?: Promise<BenchHealth[]>;
   /** Whether the pool had a usable bench last cycle, so the loss is logged once. */
   private poolWasUp?: boolean;
+  /** Set when someone changed the runway guard at runtime — `domain/controls.ts`. */
+  private minRemainingOverride?: number;
 
   constructor(opts: BenchProberOptions) {
     this.opts = opts;
     this.file = path.join(opts.stateDir, 'benches.json');
+  }
+
+  /**
+   * Minutes of runway a bench needs before a functional assay may claim it — the D8 rule.
+   *
+   * Read through a getter rather than from `opts` at each site because it is settable at
+   * runtime: a pool whose instances are wiped on a different schedule needs a different
+   * guard, and that is a number an operator should be able to change without a restart.
+   */
+  get minRemainingMin(): number {
+    return this.minRemainingOverride ?? this.opts.minRemainingMin ?? 60;
+  }
+
+  get minRemainingMinDefault(): number {
+    return this.opts.minRemainingMin ?? 60;
+  }
+
+  setMinRemainingMin(minutes: number): void {
+    this.minRemainingOverride = minutes;
+  }
+
+  clearMinRemainingMin(): void {
+    this.minRemainingOverride = undefined;
   }
 
   /** Restore the last known state so `last ok` survives a restart. */
@@ -455,7 +480,7 @@ export class BenchProber {
    * has no countdown to read, is exempt.
    */
   leasable(): BenchHealth[] {
-    return this.list().filter((b) => isLeasable(b, this.opts.minRemainingMin ?? 60));
+    return this.list().filter((b) => isLeasable(b, this.minRemainingMin));
   }
 
   /**
@@ -465,7 +490,7 @@ export class BenchProber {
    * a caller that guessed 60 would describe a gate it does not control.
    */
   window(now = new Date()): string {
-    return describeWindow(this.list(), this.opts.minRemainingMin ?? 60, now);
+    return describeWindow(this.list(), this.minRemainingMin, now);
   }
 
   /** Is the pool answering at all? Distinct from having a bench worth claiming. */
