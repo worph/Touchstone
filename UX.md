@@ -135,6 +135,16 @@ public pages, because a caveat that vanished on the way would read as having bee
 Behind it, the subject stops waiting out the seven-day freshness window and joins the backlog at
 its ordinary position — Automation's queue says `standard revised since` on that row.
 
+**The `app changed` chip** (2026-08-25) is the second of the two, and deliberately not the same
+chip: `older standard` means the rubric was edited and we will ask again, `app changed` means the
+app's `docker-compose.yml` was rewritten since the verdict was reached. To an operator that is a
+choice of which thing to go and look at; to an app author on `/public` it is the difference
+between "wait for us" and "that was you". A row may honestly carry both. It is blue where the
+standard chip is warm, because it reports something about the subject rather than a shortfall in
+it, and unlike the standard chip it draws nothing for `unknown` — that would appear on every
+pre-2026-08-25 row at once to say only "this predates the feature", and clears itself within one
+audit rotation anyway.
+
 `/overview` redirects here.
 
 ```

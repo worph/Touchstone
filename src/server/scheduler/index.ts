@@ -421,7 +421,11 @@ export class Scheduler {
         const stamp = String(rec.meta.finished_at || rec.meta.started_at || '');
         if (stamp <= at) continue;
         at = stamp;
-        newest = typeof rec.meta.subject_sha === 'string' ? rec.meta.subject_sha : undefined;
+        // Same coercion as `subjectVersionOf` and for the same reason: an all-digit sha comes
+        // back from YAML as a number, and reading it as absent would say "unknown" about an
+        // app that changed.
+        const raw = rec.meta.subject_sha;
+        newest = raw === undefined || raw === null || raw === '' ? undefined : String(raw);
       }
       out[subject] = newest;
     }

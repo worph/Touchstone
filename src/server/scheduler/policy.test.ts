@@ -345,3 +345,87 @@ describe('when the standard moves under a subject', () => {
     expect(d.action).toBe('idle');
   });
 });
+
+
+/**
+ * The second way past the freshness window: the app itself changed. Independent of the
+ * standard rule and shaped identically — it adds to the backlog and does nothing else.
+ *
+ * The safeguard under test throughout is the asymmetry: **unknown is not a trigger**. Every
+ * assay written before 2026-08-25 records no version, and if a missing sha read as "changed"
+ * the whole archive would go eligible the day this shipped and stay so until audited.
+ */
+describe('when the app changes in the store', () => {
+  /** Audited two days ago, well inside `fresh_days`, against a compose that has since moved. */
+  function changed(over: Partial<PolicyInput> = {}): PolicyInput {
+    return input({
+      subjects: ['Alpha'],
+      lastDoneAt: { Alpha: daysAgo(2) },
+      lastAttemptAt: { Alpha: daysAgo(2) },
+      currentVersion: { Alpha: 'sha-new' },
+      auditedVersion: { Alpha: 'sha-old' },
+      ...over,
+    });
+  }
+
+  it('makes a subject eligible that the freshness window would have skipped', () => {
+    const d = decide(changed());
+    expect(d.action).toBe('audit');
+    expect(d.subject).toBe('Alpha');
+  });
+
+  it('says so in the reason', () => {
+    expect(decide(changed()).reason).toContain('app changed in the store');
+  });
+
+  it('does nothing when the compose is the one that was judged', () => {
+    const d = decide(changed({ auditedVersion: { Alpha: 'sha-new' } }));
+    expect(d.action).toBe('idle');
+    expect(d.reason).toContain('backlog empty');
+  });
+
+  it('does nothing when the assay recorded no version — unknown is not changed', () => {
+    const d = decide(changed({ auditedVersion: {} }));
+    expect(d.action).toBe('idle');
+    expect(d.reason).toContain('backlog empty');
+  });
+
+  it('does nothing when the store offers no compose for it', () => {
+    const d = decide(changed({ currentVersion: {} }));
+    expect(d.action).toBe('idle');
+    expect(d.reason).toContain('backlog empty');
+  });
+
+  it('does nothing at all when versions are not being tracked', () => {
+    const d = decide(changed({ currentVersion: undefined, auditedVersion: undefined }));
+    expect(d.action).toBe('idle');
+  });
+
+  it('reads as due, and the row says which of the two reasons applies', () => {
+    const row = queue(changed()).find((r) => r.subject === 'Alpha');
+    expect(row?.state).toBe('due');
+    expect(row?.subject_changed).toBe(true);
+    expect(row?.standard_moved).toBeUndefined();
+  });
+
+  /** The two are independent, and a row may legitimately carry both. */
+  it('carries both marks when the standard moved as well', () => {
+    const row = queue(
+      changed({ standardMovedAt: daysAgo(1) }),
+    ).find((r) => r.subject === 'Alpha');
+    expect(row?.standard_moved).toBe(true);
+    expect(row?.subject_changed).toBe(true);
+    expect(row?.position).toBe(1);
+  });
+
+  it('does not jump the queue — a never-audited app still goes first', () => {
+    const rows = queue(changed({ subjects: ['Alpha', 'Beta'] }));
+    expect(rows.map((r) => r.subject)).toEqual(['Beta', 'Alpha']);
+  });
+
+  it('is still subject to the cooldown, the bench gate and the park', () => {
+    expect(decide(changed({ lastFinishedAt: minutesAgo(5) })).action).toBe('idle');
+    expect(decide(changed({ benchAvailable: false })).reason).toContain('no usable demo bench');
+    expect(decide(changed({ schedule: { Alpha: { try_n: 3, parked_at: daysAgo(1) } } })).action).toBe('idle');
+  });
+});

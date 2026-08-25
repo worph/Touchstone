@@ -327,3 +327,87 @@ describe('the standard a verdict was reached under', () => {
     expect(state.standard).toBe('older');
   });
 });
+
+
+/**
+ * The second badge. Deliberately a separate field from `standard`: one says the question
+ * changed, the other says the subject did, and an app author needs to know which.
+ */
+describe('the version of the app a verdict was reached about', () => {
+  function judgedAgainst(sha: string | undefined, at = '2026-08-01T00:00:00Z') {
+    const rec = makeRecord({ subject: 'App', leg: 'static', at });
+    return { ...rec, meta: { ...rec.meta, ...(sha ? { subject_sha: sha } : {}) } };
+  }
+
+  it('says nothing at all when the question is not being asked', () => {
+    const { state } = subjectHallmark(APP, [judgedAgainst('aaa')], { now: NOW });
+    expect(state.subject_version).toBeUndefined();
+  });
+
+  it('is current when the store offers what was judged', () => {
+    const { state } = subjectHallmark(APP, [judgedAgainst('aaa')], {
+      now: NOW,
+      versions: { [APP]: 'aaa' },
+    });
+    expect(state.subject_version).toBe('current');
+  });
+
+  it('is changed when the compose has moved since', () => {
+    const { state } = subjectHallmark(APP, [judgedAgainst('aaa')], {
+      now: NOW,
+      versions: { [APP]: 'bbb' },
+    });
+    expect(state.subject_version).toBe('changed');
+  });
+
+  /** Both directions of missing are unknown — never changed. This is the whole safeguard. */
+  it('is unknown when the assay recorded no version', () => {
+    const { state } = subjectHallmark(APP, [judgedAgainst(undefined)], {
+      now: NOW,
+      versions: { [APP]: 'bbb' },
+    });
+    expect(state.subject_version).toBe('unknown');
+  });
+
+  it('is unknown when the store offers no compose', () => {
+    const { state } = subjectHallmark(APP, [judgedAgainst('aaa')], { now: NOW, versions: {} });
+    expect(state.subject_version).toBe('unknown');
+  });
+
+  it('has nothing to say about a subject with no verdict yet', () => {
+    const { state } = subjectHallmark(APP, [], { now: NOW, versions: { [APP]: 'aaa' } });
+    expect(state.subject_version).toBeUndefined();
+  });
+
+  /** The newest verdict is the one on display, whatever an older one was judged against. */
+  it('reads the newest verdict, not an older one', () => {
+    const records = [judgedAgainst('old', '2026-07-01T00:00:00Z'), judgedAgainst('aaa', '2026-08-02T00:00:00Z')];
+    const { state } = subjectHallmark(APP, records, { now: NOW, versions: { [APP]: 'aaa' } });
+    expect(state.subject_version).toBe('current');
+  });
+
+  /** The two badges are independent and a row may carry both. */
+  /**
+   * YAML hands back a **number** for a sha that is all digits — `0000…0` parses as `0` — and
+   * a strict `typeof === 'string'` read then answers `unknown` about an app that did change.
+   * Found by an end-to-end check whose fixture sha was forty zeroes.
+   */
+  it('reads a sha YAML decoded as a number rather than calling it unknown', () => {
+    const rec = makeRecord({ subject: 'App', leg: 'static', at: '2026-08-01T00:00:00Z' });
+    const numeric = { ...rec, meta: { ...rec.meta, subject_sha: 0 as unknown as string } };
+    const { state } = subjectHallmark(APP, [numeric], { now: NOW, versions: { [APP]: 'aaa' } });
+    expect(state.subject_version).toBe('changed');
+  });
+
+  it('is composed alongside the standard badge without disturbing it', () => {
+    const rec = makeRecord({ subject: 'App', leg: 'static', at: '2026-08-01T00:00:00Z' });
+    const both = { ...rec, meta: { ...rec.meta, standard_sha256: 'stale', subject_sha: 'aaa' } };
+    const { state } = subjectHallmark(APP, [both], {
+      now: NOW,
+      standards: { static: { sha256: 'current-rubric' } },
+      versions: { [APP]: 'bbb' },
+    });
+    expect(state.standard).toBe('older');
+    expect(state.subject_version).toBe('changed');
+  });
+});

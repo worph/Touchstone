@@ -198,6 +198,15 @@ because its data access was smeared through two 200-line n8n Code nodes.
   empty another's. `reachable()` means *the last fetch succeeded*, and the runner asks it before
   dispatching: auditing against a store we cannot read would error and burn the subject's try
   for an infra condition, which invariant 3 forbids.
+  It also carries **what version of each app the store offers** — the git blob sha of
+  `<apps_path>/<App>/docker-compose.yml` — from **one** `git/trees/{ref}?recursive=1` call per
+  origin per refresh. Not `commits?path=` per app: that is 69 requests against a 60-an-hour
+  unauthenticated ceiling shared with `services/storedoc.ts`, and an origin driven unreachable
+  stops the runner dispatching, so the naive version would break auditing rather than sharpen
+  it. Not the app **directory**'s sha either, though the contents listing already carries it
+  free — a directory is the compose plus ~3 MB of icon and screenshots, so a screenshot refresh
+  would re-audit the app. The tree fetch runs *after* the app list and cannot fail the refresh:
+  the list is what gates dispatch, and a version lookup is not allowed to stop an audit.
 - **`routes/public.ts`** — `/public/subjects`, one subject, and its `fix.md`: the only prefix meant
   to be readable by somebody who does not operate Touchstone, and therefore the only one that may
   be excluded from the SSO sidecar (ARCHITECTURE §8.1). It is **read-only by construction** — an
