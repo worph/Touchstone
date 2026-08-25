@@ -196,3 +196,114 @@ describe('a store taken out of config', () => {
     expect(reg.list()).not.toContain('gone~Orphan');
   });
 });
+
+
+/**
+ * The version half. It rides the same refresh as the app list and must never be able to harm
+ * it: the list is what `reachable()` gates dispatch on, and a store that cannot be audited
+ * because a *version* lookup failed would be the feature breaking the thing it exists to
+ * sharpen (invariant 3).
+ */
+describe('what version of each app the store offers', () => {
+  it('reads one blob sha per app from a single tree call', async () => {
+    const reg = make([YUNDERA], { 'Yundera/AppStore': ['Ntfy', 'Caddy'] }, { Ntfy: 'aaa', Caddy: 'bbb' });
+    await reg.refresh();
+
+    expect(reg.versions()).toEqual({ 'yundera~Ntfy': 'aaa', 'yundera~Caddy': 'bbb' });
+    expect(reg.versionOf('yundera~Ntfy')).toBe('aaa');
+  });
+
+  it('keeps stores apart, as the app lists are', async () => {
+    const reg = make(
+      [YUNDERA, ACME],
+      { 'Yundera/AppStore': ['Ntfy'], 'Acme/AppStore': ['Ntfy'] },
+      { Ntfy: 'shared-name-different-app' },
+    );
+    await reg.refresh();
+    expect(Object.keys(reg.versions()).sort()).toEqual(['acme~Ntfy', 'yundera~Ntfy']);
+  });
+
+  it('has nothing to say about an app it was never offered a version for', async () => {
+    const reg = make([YUNDERA], { 'Yundera/AppStore': ['Ntfy'] });
+    await reg.refresh();
+    // Absent, not empty-string: "we do not know" and "it changed" must not collapse.
+    expect(reg.versionOf('yundera~Missing')).toBeUndefined();
+  });
+
+  it('survives a restart, so a tick after a reboot is not a blind one', async () => {
+    const reg = make([YUNDERA], { 'Yundera/AppStore': ['Ntfy'] }, { Ntfy: 'aaa' });
+    await reg.refresh();
+
+    const reloaded = new SubjectRegistry({ stateDir: dir, events, origins: [YUNDERA] });
+    await reloaded.load();
+    expect(reloaded.versionOf('yundera~Ntfy')).toBe('aaa');
+  });
+
+  /**
+   * The tree call failing is not the store failing. If it were, one flaky request would stop
+   * the loop dispatching to that origin entirely.
+   */
+  it('keeps the last known versions and stays reachable when the tree call fails', async () => {
+    const reg = make([YUNDERA], { 'Yundera/AppStore': ['Ntfy'] }, { Ntfy: 'aaa' });
+    await reg.refresh();
+
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      if (String(url).includes('/git/trees/')) throw new Error('boom');
+      return { ok: true, status: 200, json: async () => [{ type: 'dir', name: 'Ntfy' }] };
+    }) as unknown as typeof fetch;
+    await reg.refresh();
+    globalThis.fetch = realFetch;
+
+    expect(reg.reachable('yundera')).toBe(true);
+    expect(reg.versionOf('yundera~Ntfy')).toBe('aaa');
+  });
+
+  /**
+   * A truncated tree is discarded rather than half-believed: a missing entry looks exactly
+   * like an app with no compose, and would read as "nothing to compare" for every app the
+   * truncation dropped.
+   */
+  it('discards a truncated tree rather than believing half of it', async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        String(url).includes('/git/trees/')
+          ? { truncated: true, tree: [{ path: 'Apps/Ntfy/docker-compose.yml', type: 'blob', sha: 'aaa' }] }
+          : [{ type: 'dir', name: 'Ntfy' }],
+    })) as unknown as typeof fetch;
+    const reg = new SubjectRegistry({ stateDir: dir, events, origins: [YUNDERA] });
+    await reg.refresh();
+    globalThis.fetch = realFetch;
+
+    expect(reg.reachable('yundera')).toBe(true);
+    expect(reg.versionOf('yundera~Ntfy')).toBeUndefined();
+  });
+
+  /** Only the compose directly under the app directory — not one nested deeper. */
+  it('ignores a compose that is not the app’s own', async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        String(url).includes('/git/trees/')
+          ? {
+              truncated: false,
+              tree: [
+                { path: 'Apps/Ntfy/docker-compose.yml', type: 'blob', sha: 'aaa' },
+                { path: 'Apps/Ntfy/extras/docker-compose.yml', type: 'blob', sha: 'nested' },
+                { path: 'Apps/Ntfy', type: 'tree', sha: 'dir' },
+              ],
+            }
+          : [{ type: 'dir', name: 'Ntfy' }],
+    })) as unknown as typeof fetch;
+    const reg = new SubjectRegistry({ stateDir: dir, events, origins: [YUNDERA] });
+    await reg.refresh();
+    globalThis.fetch = realFetch;
+
+    expect(reg.versions()).toEqual({ 'yundera~Ntfy': 'aaa' });
+  });
+});

@@ -98,6 +98,8 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 | B8 | Single-flight | one in-progress app at a time | ✅ one claim, and it is what blocks the next tick |
 | B9 | Re-derive the backlog every tick — **no queue** | by construction | ✅ by construction, as n8n does |
 | B10 | **Re-eligible when the standard moves** | — (n8n has no notion of a rubric revision) | ➕ a subject not *attempted* since the last recorded edit to a scoring rubric is eligible regardless of `FRESH_DAYS`. Like D7, a Touchstone-only rule, and the second place a shadow diff is expected to differ — the tick says `· standard revised <date>` when it fires |
+| B11 | **Re-eligible when the app changes** | — (n8n audits on a calendar alone) | ➕ a subject whose `docker-compose.yml` blob sha differs from the one its last attempt recorded is eligible regardless of `FRESH_DAYS`. The tick says `· app changed in the store` |
+| B12 | `FRESH_DAYS` | 7 | ⚠️ **14** since 2026-08-25. B10 and B11 catch the changes that matter, so the calendar is the backstop rather than the trigger and does not need to run as hot. Also a runtime control now, so `config.yaml` is only the default |
 
 #### C. Claim — `Mark in-progress`
 
@@ -448,6 +450,30 @@ the bench. And a `scores: false` section cannot move it — invariant 12's third
 which a threshold edit in `currency.sh` would spend three days of agent time re-measuring
 something that re-measures itself for free on the next run.
 
+**And the subject can move too (row B11, 2026-08-25).** The rubric rule fires when the
+*question* changes; this one fires when the *app* does — a verdict about a compose that has since
+been rewritten is a verdict about a different app. Identity is the git blob sha of
+`Apps/<App>/docker-compose.yml` at the origin's ref, recorded on every assay as
+`subject_sha` and compared against what the store offers now.
+
+Three things about it are load-bearing:
+
+- **One request, not seventy.** The obvious implementation is `commits?path=…` per app, which is
+  69 requests against an unauthenticated ceiling of 60 an hour that `services/storedoc.ts` also
+  spends from. It would drive the origin unreachable, and `reachable()` gates dispatch — the
+  feature would *stop* auditing rather than sharpen it (invariant 3). `store/registry.ts` instead
+  makes one `git/trees/{ref}?recursive=1` call per origin per refresh and reads every app's blob
+  sha out of it. A truncated tree is discarded rather than half-believed, and a failed tree call
+  keeps the last known versions without touching `reachable()`.
+- **The compose, not the directory.** The app directory's tree sha arrives free in the contents
+  listing the registry already makes, and is deliberately unused: an app directory is the compose
+  plus around 3 MB of icon and screenshots, so a screenshot refresh would re-audit the app.
+- **Unknown is never changed.** A missing sha on either side — an assay from before this was
+  recorded, an app the store offers no compose for — reads as `unknown` and triggers nothing.
+  Without that asymmetry every app in the archive would go eligible the day it shipped and stay
+  so until audited, the same flood the `seed` rule avoids for rubrics. It self-heals within one
+  `fresh_days` rotation.
+
 ### 5.2 Runner
 
 Rows D1–D5. Prompt assembly from the standard, the agent call, response extraction, and the
@@ -661,6 +687,10 @@ Three properties that are not incidental:
   question, not a finding about the app — and their subjects stop waiting out `FRESH_DAYS`
   (row B10, §5.1). It moves nothing that has already run: `edit_protocol` and the editor change
   what the *next* audit is judged by and nothing else.
+- **The app moving is the other half, and it is a second badge** (row B11). `app changed` says
+  the compose was rewritten since the verdict; `older standard` says the rubric was. They are
+  never merged into one warning, because to an app author the difference is between "wait for
+  us" and "that was you", and a row may honestly carry both.
 - **`requires_bench` is where genericity starts.** "Static" and "functional" are currently an
   axis hardcoded through the whole system; expressed as a property of a protocol it is one
   step from being a property of a *requirement*, which is what the generic model needs.

@@ -154,8 +154,14 @@ export function subjectVersionOf(
 ): SubjectVersionState | null {
   const done = sortNewestFirst(records.filter(isDone))[0];
   if (!done) return null;
-  const had = done.meta.subject_sha;
-  if (typeof had !== 'string' || had === '' || !offered) return 'unknown';
+  // Coerced rather than type-checked, because YAML will hand back a **number** for a sha that
+  // happens to be all digits — `0000…0` parses as `0` — and a stricter read would then answer
+  // `unknown` for an app that had in fact changed. Vanishingly rare for a 40-hex-digit blob
+  // sha, and silent in exactly the direction that hides a real difference, which is the kind
+  // of edge worth one line rather than a comment saying it cannot happen.
+  const raw = done.meta.subject_sha;
+  const had = raw === undefined || raw === null ? '' : String(raw);
+  if (had === '' || !offered) return 'unknown';
   return had === offered ? 'current' : 'changed';
 }
 
