@@ -88,6 +88,7 @@ export const EVENT_CODES = {
   CLAIM_UNPARKED: { category: 'scheduler', label: 'subject released from parking' },
   REGISTRY_REFRESHED: { category: 'scheduler', label: 'registry changed' },
   REGISTRY_FAILED: { category: 'scheduler', label: 'registry unreadable' },
+  REGISTRY_VERSIONS_FAILED: { category: 'scheduler', label: 'app versions unreadable' },
   REGISTRY_RECOVERED: { category: 'scheduler', label: 'registry readable again' },
 
   // ── trials ────────────────────────────────────────────────────────────────
@@ -135,6 +136,15 @@ export const EVENT_CODES = {
   // The administrator's standing instructions. `config` rather than `chat`: it is a change
   // to how this instance is set up, not something that happened in a conversation.
   CONTEXT_EDITED: { category: 'config', label: 'administrator context edited' },
+  // A control — one of the config values that can be changed while the app is running.
+  // `config` for the same reason the context edit is: it is a change to how this instance is
+  // set up, whoever made it and whichever surface they made it from.
+  CONTROL_CHANGED: { category: 'config', label: 'a setting was changed' },
+  CONTROL_RESET: { category: 'config', label: 'a setting went back to config.yaml' },
+  // At boot: something in `state/controls.json` could not be applied. `warn`, because the
+  // instance is now running on a value nobody chose — the file says one thing and the
+  // process is doing another, and that is exactly the confusion controls exist to prevent.
+  CONTROL_IGNORED: { category: 'config', label: 'a stored setting was not applied' },
   AGENT_BUSY: { category: 'agent', label: 'agent busy' },
   AGENT_UNAUTHENTICATED: { category: 'agent', label: 'agent not logged in' },
 
@@ -192,6 +202,7 @@ interface EventDetails {
   CLAIM_PARKED: { subject: string; try_n: number; until_days: number };
   CLAIM_UNPARKED: { subject: string };
   REGISTRY_REFRESHED: { count: number; origin?: string };
+  REGISTRY_VERSIONS_FAILED: { error: string; origin?: string };
   REGISTRY_RECOVERED: { count: number; origin?: string };
   REGISTRY_FAILED: { error: string; live: boolean; origin?: string };
   TRIAL_STARTED: { slug: string; source: string; subject: string };
@@ -266,6 +277,22 @@ interface EventDetails {
   PROTOCOL_HISTORY_FAILED: { dir: string };
   // No version: unlike a protocol, the context is not recorded in anything it influenced.
   CONTEXT_EDITED: { bytes: number };
+  /**
+   * Which control, from what to what, and who.
+   *
+   * `config_default` rides along for the same reason it does on `SCHEDULER_ARMED`: the row
+   * has to be readable after a restart, and "cooldown is 240" means something different when
+   * the file says 240 than when it says 60.
+   */
+  CONTROL_CHANGED: {
+    key: string;
+    from: number | boolean;
+    to: number | boolean;
+    by: string;
+    config_default: number | boolean;
+  };
+  CONTROL_RESET: { key: string; from: number | boolean; to: number | boolean; by: string };
+  CONTROL_IGNORED: { key: string; value: unknown; reason: string };
   AGENT_BUSY: { subject: string; waitMs: number; attempt: number };
   AGENT_UNAUTHENTICATED: { subject: string; error: string; raw: string };
   PORT_HEALTHY: { port: string; kind: 'agent' | 'browser'; tools: number };

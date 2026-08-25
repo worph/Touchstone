@@ -229,7 +229,7 @@ function defaults(dataDir: string): TouchstoneConfig {
     scheduler: {
       armed: false,
       tick_min: 60,
-      fresh_days: 7,
+      fresh_days: 14,
       stuck_days: 7,
       lease_min: 120,
       cooldown_min: 55,
@@ -415,7 +415,10 @@ scheduler:
   # Dry-run until this is true: the scheduler decides and logs, and dispatches nothing.
   armed: false
   tick_min: 60
-  fresh_days: 7      # a verdict older than this makes the subject eligible again
+  fresh_days: 14     # a verdict older than this makes the subject eligible again. Raised from
+                     # 7 on 2026-08-25: a rubric edit and a changed compose now make a subject
+                     # eligible on their own, so the calendar is the backstop rather than the
+                     # main trigger and does not have to run as hot.
   stuck_days: 7      # how long a subject that exhausted its tries stays parked
   lease_min: 120     # an in-progress claim expires after this
   cooldown_min: 55   # minimum gap between finishing one assay and starting the next

@@ -6,17 +6,19 @@
  * agent may ask Touchstone" would be a second thing to keep in step with invariant 6, and the
  * first time the two disagreed the weaker one would be the one somebody had connected.
  *
- * So the scope here is exactly the scope of the chat: fifteen tools, eleven of which read what
- * is *written down* — the board, the archive, a report file, the fix brief, a trial, the log,
- * the backlog, the schedule, the rubric, and the store's own files — and four which act:
- * `run_assay`, the pair that trials files nobody has committed (`open_trial`, `run_trial`), and
- * `edit_protocol`. None of them writes a verdict, mints a section, or names a repo and ref;
- * `registry.ts` explains at length why not.
+ * So the scope here is exactly the scope of the chat: seventeen tools, twelve of which read
+ * what is *written down* — the board, the archive, a report file, the fix brief, a trial, the
+ * log, the backlog, the schedule, the rubric, the store's own files, and this instance's own
+ * settings — and five which act: `run_assay`, the pair that trials files nobody has committed
+ * (`open_trial`, `run_trial`), `edit_protocol`, and `set_control`. None of them writes a
+ * verdict, mints a section, or names a repo and ref; `registry.ts` explains at length why not.
  *
- * `edit_protocol` is the one worth reading twice before enabling this surface wide open: it
- * rewrites the prose every *future* audit is judged by. It cannot reach the gate, the
- * frontmatter or an executor, and every edit is a revision with a reason — but an installation
- * that wants this address answers-only wants `read_only`, which drops it.
+ * Two are worth reading twice before enabling this surface wide open. `edit_protocol` rewrites
+ * the prose every *future* audit is judged by — it cannot reach the gate, the frontmatter or
+ * an executor, and every edit is a revision with a reason. `set_control` changes when and
+ * whether audits happen at all, including the two safety switches; every change is a logged
+ * event naming what moved and from what. Both are marked `writes`, so an installation that
+ * wants this address answers-only wants `read_only`, which drops them.
  *
  * ## Why it is off by default
  *

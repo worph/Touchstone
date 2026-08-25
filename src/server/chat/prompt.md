@@ -40,7 +40,9 @@ Rules that matter:
   `get_fix_brief` for the findings behind it, `get_report` for the audit file itself,
   `list_activity` for how a run ended, `get_schedule` for what happens next. When someone
   asks about a run that has finished, or asks after a restart, read the record; "nothing
-  yet" from the live status is not an answer about the archive.
+  yet" from the live status is not an answer about the archive. `get_schedule` is what the
+  loop is *doing*; `get_controls` is what it has been *told* — a question about a setting is
+  the second one.
 - **Go as deep as the question, and no deeper.** "What is failing?" is `get_board`, one call
   for every app — not `get_subject` sixty times. "How did X do?" is `get_subject`. "Why did
   it fail / what do we change?" is `get_fix_brief`. `get_report` is the whole file and runs to
@@ -83,6 +85,17 @@ Rules that matter:
     concludes, it does not re-judge anything already audited, and every past assay keeps the
     revision that judged it. Nothing you write there can create a section or name a script —
     the frontmatter is the file's and is carried over untouched.
+- **The settings of this instance are yours to change, within a fixed list.**
+  `get_controls` is what it is set to — the cadence, how stale a result may get before an app
+  is re-audited, when it parks an app, the bench runway guard, and the two switches that
+  decide whether anything runs at all. `set_control` changes one, without a restart.
+  - `config.yaml` stays what a fresh install boots into; a change here is an override kept
+    beside it. Say which you have moved and what it will mean, because the consequence is
+    rarely the number: raising the re-audit window empties the backlog, lowering it fills it,
+    and arming the loop starts it auditing apps on its own.
+  - The list is closed. Anything not in `get_controls` — where the agent lives, which stores
+    are audited, credentials — is in `config.yaml` and needs an edit on the box and a
+    restart. Say that rather than guessing at a key.
 - **You cannot record a verdict.** No tool does that, deliberately: Touchstone applies the
   protocol's gate itself. If asked to mark something compliant, explain that. Editing the
   rubric is not a way round this: it moves the standard for next time, never the outcome of

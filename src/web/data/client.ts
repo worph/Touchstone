@@ -19,6 +19,7 @@ import type {
   PushStatus,
   RunStatus,
 } from '@shared/activity';
+import type { ControlsResponse, ControlValue } from '@shared/controls';
 import type { Diff } from '@shared/linediff';
 import type { ScheduleResponse } from '@shared/schedule';
 import type { Revision } from '@shared/standard';
@@ -190,6 +191,36 @@ export function setArmed(armed: boolean): Promise<ScheduleResponse> {
 /** Decide now rather than at the top of the hour. Claims only if armed. */
 export function tickNow(): Promise<ScheduleResponse> {
   return post<ScheduleResponse>('/schedule/tick');
+}
+
+/**
+ * The settings of this instance — what it has been told, as opposed to what it is doing.
+ *
+ * All three answer with the whole list rather than one row: changing the cooldown changes
+ * the sentence next to the re-audit window, and a page that had to re-fetch to notice would
+ * spend a moment disagreeing with itself.
+ */
+export function getControls(): Promise<ControlsResponse> {
+  return get<ControlsResponse>('/controls');
+}
+
+export function setControl(key: string, value: ControlValue): Promise<ControlsResponse> {
+  return put<ControlsResponse>(`/controls/${encodeURIComponent(key)}`, { value });
+}
+
+/** Drop the override, back to what `config.yaml` says. */
+export async function resetControl(key: string): Promise<ControlsResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/controls/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+      headers: { accept: 'application/json' },
+    });
+  } catch {
+    throw new ApiError(0, 'The API is not reachable.');
+  }
+  if (!res.ok) throw new ApiError(res.status, `Could not reset that setting (${res.status}).`);
+  return (await res.json()) as ControlsResponse;
 }
 
 async function put<T>(path: string, body: unknown): Promise<T> {

@@ -9,7 +9,7 @@
  * Every one is a thin wrapper over something the API already does; the chat is a way of
  * reaching the app by conversation, not a second implementation of it.
  *
- * **Eleven of the fifteen read, and four act.** The chat began with three tools, two of which
+ * **Twelve of the seventeen read, and five act.** The chat began with three tools, two of which
  * described the *live process* — `runner.status()`, the ledger — and that was the wrong half
  * of the app to know about. An audit takes minutes, a turn takes seconds, and `tsx watch`
  * restarts the process on any edit; so by the time the operator asked what came of a run,
@@ -39,6 +39,15 @@
  * by a check in a handler. Every edit is a revision with a required reason, so the archive can
  * still resolve the hash an assay recorded back to text. And it is marked `writes`, so an
  * installation serving this registry over MCP with `read_only` does not serve it at all.
+ *
+ * **`set_control` is the second of those, and it is about this instance rather than about any
+ * app.** It changes the cadence the loop runs at, how stale a result may get, and the two
+ * safety switches — the values `domain/controls.ts` lists because something live re-reads
+ * them. It is not "the chat can edit `config.yaml`": a setting nothing re-reads is not on
+ * that list and cannot be put there from here, `config.yaml` stays the default a fresh boot
+ * falls back to, and every change is an event naming what moved, from what, and by whom. The
+ * question it answers used to have no answer at all — asked to make the re-audit window a
+ * fortnight, the chat could read the window and then send the operator to a page.
  */
 
 import { standardLabel } from '../../shared/standard.js';
@@ -47,6 +56,7 @@ import { lineDiff, type Diff } from '../../shared/linediff.js';
 import type { Revision } from '../../shared/standard.js';
 import { asSubjectKey, subjectName, subjectOrigin, type SubjectKey } from '../../shared/subject.js';
 import type { AssayRecord, Section, SubjectState } from '../../shared/types.js';
+import { listControls, resetControl, setControl, type ControlPorts } from '../domain/controls.js';
 import { buildFixReport } from '../domain/fixreport.js';
 import { saveProtocol } from '../domain/protocoledit.js';
 import { hallmarks, LEGS, subjectHallmark, subjectNames, type LegState } from '../domain/hallmark.js';
@@ -115,6 +125,16 @@ export interface ChatToolContext {
   revisions?: RevisionStore;
   /** Reads a file out of a configured store's repo. Not a URL fetcher — see `storedoc.ts`. */
   storedoc?: StoreDocReader;
+  /**
+   * The instance's own settings — the cadence, the two safety switches, the bench guard.
+   *
+   * The same bundle `routes/controls.ts` takes, so a cooldown changed by conversation is the
+   * same write as one typed on the Automation page: one validator, one event, one file. What
+   * it reaches is `domain/controls.ts`'s closed list, which is why this is not "the chat can
+   * edit config.yaml" — a value nothing re-reads is not in the list and cannot be put there
+   * from here.
+   */
+  controls?: ControlPorts;
 }
 
 export interface ChatToolResult {
@@ -320,7 +340,11 @@ function boardRow(state: SubjectState): string {
       : state.standard === 'unknown'
         ? ' · names no standard revision'
         : '';
-  return `${state.label} (${state.origin}) · risk ${state.risk} · ${cells.join(' · ')} · ${age}${standard}`;
+  // Kept separate from the standard clause, because they are different claims: one says the
+  // rubric moved, the other says the app did. A model told only "out of date" cannot tell an
+  // author which of the two happened.
+  const version = state.subject_version === 'changed' ? ' · the app has changed in the store since' : '';
+  return `${state.label} (${state.origin}) · risk ${state.risk} · ${cells.join(' · ')} · ${age}${standard}${version}`;
 }
 
 function describeEvent(event: EventRecord): string {
@@ -401,7 +425,10 @@ export const CHAT_TOOLS: ChatTool[] = [
       // The same composition the Overview and the public board read. A second one here would
       // be a second answer to "what does this app carry", which is the failure a separate
       // surface invites — `routes/public.ts` refuses it for the same reason.
-      const rows = hallmarks(store.all(), { standards: await currentStandards(ctx) });
+      const rows = hallmarks(store.all(), {
+        standards: await currentStandards(ctx),
+        ...(ctx.registry ? { versions: ctx.registry.versions() } : {}),
+      });
       if (rows.length === 0) {
         return failed('Nothing has been audited yet, so the board is empty. list_subjects has the names.');
       }
@@ -1192,7 +1219,116 @@ export const CHAT_TOOLS: ChatTool[] = [
       );
     },
   },
+
+  {
+    /**
+     * What this instance is set to, as opposed to what it has found.
+     *
+     * Distinct from `get_schedule` on purpose, and the descriptions have to keep it that
+     * way: `get_schedule` is what the loop is *doing* — armed, next tick, the backlog in
+     * order — and this is what it has been *told*. The two overlap on three numbers and
+     * answer opposite questions, and the one that used to be unanswerable is this one: a
+     * turn asked to change the re-audit window could read the window and then had nothing
+     * to do but tell the operator to go and edit a file.
+     */
+    name: 'get_controls',
+    description:
+      'The settings of this instance — how often the loop decides, how long it waits between audits, how old a result may be before an app is re-audited, when it gives up, and the two switches that gate whether anything runs at all. Each row says what it is set to now, what `config.yaml` asks for, and what changing it does. This is what the instance is *told*; `get_schedule` is what it is currently *doing*.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async (_input, ctx) => {
+      const ports = ctx.controls;
+      if (!ports) return failed('Settings are not wired up in this build, so there is nothing to read.');
+      const rows = listControls(ports);
+      if (rows.length === 0) return failed('Nothing in this instance is settable at runtime.');
+
+      const lines: string[] = [];
+      let group = '';
+      for (const row of rows) {
+        if (row.group !== group) {
+          group = row.group;
+          lines.push(`${group}:`);
+        }
+        lines.push(
+          `  ${row.key} = ${controlWord(row)}` +
+            (row.source === 'override' ? ` (config.yaml says ${controlWord({ ...row, value: row.default })})` : '') +
+            (row.settable ? '' : ' — not settable here, the part of the app that owns it is not running') +
+            `\n      ${row.description}`,
+        );
+      }
+      lines.push('');
+      lines.push('Change one with set_control. A change takes effect without a restart; config.yaml stays the value a fresh boot falls back to.');
+      return ok(lines.join('\n'));
+    },
+  },
+
+  {
+    /**
+     * The tool that answers "can you change the 7-day automation to 14 days?" with a change
+     * rather than with directions to a page.
+     *
+     * It writes no verdict and cannot: `domain/controls.ts` holds a closed list of values
+     * that something live re-reads, every one of them about *when* and *whether* an audit
+     * happens. Invariant 6 is untouched — what an audit concluded is still the runner's to
+     * record, and the rubric it was judged against is still `edit_protocol`'s.
+     *
+     * Marked `writes`, so an installation serving this registry over MCP with `read_only`
+     * does not serve it at all. That matters more here than for `run_assay`: an aggregator
+     * that authenticates nobody must not be able to disarm the loop.
+     */
+    name: 'set_control',
+    writes: true,
+    description:
+      'Change one of this instance\'s settings — the re-audit window, the cooldown, the tick, when it parks an app, the bench runway guard, or either safety switch. Read `get_controls` first for the exact key and what it currently is. Takes effect without a restart: a number the loop reads is applied at the next decision, and the two switches apply at once. Pass `reset: true` instead of a value to put a setting back to what `config.yaml` says. Say what you changed and what it will mean — raising the re-audit window empties the backlog, lowering it fills it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: {
+          type: 'string',
+          description: 'A key from get_controls — `scheduler.fresh_days`, `scheduler.cooldown_min`, `runner.enabled`.',
+        },
+        value: {
+          description: 'The new value: a whole number, or true/false for a switch. Omit when resetting.',
+        },
+        reset: {
+          type: 'boolean',
+          description: 'Drop the override and go back to what config.yaml says. Ignores `value`.',
+        },
+      },
+      required: ['key'],
+    },
+    handler: async (input, ctx) => {
+      const ports = ctx.controls;
+      if (!ports) return failed('Settings are not wired up in this build, so nothing here can be changed.');
+      const key = String(input.key ?? '').trim();
+
+      const result =
+        input.reset === true
+          ? await resetControl(ports, key, 'chat')
+          : await setControl(ports, key, input.value, 'chat');
+      if (!result.ok) return failed(result.error);
+
+      const row = result.row;
+      if (!result.changed) {
+        return ok(`${row.key} was already ${controlWord(row)}, so nothing was written.`);
+      }
+      return ok(
+        [
+          `${row.key} is now ${controlWord(row)}` +
+            (row.source === 'override'
+              ? `. config.yaml still says ${controlWord({ ...row, value: row.default })}, and a fresh install would boot into that.`
+              : ', which is what config.yaml asks for.'),
+          row.effect,
+        ].join('\n'),
+      );
+    },
+  },
 ];
+
+/** `14 days`, `on`, `60 minutes` — a control's value said the way a person would say it. */
+function controlWord(row: { kind: 'number' | 'boolean'; value: number | boolean; unit?: string }): string {
+  if (row.kind === 'boolean') return row.value ? 'on' : 'off';
+  return row.unit ? `${row.value} ${row.unit}` : String(row.value);
+}
 
 export function chatTool(name: string): ChatTool | undefined {
   return CHAT_TOOLS.find((t) => t.name === name);

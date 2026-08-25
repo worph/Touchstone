@@ -69,7 +69,7 @@ export interface TickDecision {
  * | `running` | this subject holds the claim — the reason nothing else starts |
  * | `retry` | a previous attempt errored; retried on the next tick, no freshness wait |
  * | `never` | no completed assay on file |
- * | `due` | last result is older than `fresh_days`, or the standard moved under it |
+ * | `due` | last result is older than `fresh_days`, or the standard moved, or the app changed |
  * | `fresh` | audited recently enough to be skipped |
  * | `parked` | too many consecutive errors; left alone until `stuck_days` pass |
  */
@@ -92,6 +92,13 @@ export interface QueueRow {
    * type to say something the note says better.
    */
   standard_moved?: boolean;
+  /**
+   * Due because the app's compose changed in the store since it was last looked at.
+   *
+   * Independent of `standard_moved` — a row can carry both, and they mean different things:
+   * the question changed, or the subject did.
+   */
+  subject_changed?: boolean;
   try_n: number;
   parked_at?: string;
   claim_since?: string;

@@ -149,6 +149,16 @@ export interface RunnerOptions {
   storeReachable?: (origin: string) => boolean;
   /** Why not, for the blocked report. One clause, never an error object. */
   storeFailure?: (origin: string) => string | undefined;
+  /**
+   * The version of the subject the store is offering — `SubjectRegistry.versionOf`.
+   *
+   * A callback rather than the registry itself, exactly as `storeReachable` is: the runner
+   * asks a question and is handed an answer, so a test needs no GitHub. Recorded onto every
+   * assay of the run so the archive can later say whether a verdict is about the app as it
+   * stands. Absent — no registry, a store that offers no compose, a tree fetch that failed —
+   * writes nothing, which reads downstream as "no version to compare" and never as "changed".
+   */
+  subjectVersion?: (key: string) => string | undefined;
   events: EventLog;
   index?: ReportIndex;
   prober?: BenchProber;
@@ -196,13 +206,56 @@ export class Runner {
   private running = false;
   private current: RunnerStatus['running'] = null;
   private previous: RunnerStatus['last'] = null;
+  /** Set when someone switched the runner on or off at runtime. Absent, the config stands. */
+  private enabledOverride?: boolean;
+  private backoffOverrideMs?: number;
 
   constructor(opts: RunnerOptions) {
     this.opts = opts;
   }
 
   get enabled(): boolean {
+    return this.enabledOverride ?? this.opts.enabled;
+  }
+
+  /** What `config.yaml` asked for, which is what a fresh boot falls back to. */
+  get enabledDefault(): boolean {
     return this.opts.enabled;
+  }
+
+  /**
+   * Switch the runner on or off while the process is up — `domain/controls.ts`.
+   *
+   * It gates hand-run assays as well as the loop's, which is why it is a separate switch
+   * from `scheduler.armed` and why turning it off does not stop the audit in flight: the
+   * flag is read when a job arrives, so a run already dispatched finishes and records. The
+   * override is not persisted here; `ControlStore` owns the file and the composition root
+   * re-applies it after boot.
+   */
+  setEnabled(enabled: boolean): void {
+    this.enabledOverride = enabled;
+  }
+
+  /** Forget the override, back to what the config file says. */
+  clearEnabled(): void {
+    this.enabledOverride = undefined;
+  }
+
+  /** Minutes waited before the single retry when the agent answered 409. */
+  get busyBackoffMin(): number {
+    return (this.backoffOverrideMs ?? this.opts.busyBackoffMs ?? DEFAULT_BACKOFF_MS) / 60_000;
+  }
+
+  get busyBackoffMinDefault(): number {
+    return (this.opts.busyBackoffMs ?? DEFAULT_BACKOFF_MS) / 60_000;
+  }
+
+  setBusyBackoffMin(minutes: number): void {
+    this.backoffOverrideMs = minutes * 60_000;
+  }
+
+  clearBusyBackoff(): void {
+    this.backoffOverrideMs = undefined;
   }
 
   /** Whether a job is in flight. The scheduler's single-flight is the real guard; this is a belt. */
@@ -419,6 +472,9 @@ export class Runner {
     const agentSections = runSections.filter((s) => s.executor.kind === 'agent');
     const scriptSections = runSections.filter((s) => s.executor.kind !== 'agent');
     const subjectRef = subjectRefOf(store, appName);
+    // Read once, at dispatch, and carried onto every assay of this run: what the audit is
+    // about is the version it started against, not whatever the store holds when it ends.
+    const subjectSha = this.opts.subjectVersion?.(job.subject);
 
     // Scripts run first, because they take seconds where the agent takes minutes and the run's
     // own state is simpler while nothing is in flight.
@@ -433,6 +489,7 @@ export class Runner {
       ...(origin ? { origin } : {}),
       store,
       subjectRef,
+      ...(subjectSha ? { subjectSha } : {}),
       startedAt,
       ...(job.trial?.source?.compose ? { compose: job.trial.source.compose } : {}),
     });
@@ -451,6 +508,7 @@ export class Runner {
           startedAt,
           finishedAt,
           subjectRef,
+          ...(subjectSha ? { subjectSha } : {}),
         }),
       );
       return this.publish(job, [...scriptAssays, ...blockedAssays], reportsRoot, events);
@@ -527,7 +585,7 @@ export class Runner {
 
     // ── the one retry, row D5 ────────────────────────────────────────────────────────────
     if (!outcome.ok && outcome.error === 'agent-busy') {
-      const waitMs = this.opts.busyBackoffMs ?? DEFAULT_BACKOFF_MS;
+      const waitMs = this.backoffOverrideMs ?? this.opts.busyBackoffMs ?? DEFAULT_BACKOFF_MS;
       events.log({
         level: 'info',
         code: 'AGENT_BUSY',
@@ -567,6 +625,7 @@ export class Runner {
       subject: appName,
       origin,
       subjectRef: subjectRefOf(store, appName),
+      ...(subjectSha ? { subjectSha } : {}),
       declared: outcome.report,
       // The sections that actually ran, and — recorded rather than dropped — the ones that
       // could not, so a run always produces one file per section and the store can say "not
@@ -667,6 +726,7 @@ export class Runner {
       origin?: string;
       store: OriginEntry;
       subjectRef: string;
+      subjectSha?: string;
       startedAt: string;
       compose?: string;
     },
@@ -716,6 +776,7 @@ export class Runner {
         startedAt: started,
         finishedAt: this.now().toISOString(),
         subjectRef: ctx.subjectRef,
+        ...(ctx.subjectSha ? { subjectSha: ctx.subjectSha } : {}),
       });
 
       if (assay.meta.status === 'blocked') {
