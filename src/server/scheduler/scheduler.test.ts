@@ -480,3 +480,137 @@ describe('a schedule file written before subjects were keyed', () => {
     expect(s.snapshot().subjects['yundera~acme~Alpha']).toBeUndefined();
   });
 });
+
+/**
+ * A run that was in flight when the rubric changed.
+ *
+ * `standardMoved` asks "have we looked at this app since the standard moved", and the answer
+ * has to come from when the run *picked the rubric up*, not from when it put its report down.
+ * An audit takes half an hour, so it can straddle an edit — and reading the finish then made
+ * the scheduler believe the app had already been judged by a revision it had never seen. The
+ * archive said otherwise the whole time: the assay records the old sha, so the Store page put
+ * an `older standard` chip on a row the backlog called `fresh`, and nothing would re-audit it
+ * until `fresh_days` ran out. `yundera~Terminal` sat like that for two weeks.
+ */
+describe('a run that straddled a standard edit', () => {
+  const STARTED = '2026-08-24T12:04:11.457Z';
+  const MOVED = '2026-08-24T12:12:25.097Z';
+  const FINISHED = '2026-08-24T12:12:57.785Z';
+
+  /** One subject, one section, one assay that began before `MOVED` and ended after it. */
+  function straddling(): ReportIndex {
+    const rec = { meta: { started_at: STARTED, finished_at: FINISHED } } as never;
+    const at = (_subject: string, section: string) => (section === 'static' ? rec : null);
+    return {
+      sections: () => ['static'],
+      latest: at,
+      latestAny: at,
+      subjects: () => ['Alpha'],
+    } as unknown as ReportIndex;
+  }
+
+  function scheduler(): Scheduler {
+    return make({
+      index: straddling(),
+      registry: registryOf(['Alpha']),
+      standardMovedAt: async () => MOVED,
+    });
+  }
+
+  it('is still eligible, because the standard it was judged by is not the one in force', async () => {
+    const d = await scheduler().tick();
+    expect(d.action).toBe('audit');
+    expect(d.subject).toBe('Alpha');
+    expect(d.reason).toContain('standard revised');
+  });
+
+  it('shows the row as due rather than fresh', async () => {
+    const rows = await scheduler().previewQueue();
+    expect(rows[0]).toMatchObject({ subject: 'Alpha', state: 'due', standard_moved: true });
+  });
+
+  /** The ordinary case still settles: a run that began after the edit has looked. */
+  it('settles once a run begins under the new standard', async () => {
+    const rec = { meta: { started_at: FINISHED, finished_at: FINISHED } } as never;
+    const at = (_s: string, section: string) => (section === 'static' ? rec : null);
+    const d = await make({
+      index: {
+        sections: () => ['static'],
+        latest: at,
+        latestAny: at,
+        subjects: () => ['Alpha'],
+      } as unknown as ReportIndex,
+      registry: registryOf(['Alpha']),
+      standardMovedAt: async () => MOVED,
+    }).tick();
+    expect(d.action).toBe('idle');
+    expect(d.reason).toContain('backlog empty');
+  });
+});
+
+/**
+ * The claim is the scheduler's, so settling it cannot depend on the dispatcher behaving.
+ *
+ * On 2026-08-26 a report the volume would not let the runner write threw out of `dispatch`,
+ * and the claim was simply never closed: `⏸️ idle — audit already in progress` on every tick
+ * for two hours, then a reclaim that burned a try, three times, then a park. Four apps in a
+ * row went that way and the loop did no work for fifteen hours. The only trace was a
+ * `console.error` — nothing in the event log, nothing on a page.
+ */
+describe('a dispatcher that throws', () => {
+  function throwing(): { scheduler: Scheduler; calls: () => number } {
+    let calls = 0;
+    const s = make({
+      armed: true,
+      registry: registryOf(['Alpha']),
+      dispatch: async () => {
+        calls += 1;
+        throw new Error("EACCES: permission denied, open '/DATA/reports/yundera/Alpha/x.md'");
+      },
+    });
+    return { scheduler: s, calls: () => calls };
+  }
+
+  it('releases the claim instead of leaving it to expire two hours later', async () => {
+    const { scheduler } = throwing();
+    await scheduler.tick();
+    // The dispatcher rejects on a later turn than the tick that called it.
+    await new Promise((r) => setImmediate(r));
+    expect(scheduler.snapshot().subjects['Alpha']?.claim).toBeUndefined();
+  });
+
+  it('says so in the log, with the error the operator has to act on', async () => {
+    const { scheduler } = throwing();
+    await scheduler.tick();
+    await new Promise((r) => setImmediate(r));
+    await events.flush();
+
+    const failed = events.query({ code: 'ASSAY_FAILED' })[0];
+    expect(failed?.subject).toBe('Alpha');
+    expect(failed?.level).toBe('error');
+    expect(String((failed?.detail as { raw?: string })?.raw)).toContain('EACCES');
+  });
+
+  /** E7: the finish is stamped and the try is burned, so the backlog moves on. */
+  it('burns the try and stamps the finish, so one broken app cannot hold the loop', async () => {
+    const { scheduler } = throwing();
+    await scheduler.tick();
+    await new Promise((r) => setImmediate(r));
+
+    const snap = scheduler.snapshot();
+    expect(snap.subjects['Alpha']?.try_n).toBe(1);
+    expect(snap.last_finished_at).toBeTruthy();
+  });
+
+  /** And it parks, rather than re-running a half-hour audit against a fault that persists. */
+  it('parks after max_tries rather than retrying for ever', async () => {
+    const { scheduler, calls } = throwing();
+    for (let i = 0; i < CONSTANTS.max_tries + 2; i += 1) {
+      const now = new Date(Date.now() + i * (CONSTANTS.cooldown_min + 1) * 60_000);
+      await scheduler.tick({ now });
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(scheduler.snapshot().subjects['Alpha']?.parked_at).toBeTruthy();
+    expect(calls()).toBe(CONSTANTS.max_tries);
+  });
+});
