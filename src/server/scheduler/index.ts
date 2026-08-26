@@ -433,6 +433,48 @@ export class Scheduler {
   }
 
   /**
+   * A dispatcher that threw instead of reporting back.
+   *
+   * The claim is this object's to settle, so settling it cannot be left to the dispatcher's
+   * good behaviour. Until this existed the throw reached a `console.error` and nothing else:
+   * the claim stayed open, every tick for a full `lease_min` said "audit already in
+   * progress", the reclaim burned a try, and three of those parked an app for `stuck_days`
+   * over six hours — with no event, no alert and no row on any page saying why the loop had
+   * stopped. A report the volume would not let us write did exactly that on 2026-08-26, to
+   * four apps in a row, and read from the outside as "idle".
+   *
+   * Recorded as an `error`, not `blocked`, and the difference is the one that matters here.
+   * `blocked` keeps the try and does not stamp the finish, so the subject stays the stalest
+   * row and is re-picked on the next tick — a fault that persists would then re-run a
+   * half-hour audit for ever and the rest of the backlog would never be reached. `error`
+   * stamps the finish and burns a try, which is what `record.ts` already describes as this
+   * case ("the attempt failed ... the run died") and what E7 asks for: a reliably failing app
+   * must not starve the others. Three fast tries park it, the loop moves on, and the event
+   * says what happened.
+   */
+  private dispatchFailed(subject: SubjectKey, err: unknown): void {
+    const reason = err instanceof Error ? err.message : String(err);
+    this.opts.events.log({
+      level: 'error',
+      code: 'ASSAY_FAILED',
+      message: 'An audit failed to produce a report',
+      subject,
+      detail: {
+        subject,
+        error: 'dispatch-failed',
+        raw: err instanceof Error ? (err.stack ?? reason) : reason,
+      },
+    });
+    // Nothing above this can be allowed to leave the claim held, so the record is a promise
+    // whose own failure is logged rather than thrown into a place with no handler.
+    void this.record(subject, { kind: 'error', reason: `dispatch failed: ${reason}` }).catch(
+      (e) => {
+        console.error('could not record a failed dispatch', e);
+      },
+    );
+  }
+
+  /**
    * Newest assay of **any status** per subject — a blocked or errored attempt counts.
    *
    * The sibling of `lastDoneAt`, and it exists because the two answer different questions.
@@ -440,6 +482,16 @@ export class Scheduler {
    * at this app" wants the last *look*, and a run that blocked every section still looked.
    * Without that distinction a permanently blocked section would keep a subject eligible for
    * ever — see `standardMoved` in `policy.ts`.
+   *
+   * **`started_at`, not `finished_at`** — the moment the run picked the rubric up is the
+   * moment that decides which revision judged it, and a half-hour audit can straddle an
+   * edit. `yundera~Terminal` did: it started at 12:04:11 on 2026-08-24, both rubrics were
+   * rewritten at 12:12:25, and it finished at 12:12:57. Reading the finish made the
+   * scheduler say we had looked at it under the new standard when its own assays record the
+   * old shas, so the Store page showed an `older standard` chip on a row the backlog called
+   * `fresh` and nothing would re-audit it until `fresh_days` ran out. Comparing the start
+   * also errs the safe way: the worst a run that straddled an edit can now do is be audited
+   * once more under the standard that is actually in force.
    */
   private lastAttemptAt(subjects: string[]): Record<string, string | undefined> {
     const out: Record<string, string | undefined> = {};
@@ -447,8 +499,9 @@ export class Scheduler {
       let newest: string | undefined;
       for (const section of this.opts.index.sections()) {
         const rec = this.opts.index.latestAny(subject, section);
-        // A blocked assay may carry no finish time; `started_at` is when we looked.
-        const at = rec ? String(rec.meta.finished_at || rec.meta.started_at || '') : '';
+        // `finished_at` is the fallback, for an assay written before `started_at` was
+        // recorded; a blocked one may carry no finish time at all.
+        const at = rec ? String(rec.meta.started_at || rec.meta.finished_at || '') : '';
         if (at && (!newest || at > newest)) newest = at;
       }
       out[subject] = newest;
@@ -617,7 +670,7 @@ export class Scheduler {
         // re-normalising would quietly hide a violation of that contract rather than surface it.
         void Promise.resolve(
           this.opts.dispatch?.({ subject: decision.subject as SubjectKey, try_n: claim.try_n }),
-        ).catch((err) => console.error('dispatch failed', err));
+        ).catch((err) => this.dispatchFailed(decision.subject as SubjectKey, err));
       }
     } else if (benchGated(decision)) {
       // Logged above, as a transition rather than once per tick.
