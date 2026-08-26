@@ -400,6 +400,28 @@ describe('refusing to run', () => {
   });
 
   /**
+   * The switch is a *control*, so the gate has to read the override rather than the config
+   * value it falls back to. It read `opts.enabled` for five days, which made every runtime
+   * flip — the Automation page's, the chat's `set_control`, the admin MCP's — silently inert
+   * in both directions.
+   */
+  it('honours the runtime override, both ways', async () => {
+    const on = make({ enabled: false });
+    on.setEnabled(true);
+    expect((await on.run({ subject: SUBJECT, try_n: 1 })).kind).not.toBe('blocked');
+
+    const off = make({ enabled: true });
+    off.setEnabled(false);
+    expect(await off.run({ subject: SUBJECT, try_n: 1 })).toEqual({
+      kind: 'blocked',
+      reason: 'runner_disabled',
+    });
+
+    off.clearEnabled();
+    expect((await off.run({ subject: SUBJECT, try_n: 1 })).kind).not.toBe('blocked');
+  });
+
+  /**
    * Principle 4, and the thing this used to get wrong.
    *
    * A dead demo pool once aborted the whole job before the agent was called, so it cost the

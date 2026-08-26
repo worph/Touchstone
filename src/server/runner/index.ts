@@ -322,7 +322,7 @@ export class Runner {
   }
 
   async run(job: RunnerJob): Promise<RunOutcome> {
-    if (!this.opts.enabled) {
+    if (!this.enabled) {
       return { kind: 'blocked', reason: 'runner_disabled' };
     }
     if (this.running) {
