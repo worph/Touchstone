@@ -5,10 +5,11 @@
 # 1. **Everything Touchstone owns lives under one path** — `/DATA` here, the volume in the
 #    compose. Config, the rubric, the report archive, trials and runtime state are all under
 #    it, so a backup of one path is the whole system (ARCHITECTURE §8).
-# 2. **The rubric is seeded, not baked.** `data/protocols/*.md` are committed to the repo,
-#    which is enough for a checkout and wrong for a container: the volume starts empty. The
-#    image therefore carries its own copy at `/app/seed/protocols`, *outside* the volume, and
-#    `ensureProtocolFiles` copies it in on first boot without ever overwriting. The rubric is
+# 2. **The rubric and the knowledge base are seeded, not baked.** `data/protocols/*.md` and
+#    `data/kb/*.md` are committed to the repo, which is enough for a checkout and wrong for a
+#    container: the volume starts empty. The image therefore carries its own copies at
+#    `/app/seed/protocols` and `/app/seed/kb`, *outside* the volume, and `ensureProtocolFiles`
+#    / `ensureKbFiles` copy them in on first boot without ever overwriting. The rubric is
 #    editable in the app and versions itself on save, so an operator's edit must outrank the
 #    image's copy — a redeploy that reverted it would silently change what every subsequent
 #    assay is judged against.
@@ -67,6 +68,13 @@ COPY --from=build /app/dist         ./dist
 # never overwrites either: an operator's edit outranks the image's copy, for the procedure for
 # exactly the same reason it does for the policy.
 COPY data/protocols/ ./seed/protocols/
+
+# The knowledge base, on exactly the same terms — reference material the agent reads beside the
+# rubric, seeded once and never overwritten, because an operator's page outranks the image's.
+# `KB_SEED_DIR` resolves to `<REPO_ROOT>/seed/kb`. Without this the volume has no `kb/` and
+# `forSections` answers null: the prompt is then byte-for-byte what it was before the KB
+# existed, which is a supported state and therefore a silent one — hence this line.
+COPY data/kb/ ./seed/kb/
 
 # `pcs` runs apps as 1000:1000 and the compose sets `user: 1000:1000`; node:22 already has a
 # `node` user at that id. The mountpoint is created and chowned here so a first boot against an
