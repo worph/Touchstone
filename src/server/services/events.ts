@@ -86,6 +86,11 @@ export const EVENT_CODES = {
   CLAIM_RECLAIMED: { category: 'scheduler', label: 'expired claim released' },
   CLAIM_PARKED: { category: 'scheduler', label: 'subject parked' },
   CLAIM_UNPARKED: { category: 'scheduler', label: 'subject released from parking' },
+  // Somebody asked for an app to be looked at again. `scheduler`, not `assay`: nothing was
+  // audited, the backlog simply gained a row — and the pair reads as one story on Activity
+  // when a flag is set and then thought better of.
+  SUBJECT_FLAGGED: { category: 'scheduler', label: 'app flagged for re-audit' },
+  SUBJECT_UNFLAGGED: { category: 'scheduler', label: 're-audit flag removed' },
   REGISTRY_REFRESHED: { category: 'scheduler', label: 'registry changed' },
   REGISTRY_FAILED: { category: 'scheduler', label: 'registry unreadable' },
   REGISTRY_VERSIONS_FAILED: { category: 'scheduler', label: 'app versions unreadable' },

@@ -127,3 +127,34 @@ describe('the claim — rows C1 and C2', () => {
     expect(opened.parked_at).toBe('2026-08-01T00:00:00Z');
   });
 });
+
+/**
+ * The re-audit flag is not this file's to clear.
+ *
+ * It is a timestamp that stops counting once a *later* attempt exists, and a finisher cannot
+ * tell whether the flag arrived before or after the run it is recording — a flag set at 10:05
+ * while a run that started at 10:00 was still going is asking for the next look. So every
+ * branch carries it and `isFlaggedForReaudit` decides.
+ */
+describe('the re-audit flag', () => {
+  const FLAGGED = '2026-08-19T09:00:00.000Z';
+  const flagged = { try_n: 0, flagged_at: FLAGGED };
+
+  it('survives a verdict', () => {
+    const r = record({ kind: 'verdict' }, flagged);
+    expect(r.schedule.flagged_at).toBe(FLAGGED);
+    expect(r.schedule.try_n).toBe(0);
+  });
+
+  it('survives an error, including a dispatch that wrote no assay at all', () => {
+    const r = record({ kind: 'error', reason: 'dispatch failed' }, flagged);
+    expect(r.schedule.flagged_at).toBe(FLAGGED);
+  });
+
+  it('survives the two outcomes that cost nothing', () => {
+    expect(record({ kind: 'agent_busy' }, flagged).schedule.flagged_at).toBe(FLAGGED);
+    expect(record({ kind: 'blocked', reason: 'no bench' }, flagged).schedule.flagged_at).toBe(
+      FLAGGED,
+    );
+  });
+});

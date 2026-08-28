@@ -9,7 +9,7 @@
  * Every one is a thin wrapper over something the API already does; the chat is a way of
  * reaching the app by conversation, not a second implementation of it.
  *
- * **Twelve of the seventeen read, and five act.** The chat began with three tools, two of which
+ * **Twelve of the eighteen read, and six act.** The chat began with three tools, two of which
  * described the *live process* — `runner.status()`, the ledger — and that was the wrong half
  * of the app to know about. An audit takes minutes, a turn takes seconds, and `tsx watch`
  * restarts the process on any edit; so by the time the operator asked what came of a run,
@@ -48,6 +48,12 @@
  * falls back to, and every change is an event naming what moved, from what, and by whom. The
  * question it answers used to have no answer at all — asked to make the re-audit window a
  * fortnight, the chat could read the window and then send the operator to a page.
+ *
+ * **`flag_reaudit` is the sixth, and it is the one that writes nothing about anything.** It
+ * sets a timestamp the scheduler reads, and the app joins the backlog in its ordinary place.
+ * It is separate from `run_assay` on purpose: an operator whose app looks fresh because one
+ * section blocked wants it looked at *again*, not looked at *now* — and "now" is the single
+ * agent, taken from whatever else was going to use it.
  */
 
 import { standardLabel } from '../../shared/standard.js';
@@ -605,7 +611,7 @@ export const CHAT_TOOLS: ChatTool[] = [
       }
       return ok(
         `${started} On the world as it stands, ${list(forecast.run)} would run and ${list(forecast.blocked.map((b) => b.section))} would be recorded blocked — ${because}. ` +
-          `That costs ${subjectName(key)} nothing and is not a statement about the app, but a blocked section is NOT retried automatically: re-run the audit once that is fixed. ` +
+          `That costs ${subjectName(key)} nothing and is not a statement about the app, but a blocked section is NOT retried automatically: once that is fixed, either run this again or call flag_reaudit to let the loop pick it up in its own order. ` +
           'The runner re-checks at dispatch, so this is a forecast rather than a promise — get_status reports what it settled on.',
       );
     },
@@ -1020,6 +1026,67 @@ export const CHAT_TOOLS: ChatTool[] = [
         if (eligible.length > QUEUE_ROWS) lines.push(`  …and ${eligible.length - QUEUE_ROWS} more.`);
       }
       return ok(lines.join('\n'));
+    },
+  },
+
+  {
+    name: 'flag_reaudit',
+    writes: true,
+    description:
+      'Flag one app so the automatic loop audits it again, or take that flag off. This does NOT start a run: it puts the app back in the backlog and the loop reaches it in its own order, under the same cooldown and the same one-audit-at-a-time rule as everything else — use run_assay when the operator wants it audited now. It is the answer to an app that is stuck looking fresh when it is not: a section that was recorded blocked stamps nothing, but a sibling section that completed keeps the whole app out of the backlog until the re-audit window runs out. The flag is spent by the next attempt whatever that attempt concludes, so it never has to be cleared by hand.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        subject: { type: 'string', description: 'The app name, exactly as list_subjects gives it.' },
+        flagged: {
+          type: 'boolean',
+          description: 'True to flag it for re-audit, false to drop a flag it already has. Defaults to true.',
+        },
+      },
+      required: ['subject'],
+    },
+    handler: async (input, ctx) => {
+      const scheduler = ctx.scheduler;
+      if (!scheduler) return failed('No scheduler is wired, so there is no backlog to add anything to.');
+      const subject = String(input.subject ?? '').trim();
+      if (!subject) return failed('flag_reaudit needs a subject.');
+      const flagged = input.flagged === undefined ? true : Boolean(input.flagged);
+
+      // The registry, exactly as `run_assay` resolves it: what a model may say is *which*
+      // subject, and only ever one the store already lists.
+      const known = scheduler.knownSubjects();
+      const resolved = resolveSubjectKey(subject, known);
+      if (resolved.kind === 'ambiguous') {
+        return failed(
+          `${ambiguousMessage(subject, resolved.candidates)}. Call list_subjects to see the ids.`,
+        );
+      }
+      if (resolved.kind !== 'ok') {
+        return failed(`There is no subject called "${subject}". Call list_subjects to see the names.`);
+      }
+
+      // `'chat'`, the same label `set_control` writes, so the log reads the same way whichever
+      // of the two surfaces made the change.
+      const changed = await scheduler.setFlagged(resolved.key, flagged, 'chat');
+      const name = subjectName(resolved.key);
+      if (!changed) {
+        return ok(
+          flagged
+            ? `${name} was already flagged for re-audit; nothing changed.`
+            : `${name} was not flagged, so there was nothing to take off.`,
+        );
+      }
+      if (!flagged) return ok(`Dropped the re-audit flag on ${name}. It is scheduled by the calendar again.`);
+
+      const rows = await scheduler.previewQueue();
+      const row = rows.find((r) => r.subject === resolved.key);
+      const where = row?.position
+        ? `It is number ${row.position} of ${rows.filter((r) => r.position !== undefined).length} in the backlog.`
+        : 'It is in the backlog.';
+      const armed = scheduler.snapshot().armed
+        ? ''
+        : ' Automatic mode is off, though, so nothing will be picked up until it is switched on.';
+      return ok(`Flagged ${name} for re-audit. ${where} This started no run.${armed}`);
     },
   },
 

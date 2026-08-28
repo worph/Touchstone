@@ -35,7 +35,10 @@ bar is mechanical, something live has to re-read the value, and the override liv
 `state/controls.json` so the file stays the default), **standard in force** (the revision of each
 rubric that would judge a subject *today*, and when
 that last changed — `domain/standards.ts`; a verdict reached under an older one carries an
-`older standard` chip and stops waiting out `fresh_days`).
+`older standard` chip and stops waiting out `fresh_days`), **flag** (an operator asking for one
+more audit of one subject — `SubjectSchedule.flagged_at`, the third way past the freshness window
+and the only one that is not about the world changing; it adds to the backlog, starts nothing, and
+is spent by the next attempt).
 
 A subject's identity is `<origin>~<name>` — `yundera~FileBrowser`. The separator is `~` because
 it is unreserved in `encodeURIComponent` and therefore survives a URL untouched, which is what
@@ -164,7 +167,23 @@ because its data access was smeared through two 200-line n8n Code nodes.
   requirement *as it settles it*, so a run that dies at requirement 12 of 16 keeps twelve results.
   It also resolves each record's **section** from the canonical list, which is what lets one
   agent response become one assay per section without parsing the prose for headings.
-- **`routes/mcp-admin.ts`** — the *same* seventeen tools, served as an MCP server at
+- **the re-audit flag** — `SubjectSchedule.flagged_at`, `POST /schedule/flag`,
+  `Scheduler.setFlagged()`, `isFlaggedForReaudit()` in `policy.ts`. The **third** way past the
+  freshness window, beside the standard moving and the app changing, and the only one that is
+  not about the world: an operator saying *look at this one again*. It exists because a
+  `blocked` section stamps nothing and costs nothing (invariant 3) while a *sibling* section
+  that completed sets the last-run date, so the whole subject reads fresh on the strength of
+  the half of the audit that ran — and no automatic rule may fix that, because one that made
+  a blocked section eligible would re-pick that app every cooldown until the bench came back
+  and starve the other 72. It is a **timestamp, not a boolean**, and it stops counting once a
+  later *attempt* exists: the next look spends it whatever that look concluded, nothing has to
+  remember to clear it, and a flag set while a run is already in flight survives that run
+  (the comparison is against the attempt's **start**). `record.ts` therefore never clears it —
+  a finisher cannot tell whether the flag arrived before it started. Like the other two it
+  only *adds to the backlog*: no jump, no forced run, no bypass of the cooldown, the park or
+  the bench gate. `run_assay`/`POST /assays` remains the other verb — that one means *now*,
+  and takes the single agent.
+- **`routes/mcp-admin.ts`** — the *same* eighteen tools, served as an MCP server at
   `POST /api/v1/mcp/admin` so an agent can ask them: it renders `CHAT_TOOLS` into `tools/list`
   and hands `tools/call` to the same handlers with the chat's own `ChatToolContext`. There is
   no second definition of what an agent may ask this app, which is the point — a second one
@@ -172,7 +191,7 @@ because its data access was smeared through two 200-line n8n Code nodes.
   and disabled it registers no route at all: it is meant to be beaconified into an aggregator
   that authenticates nobody, so turning it on is a statement about the box. `read_only` drops
   every tool marked `writes` (`run_assay`, `open_trial`, `run_trial`, `edit_protocol`,
-  `set_control`) from the list *and*
+  `set_control`, `flag_reaudit`) from the list *and*
   refuses them if asked for anyway — the filter reads the mark rather than a list of names,
   so a new write tool is covered the day it lands; `token` is a bearer a beaconify sidecar can inject. `routes/rpc.ts` is the MCP
   envelope both surfaces share — `initialize`, `tools/list`, `tools/call`, and a `202` for the
@@ -265,16 +284,18 @@ because its data access was smeared through two 200-line n8n Code nodes.
   authoritative; alerts dedup an environment condition to one row; outlets and push are
   best-effort.
 - **`src/server/chat/`** — the administrator chat: a bounded turn loop (`loop.ts`, 8 calls and
-  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), seventeen tools wrapping the
+  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), eighteen tools wrapping the
   API (`registry.ts`), and the agent call (`driver.ts`) reusing `postToAgent` from the runner.
-  Twelve of the seventeen **read**, and most of those read what is *written down* — the board, the
+  Twelve of the eighteen **read**, and most of those read what is *written down* — the board, the
   archive, a report file, the fix brief, the log, the backlog — not the live process, which a
   `tsx watch` restart empties while the operator is still waiting for the run it started
   (HANDOFF §5k). Four of them are the same question at four depths, which is why their
   descriptions work so hard to stay distinct: `get_board` (every app), `get_subject` (one
   app), `get_fix_brief` (its findings), `get_report` (the file, and the only place the
-  evidence behind a *passing* requirement survives). The four that act are `run_assay`, the
-  trial pair `open_trial` / `run_trial`, and `edit_protocol`. A run started from a turn
+  evidence behind a *passing* requirement survives). The six that act are `run_assay`, the
+  trial pair `open_trial` / `run_trial`, `edit_protocol`, `set_control`, and `flag_reaudit` —
+  which starts nothing, and is the one to reach for when the operator wants an app audited
+  *again* rather than *now*. A run started from a turn
   appends a `note` row back into that thread when it finishes, so the conversation knows what
   became of its own work.
   **`get_protocol` / `get_store_file` / `edit_protocol` are the standard and the store it

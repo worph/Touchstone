@@ -8,6 +8,17 @@ import type { AssayRecord, Leg, Severity, SubjectState } from '@shared/types';
 export interface SubjectDetail {
   subject: SubjectState;
   history: AssayRecord[];
+  /**
+   * Whether this app is flagged for re-audit — the scheduler's opinion, alongside the
+   * hallmark rather than inside it.
+   *
+   * Deliberately not a field on `SubjectState`: the same reason `try_n` and the park are not
+   * there either. That object is composed from assay frontmatter and is what `/public`
+   * serves; a scheduling flag is neither a property of an assay nor anything an app author
+   * should be reading. Absent when no scheduler is wired up, which is not the same as
+   * `false` — the page then offers no control at all rather than one that cannot work.
+   */
+  flagged?: boolean;
 }
 
 /** What StatusCell renders. Derived, never transported. */

@@ -25,6 +25,22 @@ export interface SubjectSchedule {
   /** The open claim, if this subject holds one. */
   claim?: { since: string; try_n: number };
   /**
+   * When somebody asked for this subject to be looked at again — the re-audit flag.
+   *
+   * A timestamp rather than a boolean, because it is *consumed by comparison*: the subject is
+   * flagged for as long as its last attempt is older than this, so the next look clears it
+   * with no second write to go wrong. A boolean would need somebody to unset it, and the
+   * somebody is a run that may die halfway.
+   *
+   * It exists because a section can block for ever without the subject ever becoming
+   * eligible again: `blocked` stamps no finish and burns no try (invariant 3), while a
+   * *sibling* section that completed keeps the whole subject fresh for `fresh_days`. The
+   * automatic clauses cannot cover that — a rule that made a blocked section eligible would
+   * re-pick the same app every cooldown until the bench came back and starve the rest — so
+   * the escape hatch is a person saying so.
+   */
+  flagged_at?: string;
+  /**
    * This row was read off n8n's roll-up rather than recorded by us — see `adopt.ts`.
    *
    * It is what lets a later import correct an earlier one. Without the marker, the first
@@ -69,7 +85,7 @@ export interface TickDecision {
  * | `running` | this subject holds the claim — the reason nothing else starts |
  * | `retry` | a previous attempt errored; retried on the next tick, no freshness wait |
  * | `never` | no completed assay on file |
- * | `due` | last result is older than `fresh_days`, or the standard moved, or the app changed |
+ * | `due` | last result is older than `fresh_days`, or the standard moved, or the app changed, or it was flagged |
  * | `fresh` | audited recently enough to be skipped |
  * | `parked` | too many consecutive errors; left alone until `stuck_days` pass |
  */
@@ -99,6 +115,16 @@ export interface QueueRow {
    * the question changed, or the subject did.
    */
   subject_changed?: boolean;
+  /**
+   * Due because an operator flagged it for re-audit rather than because anything about the
+   * world changed.
+   *
+   * The third qualifier alongside the two above and read the same way — the row *is* `due`,
+   * and this says what made it due. It is also the only one of the three a person can clear
+   * from the page, which is why it survives to the wire rather than being folded into a note
+   * on the server.
+   */
+  flagged?: boolean;
   try_n: number;
   parked_at?: string;
   claim_since?: string;

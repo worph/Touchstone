@@ -163,3 +163,89 @@ describe('what the page renders', () => {
   });
 });
 
+
+/**
+ * `POST /schedule/flag` — the one manual way into the backlog that is not a dispatch.
+ *
+ * The two things worth pinning: a name typed by a person is resolved against the registry
+ * rather than written as given, and the answer carries the queue the flag produced, so the
+ * page never has to guess whether the flag actually earned a position.
+ */
+describe('POST /schedule/flag', () => {
+  it('flags an app by its bare name and answers with the queue it produced', async () => {
+    const scheduler = make();
+    await scheduler.load();
+    app = await serve(scheduler);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/schedule/flag',
+      payload: { subject: 'Alpha', flagged: true },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as ScheduleResponse & { subject: string; changed: boolean };
+    // Resolved to the key, not stored as typed — otherwise the row belongs to nobody.
+    expect(body.subject).toBe('yundera~Alpha');
+    expect(body.changed).toBe(true);
+    expect(body.queue.find((r) => r.subject === 'yundera~Alpha')?.flagged).toBe(true);
+    expect(scheduler.isFlagged('yundera~Alpha')).toBe(true);
+  });
+
+  it('takes the flag off again, and says when nothing moved', async () => {
+    const scheduler = make();
+    await scheduler.load();
+    app = await serve(scheduler);
+    const off = async () =>
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/schedule/flag',
+          payload: { subject: 'yundera~Alpha', flagged: false },
+        })
+      ).json() as { changed: boolean };
+
+    expect((await off()).changed).toBe(false);
+    await app.inject({
+      method: 'POST',
+      url: '/schedule/flag',
+      payload: { subject: 'yundera~Alpha', flagged: true },
+    });
+    expect((await off()).changed).toBe(true);
+    expect(scheduler.isFlagged('yundera~Alpha')).toBe(false);
+  });
+
+  it('refuses an app the store does not list, rather than writing a row nothing reads', async () => {
+    const scheduler = make();
+    await scheduler.load();
+    app = await serve(scheduler);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/schedule/flag',
+      payload: { subject: 'Nonesuch', flagged: true },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('refuses a request that does not say which way', async () => {
+    const scheduler = make();
+    await scheduler.load();
+    app = await serve(scheduler);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/schedule/flag',
+      payload: { subject: 'Alpha' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('says there is no scheduler rather than pretending it flagged something', async () => {
+    app = await serve();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/schedule/flag',
+      payload: { subject: 'Alpha', flagged: true },
+    });
+    expect(res.statusCode).toBe(503);
+  });
+});

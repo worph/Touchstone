@@ -107,6 +107,44 @@ const routes: FastifyPluginAsync<ScheduleRoutesOptions> = async (app, options) =
     return answer();
   });
 
+  /**
+   * Flag an app for re-audit, or take the flag off.
+   *
+   * Deliberately *not* a dispatch. `POST /assays` starts an audit now and contends with
+   * whatever else has the agent; this only says "include it in the backlog", and the loop
+   * reaches it in its own order under the same cooldown, park and bench gate as everything
+   * else. The response is the whole schedule answer, so the caller sees the queue the flag
+   * produced rather than having to ask again.
+   *
+   * The subject is resolved against what the loop knows for the same reason `/schedule/tick`
+   * does it: a name typed on a page is not a key, and flagging a subject the registry has
+   * never heard of would write a row nothing ever reads.
+   */
+  app.post<{ Body?: { subject?: unknown; flagged?: unknown } }>(
+    '/schedule/flag',
+    async (req, reply) => {
+      if (!options.scheduler) return reply.code(503).send({ error: 'No scheduler is wired up.' });
+      const { subject, flagged } = req.body ?? {};
+      if (typeof subject !== 'string' || !subject.trim()) {
+        return reply.code(400).send({ error: 'Send { "subject": "<app>", "flagged": true }.' });
+      }
+      if (typeof flagged !== 'boolean') {
+        return reply.code(400).send({ error: 'Send { "flagged": true } or { "flagged": false }.' });
+      }
+      const hit = resolveSubjectKey(subject, options.scheduler.knownSubjects());
+      if (hit.kind !== 'ok') {
+        return reply.code(404).send({
+          error:
+            hit.kind === 'ambiguous'
+              ? `More than one app is called ${subject} — name the store too, as <store>~${subject}.`
+              : `No app called ${subject} is in the store list.`,
+        });
+      }
+      const changed = await options.scheduler.setFlagged(hit.key, flagged);
+      return { ...(await answer()), subject: hit.key, flagged, changed };
+    },
+  );
+
   app.post<{ Body?: { forced?: string[] } }>('/schedule/tick', async (req) => {
     if (!options.scheduler) return { ...(await answer()), ran: false };
     // A wire boundary: `forced` is app names a person typed, so resolve each to a key against

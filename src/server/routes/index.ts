@@ -243,6 +243,17 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
       ...(options.registry ? { versions: options.registry.versions() } : {}),
     }));
 
+  /**
+   * Whether the scheduler is holding a re-audit flag for this subject.
+   *
+   * `undefined` when there is no scheduler at all, and the page reads that as "no control to
+   * offer" rather than as "not flagged". Kept beside the hallmark rather than inside it: the
+   * flag is the scheduler's opinion about a subject, not a property of any assay, which is
+   * the same line `try_n` and the park sit on.
+   */
+  const flagOf = (subject: string): boolean | undefined =>
+    options.scheduler ? options.scheduler.isFlagged(subject) : undefined;
+
   // GET /subjects/:name — the subject detail page: the composed row plus full history.
   app.get<{ Params: { name: string } }>('/subjects/:name', async (request, reply) => {
     const resolved = resolveSubject(request.params.name);
@@ -256,6 +267,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
           ...(options.registry ? { versions: options.registry.versions() } : {}),
         }).state,
         history: sortNewestFirst(resolved.records), // newest first, both legs interleaved
+        ...(flagOf(resolved.name) === undefined ? {} : { flagged: flagOf(resolved.name) }),
       };
     }
 
@@ -277,7 +289,11 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
       return fail(reply, 400, ambiguousMessage(name, fromRegistry.candidates));
     }
     if (fromRegistry.kind !== 'ok') return fail(reply, 404, `unknown subject: ${name}`);
-    return { subject: subjectHallmark(fromRegistry.key, []).state, history: [] };
+    return {
+      subject: subjectHallmark(fromRegistry.key, []).state,
+      history: [],
+      ...(flagOf(fromRegistry.key) === undefined ? {} : { flagged: flagOf(fromRegistry.key) }),
+    };
   });
 
   /**

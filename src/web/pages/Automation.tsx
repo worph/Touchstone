@@ -19,6 +19,7 @@ import type { QueueRow, QueueState, ScheduleResponse } from '@shared/schedule';
 import ControlList from '../components/ControlList';
 import { ErrorState, Loading, Notice } from '../components/Ui';
 import {
+  flagSubject,
   getControls,
   getSchedule,
   resetControl,
@@ -107,6 +108,23 @@ export default function Automation() {
     },
     [],
   );
+
+  /**
+   * Flag or unflag one app.
+   *
+   * The response is the whole schedule, so the row moves into or out of the backlog and every
+   * position below it renumbers in the same paint. Nothing is guessed at optimistically:
+   * whether a flag actually produces a queue position depends on rules this page does not
+   * hold a copy of.
+   */
+  const flag = useCallback(async (subject: string, flagged: boolean) => {
+    try {
+      setData(await flagSubject(subject, flagged));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+    }
+  }, []);
 
   if (!data && error) return <ErrorState error={error} what="automated mode" />;
   if (!data) return <Loading what="automated mode" />;
@@ -305,7 +323,12 @@ export default function Automation() {
         ) : (
           <div className="env">
             {data.queue.map((row) => (
-              <QueueLine key={row.subject} row={row} maxTries={data.constants.max_tries} />
+              <QueueLine
+                key={row.subject}
+                row={row}
+                maxTries={data.constants.max_tries}
+                onFlag={flag}
+              />
             ))}
           </div>
         )}
@@ -327,9 +350,17 @@ function Fact({ label, value }: { label: string; value: string }) {
  * One row. Eligible subjects carry their position, everyone else carries the reason they do
  * not have one — "why is my app not being tested" is the question this list answers.
  */
-function QueueLine({ row, maxTries }: { row: QueueRow; maxTries: number }) {
+function QueueLine({
+  row,
+  maxTries,
+  onFlag,
+}: {
+  row: QueueRow;
+  maxTries: number;
+  onFlag: (subject: string, flagged: boolean) => void;
+}) {
   return (
-    <div className="env-row auto-row" data-state={row.state}>
+    <div className="env-row auto-row" data-state={row.state} data-flagged={String(Boolean(row.flagged))}>
       <span className="auto-pos" aria-hidden="true">
         {row.position ?? '·'}
       </span>
@@ -338,7 +369,45 @@ function QueueLine({ row, maxTries }: { row: QueueRow; maxTries: number }) {
       </Link>
       <span className="env-status">{STATE_LABEL[row.state]}</span>
       <span className="env-note">{note(row, maxTries)}</span>
+      <FlagCell row={row} onFlag={onFlag} />
     </div>
+  );
+}
+
+/**
+ * The flag, on the row it applies to.
+ *
+ * Only on rows where it would mean something. A `running` subject is being looked at right
+ * now and a `parked` one is being left alone on purpose; flagging either says nothing the
+ * next attempt will not immediately erase, and a control that quietly does nothing is worse
+ * than no control. Rows already in the backlog for another reason are offered it too — the
+ * flag outlives that reason if the audit does not happen.
+ */
+function FlagCell({
+  row,
+  onFlag,
+}: {
+  row: QueueRow;
+  onFlag: (subject: string, flagged: boolean) => void;
+}) {
+  if (row.state === 'running' || row.state === 'parked') {
+    return <span className="auto-flag" aria-hidden="true" />;
+  }
+  return (
+    <span className="auto-flag">
+      <button
+        className="btn btn--sm"
+        type="button"
+        onClick={() => onFlag(row.subject, !row.flagged)}
+        title={
+          row.flagged
+            ? 'Drop the re-audit flag. It goes back to being scheduled by the calendar.'
+            : 'Put this app back in the backlog. It is audited in the queue order, not now.'
+        }
+      >
+        {row.flagged ? 'unflag' : 'flag'}
+      </button>
+    </span>
   );
 }
 
@@ -351,11 +420,12 @@ function note(row: QueueRow, maxTries: number): string {
   if (row.state === 'retry') return `try ${row.try_n + 1} of ${maxTries} · ${last}`;
   // Otherwise a row audited yesterday reads as `due` with a recent date beside it and no
   // account of itself. This is the whole of the explanation: the calendar did not make it
-  // due, an edit to the rubric did.
-  // Two independent reasons a fresh-looking row is in the backlog, and a row can carry both.
+  // due — an edit to the rubric did, or the app moved, or somebody asked. Three independent
+  // reasons, and a row can carry all of them.
   const why = [
     row.standard_moved ? 'standard revised since' : '',
     row.subject_changed ? 'app changed in the store' : '',
+    row.flagged ? 'flagged for re-audit' : '',
   ].filter(Boolean);
   if (why.length > 0) return [last, ...why].filter(Boolean).join(' · ');
   return last;

@@ -88,6 +88,8 @@ export function recordResult(input: RecordInput): RecordResult {
         try_n: attempt,
         parked_at: parked ? now.toISOString() : previous.parked_at,
         claim: undefined,
+        // Carried, never cleared here — see the verdict branch below.
+        flagged_at: previous.flagged_at,
       },
       stampsFinish: true,
       parked,
@@ -99,7 +101,13 @@ export function recordResult(input: RecordInput): RecordResult {
 
   return {
     // A verdict clears the slate: the error streak is over and any park with it.
-    schedule: { try_n: 0, parked_at: undefined, claim: undefined },
+    //
+    // The re-audit flag is deliberately *not* cleared, by this branch or any other. It is a
+    // timestamp that stops counting once a later attempt exists (`isFlaggedForReaudit`), and
+    // a finisher clearing it eagerly would eat the one case the timestamp exists for: a flag
+    // set at 10:05 while a run that started at 10:00 was still going is asking for the next
+    // look, and this code cannot tell those two apart. The comparison can.
+    schedule: { try_n: 0, parked_at: undefined, claim: undefined, flagged_at: previous.flagged_at },
     stampsFinish: true,
     parked: false,
     note: 'assay completed',
