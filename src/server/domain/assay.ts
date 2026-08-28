@@ -237,6 +237,14 @@ export interface AgentAssayInput {
   /** The browser it drove. Same reason: a live result is only as good as the pair. */
   browserEndpoint?: string;
   /**
+   * The digest of the knowledge base the agent was given — `AssayMeta.kb_sha256`.
+   *
+   * On every section of the run, unlike the headline fields: the KB was in front of the agent
+   * for the whole of it, so a per-section assay that omitted it would be claiming it was
+   * reached without reference material that was there.
+   */
+  kbSha256?: string;
+  /**
    * What the agent recorded requirement by requirement while it worked.
    *
    * These are the record; the narrative body is the evidence for them. Each one knows its
@@ -341,6 +349,7 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
     ...(input.benchHost ? { bench_host: input.benchHost } : {}),
     ...(input.benchBuild ? { bench_build: input.benchBuild } : {}),
     ...(input.browserEndpoint ? { browser: input.browserEndpoint } : {}),
+    ...(input.kbSha256 ? { kb_sha256: input.kbSha256 } : {}),
     produced_by: 'touchstone-runner',
   };
 

@@ -15,22 +15,20 @@ metadata) and functionally (a real install on a demo instance, driven through a 
 
 ## What it replaces
 
-Touchstone is not a new idea. The job is already being done, correctly, by two n8n workflows on
-`yunderalabs` that have audited 69 apps:
+Touchstone was not a new idea. The job was already being done, correctly, by two workflows on
+`yunderalabs` that had audited 69 apps:
 
 | Workflow | Role |
 | --- | --- |
 | `AppStore Continuous Store QA Loop` | hourly tick — derives the backlog, claims one app, records the result |
 | `AppStore App Audit` | builds the prompt, calls Claude Code, publishes the report |
 
-**Touchstone exists to absorb those two and nothing else.** Two further workflows — PR review and
-release notes — keep running in n8n and are out of scope.
+**Touchstone was written to absorb those two and nothing else**, and it has: it runs the loop now.
+PR review and release notes were never in scope and are somebody else's.
 
-That constraint is the project's organising rule. The full capability inventory of both workflows,
-and what Touchstone covers of it, is
-[ARCHITECTURE.md §1.4](ARCHITECTURE.md#14-capability-inventory-and-parity-matrix). It is the
-specification: **we cannot switch n8n off until every row is covered**, and anything not on it is
-not being built.
+That constraint was the project's organising rule, and the capability inventory it produced —
+[docs/architecture.md §1.4](docs/architecture.md#14-capability-inventory-and-parity-matrix) — is
+still the record of what the replacement had to cover, and of what was deliberately left out.
 
 ## Why it is worth replacing
 
@@ -56,7 +54,7 @@ retry budget on a condition that had nothing to do with any app:
 
 It is not a historical incident. It compounds hourly, and it is still compounding. A twenty-line
 login preflight would stop it today, independent of this project — see
-[ARCHITECTURE.md §9](ARCHITECTURE.md#9-phases).
+[docs/architecture.md §9](docs/architecture.md#9-phases).
 
 **4. The browser is shared, and it is contended.** Three consecutive reports independently record
 another audit stealing page selection mid-run. Two assays sharing one browser is a correctness
@@ -95,21 +93,16 @@ the other.
 | Phase | Deliverable | Retires |
 | --- | --- | --- |
 | **0** ✅ | report files, in-memory index, read API, Overview + Subject detail | Docmost as a *reader* |
-| **1** | scheduler, registry, lease, tries, parking, bench preflight, log + alerts + push | the QA Loop workflow |
-| **2** | runner, agent call, busy retry, browser sidecars, `(bench, browser)` leasing | the App Audit workflow |
+| **1** ✅ | scheduler, registry, lease, tries, parking, bench preflight, log + alerts + push | the QA Loop workflow |
+| **2** ✅ | runner, agent call, busy retry, browser sidecars, `(bench, browser)` leasing | the App Audit workflow |
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — the capability inventory, the domain model, decisions and rationale
-- [MVP.md](MVP.md) — what "minimum viable" means here, and the order of work
-- [IMPLEMENTATION.md](IMPLEMENTATION.md) — stack, storage, the scheduler port, the runner, packaging
-- [UX.md](UX.md) — the three pages
-- [REQUIREMENTS.md](REQUIREMENTS.md) — what the operator asked for **beyond** parity, and its status
+- [docs/architecture.md](docs/architecture.md) — the capability inventory, the domain model, decisions and rationale
+- [docs/requirements.md](docs/requirements.md) — what the operator asked for **beyond** parity, and its status
+- [UX.md](UX.md) — the pages and their degraded states
 
-Phase 0 was scoped before the parity rule and built some things that are no longer in the plan —
-findings-as-rows, the Findings page, history and regression detection. Those have been removed;
-[MVP.md §4](MVP.md#4-what-p1-removed--done) records exactly what went and what survives.
-
-Both n8n workflows keep running unchanged until phase 1, and their data is imported rather than
-discarded.
+Phase 0 was scoped before the parity rule and built some things that are not in the product —
+findings-as-rows, the Findings page, history and regression detection. Those were removed, and
+[docs/architecture.md §1.4 G](docs/architecture.md) records what went and why.
 
 ## Testing a build before it is tagged
 
@@ -184,15 +177,15 @@ outbound port broken.
 The one deliberate divergence is the browser profile: Newsdesk's persists, Touchstone's is
 discarded between assays, because a surviving session cookie would make an unprotected app look
 protected on the one check that catches auth bypass. See
-[ARCHITECTURE.md §5.4](ARCHITECTURE.md#54-bench-and-browser-leasing).
+[docs/architecture.md §5.4](docs/architecture.md#54-bench-and-browser-leasing).
 
 ## Non-goals
 
 - **Not a CI runner.** Touchstone judges conformance to a standard; it does not run the subject's
   own test suite.
-- **Not a PR gate.** PR review stays in n8n.
+- **Not a PR gate.** PR review is a different workflow and was never in scope.
 - **Not a findings database.** Findings are prose inside the report, as they are today. Rule codes,
   cross-subject aggregation and regression detection were designed and are deliberately dropped —
-  [ARCHITECTURE.md §1.4 G](ARCHITECTURE.md#g-deliberately-dropped).
+  [docs/architecture.md §1.4 G](docs/architecture.md#g-deliberately-dropped).
 - **Not a general web crawler.** The browser exists to install and exercise apps on a bench, and its
   profile is thrown away between assays.

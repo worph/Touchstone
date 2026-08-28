@@ -20,3 +20,6 @@ data/uploads/
 # The protocol's own history: snapshots of every revision of every rubric and script on
 # THIS box. `data/protocols/*.md` are tracked; what an operator did to them is not ours.
 data/protocols/.history/
+# The knowledge base's own history: what a reference page said on THIS box, which is
+# recorded but is never the standard.
+data/kb/.history/

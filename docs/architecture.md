@@ -1,13 +1,18 @@
 # Touchstone — Design & Architecture
 
-Status: **phase 0 built; P1 (truth) and P2 (eyes) built; the driver and runner designed.** Touchstone exists to replace two running n8n
-workflows. This document is the argument for its shape, and its first section is the inventory of
-what those workflows do — because that inventory *is* the specification. We cannot switch n8n off
-until every row in §1.4 is covered.
+Status: **built, and driving the conformance loop.** Touchstone was written to replace two
+workflows — the store QA loop and the audit executor — and it has. This document is the argument
+for its shape, and its first section is the inventory of what those workflows did, because that
+inventory *was* the specification: §1.4 is now the record of what the replacement had to cover,
+and §1.4 G is still the list of what was deliberately left out.
 
-The web UI is designed separately in [UX.md](UX.md); the *how* is in
-[IMPLEMENTATION.md](IMPLEMENTATION.md). Facts about the running system were read off `yunderalabs`
-on 2026-08-07 and are cited so they can be re-checked when they drift.
+Sections written while the cutover was ahead of us are kept in that tense rather than rewritten —
+the reasoning is the point, and a decision reads differently once you can see what it was
+weighing. Where a passage plans for a seam that no longer exists, it is history.
+
+The web UI is designed separately in [../UX.md](../UX.md); capability beyond parity is in
+[requirements.md](requirements.md). Facts about the running system were read off `yunderalabs` on
+2026-08-07 and are cited so they can be re-checked when they drift.
 
 ---
 
@@ -382,6 +387,7 @@ it is today. §1.4 G explains why.
 | `standard` | the protocol file itself — a section's name and version are its own rubric's |
 | `protocol` | `protocols/*.md` — the rubric, the definition of the sections, and — as the sha256 of the file — the revision every assay records |
 | `revision` | one recorded state of a protocol file: `{seq, at, file, sha256, parent, bytes, source, message}` in `protocols/.history/log.jsonl`, beside a snapshot of the bytes |
+| `knowledge base` | `kb/KB.md` + `kb/*.md` — reference material handed to the agent beside the rubric, never part of it (§5.9). Recorded the same way, in `kb/.history/`, and named on each assay by `kb_sha256` |
 | `subject` | each origin's GitHub contents API + overrides in `config.yaml` |
 | `origin` | `config.yaml` `origins[]` — never discovered, and the default one is re-added if dropped |
 | `assay` | **frontmatter of the report file** — the record and the artefact are one thing |
@@ -700,6 +706,37 @@ The exported copies carried `imported_from: docmost:<slug>` until 2026-08-20; no
 the Protocol screen showed it, and it outlived the wiki. `ProtocolStore` still parses the field
 for any future import — no protocol on disk sets it.
 
+### 5.9 The knowledge base is beside the rubric, not inside it
+
+`data/kb/*.md`, indexed by a hand-written `KB.md`, appended to the prompt **after** the protocol
+under a fence saying the protocol governs on conflict. It carries what an auditor needs in order
+to *operate* the platform — routes, what a dialog is doing, where an app documents its first
+credentials — and it decides nothing.
+
+It exists because a third of `functional.md` was that kind of knowledge, and inside a document
+titled *Functional Review Protocol* it read as a list of things apps were being judged on. Worse:
+the rubric's identity is the sha256 of its file, so **writing down a fact about a dialog
+re-versioned the standard** — every subject eligible for re-audit, days of agent time, because
+somebody documented the Tips menu.
+
+Three rules hold the separation (invariant 13):
+
+- **The KB never judges.** It may not add a requirement, excuse one, or decide a verdict. When a
+  page turns out to be deciding something — *credentials in Tips count as documented* — that
+  sentence moves into the protocol, as a revision with a reason. The KB says where to look; the
+  rubric says what makes it a pass.
+- **It is not the standard.** `domain/standards.ts` never reads it: no `older standard` chip, no
+  re-eligibility. Invariant 12's argument, applied to the same class of thing.
+- **It is still recorded.** `kb_sha256` on every assay the agent produced — a digest over the
+  pages it was actually shown — and the bytes in `kb/.history/`, swept the way the protocols are,
+  so an edit made over SSH is captured too. The digest says whether the material moved; the
+  history, being time-ordered, says what it said when a given assay ran.
+
+Selection is per run: a page's `sections:` frontmatter says which sections it bears on, so a
+static-only audit is handed nothing about a dashboard it will not open — and when no page
+applies, nothing is sent at all, index included. A box with no `kb/` gets
+the prompt it got before any of this existed. R15, [requirements.md §17](requirements.md).
+
 ### 5.6 Reports and outlets
 
 An assay writes one markdown file per section under `<data>/reports/<origin>/<subject>/<iso>-<section>.md`, frontmatter
@@ -942,8 +979,12 @@ One thing to reconcile first: the running `newsdesk-browser` container is **not 
 | Phase | Deliverable | Retires |
 | --- | --- | --- |
 | **0** ✅ | report files, index, read API, Overview + Subject detail | Docmost as a *reader* |
-| **1** | scheduler, registry, lease, tries, parking, bench preflight, events + alerts + push | **`AppStore Continuous Store QA Loop`** |
-| **2** | runner, agent call, busy retry, browser sidecar, `(bench, browser)` leasing | **`AppStore App Audit`** |
+| **1** ✅ | scheduler, registry, lease, tries, parking, bench preflight, events + alerts + push | **`AppStore Continuous Store QA Loop`** |
+| **2** ✅ | runner, agent call, busy retry, browser sidecar, `(bench, browser)` leasing | **`AppStore App Audit`** |
+
+**Both retired.** What follows was the plan for the seam between them, written while it mattered;
+it is kept because the constraints it found are still true of that webhook, and somebody wiring
+anything to it will meet them again.
 
 Phase 1 can ship while the audit workflow still executes assays — Touchstone calls its
 `Webhook (programmatic)` trigger. That is the seam that makes phase 2 a change of driver rather

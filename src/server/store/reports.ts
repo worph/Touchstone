@@ -201,6 +201,9 @@ const META_ORDER = [
   // Legacy, still in every file written before 2026-08-23. Kept immediately behind its
   // replacement so an old file rewritten today keeps a key order a diff can follow.
   'standard_version',
+  // Beside the standard's hash: both say what the run was reading, and a reader who sees one
+  // has to see the other to know which document a conclusion came from.
+  'kb_sha256',
   'status',
   'verdict',
   'top_severity',

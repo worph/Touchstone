@@ -38,8 +38,15 @@
  *   that does not exist and then scored the app on a reinstall that could only come back
  *   empty. The step now names the archive path, matching `protocols/functional.md` §3 Phase G.
  *
- * When the App Audit workflow is switched off (M7), this file becomes the only copy and the
- * fallback branch can go.
+ * - **The knowledge base, 2026-08-28.** A second document is appended after the rubric, under
+ *   a fence that says the rubric governs on conflict. It carries what an auditor needs in
+ *   order to *operate* the platform rather than what makes an app pass — and moving that out
+ *   of `functional.md` is what stops a fact about a dialog reading as one more thing apps are
+ *   judged on. Absent a KB on the volume, nothing is added and the prompt is what it was.
+ *
+ * The fallback branches below — no inline protocol, no supplied demo host — date from the
+ * period when the n8n workflow this replaced was still running on the same agent, and are kept
+ * for a caller that supplies neither.
  */
 
 /** One section of the protocol, as the prompt needs it. */
@@ -89,6 +96,19 @@ export interface PromptInput {
   protocols?: { orchestrator?: string; sections?: PromptSection[] };
   /** The sections being audited this run, in protocol order. */
   sections?: PromptSection[];
+  /**
+   * The knowledge base — how the platform behaves, and where to look for things.
+   *
+   * Reference material, and the fence it is given under says so: it can tell the agent that
+   * an app's first-run credentials are usually in a Tips dialog, and it never decides whether
+   * finding them there satisfies a requirement. That line is what lets the rubric stay about
+   * the gate — see `store/kb.ts`. Absent, the prompt is exactly what it was before the KB
+   * existed, which is what keeps the archive's older reports readable against it.
+   */
+  kb?: {
+    index?: string | null;
+    docs?: { file: string; title: string; body: string }[];
+  };
   /** Sections not attempted this run, and why — so the agent reports them as not run. */
   skipped?: { id: string; name: string; reason: string }[];
   /**
@@ -151,6 +171,9 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
   // The sections being audited. `protocols.sections` is where the runner puts them; the
   // top-level field is the same list for a caller that has no orchestrator text to pass.
   const sections = f.sections ?? f.protocols?.sections ?? [];
+  // Nothing to say when the volume has no KB, which is every installation before 2026-08-28.
+  const kbDocs = f.kb?.docs ?? [];
+  const kb = f.kb && (f.kb.index || kbDocs.length > 0) ? f.kb : null;
   const skipped = f.skipped ?? [];
   const ids = sections.map((s) => s.id);
   // A section that needs a live instance is what makes this run a live one. Nothing here
@@ -198,6 +221,13 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
   L.push(protocolsInline
     ? 'TOOL ACCESS (critical): you need the repository and, for a section that installs the app, a browser. There is NO wiki in this installation - do not call docmost-mcp or any page-fetching tool, and do not treat a missing wiki as a reason to error. The protocol is given to you in full below.'
     : 'TOOL ACCESS (critical): reach ALL MCP tools through the mcp__beacon__call tool - the direct beacon at beacon:9300, the same beacon n8n uses to publish - passing bare tool names such as docmost-mcp__get_page and browser-mcp__new_page. Do NOT rely on the mcp__claude_ai_yunderalabs_nsl_sh or mcp__claude_ai_Yunderateam connectors: those require interactive auth that is frequently ABSENT in this headless run and return permission-not-granted. Use mcp__beacon__call FIRST for both docmost and the browser; only if it genuinely fails should you try the claude.ai connectors, and only mark the audit errored after BOTH access paths fail.');
+  // Said once, before the steps, because it is a rule about how to read two documents rather
+  // than a step to perform. The rubric governing on conflict is the whole boundary: a KB page
+  // that could overrule it would be an unversioned standard.
+  if (kb) {
+    L.push('');
+    L.push('KNOWLEDGE BASE: reference material is reproduced after the protocol - how the platform behaves, what a dialog is doing, where an app documents things. Read the index and then the pages that bear on what you are doing. It is NOT the rubric: it never adds a requirement, never excuses one, and never decides a verdict. Where it and the protocol disagree, the PROTOCOL governs - note the disagreement in your report and follow the protocol.');
+  }
   L.push('');
   L.push('Steps:');
   const src = f.source;
@@ -276,6 +306,16 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
     // to audit it — and its results would have nowhere to go.
     for (const section of sections) {
       if (section.body) L.push(NL + '--- ' + section.name.toUpperCase() + ' (section ' + section.id + ') ---' + NL + section.body);
+    }
+  }
+  // Last, after the rubric it supports: the order is the claim. A page that arrived before the
+  // protocol would read as a qualification of it.
+  if (kb) {
+    L.push('');
+    L.push('=== KNOWLEDGE BASE (reference, supplied inline - the protocol above governs on any conflict) ===');
+    if (kb.index) L.push(NL + '--- INDEX ---' + NL + kb.index);
+    for (const doc of kbDocs) {
+      L.push(NL + '--- ' + doc.title.toUpperCase() + ' (' + doc.file + ') ---' + NL + doc.body);
     }
   }
   const prompt = L.join(NL);

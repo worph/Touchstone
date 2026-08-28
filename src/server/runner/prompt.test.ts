@@ -176,3 +176,59 @@ describe('installing from the trial\'s own store', () => {
     expect(prompt).not.toContain('4a. STORE');
   });
 });
+
+/**
+ * The knowledge base.
+ *
+ * Two properties, and they are the whole reason it can exist beside the rubric without
+ * becoming one: it arrives **after** the protocol, and it arrives under a sentence saying the
+ * protocol wins. A KB that could be read as a qualification of the rubric would be an
+ * unversioned standard, which is exactly what moving this prose out of `functional.md` was
+ * meant to avoid.
+ */
+describe('the knowledge base', () => {
+  const KB = {
+    index: '# Knowledge base\n\nWhat is here.',
+    docs: [{ file: 'maison.md', title: 'Driving Maison', body: 'The Tips dialog carries the first-run credentials.' }],
+  };
+
+  it('is reproduced after the protocol, and says the protocol governs', () => {
+    const prompt = buildPrompt({
+      ...BASE,
+      protocols: { sections: [{ id: 'static', name: 'Static Review Protocol', body: 'The rubric.' }] },
+      kb: KB,
+    }).prompt;
+
+    expect(prompt).toContain('=== KNOWLEDGE BASE (reference, supplied inline');
+    expect(prompt).toContain('--- DRIVING MAISON (maison.md) ---');
+    expect(prompt).toContain('The Tips dialog carries the first-run credentials.');
+    expect(prompt).toContain('the PROTOCOL governs');
+    // Order is the claim: the rubric first, its reference material after it.
+    expect(prompt.indexOf('=== PROTOCOL')).toBeLessThan(prompt.indexOf('=== KNOWLEDGE BASE'));
+  });
+
+  it('never says it may add or excuse a requirement', () => {
+    const prompt = buildPrompt({ ...BASE, kb: KB }).prompt;
+    expect(prompt).toContain('never adds a requirement, never excuses one, and never decides a verdict');
+  });
+
+  /**
+   * The compatibility argument. Every box that has no `data/kb/` must get the prompt it got
+   * before the KB existed, or the archive's earlier reports stop being comparable with the
+   * next one for a reason that has nothing to do with any app.
+   */
+  it('adds nothing at all when there is none', () => {
+    const bare = buildPrompt(BASE).prompt;
+    expect(buildPrompt({ ...BASE, kb: { docs: [] } }).prompt).toBe(bare);
+    expect(buildPrompt({ ...BASE, kb: { index: null, docs: [] } }).prompt).toBe(bare);
+    expect(bare).not.toContain('KNOWLEDGE BASE');
+  });
+
+  // The builder renders whatever it is handed; deciding that an index with no pages is not a
+  // knowledge base is `KbStore.forSections`'s job, and it answers null there.
+  it('renders an index it is handed even with no pages', () => {
+    const prompt = buildPrompt({ ...BASE, kb: { index: '# Knowledge base', docs: [] } }).prompt;
+    expect(prompt).toContain('--- INDEX ---');
+    expect(prompt).toContain('KNOWLEDGE BASE');
+  });
+});
