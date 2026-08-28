@@ -40,6 +40,7 @@ surprise.
 | **R14** | The administrator can change how this instance behaves, from inside it | ✅ built 2026-08-25 — §16 |
 | **R15** | Supporting knowledge lives beside the rubric instead of inside it — a *knowledge base* | ✅ built 2026-08-28 — §17 |
 | — | The rubric cleanup: one id space, severity defined, the static leaf's mechanics to the KB | ✅ done 2026-08-28 — §18 |
+| — | The rubric is seeded from `seed/`, not committed as if it were the live standard | ✅ done 2026-08-28 — §19 |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -1165,3 +1166,85 @@ requirement-level vocabulary at all.
 one copy instead of two. `kind: orchestrator` already exists and is given to every run, but **an
 orchestrator's hash is recorded on no assay**, so normative text moved there becomes invisible
 to `standard_sha256`. That is a prerequisite fix, not a detail to accept quietly.
+
+## 19. Where the rubric lives, and who owns it — 2026-08-28
+
+### 19.1 The bug that made the point
+
+Adding one knowledge-base page broke a release. `deploy/Dockerfile` gained
+`COPY data/kb/ ./seed/kb/`, but `.dockerignore` said
+
+```
+data/*
+!data/protocols/
+```
+
+so `data/kb/` was never in the build context, `COPY` failed on an empty source, and v1.1.12
+produced a tag with no image. Typecheck and tests were green; the packaging was not.
+
+The lesson is not "remember the third file". It is that **a `COPY` whose source depends on an
+exception in a second file breaks the first time somebody adds a directory** — which is a
+property of shipping instance data alongside code, not an accident.
+
+### 19.2 What was actually wrong
+
+The rubric was committed at `data/protocols/` *and* shipped from there. Neither the seeding nor
+the never-overwrite rule was wrong — the image's copy had had no effect on `yunderalabs` since
+its first boot — but two things were:
+
+- **The repo's copy looked like the live standard.** A box edits its own; that is the point of
+  an editable rubric. The tracked file drifts from every instance the moment anyone uses the
+  editor, while still being what a reviewer reads. On 2026-08-28 that cost real time: applying
+  the functional/KB split meant pulling the box's file down and diffing *bodies* to discover its
+  frontmatter had been re-serialised by an older build on 08-24, and that overwriting it would
+  have reverted an operator's edit.
+- **Development never ran the seeding code.** The checkout arrived with `data/protocols/`
+  populated, so `ensureProtocolFiles` only ever executed in a container — a poor place to find
+  out it does not work.
+
+### 19.3 `seed/`
+
+`data/protocols/` → `seed/protocols/`, `data/kb/` → `seed/kb/`, and **all** of `data/` is
+gitignored. `PROTOCOL_SEED_DIR` and `KB_SEED_DIR` already resolved to `<REPO_ROOT>/seed/…`, so
+the code did not move; the files moved to where it was already looking.
+
+- The Dockerfile is one line, `COPY seed/ ./seed/`, and `.dockerignore` needs no carve-out:
+  adding a seeded file is adding a file rather than editing three places.
+- The name states the relationship. `seed/` is what a fresh install starts with. It is not what
+  any box is running.
+- Development seeds itself on first boot, so the path is exercised on every fresh checkout.
+
+**The direction of truth, written down because it was only ever implied:** the box is the
+original; `seed/` is the default the next fresh install begins from; bringing a box's
+improvement back into `seed/` is a deliberate, reviewed act. The same rule `config.yaml` has
+always followed.
+
+### 19.4 Fail closed when a section produced nothing
+
+`sectionRan` returned `{ ran: true }` for any section with no phase plan — "nothing to gate on".
+True for the static checklist. False, and dangerous, for a section that declares
+`requires: [bench, browser]`: it was dispatched against live infrastructure and came back with
+no plan, no requirement and no prose, and that was being recorded as a completed audit of the
+app. Fail-open in the one place the system is meant to fail closed (invariants 3 and 4).
+
+It also has a shape. A rubric whose frontmatter the running build cannot read declares its steps
+and derives none — which is exactly what `functional.md` would have done on v1.1.11, whose
+`sectionsOf` reads a `phases:` block that no longer exists. The protocol edit was held back for
+that reason; the guard means the next one fails visibly instead.
+
+The test is **evidence, not shape**: a live section with no sequence still counts as run once it
+has settled a single requirement, recorded any phase, or written prose. Only total silence is
+blocked.
+
+### 19.5 Still open
+
+**A `schema_version` for the protocol file format.** `static.md` fails an app **Major** for
+relying on `folders` or `hooks` without declaring `schema_version: 2`, and the stated reason is
+that an older reader starts it silently without them. That is precisely what a rubric using
+`phase:` does on a build that predates it. Touchstone should hold its own format to the rule it
+grades apps against: a leaf declaring a schema the build does not know is recorded blocked with
+a reason, rather than half-read. §19.4 is the cheap guard; this is the correct one.
+
+**A drift indicator.** The revision log already knows — a file whose newest revision is `source:
+seed` is pristine, anything else has diverged — so the Protocols page could say "edited on this
+box, 2 revisions since the shipped default" instead of leaving it to be diffed by hand.

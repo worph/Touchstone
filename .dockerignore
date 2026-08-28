@@ -6,18 +6,14 @@ dist
 .git
 .github
 
-# Runtime data. `data/protocols/` is the exception: the image ships it as a seed, so it is
-# un-ignored below. Reports, trials, state and config are the operator's and must never be
-# baked in — a redeploy carrying somebody else's archive would be a very confusing bug.
-data/*
-!data/protocols/
-# ...but not the history of somebody else's edits to them. `ensureProtocolFiles` would
-# filter it out anyway; this keeps it out of the image in the first place.
-data/protocols/.history
-data/reports
-data/trials
-data/state
-data/config.yaml
+# Runtime data — all of it, with no exceptions to keep in step. What the image ships is
+# `seed/`, which is not under `data/` and needs no carve-out here.
+#
+# It used to need one: `data/*` plus `!data/protocols/`, and when the knowledge base was added
+# in 2026-08-28 nobody added `!data/kb/`, so `COPY data/kb/` found an empty context and failed
+# the build. A `COPY` whose source depends on an exception in a second file is a release that
+# breaks on a new directory.
+data/
 
 test
 docker-compose.dev.yml

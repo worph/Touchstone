@@ -1,10 +1,14 @@
 /**
  * Seeding the rubric into the data directory.
  *
- * This exists because of packaging. `data/protocols/*.md` are committed, which is enough in a
- * checkout and exactly wrong in a container: the data dir is a volume that starts empty, and an
- * empty protocol directory means `sectionsOf()` returns nothing, every run blocks `no_protocol`,
- * and the Protocols page is blank — with no error anywhere saying why.
+ * This exists because the data dir is a volume that starts empty, and an empty protocol
+ * directory means `sectionsOf()` returns nothing, every run blocks `no_protocol`, and the
+ * Protocols page is blank — with no error anywhere saying why.
+ *
+ * Since 2026-08-28 it is also the path **development** takes: `seed/protocols/` is tracked and
+ * `data/` is not, so a fresh checkout seeds itself on first boot exactly as a container does.
+ * Before that the checkout arrived with `data/protocols/` already populated, and this code ran
+ * nowhere but in production — which is a poor place to find out it does not work.
  */
 
 import { promises as fs } from 'node:fs';
@@ -73,7 +77,8 @@ describe('ensureProtocolFiles', () => {
   });
 
   it('does nothing, quietly, when there is no seed directory', async () => {
-    // Development: the checkout already has data/protocols, and no image seed exists.
+    // An install carrying no seed at all: there is nothing to copy and that is not an error.
+    // The run that follows blocks `no_protocol`, which says so where an operator can see it.
     const res = await ensureProtocolFiles(dataProtocols, path.join(dir, 'absent'));
     expect(res).toEqual({ seeded: [] });
   });

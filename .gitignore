@@ -2,24 +2,11 @@ node_modules/
 dist/
 *.log
 
-# Runtime data. The report archive is the archive of record, but it is imported
-# from Docmost rather than authored here, so it is not committed. Fixtures used
-# by tests live under test/fixtures/ and ARE committed.
-data/reports/
-data/state/
-data/config.yaml
-# The administrator's standing instructions — written by whoever runs the instance,
-# about that instance. Never ours to commit.
-data/context.md
+# Runtime data — **all of it**. Nothing under `data/` is ours: it is what one instance did,
+# on one box. What a *fresh* install starts with lives in `seed/`, which is tracked, and the
+# seeders copy it in on first boot without ever overwriting. Before 2026-08-28 the rubric and
+# the knowledge base were committed here as well as shipped, which made the repo's copy look
+# like the live standard while a box had been editing its own for days.
+data/
 
 .DS_Store
-data/cache/
-data/trials/
-# The files an upload trial audits — somebody's working copy, never ours to commit.
-data/uploads/
-# The protocol's own history: snapshots of every revision of every rubric and script on
-# THIS box. `data/protocols/*.md` are tracked; what an operator did to them is not ours.
-data/protocols/.history/
-# The knowledge base's own history: what a reference page said on THIS box, which is
-# recorded but is never the standard.
-data/kb/.history/
