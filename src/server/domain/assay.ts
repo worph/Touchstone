@@ -116,6 +116,13 @@ export interface AssaySection {
   standard: Standard;
   /** The ids of its phase plan, in order. Empty for a section that has no phases. */
   phases: string[];
+  /**
+   * The capabilities the section could not have run without — `bench`, `browser`.
+   *
+   * Carried here only so that "this section produced nothing at all" can be read differently
+   * for a live section than for a desk one. See `sectionRan`.
+   */
+  requires?: string[];
   /** Heading patterns that mark this section in the narrative report. */
   headings: string[];
 }
@@ -297,10 +304,25 @@ function sectionRan(
   section: AssaySection,
   recorded: RecordedPhase[],
   narrative: string | null,
+  settled: number,
 ): { ran: boolean; failed: boolean } {
-  // A section that declares no plan has nothing to gate on: it is done when the agent
-  // answered at all.
-  if (section.phases.length === 0) return { ran: true, failed: false };
+  if (section.phases.length === 0) {
+    // A section with no plan has no sequence to gate on. For a desk section — the static
+    // checklist — answering at all is the whole of "it ran", and that is the common case.
+    //
+    // For a section that needed a **bench or a browser**, the same silence means something
+    // else: it was dispatched against live infrastructure and came back with no plan, no
+    // requirement and no prose. Reading that as a completed audit is fail-open in the one
+    // place the system is meant to fail closed — it turns an outage into a verdict about the
+    // app, which invariants 3 and 4 exist to forbid. It also has a shape: a rubric whose
+    // frontmatter this build could not read declares its steps and derives none.
+    //
+    // The test is evidence rather than shape, so a live section that genuinely has no
+    // sequence still passes it by recording anything at all.
+    if ((section.requires ?? []).length === 0) return { ran: true, failed: false };
+    const evidence = settled > 0 || recorded.length > 0 || Boolean(narrative);
+    return { ran: evidence, failed: false };
+  }
   const plan = section.phases;
   const mine: { id: string; result: string }[] =
     recorded.length > 0
@@ -363,7 +385,7 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
   for (const section of sections) {
     const narrative = shape.sections[section.id]?.text ?? null;
     const phases = recordedPhases.filter((p) => (p.section ?? primary?.id) === section.id);
-    const status = sectionRan(section, phases, narrative);
+    const status = sectionRan(section, phases, narrative, mineOf(section).length);
     state.set(section.id, status);
   }
 
