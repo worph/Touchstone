@@ -279,3 +279,40 @@ describe('the bench build rides every assay', () => {
     expect(out[0]?.meta.bench_build).toBeUndefined();
   });
 });
+
+/**
+ * A section that declares no phase plan.
+ *
+ * The desk case — the static checklist — is unchanged: answering at all is the whole of "it
+ * ran". The live case is not, and the difference is the point. A section dispatched against a
+ * bench that comes back with **nothing at all** used to be recorded `done`, which turns an
+ * outage into a verdict about the app: exactly what invariants 3 and 4 forbid. It also has a
+ * shape — a rubric whose frontmatter the running build cannot read declares its steps and
+ * derives none, which is what a protocol edit deployed ahead of its code looks like.
+ */
+describe('a section with no phase plan', () => {
+  const DESK = { ...STATIC, phases: [] };
+  const LIVE = { ...FUNCTIONAL, phases: [], requires: ['bench', 'browser'] };
+
+  it('counts a desk section as run, because answering is all it has to do', () => {
+    const out = compose({ sections: [DESK] });
+    expect(out[0]!.meta.status).toBe('done');
+  });
+
+  it('records a live section blocked when it produced nothing at all', () => {
+    const out = compose({ sections: [LIVE], declared: { verdict: 'compliant', severity: 'none', risk_score: 0, report_markdown: '## Verdict\ncompliant' } });
+    expect(out[0]!.meta.status).toBe('blocked');
+    expect(out[0]!.meta.verdict).toBeNull();
+  });
+
+  /** Evidence, not shape: a live section that genuinely has no sequence still counts. */
+  it('counts a live section as run once it has settled a single requirement', () => {
+    const out = compose({ sections: [LIVE], requirements: [req('phase-a-session', 'functional')] });
+    expect(out[0]!.meta.status).toBe('done');
+  });
+
+  it('counts a live section as run when it recorded a phase off-plan', () => {
+    const out = compose({ sections: [LIVE], phases: [phase('A', 'functional')] });
+    expect(out[0]!.meta.status).toBe('done');
+  });
+});

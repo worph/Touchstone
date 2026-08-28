@@ -852,6 +852,7 @@ export class Runner {
       name: section.name,
       standard: { name: section.name, sha256: section.sha256 },
       phases: section.phases.map((p) => p.id),
+      requires: section.requires,
       headings: section.headings,
     };
   }
