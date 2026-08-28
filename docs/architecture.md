@@ -329,11 +329,13 @@ origin     -- config.yaml `origins[]`; the store a subject comes from
 
 -- WHAT IT IS JUDGED AGAINST ---------------------------------------------
 protocol   -- data/protocols/<id>.md; a `leaf` IS a section definition
-  id, name, version, kind, order, requires, phases, report_headings, requirements
+  id, name, kind, order, requires, report_headings, requirements
   -- kind      ∈ orchestrator | leaf
   -- order     decides report order and which section carries the run's headline verdict
   -- requires  the capabilities it cannot run without — bench, browser. This replaced `depth`.
-  -- phases    its fixed steps, if it has any; the UI track and the prompt both read this list
+  -- requirements  the canonical ids, and — via `phase:` on the ones that are ordered steps —
+                   the phase plan too. ONE list: the ledger, the prompt and the UI track all
+                   read it. A literal `phases:` block still wins where a rubric carries one.
 
 standard   -- not a separate entity: a section's standard IS its protocol file
   name, sha256

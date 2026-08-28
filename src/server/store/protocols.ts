@@ -110,7 +110,17 @@ export interface ProtocolMeta {
    * name across runs and across apps. An item found that is not here is recorded anyway and
    * marked `unlisted`, which is how the list gets corrected.
    */
-  requirements?: { id: string; text: string; requires?: string }[];
+  requirements?: {
+    id: string;
+    text: string;
+    requires?: string;
+    /**
+     * Present, this requirement is also an **ordered step** in the section's phase plan, and
+     * this is its short label on the track. Absent, it is judged but not sequenced — which is
+     * every item on the static checklist.
+     */
+    phase?: string;
+  }[];
   /** Where it came from, when it was not written here. Provenance only. */
   imported_from?: string;
   imported_at?: string;
@@ -278,6 +288,30 @@ export interface ProtocolSection {
  * directory's alphabetical accident: the first section carries the run's headline verdict,
  * and `functional.md` sorting before `static.md` would silently move it.
  */
+/**
+ * The ordered steps of a section — **derived from its requirements, not listed twice.**
+ *
+ * A phase is not a different kind of thing from a requirement: it is a requirement that also
+ * happens to be a step in a fixed sequence. Saying so twice is how the two came to disagree —
+ * `functional.md` carried a `phases:` list keyed `A, C, D, E8…` and a `requirements:` list
+ * keyed `phase-a-session…`, two id spaces for the same eight facts, and the letters had holes
+ * in them (no B, no E1–E7) where an older document's steps used to be. A requirement now
+ * declares `phase: <short label>` and that *is* the plan: one list, in one order, with one set
+ * of ids the ledger, the prompt and the UI track all agree on.
+ *
+ * A literal `phases:` block still wins if a file carries one, so a rubric written before this
+ * keeps working unchanged.
+ */
+export function phasesOf(meta: ProtocolMeta): { id: string; label: string }[] {
+  const declared = (meta.phases ?? []).filter((ph) => ph?.id);
+  if (declared.length > 0) {
+    return declared.map((ph) => ({ id: String(ph.id), label: String(ph.label ?? ph.id) }));
+  }
+  return (meta.requirements ?? [])
+    .filter((r) => r?.id && typeof r.phase === 'string' && r.phase.trim() !== '')
+    .map((r) => ({ id: String(r.id), label: String(r.phase) }));
+}
+
 export function sectionsOf(protocols: readonly Protocol[]): ProtocolSection[] {
   return protocols
     .filter((p) => p.meta.kind === 'leaf')
@@ -286,9 +320,7 @@ export function sectionsOf(protocols: readonly Protocol[]): ProtocolSection[] {
       name: p.meta.name,
       order: Number.isFinite(Number(p.meta.order)) ? Number(p.meta.order) : 100,
       requires: p.meta.requires ?? [],
-      phases: (p.meta.phases ?? [])
-        .filter((ph) => ph?.id)
-        .map((ph) => ({ id: String(ph.id), label: String(ph.label ?? ph.id) })),
+      phases: phasesOf(p.meta),
       headings: (p.meta.report_headings ?? []).map((h) => String(h)),
       requirements: p.meta.requirements ?? [],
       executor: parseExecutor(p.meta.executor),

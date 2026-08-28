@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { ProtocolStore, isSafeId, parseExecutor, parseProtocol, sectionsOf, serialiseProtocol } from './protocols.js';
+import { ProtocolStore, isSafeId, parseExecutor, parseProtocol, phasesOf, sectionsOf, serialiseProtocol } from './protocols.js';
 
 let dir: string;
 let store: ProtocolStore;
@@ -291,5 +291,77 @@ describe('executors', () => {
     const sections = sectionsOf(await store.list());
     expect(sections.find((s) => s.id === 'p')?.policy).toEqual({ stale_days: 180 });
     expect(sections.find((s) => s.id === 'q')?.policy).toEqual({});
+  });
+});
+
+/**
+ * The phase plan comes out of the requirements.
+ *
+ * There used to be two lists — `phases:` keyed `A, C, D, E8…` and `requirements:` keyed
+ * `phase-a-session…` — describing the same facts in two id spaces, which is how they came to
+ * disagree. A requirement that is also an ordered step says so with `phase:`, and that one
+ * list is what the ledger accepts, what the prompt asks for and what the UI track draws.
+ */
+describe('the phase plan', () => {
+  const meta = (over: Record<string, unknown>) =>
+    ({ id: 'functional', name: 'Functional', kind: 'leaf', ...over }) as never;
+
+  it('is derived from the requirements that declare a phase', () => {
+    expect(
+      phasesOf(
+        meta({
+          requirements: [
+            { id: 'session', text: 'a session', phase: 'session' },
+            { id: 'install', text: 'installs', phase: 'fresh install' },
+          ],
+        }),
+      ),
+    ).toEqual([
+      { id: 'session', label: 'session' },
+      { id: 'install', label: 'fresh install' },
+    ]);
+  });
+
+  /** The static checklist: eighteen requirements, no sequence, no track. */
+  it('is empty when no requirement declares one', () => {
+    expect(phasesOf(meta({ requirements: [{ id: 'assets', text: 'icon and screenshots' }] }))).toEqual([]);
+  });
+
+  it('keeps the order the requirements are written in', () => {
+    const plan = phasesOf(
+      meta({
+        requirements: [
+          { id: 'c', text: 'third', phase: 'third' },
+          { id: 'a', text: 'first', phase: 'first' },
+          { id: 'b', text: 'second', phase: 'second' },
+        ],
+      }),
+    );
+    expect(plan.map((p) => p.id)).toEqual(['c', 'a', 'b']);
+  });
+
+  /** A rubric written before this keeps working, unchanged and unmigrated. */
+  it('still honours a literal phases block, which wins', () => {
+    expect(
+      phasesOf(
+        meta({
+          phases: [{ id: 'A', label: 'session' }],
+          requirements: [{ id: 'session', text: 'a session', phase: 'session' }],
+        }),
+      ),
+    ).toEqual([{ id: 'A', label: 'session' }]);
+  });
+
+  it('ignores a phase that is not a non-empty string', () => {
+    expect(
+      phasesOf(
+        meta({
+          requirements: [
+            { id: 'a', text: 'x', phase: '   ' },
+            { id: 'b', text: 'y', phase: 'kept' },
+          ],
+        }),
+      ),
+    ).toEqual([{ id: 'b', label: 'kept' }]);
   });
 });

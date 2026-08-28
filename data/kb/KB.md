@@ -15,5 +15,6 @@ the report and carry on.
 | Page | Read it when | Relevant to |
 | --- | --- | --- |
 | `maison.md` — Driving Maison | you are installing, opening, uninstalling or restoring an app on a demo PCS; a dialog or a route is not what you expected; you are about to conclude something from what the dashboard did | `functional` |
+| `maison-compose.md` — What Maison reads from a compose file | you are judging metadata, declared folders or install hooks; you need to know which block wins, what is parsed and ignored, or when and where a hook actually runs | `static` |
 
 Each page is reproduced in full below this index, so there is nothing to fetch.

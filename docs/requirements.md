@@ -39,6 +39,7 @@ surprise.
 | **R13** | What the standard said when it judged, and what changed since | ✅ built 2026-08-23 — §15 |
 | **R14** | The administrator can change how this instance behaves, from inside it | ✅ built 2026-08-25 — §16 |
 | **R15** | Supporting knowledge lives beside the rubric instead of inside it — a *knowledge base* | ✅ built 2026-08-28 — §17 |
+| — | The rubric cleanup: one id space, severity defined, the static leaf's mechanics to the KB | ✅ done 2026-08-28 — §18 |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -1048,3 +1049,119 @@ gate, determinism, and the cleanup obligation.
 - **No per-page inclusion in the report.** The digest says which set was given, not which page
   the agent leaned on. Recording that would mean asking the agent, and an agent's account of
   what influenced it is not evidence.
+
+## 18. The rubric cleanup — 2026-08-28
+
+Operator feedback on reading the two protocols end to end, taken in one pass because each item
+moves `moved_at` and four separate saves would have re-audited the archive four times.
+
+### 18.1 One id space, not two
+
+`functional.md` carried a `phases:` block keyed `A, C, D, E8, E9, E10, F, G` **and** a
+`requirements:` list keyed `phase-a-session…` — two id spaces for the same eight facts. The
+letters were a fossil of the document this rubric was exported from, and they had the holes to
+prove it: no `B`, no `E1`–`E7`, gaps where an older sequence's steps used to be. Every reader
+had to learn that "E8" meant "works immediately" instead of reading it.
+
+`static.md` had never done this. Eighteen flat semantic ids — `permissions`, `caddy-wiring`,
+`hook-idempotency` — one list, no letters. Functional was the outlier, so it was brought into
+line rather than the other way round.
+
+**A phase is not a different kind of thing from a requirement**; it is a requirement that also
+happens to be an ordered step. So there is one list now, and a requirement that is a step says
+so with `phase: <short label>`. `phasesOf()` derives the plan from it, a literal `phases:` block
+still wins where a rubric carries one, and the ledger, the prompt and the UI track read the same
+ids the rubric names.
+
+Three code sites were carrying the letters and would have gone silently stale:
+
+- **`prompt.ts` step 4** spelled out `A session, C fresh install, D discover URL…` in prose. It
+  now names the section's declared plan, so a rubric that renames a step cannot end up telling
+  the agent one set of ids while the ledger accepts another — and the per-step detail it
+  duplicated is the rubric's to state.
+- **`MANDATORY_PHASES`** in `domain/extract.ts` was a hardcoded set of letters, imported by
+  `domain/assay.ts` and never read. Invariant 2 in miniature. Deleted.
+- **`PHASE_ROW`**, the prose fallback used when the ledger recorded nothing, matched only
+  letters. It now carries both vocabularies: the archive is not rewritten, and a loose match is
+  safe because `sectionRan` keeps only ids the declared plan names.
+
+`PHASE_LABEL` in `shared/activity.ts` was left alone deliberately — it decodes what old assays
+say, and old assays still say `E8`.
+
+### 18.2 `migration` is declared rather than invented
+
+`G′` was prose telling the agent to record `n-a`, not a declared id. So the agent invented a
+phase called `G'` on every run — observed on `yundera~Tuwunel`, 2026-08-28 — and the UI dropped
+it, because `mergeTrack` maps over the declared plan and an unplanned id has nothing to attach
+to. The protocol's own argument for recording it (*"a row that says so is the only thing keeping
+it from looking like a phase that quietly passed"*) was being defeated by the row being
+invisible. It is `migration` now: declared, permanently `n-a`, with the reason in its text.
+
+### 18.3 Functional demanded a severity and never defined one ✅ fixed
+
+The gap that mattered most, and the reason this went in ahead of the renaming. `static.md` §3
+defines Critical / Major / Minor concretely with examples. `functional.md` said "with a severity
+on every `fail`" three times and stopped — while `risk_score` is `100·Critical + 10·Major +
+1·Minor` and **any** Critical is unconditionally non-compliant. The most consequential number in
+a runtime audit came from whatever the agent felt at the time.
+
+`functional.md` §4 now gives each requirement a **default tier** — `auth-gate` and
+`data-persistence` Critical, the install-and-usability ones Major, `clean-boot` Minor, `session`
+none because it is infra — and requires a stated reason to raise or lower, with `auth-gate` and
+`data-persistence` never lowered. Mechanical default, argued deviation: the same shape as
+static's D1–D5.
+
+### 18.4 The static leaf had functional's old disease
+
+Roughly a third of `static.md` §6–§7 was platform mechanics: which metadata block Maison reads
+and which wins, what it parses and then ignores, when declared folders are created, when each
+hook fires, and that hooks run inside the Maison container against the host daemon with `/DATA`
+bind-mounted at the same path. That is knowledge-base material by §17's test — it tells the
+auditor where to look, it does not say what makes an app pass.
+
+It moved to `kb/maison-compose.md` (`sections: [static]`), so a functional-only run does not
+carry it and a static-only run does. The verdict tables stayed, trimmed to the verdict: what to
+check, what tier it fails at. `static.md` went 18.7 KB → 16.3 KB.
+
+One paragraph deliberately stayed: *a read-only test in a hook reads the real host file*, and
+the note that the opposite inference **has been drawn and shipped as a Major against an app
+whose guard was correct**. The mechanism it rests on is in the KB; the instruction not to make
+that mistake is a judging rule.
+
+### 18.5 The Docmost and n8n fossils are gone
+
+Both rubrics opened with a line about Docmost pages driving a workflow in n8n. `prompt.ts`
+carried more: a whole branch fetching the orchestrator and its leaves from Docmost by slug and
+applying "every dated Amendment section" as binding, a branch selecting a demo host off the
+management board, and an opening rule justified by *"n8n handles all publishing"*.
+
+All removed. The two protocol lines, and in the prompt: the wiki branch (unreachable — the
+runner refuses a run with no protocol before `buildPrompt` is called), the host-selection branch
+(the caller always supplies a probed host, and the board's own "most time remaining" rule once
+preferred an instance whose login answered 500), and the publishing justification — the rule not
+to publish is unchanged, but an agent told somebody else does it might reasonably wonder whether
+to help.
+
+One Docmost mention was **kept on purpose**: the prompt still says *do not call `docmost-mcp`
+looking for the protocol*. The wiki is gone; the aggregator still lists the tool, so an agent
+that decides the rubric must live somewhere canonical can still find something to fetch.
+
+### 18.6 The duplicated recording section
+
+Both rubrics carried a `## How results are recorded` block naming `touchstone__list_requirements`,
+`touchstone__record_requirement` and `touchstone__record_phase` — a second copy of what
+`prompt.ts` already emits whenever a callback exists. Tool names are a property of the runner:
+rename one and the code changes while the rubric silently rots.
+
+The tool mechanics were deleted from both. What stayed is what is genuinely normative and has to
+be hash-recorded per section: what each value *means*, that there is no `skipped`, the coverage
+sentence, never defer to a human. Functional now states both vocabularies explicitly — a
+requirement takes a **verdict** (`pass` / `fail` / `n-a` / `unverified`), a step takes a
+**result** (`pass` / `fail` / `errored` / `n-a`) — because the two tables previously looked
+contradictory and were in fact about different things, with functional never stating its
+requirement-level vocabulary at all.
+
+**Not done:** moving those shared conventions into an orchestrator protocol, which would give
+one copy instead of two. `kind: orchestrator` already exists and is given to every run, but **an
+orchestrator's hash is recorded on no assay**, so normative text moved there becomes invisible
+to `standard_sha256`. That is a prerequisite fix, not a detail to accept quietly.
