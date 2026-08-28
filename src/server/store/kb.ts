@@ -102,7 +102,10 @@ export function parseKbDoc(raw: string, file: string): Omit<KbDoc, 'sha256' | 'b
   };
 }
 
-/** Where the image keeps its copy, for a volume that has none yet. */
+/**
+ * What a fresh install starts with — `seed/kb/`, on the same terms as the rubric's seed and
+ * for the same reasons. See `PROTOCOL_SEED_DIR`.
+ */
 export const KB_SEED_DIR = process.env.TOUCHSTONE_KB_SEED_DIR ?? path.join(REPO_ROOT, 'seed', 'kb');
 
 export interface KbSeedResult {

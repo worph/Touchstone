@@ -338,17 +338,25 @@ export function sectionsOf(protocols: readonly Protocol[]): ProtocolSection[] {
 }
 
 /**
- * Where the shipped copies of the rubric live in a built image.
+ * **What a fresh install starts with** — `seed/protocols/`, tracked in the repo and copied
+ * into the image, and never the same file as the one a box is running.
  *
- * `data/protocols/*.md` are committed to the repo, which is enough in development and is
- * exactly wrong in a container: the data dir is a volume, it starts empty, and an empty
- * protocol directory means `sectionsOf()` returns nothing, every run blocks `no_protocol`
- * and the Protocols page renders empty. So the image carries its own copy outside the volume
- * and seeds it on first boot, the same move `ensureConfigFile` makes for `config.yaml`.
+ * The data dir is a volume: it starts empty, and an empty protocol directory means
+ * `sectionsOf()` returns nothing, every run blocks `no_protocol` and the Protocols page
+ * renders empty. So the seed lives outside the volume and is copied in on first boot without
+ * ever overwriting — the same move `ensureConfigFile` makes for `config.yaml`.
  *
- * `REPO_ROOT` resolves to `/app` in the image and to the repo in development, where this
- * directory does not exist and seeding is therefore a no-op — `data/protocols/` is already
- * populated by the checkout.
+ * It lived at `data/protocols/` until 2026-08-28, committed *and* shipped. Two things were
+ * wrong with that and neither was the seeding:
+ *
+ * - **The repo's copy looked like the live standard.** A box edits its own — that is the whole
+ *   point of an editable rubric — so the tracked file drifts from every instance the moment
+ *   anybody uses the editor, while still being what a reviewer reads.
+ * - **Development never ran this code.** The checkout arrived with `data/protocols/` populated,
+ *   so seeding only ever executed in a container.
+ *
+ * `REPO_ROOT` resolves to `/app` in the image and to the repo in development, and both now
+ * have a `seed/`.
  */
 export const PROTOCOL_SEED_DIR =
   process.env.TOUCHSTONE_PROTOCOL_SEED_DIR ?? path.join(REPO_ROOT, 'seed', 'protocols');

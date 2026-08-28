@@ -62,19 +62,16 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/dist         ./dist
 
-# The shipped rubric *and its executors*, outside the volume. `PROTOCOL_SEED_DIR` resolves to
-# `<REPO_ROOT>/seed/protocols`, and REPO_ROOT is `/app` here because the code runs from
-# `/app/dist/server/`. `ensureProtocolFiles` copies both `.md` and `.sh` in on first boot and
-# never overwrites either: an operator's edit outranks the image's copy, for the procedure for
-# exactly the same reason it does for the policy.
-COPY data/protocols/ ./seed/protocols/
-
-# The knowledge base, on exactly the same terms — reference material the agent reads beside the
-# rubric, seeded once and never overwritten, because an operator's page outranks the image's.
-# `KB_SEED_DIR` resolves to `<REPO_ROOT>/seed/kb`. Without this the volume has no `kb/` and
-# `forSections` answers null: the prompt is then byte-for-byte what it was before the KB
-# existed, which is a supported state and therefore a silent one — hence this line.
-COPY data/kb/ ./seed/kb/
+# What a fresh install starts with: the rubric, its executors, and the knowledge base. It is
+# copied verbatim from the repo's `seed/` to the image's, because `PROTOCOL_SEED_DIR` and
+# `KB_SEED_DIR` both resolve to `<REPO_ROOT>/seed/...` and REPO_ROOT is `/app` here — the code
+# runs from `/app/dist/server/`. The seeders copy them onto the volume on first boot and never
+# overwrite: an operator's edit outranks the image's copy, for the procedure exactly as for the
+# policy.
+#
+# One directory, no per-subdirectory lines and no `.dockerignore` exceptions to keep in step, so
+# adding a seeded file is adding a file rather than editing three places.
+COPY seed/ ./seed/
 
 # `pcs` runs apps as 1000:1000 and the compose sets `user: 1000:1000`; node:22 already has a
 # `node` user at that id. The mountpoint is created and chowned here so a first boot against an
