@@ -126,6 +126,44 @@ function subjectChanged(input: PolicyInput, subject: string): boolean {
   return now !== then;
 }
 
+/**
+ * Whether somebody has asked for this subject and we have not looked since.
+ *
+ * The third way past the freshness window, and the only one that is not about the world
+ * changing: it is an operator saying "look at this one again". Read exactly as
+ * `standardMoved` is read — against the last **attempt**, so the next look clears it whatever
+ * that look concluded, and a subject cannot be pinned in the backlog by a flag nobody
+ * remembers setting.
+ *
+ * That is also what makes it the right answer to a section that is permanently blocked: the
+ * flag costs one audit, not one audit per cooldown for ever.
+ */
+export function isFlaggedForReaudit(
+  flaggedAt: string | undefined,
+  lastAttemptAt: string | undefined,
+): boolean {
+  if (!flaggedAt) return false;
+  const flagged = Date.parse(flaggedAt);
+  if (Number.isNaN(flagged)) return false;
+  const attempted = Date.parse(lastAttemptAt ?? '');
+  // `<`, and against the attempt's *start*: a flag set while a run was already in flight is
+  // asking for the *next* look, not for the one that was halfway through when it was set.
+  // That is also why nothing clears the field when a run finishes — a finisher cannot tell
+  // whether the flag arrived before it started, and the comparison can.
+  return Number.isNaN(attempted) || attempted < flagged;
+}
+
+function flaggedForReaudit(
+  input: PolicyInput,
+  subject: string,
+  row: SubjectSchedule | undefined,
+): boolean {
+  // The row comes from the caller rather than from `input.schedule`, because `plan()` works
+  // on the copy `reclaimExpired` returned and that copy is the one the rest of the tick
+  // agrees with.
+  return isFlaggedForReaudit(row?.flagged_at, input.lastAttemptAt?.[subject]);
+}
+
 function minutesSince(iso: string | undefined, now: Date): number {
   if (!iso) return Number.POSITIVE_INFINITY;
   const t = Date.parse(iso);
@@ -200,6 +238,8 @@ function plan(input: PolicyInput): {
   restandard: Set<string>;
   /** Of those, the ones that are only eligible because the app itself changed. */
   rechanged: Set<string>;
+  /** Of those, the ones that are only eligible because somebody flagged them. */
+  reflagged: Set<string>;
 } {
   const { constants, now } = input;
   const { schedule, reclaimed, busy } = reclaimExpired(input.schedule, input);
@@ -218,8 +258,16 @@ function plan(input: PolicyInput): {
   const eligible: string[] = [];
   const restandard = new Set<string>();
   const rechanged = new Set<string>();
+  const reflagged = new Set<string>();
   for (const subject of input.subjects) {
     const row = schedule[subject];
+    // Computed first, and for every subject rather than only for the ones the freshness
+    // window would have skipped. Unlike the two clauses below it, the flag is a *stored*
+    // thing an operator toggles, and the control that toggles it renders from this — so a
+    // flag on a row that was already due, already retrying or already claimed still has to
+    // come back as set, or the button offers to set it again.
+    const flagged = flaggedForReaudit(input, subject, row);
+    if (flagged) reflagged.add(subject);
     if (row?.claim) continue;
     if (row?.parked_at) continue;
     // An errored subject is retried on the next tick — no freshness wait. That is what
@@ -243,12 +291,14 @@ function plan(input: PolicyInput): {
     // says "re-judge it with the spare hour rather than waiting out the week", which is
     // exactly as much as it should say. It sorts last among the eligible — by `lastDoneAt`,
     // and it is the freshest thing in the list — so a never-audited app still goes first.
-    // Two ways past the freshness window, and they are independent: the question changed, or
-    // the subject did. Both merely add to the backlog — no jump, no forced run, no bypass of
-    // the cooldown, the park or the bench gate.
+    // Three ways past the freshness window, and they are independent: the question changed,
+    // the subject did, or somebody asked. All three merely add to the backlog — no jump, no
+    // forced run, no bypass of the cooldown, the park or the bench gate — so a flagged app
+    // that was audited yesterday sorts behind everything staler, which is the point: it is a
+    // request to include it in the ordinary rotation, not to interrupt it.
     const moved = standardMoved(input, subject);
     const changed = subjectChanged(input, subject);
-    if (!moved && !changed) continue;
+    if (!moved && !changed && !flagged) continue;
     eligible.push(subject);
     if (moved) restandard.add(subject);
     if (changed) rechanged.add(subject);
@@ -264,7 +314,7 @@ function plan(input: PolicyInput): {
     return input.subjects.indexOf(a) - input.subjects.indexOf(b);
   });
 
-  return { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged };
+  return { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged };
 }
 
 /**
@@ -275,7 +325,8 @@ function plan(input: PolicyInput): {
  */
 export function decide(input: PolicyInput): TickDecision {
   const { constants, now } = input;
-  const { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged } = plan(input);
+  const { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged } =
+    plan(input);
 
   const base = {
     backlog: eligible.length,
@@ -318,6 +369,9 @@ export function decide(input: PolicyInput): TickDecision {
       reason += ` · standard revised ${String(input.standardMovedAt).slice(0, 10)}`;
     }
     if (rechanged.has(subject!)) reason += ' · app changed in the store';
+    // Named for the same reason as the clause above: n8n has no flag, so a shadow diff on
+    // this tick is somebody having asked rather than a divergence to chase.
+    if (reflagged.has(subject!)) reason += ' · flagged for re-audit';
   }
 
   // ── the bench gate — row D7, which n8n does not have ──────────────────────────────────
@@ -355,7 +409,7 @@ export function decide(input: PolicyInput): TickDecision {
  */
 export function queue(input: PolicyInput): QueueRow[] {
   const { constants, now } = input;
-  const { schedule, eligible, restandard, rechanged } = plan(input);
+  const { schedule, eligible, restandard, rechanged, reflagged } = plan(input);
   const position = new Map(eligible.map((subject, i) => [subject, i + 1]));
 
   const rows = input.subjects.map((subject): QueueRow => {
@@ -371,7 +425,9 @@ export function queue(input: PolicyInput): QueueRow[] {
     else if (daysSince(last, now) >= constants.fresh_days) state = 'due';
     // A restandard row carries a queue position, so calling it `fresh` would put a
     // contradiction on one line. It is due; the note says what made it due.
-    else state = restandard.has(subject) || rechanged.has(subject) ? 'due' : 'fresh';
+    // `position` is the honest test now that a flag is reported on every row it is set on:
+    // a claimed or parked subject can carry one, and neither of those is due.
+    else state = position.has(subject) ? 'due' : 'fresh';
 
     return {
       subject,
@@ -384,6 +440,9 @@ export function queue(input: PolicyInput): QueueRow[] {
       // why — which the Automation page appends to the note rather than to the status word.
       ...(restandard.has(subject) ? { standard_moved: true } : {}),
       ...(rechanged.has(subject) ? { subject_changed: true } : {}),
+      // Reported from the *derived* set rather than from `flagged_at` being present, so a
+      // flag the last attempt already answered stops showing the moment it stops counting.
+      ...(reflagged.has(subject) ? { flagged: true } : {}),
       ...(row?.parked_at ? { parked_at: row.parked_at } : {}),
       ...(row?.claim ? { claim_since: row.claim.since } : {}),
     };

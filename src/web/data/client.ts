@@ -188,6 +188,17 @@ export function setArmed(armed: boolean): Promise<ScheduleResponse> {
   return post<ScheduleResponse>('/schedule/arm', { armed });
 }
 
+/**
+ * Flag an app for re-audit, or take the flag off.
+ *
+ * Not a run. It puts the app back in the backlog and the loop reaches it in its own order,
+ * which is why the response is the whole schedule: the caller wants to see the queue the
+ * flag produced, and on the Automation page that is the list right under the button.
+ */
+export function flagSubject(subject: string, flagged: boolean): Promise<ScheduleResponse> {
+  return post<ScheduleResponse>('/schedule/flag', { subject, flagged });
+}
+
 /** Decide now rather than at the top of the hour. Claims only if armed. */
 export function tickNow(): Promise<ScheduleResponse> {
   return post<ScheduleResponse>('/schedule/tick');

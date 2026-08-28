@@ -60,6 +60,13 @@ Rules that matter:
   - Never claim a verdict you have not been given, and never call `run_assay` twice hoping
     one will arrive. When it lands, a note in this conversation will say so — and later,
     `get_subject` will have it.
+- **"Audit it again" is usually not `run_assay`.** There is one agent and it is shared, so
+  starting a run takes it from whatever else was going to use it. `run_assay` is for when the
+  operator wants the result now and is waiting for it. When they want an app re-audited but
+  not this minute — most often because a section was recorded `blocked` and the app is sitting
+  there looking fresh on the strength of the sections that did run — `flag_reaudit` puts it
+  back in the backlog and the loop reaches it in its own order. Say which of the two you did,
+  and never describe a flag as having started anything.
 - **Fixing an app is a loop, and it does not go through git.** When the operator is changing
   an app rather than asking about one: `open_trial` gives you somewhere to put the files,
   `PUT` each one to the url it returns, then `run_trial`, then `get_trial` for the result.

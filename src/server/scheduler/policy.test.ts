@@ -429,3 +429,162 @@ describe('when the app changes in the store', () => {
     expect(decide(changed({ schedule: { Alpha: { try_n: 3, parked_at: daysAgo(1) } } })).action).toBe('idle');
   });
 });
+
+/**
+ * The third way past the freshness window: somebody asked.
+ *
+ * It exists for a case the two automatic rules cannot reach. A section recorded `blocked`
+ * stamps no finish and burns no try — invariant 3 — but a *sibling* section that completed
+ * sets `lastDoneAt`, so the whole subject reads fresh for `fresh_days` on the strength of the
+ * half of the audit that ran. Nothing about the world has changed, so neither the standard
+ * clause nor the version clause fires, and the operator has no way to say "look at it again"
+ * short of taking the agent with a hand-run.
+ *
+ * Shaped exactly like the other two: it adds to the backlog and does nothing else.
+ */
+describe('when a subject is flagged for re-audit', () => {
+  const FLAGGED = daysAgo(1);
+
+  /** Audited two days ago, well inside `fresh_days`; flagged yesterday. */
+  function flagged(over: Partial<PolicyInput> = {}): PolicyInput {
+    return input({
+      subjects: ['Alpha'],
+      lastDoneAt: { Alpha: daysAgo(2) },
+      lastAttemptAt: { Alpha: daysAgo(2) },
+      schedule: { Alpha: { try_n: 0, flagged_at: FLAGGED } },
+      ...over,
+    });
+  }
+
+  it('makes a subject eligible that the freshness window would have skipped', () => {
+    const d = decide(flagged());
+    expect(d.action).toBe('audit');
+    expect(d.subject).toBe('Alpha');
+    expect(d.backlog).toBe(1);
+  });
+
+  it('says so in the reason, because n8n has no such rule to diff against', () => {
+    expect(decide(flagged()).reason).toContain('flagged for re-audit');
+  });
+
+  it('does nothing to a subject nobody flagged', () => {
+    const d = decide(flagged({ schedule: { Alpha: { try_n: 0 } } }));
+    expect(d.action).toBe('idle');
+    expect(d.reason).toContain('backlog empty');
+  });
+
+  /**
+   * The whole reason the flag is a timestamp rather than a boolean: the next attempt spends
+   * it, so nothing has to remember to switch it off, and a stale flag cannot pin an app in
+   * the backlog for ever.
+   */
+  it('is spent by the next attempt', () => {
+    const d = decide(flagged({ lastAttemptAt: { Alpha: daysAgo(0) } }));
+    expect(d.action).toBe('idle');
+    expect(d.reason).toContain('backlog empty');
+  });
+
+  /**
+   * And spent by an attempt that concluded nothing — which is the case it was set for. One
+   * flag buys one look, not one look per cooldown until the bench comes back.
+   */
+  it('is spent even by an attempt that produced no verdict', () => {
+    const d = decide(
+      flagged({ lastDoneAt: { Alpha: daysAgo(2) }, lastAttemptAt: { Alpha: minutesAgo(30) } }),
+    );
+    expect(d.action).toBe('idle');
+  });
+
+  /**
+   * A flag set while a run was already in flight is asking for the *next* look. The
+   * comparison is against the attempt's start, so a run that began before the flag does not
+   * answer it — which is why nothing clears the field when a run finishes.
+   */
+  it('survives a run that started before it was set', () => {
+    const d = decide(
+      flagged({
+        schedule: { Alpha: { try_n: 0, flagged_at: minutesAgo(30) } },
+        lastAttemptAt: { Alpha: minutesAgo(60) },
+      }),
+    );
+    expect(d.action).toBe('audit');
+    expect(d.reason).toContain('flagged for re-audit');
+  });
+
+  it('does not jump the queue — a never-audited app still goes first', () => {
+    const rows = queue(flagged({ subjects: ['Alpha', 'Beta'] }));
+    expect(rows.map((r) => r.subject)).toEqual(['Beta', 'Alpha']);
+    expect(rows[0]?.state).toBe('never');
+  });
+
+  /** It is due, and the note is where the reason lives — not in a seventh state word. */
+  it('reads as due rather than fresh, and carries why', () => {
+    const row = queue(flagged()).find((r) => r.subject === 'Alpha');
+    expect(row?.state).toBe('due');
+    expect(row?.position).toBe(1);
+    expect(row?.flagged).toBe(true);
+  });
+
+  it('leaves an unflagged row unmarked', () => {
+    const row = queue(
+      flagged({
+        lastDoneAt: { Alpha: daysAgo(30) },
+        lastAttemptAt: { Alpha: daysAgo(30) },
+        schedule: { Alpha: { try_n: 0 } },
+      }),
+    ).find((r) => r.subject === 'Alpha');
+    expect(row?.state).toBe('due');
+    expect(row?.flagged).toBeUndefined();
+  });
+
+  /**
+   * Unlike `standard_moved`, the flag is reported wherever it is set — including on a row
+   * that was already due for its own reasons. It is what the control renders from, and a
+   * button that offers to set a flag that is already set is a button that lies.
+   */
+  it('is reported on a row that was already due for another reason', () => {
+    const row = queue(
+      flagged({ lastDoneAt: { Alpha: daysAgo(30) }, lastAttemptAt: { Alpha: daysAgo(30) } }),
+    ).find((r) => r.subject === 'Alpha');
+    expect(row?.state).toBe('due');
+    expect(row?.flagged).toBe(true);
+  });
+
+  it('is reported on a subject that has never been audited', () => {
+    const row = queue(
+      flagged({ lastDoneAt: {}, lastAttemptAt: {} }),
+    ).find((r) => r.subject === 'Alpha');
+    expect(row?.state).toBe('never');
+    expect(row?.flagged).toBe(true);
+  });
+
+  /** A row can be due for all three reasons at once, and says all three. */
+  it('sits alongside the other two rather than replacing them', () => {
+    const row = queue(
+      flagged({
+        standardMovedAt: daysAgo(1),
+        currentVersion: { Alpha: 'bbb' },
+        auditedVersion: { Alpha: 'aaa' },
+      }),
+    ).find((r) => r.subject === 'Alpha');
+    expect(row?.flagged).toBe(true);
+    expect(row?.standard_moved).toBe(true);
+    expect(row?.subject_changed).toBe(true);
+    expect(row?.position).toBe(1);
+  });
+
+  it('is still subject to the cooldown, the bench gate and the park', () => {
+    expect(decide(flagged({ lastFinishedAt: minutesAgo(5) })).action).toBe('idle');
+    expect(decide(flagged({ benchAvailable: false })).reason).toContain('no usable demo bench');
+    expect(
+      decide(flagged({ schedule: { Alpha: { try_n: 3, parked_at: daysAgo(1), flagged_at: FLAGGED } } }))
+        .action,
+    ).toBe('idle');
+  });
+
+  /** Garbage in the file must not throw a tick; it reads as "not flagged". */
+  it('ignores a flag that is not a date', () => {
+    const d = decide(flagged({ schedule: { Alpha: { try_n: 0, flagged_at: 'soon' } } }));
+    expect(d.action).toBe('idle');
+  });
+});

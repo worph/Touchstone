@@ -614,3 +614,111 @@ describe('a dispatcher that throws', () => {
     expect(calls()).toBe(CONSTANTS.max_tries);
   });
 });
+
+/**
+ * The re-audit flag, end to end: the file it lands in, the event it writes, and the fact
+ * that it is the *same* predicate the tick reads.
+ *
+ * Real `<origin>~<name>` keys throughout, unlike the blocks above: `load()` migrates a bare
+ * name into one, so a test that restarts a scheduler has to speak the language the file does.
+ */
+const ALPHA = 'yundera~Alpha';
+const BETA = 'yundera~Beta';
+
+describe('flagging a subject for re-audit', () => {
+  /** Alpha audited yesterday — inside `fresh_days`, so the backlog would skip it. */
+  function fresh(): Scheduler {
+    const at = new Date(Date.now() - 86_400_000).toISOString();
+    return make({
+      index: indexOf({ [ALPHA]: at, [BETA]: at }),
+      registry: registryOf([ALPHA, BETA]),
+    });
+  }
+
+  it('puts a fresh subject into the backlog and nothing else', async () => {
+    const scheduler = fresh();
+    await scheduler.load();
+    expect((await scheduler.previewQueue()).filter((r) => r.position !== undefined)).toHaveLength(0);
+
+    await scheduler.setFlagged(ALPHA, true);
+
+    const rows = await scheduler.previewQueue();
+    const alpha = rows.find((r) => r.subject === ALPHA);
+    expect(alpha?.position).toBe(1);
+    expect(alpha?.flagged).toBe(true);
+    expect(rows.find((r) => r.subject === BETA)?.position).toBeUndefined();
+  });
+
+  it('survives a restart, because it is state rather than a request', async () => {
+    const first = fresh();
+    await first.load();
+    await first.setFlagged(ALPHA, true);
+
+    const second = fresh();
+    await second.load();
+    expect(second.isFlagged(ALPHA)).toBe(true);
+  });
+
+  it('logs who asked, both ways round', async () => {
+    const scheduler = fresh();
+    await scheduler.load();
+    await scheduler.setFlagged(ALPHA, true, 'chat');
+    await scheduler.setFlagged(ALPHA, false, 'operator');
+
+    const flagged = events.query({ code: 'SUBJECT_FLAGGED' })[0];
+    expect(flagged?.subject).toBe(ALPHA);
+    expect((flagged?.detail as { by?: string })?.by).toBe('chat');
+    expect(events.query({ code: 'SUBJECT_UNFLAGGED' })).toHaveLength(1);
+  });
+
+  it('reports nothing changed when the flag is already where it is asked to be', async () => {
+    const scheduler = fresh();
+    await scheduler.load();
+    expect(await scheduler.setFlagged(ALPHA, true)).toBe(true);
+    expect(await scheduler.setFlagged(ALPHA, true)).toBe(false);
+    expect(events.query({ code: 'SUBJECT_FLAGGED' })).toHaveLength(1);
+  });
+
+  /**
+   * `isFlagged` is what the subject page renders and the queue is what the Automation page
+   * renders; they read one predicate, so the two surfaces cannot disagree about the word.
+   */
+  it('stops reading as flagged once an attempt has answered it', async () => {
+    const scheduler = fresh();
+    await scheduler.load();
+    await scheduler.setFlagged(ALPHA, true);
+    expect(scheduler.isFlagged(ALPHA)).toBe(true);
+
+    // An attempt recorded *after* the flag — the audit it asked for.
+    const after = make({
+      index: indexOf({ [ALPHA]: new Date(Date.now() + 1000).toISOString() }),
+      registry: registryOf([ALPHA, BETA]),
+    });
+    await after.load();
+    expect(after.isFlagged(ALPHA)).toBe(false);
+    expect((await after.previewQueue()).find((r) => r.subject === ALPHA)?.flagged).toBeUndefined();
+  });
+
+  it('claims the flagged subject on the next tick once armed', async () => {
+    const picked: string[] = [];
+    const at = new Date(Date.now() - 86_400_000).toISOString();
+    const scheduler = make({
+      armed: true,
+      index: indexOf({ [ALPHA]: at, [BETA]: at }),
+      registry: registryOf([ALPHA, BETA]),
+      dispatch: (job) => {
+        picked.push(job.subject);
+      },
+    });
+    await scheduler.load();
+    expect((await scheduler.tick()).action).toBe('idle');
+
+    await scheduler.setFlagged(BETA, true);
+    const d = await scheduler.tick();
+    expect(d.action).toBe('audit');
+    expect(d.subject).toBe(BETA);
+    expect(d.reason).toContain('flagged for re-audit');
+    await new Promise((r) => setImmediate(r));
+    expect(picked).toEqual([BETA]);
+  });
+});

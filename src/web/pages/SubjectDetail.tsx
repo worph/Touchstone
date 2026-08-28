@@ -14,6 +14,7 @@ import MarkdownView, { MissingReport } from '../components/MarkdownView';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getReport, getSubject } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
+import FlagButton from '../components/FlagButton';
 import ReassayButton from '../components/ReassayButton';
 import FixReportPanel, { FixReportButton } from '../components/FixReport';
 import LegCard, { StandardTag, verdictSections } from '../components/LegCard';
@@ -126,6 +127,9 @@ export default function SubjectDetail() {
             {/* Only when there is something to brief anyone on. A "fix report" button on a
                 compliant app is a button that produces a document saying nothing. */}
             {fixable ? <FixReportButton open={fixOpen} onToggle={() => setFixOpen((v) => !v)} /> : null}
+            {/* The queue's verb beside the agent's. One asks for the app to be looked at
+                again in the ordinary rotation; the other takes the agent now. */}
+            <FlagButton subject={subject.name} flagged={data.flagged} onChanged={reload} />
             <ReassayButton subject={subject.name} onFinished={reload} />
           </div>
 

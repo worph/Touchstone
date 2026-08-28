@@ -30,6 +30,7 @@ import type { EventLog } from '../services/events.js';
 import {
   cooldownLeftMin,
   decide,
+  isFlaggedForReaudit,
   queue,
   stateLine,
   type PolicyInput,
@@ -225,6 +226,55 @@ export class Scheduler {
       });
     }
     await this.persist();
+  }
+
+  /**
+   * Whether a re-audit flag is *counting* for this subject.
+   *
+   * The same predicate the tick uses, not a second reading of the stored field — otherwise
+   * the subject page would offer "unflag" for a flag the queue had already spent, and the
+   * two surfaces would disagree about the same word.
+   */
+  isFlagged(subject: string): boolean {
+    return isFlaggedForReaudit(
+      this.subjects[subject]?.flagged_at,
+      this.lastAttemptAt([subject])[subject],
+    );
+  }
+
+  /**
+   * Flag a subject for re-audit, or take the flag off again.
+   *
+   * The one manual way into the backlog that is not a dispatch. `POST /assays` and
+   * `/schedule/tick {forced}` both start an audit *now* — they contend with whatever else is
+   * on the agent and they ignore the queue — and neither is what an operator wants when a
+   * section blocked and the app simply needs looking at again some time this week.
+   *
+   * All this writes is a timestamp. Eligibility is derived from it on every tick
+   * (`flaggedForReaudit` in `policy.ts`) and the flag is spent by the next *attempt*,
+   * whatever that attempt concluded — so there is no second write to lose, and a flag cannot
+   * outlive the audit it asked for. Invariant 8 holds: there is still no queue, only rules
+   * re-read from state.
+   *
+   * Returns whether anything moved, so the route can answer honestly rather than reporting a
+   * change it did not make.
+   */
+  async setFlagged(subject: string, flagged: boolean, by = 'operator'): Promise<boolean> {
+    const row = this.subjects[subject] ?? { try_n: 0 };
+    if (Boolean(row.flagged_at) === flagged) return false;
+    const at = new Date().toISOString();
+    this.subjects[subject] = { ...row, flagged_at: flagged ? at : undefined };
+    this.opts.events.log({
+      level: 'info',
+      code: flagged ? 'SUBJECT_FLAGGED' : 'SUBJECT_UNFLAGGED',
+      message: flagged
+        ? 'An app has been flagged for re-audit and joins the backlog'
+        : 'An app is no longer flagged for re-audit',
+      subject,
+      detail: { subject, by, ...(flagged ? { flagged_at: at } : {}) },
+    });
+    await this.persist();
+    return true;
   }
 
   /**

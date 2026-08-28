@@ -500,9 +500,9 @@ and what does that make the queue.
 │ └────────────────────────────────────────────────────────┘   │
 ├──────────────────────────────────────────────────────────────┤
 │ QUEUE  69                                                    │
-│  1  AIOStreams      never audited      no result on file     │
-│  2  AnnasTorrents   never audited      no result on file     │
-│  ·  Caddy           recently audited   last 2026-08-19 11:04 │
+│  1  AIOStreams      never audited      no result …    [flag] │
+│  2  UptimeKuma      due   last 2026-08-27 · flagged [unflag] │
+│  ·  Caddy           recently audited   last 2026-…    [flag] │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -528,6 +528,20 @@ question this page exists to answer, and an app missing from the list answers no
 with no position carries the reason it has none — recently audited, parked, or being audited now.
 The order is the pick's own, derived from the same `plan()` the scheduler decides with, so position
 1 is the app the next unblocked tick claims rather than a second guess at it.
+
+**Flagging an app puts it back in the backlog — it does not start anything.** (2026-08-28.) The
+case it exists for is an app that looks fresh and is not: a section recorded `blocked` stamps
+nothing and costs the app nothing, but a *sibling* section that completed sets the last-run date,
+so the whole app drops out of the backlog for `fresh_days` on the strength of the half of the audit
+that ran. Nothing about the world changed, so neither `standard revised since` nor `app changed in
+the store` fires, and before this the only way to ask for another look was a hand-run that takes
+the single agent from whatever else wanted it. The flag is deliberately the *quiet* verb: the row
+joins the queue at its ordinary position, behind everything staler, under the same cooldown, park
+and bench gate as everything else. It is spent by the next attempt whatever that attempt concluded,
+so it is a request rather than a switch somebody has to remember to turn off — which also means one
+flag buys one look, never one look per cooldown until the bench comes back. The button is on the
+queue row and on the subject page beside `re-assay`; the two verbs sit together there on purpose,
+one meaning *again* and the other meaning *now*.
 
 **Pressing Start decides immediately** rather than waiting for the top of the hour, so the button
 either produces a claim or says in one clause why it did not. An hour of silence is not an answer.
