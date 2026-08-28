@@ -1,5 +1,5 @@
 /**
- * `data/protocols/currency.sh` — the shipped executor, run as the real artifact.
+ * `seed/protocols/currency.sh` — the shipped executor, run as the real artifact.
  *
  * A script is not unit-testable the way a pure function is, and that was the acknowledged
  * cost of putting the procedure on the volume rather than in the image. What replaces it is
@@ -17,7 +17,10 @@ import { describe, expect, it } from 'vitest';
 
 import { runScript, type ScriptOutput } from '../src/server/runner/exec.js';
 
-const SCRIPT = path.join(fileURLToPath(new URL('../', import.meta.url)), 'data/protocols/currency.sh');
+// The tracked copy, not a volume's. `data/` is what one instance did and is gitignored, so a
+// fresh clone has none — which is how this suite went red on CI while passing on a working
+// tree that still had the pre-move directory lying around.
+const SCRIPT = path.join(fileURLToPath(new URL('../', import.meta.url)), 'seed/protocols/currency.sh');
 
 const POLICY = { platform_images: ['ghcr.io/yundera/appshield'], stale_days: 180, max_pages: 10, timeout: 5 };
 
