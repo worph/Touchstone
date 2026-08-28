@@ -251,16 +251,25 @@ export interface PhaseResult {
   note: string;
 }
 
-const PHASE_ROW =
-  /^\|\s*\*{0,2}(A|B|C|D|E\d{1,2}|F|G[-−]?(?:prime|′|')?|H)\s*\*{0,2}\s*(?:[—–-]\s*)?([^|]*)\|\s*[^|]*?\*{0,2}(pass|fail|errored|error|n-?\/?a|skipped|not[- ]run)\*{0,2}[^|]*\|([^|]*)\|?/i;
-
 /**
- * The phases that constitute a functional run. `B` is pre-flight, `G′` is n-a in every
- * audit (the PR path owns migration, an audit having only one version), and `H` passes
- * trivially when nothing was ever installed — so none of the three is evidence that the
- * leg actually happened.
+ * A phase row in the agent's prose, used only when the ledger recorded nothing.
+ *
+ * The id alternation carries **two** vocabularies on purpose. The letters are what every
+ * report written before 2026-08-28 says, and the archive is not rewritten. The kebab-case
+ * branch is what a rubric says now that a section's steps are named rather than lettered
+ * (`session`, `works-immediately`), and it has to be here or this fallback would quietly stop
+ * recognising the rows it exists to recognise.
+ *
+ * A loose match is safe: `sectionRan` keeps only the ids the section's declared plan names, so
+ * a row from some other table matching this shape is discarded rather than counted.
  */
-export const MANDATORY_PHASES = new Set(['A', 'C', 'D', 'E8', 'E9', 'E10', 'F', 'G']);
+const PHASE_ROW =
+  /^\|\s*\*{0,2}(A|B|C|D|E\d{1,2}|F|G[-−]?(?:prime|′|')?|H|[a-z][a-z0-9]*(?:-[a-z0-9]+)*)\s*\*{0,2}\s*(?:[—–-]\s*)?([^|]*)\|\s*[^|]*?\*{0,2}(pass|fail|errored|error|n-?\/?a|skipped|not[- ]run)\*{0,2}[^|]*\|([^|]*)\|?/i;
+
+// `MANDATORY_PHASES` lived here until 2026-08-28: a hardcoded set of phase letters, imported
+// by `domain/assay.ts` and never read. It was invariant 2 in miniature — code enumerating what
+// the protocol declares — and the rename that turned `E8` into `works-immediately` would have
+// left it describing a plan nothing runs. What is mandatory is what the section's rubric lists.
 
 export function parsePhases(section: string): PhaseResult[] {
   const out: PhaseResult[] = [];
@@ -268,7 +277,14 @@ export function parsePhases(section: string): PhaseResult[] {
   for (const line of section.split('\n')) {
     const m = PHASE_ROW.exec(line);
     if (!m) continue;
-    const code = /^G[-−]?(prime|′|')$/i.test(m[1]!) ? 'G′' : m[1]!.toUpperCase();
+    const raw = m[1]!;
+    // A lettered code is normalised upward (`e8` → `E8`); a named one is already canonical and
+    // upper-casing it would stop it matching the plan it came from.
+    const code = /^G[-−]?(prime|′|')$/i.test(raw)
+      ? 'G′'
+      : /-|^[a-z]{4,}$/.test(raw) && !/^(A|B|C|D|F|G|H|E\d{1,2})$/i.test(raw)
+        ? raw
+        : raw.toUpperCase();
     if (seen.has(code)) continue;
     seen.add(code);
     const r = m[3]!.toLowerCase();

@@ -15,7 +15,7 @@
 
 import type { AssayMeta, Section, Severity, Verdict } from '../../shared/types.js';
 import { coverageOf, type RecordedPhase, type RecordedRequirement } from '../services/ledger.js';
-import { MANDATORY_PHASES, parsePhases, shapeReport } from './extract.js';
+import { parsePhases, shapeReport } from './extract.js';
 
 /**
  * Scope a combined `errored` verdict to the leg that actually caused it.
