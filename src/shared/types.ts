@@ -135,6 +135,20 @@ export interface AssayMeta {
    * be turned back into the text it named.
    */
   standard_version?: number;
+  /**
+   * **The knowledge base the agent was reading**, as a digest over the pages it was given.
+   *
+   * Not a standard, and deliberately not treated as one: the KB never judges, so this puts no
+   * `older standard` chip on a row and never makes a subject eligible for re-audit — an edit
+   * to a reference page must not spend three days of agent time re-running full audits, which
+   * is the same argument invariant 12 makes for a `scores: false` reading.
+   *
+   * It is recorded because it can still change what an audit *concludes*. The digest answers
+   * "was it the same material as today"; `data/kb/.history/`, which is time-ordered, answers
+   * "what did it say when this ran". Absent when the volume has no KB, and on everything
+   * written before 2026-08-28. A scripted section never has one: a script reads no prose.
+   */
+  kb_sha256?: string;
   status: AssayStatus;
   verdict: Verdict | null;
   top_severity: Severity;

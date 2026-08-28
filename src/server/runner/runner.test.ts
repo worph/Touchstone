@@ -11,6 +11,7 @@ import { Runner, type RunnerOptions } from './index.js';
 import { liveWorld, resolveCapabilities } from './capabilities.js';
 import type { ProtocolSection } from '../store/protocols.js';
 import { ProtocolStore } from '../store/protocols.js';
+import { KbStore } from '../store/kb.js';
 
 /** The app under test, as the runner now addresses it: `<origin>~<name>`. */
 const SUBJECT = subjectKey(DEFAULT_ORIGIN, 'Tuwunel');
@@ -1071,5 +1072,62 @@ describe('forecasting a run before it starts', () => {
     const runner = make({ revisions: { sweep: async () => void swept.push('swept') } as never });
     await runner.forecast();
     expect(swept).toEqual([]);
+  });
+});
+
+/**
+ * The knowledge base, from the runner's side.
+ *
+ * Two things have to be true for it to be safe: the digest of what the agent was actually
+ * shown reaches every assay of the run, and a box with no KB writes exactly what it wrote
+ * before one existed. The third — that it never becomes the standard — is enforced elsewhere
+ * (`domain/standards.ts` does not read it at all).
+ */
+describe('the knowledge base', () => {
+  async function withKb(pages: Record<string, string>): Promise<KbStore> {
+    const kdir = path.join(dir, 'kb');
+    await fs.mkdir(kdir, { recursive: true });
+    for (const [name, body] of Object.entries(pages)) {
+      await fs.writeFile(path.join(kdir, name), body, 'utf8');
+    }
+    return new KbStore(kdir);
+  }
+
+  it('records on every assay the digest of what the agent was shown', async () => {
+    const kb = await withKb({
+      'KB.md': '# Knowledge base\n',
+      'maison.md': '---\nid: maison\ntitle: Driving Maison\nsections: [functional]\n---\n\nThe Tips dialog.\n',
+    });
+    const expected = (await kb.forSections(['static', 'functional']))!.sha256;
+
+    await make({ kb }).run({ subject: SUBJECT, try_n: 1 });
+
+    const files = await reportFiles();
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      expect(await fs.readFile(file, 'utf8')).toContain(`kb_sha256: ${expected}`);
+    }
+  });
+
+  it('writes no digest when the box has no knowledge base', async () => {
+    await make().run({ subject: SUBJECT, try_n: 1 });
+    for (const file of await reportFiles()) {
+      expect(await fs.readFile(file, 'utf8')).not.toContain('kb_sha256');
+    }
+  });
+
+  /**
+   * The sweep is the same guarantee the protocol history gives: a page that changed what an
+   * audit concluded has to be readable back afterwards, including when it was changed by
+   * somebody with a shell rather than through the app.
+   */
+  it('records what the knowledge base said before reading it', async () => {
+    const swept: string[] = [];
+    const runner = make({
+      kb: await withKb({ 'KB.md': '# Knowledge base\n' }),
+      kbRevisions: { sweep: async () => void swept.push('swept') } as never,
+    });
+    await runner.run({ subject: SUBJECT, try_n: 1 });
+    expect(swept).toEqual(['swept']);
   });
 });

@@ -138,6 +138,10 @@ export const EVENT_CODES = {
   // changed while nobody was looking is exactly what the history exists to make visible.
   PROTOCOL_REVISED: { category: 'config', label: 'protocol changed on disk' },
   PROTOCOL_HISTORY_FAILED: { category: 'config', label: 'protocol history not recorded' },
+  // The knowledge base moves the same way a protocol does and is recorded the same way, but
+  // it never judges — so these rows say "reference material", never "the standard changed".
+  KB_REVISED: { category: 'config', label: 'knowledge base changed on disk' },
+  KB_HISTORY_FAILED: { category: 'config', label: 'knowledge base history not recorded' },
   // The administrator's standing instructions. `config` rather than `chat`: it is a change
   // to how this instance is set up, not something that happened in a conversation.
   CONTEXT_EDITED: { category: 'config', label: 'administrator context edited' },
@@ -160,6 +164,7 @@ export const EVENT_CODES = {
   SERVER_STARTED: { category: 'system', label: 'Touchstone started' },
   CONFIG_SEEDED: { category: 'system', label: 'configuration written' },
   PROTOCOL_SEEDED: { category: 'system', label: 'rubric written into the data directory' },
+  KB_SEEDED: { category: 'system', label: 'knowledge base written into the data directory' },
   LOG_TRIMMED: { category: 'system', label: 'log trimmed' },
 } as const satisfies Record<string, CodeSpec>;
 
@@ -230,6 +235,7 @@ interface EventDetails {
   };
   ARCHIVE_MIGRATION_FAILED: { error: string };
   PROTOCOL_SEEDED: { files: string[]; dir: string };
+  KB_SEEDED: { files: string[]; dir: string };
   ASSAY_STARTED: {
     subject: string;
     /** The sections this run is attempting — those whose prerequisites were met. */
@@ -280,6 +286,8 @@ interface EventDetails {
   };
   PROTOCOL_REVISED: { file: string; sha256: string; seq: number };
   PROTOCOL_HISTORY_FAILED: { dir: string };
+  KB_REVISED: { file: string; sha256: string; seq: number };
+  KB_HISTORY_FAILED: { dir: string };
   // No version: unlike a protocol, the context is not recorded in anything it influenced.
   CONTEXT_EDITED: { bytes: number };
   /**

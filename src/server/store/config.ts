@@ -100,6 +100,14 @@ export interface TouchstoneConfig {
   /** The rubric, as local markdown Touchstone owns and edits — and what versions itself. */
   protocolsDir: string;
   /**
+   * The knowledge base: reference material handed to the agent beside the rubric.
+   *
+   * A sibling of `protocols/` rather than a folder inside it — the protocol directory is
+   * scanned for sections and for executors, and a page that is neither has no business being
+   * read by that scan. See `store/kb.ts`.
+   */
+  kbDir: string;
+  /**
    * The five constants of `Pick next target`, at the values n8n runs today. P3 ports the
    * scheduler against these; changing one here changes both systems' behaviour to differ,
    * which is precisely what shadow mode is there to detect.
@@ -226,6 +234,7 @@ function defaults(dataDir: string): TouchstoneConfig {
     uploadsRoot: path.join(dataDir, 'uploads'),
     stateDir: path.join(dataDir, 'state'),
     protocolsDir: path.join(dataDir, 'protocols'),
+    kbDir: path.join(dataDir, 'kb'),
     scheduler: {
       armed: false,
       tick_min: 60,

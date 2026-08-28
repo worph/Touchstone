@@ -6,14 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Touchstone is a **conformance agent**: it holds a versioned standard, runs *assays* against
 *subjects* (apps in the Yundera AppStore), and issues a *hallmark* — the verdict a subject carries
-until the next assay contradicts it. It exists to absorb exactly two n8n workflows
-(`AppStore Continuous Store QA Loop` — the driver, and `AppStore App Audit` — the executor) and
-nothing else. `AppStore PR Review` and release notes stay in n8n and are out of scope.
+until the next assay contradicts it. It was built to absorb exactly two workflows — the store QA
+loop that drove the audits and the audit executor itself — and it has: Touchstone runs them now.
+`AppStore PR Review` and release notes were never in scope and are somebody else's.
 
-**The parity matrix in [ARCHITECTURE.md §1.4](ARCHITECTURE.md) is the specification.** n8n cannot
-be switched off until every row is covered, and anything not on it is not being built. Before
-adding a capability, check whether it is on that matrix or in §1.4 G ("deliberately dropped" —
-findings-as-rows, rule codes, cross-subject aggregation, regression detection, history views).
+**The parity matrix in [docs/architecture.md §1.4](docs/architecture.md) is the record of what
+that took**, and is still the first place to look before adding a capability: §1.4 G lists what
+was **deliberately dropped** (findings-as-rows, rule codes, cross-subject aggregation, regression
+detection, history views), and re-adding one of those is a decision rather than an oversight.
+New capability beyond parity belongs in `docs/requirements.md`, numbered, with what it cost.
 
 Vocabulary used throughout the code: **subject** (an app), **standard** (a versioned rubric),
 **assay** (one run of one standard against one subject), **hallmark** (the composed verdict),
@@ -35,7 +36,11 @@ bar is mechanical, something live has to re-read the value, and the override liv
 `state/controls.json` so the file stays the default), **standard in force** (the revision of each
 rubric that would judge a subject *today*, and when
 that last changed — `domain/standards.ts`; a verdict reached under an older one carries an
-`older standard` chip and stops waiting out `fresh_days`), **flag** (an operator asking for one
+`older standard` chip and stops waiting out `fresh_days`), **knowledge base** (supporting knowledge for an audit that is *not* the standard — how the
+platform behaves, where an app documents its first credentials; `data/kb/*.md`, indexed by
+`KB.md`, handed to the agent after the rubric under a fence saying the rubric governs on
+conflict. It never judges, so it moves no verdict and re-eligibles nobody, and it is still
+recorded: each assay carries `kb_sha256`), **flag** (an operator asking for one
 more audit of one subject — `SubjectSchedule.flagged_at`, the third way past the freshness window
 and the only one that is not about the world changing; it adds to the backlog, starts nothing, and
 is spent by the next attempt).
@@ -110,6 +115,8 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | --- | --- |
 | `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile`. Displayed — redacted, never posted — by the Configuration page |
 | `context.md` | the **administrator's standing instructions**, prepended to the chat's prompt every turn. Beside `config.yaml` rather than under `state/` because everything in there is regenerable and this is the one operator-authored string with no other copy. Written by the Settings page, gitignored |
+| `kb/KB.md`, `kb/*.md` | **the knowledge base** — what an auditor needs in order to *operate* the platform rather than to judge an app: routes, what a dialog does, where an app documents its first credentials. `KB.md` is the hand-written index; a page declaring `sections:` is given only to a run auditing one of them, and a run no page applies to is given nothing at all — an index describing pages the agent does not have is worse than silence. Appended to the prompt after the rubric, under a fence saying the rubric governs on conflict. It is **not** the standard: `domain/standards.ts` never reads it, so an edit puts no chip on a row and makes nobody eligible for re-audit — and it is still recorded, because it can change what an audit concludes |
+| `kb/.history/` | the same append-only log the protocols have, over the KB. What makes an assay's `kb_sha256` resolve to bytes: the digest says *whether* the material moved, this log — being time-ordered — says what it said when a given assay ran |
 | `protocols/*.sh` | **the procedure**, for a leaf whose `executor:` names one. A sibling of the rubric that declares it, on the volume, so a threshold or a registry URL is an edit rather than a rebuild. **No route can write one** — `save()` writes `${id}.md`, which is what keeps invariant 6 from widening into "a model cannot post code" |
 | `protocols/.history/` | **what the rubric used to say** — `log.jsonl` plus a snapshot per revision, so the sha256 an assay recorded resolves to bytes. Swept at boot, after a save and before a run reads the protocol, so an edit made over SSH is recorded too (as `observed`, with no reason, which is the honest thing to show). Append-only and **not restorable through any route**: putting an old revision back is an ordinary save of that text, forward |
 | `protocols/*.md` | **the rubric itself**, the definition of the sections, and — as the sha256 of the whole file, frontmatter included — the revision every assay records: a leaf's `id` is a section id, its `order`, `requires`, `phases` and `report_headings` are what the runner reads. There is no separate `standards/` — a second file could only disagree with the rubric it versioned. A save replaces the **prose** and carries the frontmatter over as bytes, so an operator's YAML comments survive and no route can rewrite `executor:` |
@@ -135,7 +142,7 @@ because its data access was smeared through two 200-line n8n Code nodes.
   (size, mtime)-keyed cache; any doubt about an entry re-parses the file.
 - **`scheduler/`** — `policy.ts` is the **pure** port of n8n's `Pick next target`
   (`busy → forced → cooldown → backlog empty → pick the stalest`; the bench gate sits *after* that
-  chain so the pick stays diffable against n8n). `record.ts` is the pure port of `Record result`.
+  chain, where the port put it so the pick could be diffed against the workflow it replaced). `record.ts` is the pure port of `Record result`.
   `index.ts` does all the world-reading and owns `state/schedule.json` and the timer.
 - **`store/revisions.ts`** — the protocol's history. Identity is the **sha256 of the file**,
   for a rubric and its script alike; this is what makes that hash resolve to bytes. The sweep
@@ -196,6 +203,15 @@ because its data access was smeared through two 200-line n8n Code nodes.
   so a new write tool is covered the day it lands; `token` is a bearer a beaconify sidecar can inject. `routes/rpc.ts` is the MCP
   envelope both surfaces share — `initialize`, `tools/list`, `tools/call`, and a `202` for the
   notification, which is what a discovery client waits for.
+- **`store/kb.ts`** — the knowledge base. It exists because `functional.md` was 24 KB and a
+  third of it described Maison rather than the gate: every fact about the dashboard read as one
+  more thing apps were judged on, and a fact learned the hard way could only be recorded by
+  editing the standard — which re-versions it and re-eligibles every subject. So reference
+  material is a **sibling** of `protocols/`, never a folder inside it (that directory is scanned
+  for sections and executors), it mints no section and carries no requirements, and the runner
+  selects per run from `sections:` so a static-only audit carries nothing about a dashboard it
+  will not open. `forSections()` returns **null** when the volume has no KB — the prompt is then
+  byte-for-byte what it was before one existed.
 - **`domain/fixreport.ts`** — the audit composed into a brief for whoever has to fix the app,
   served as markdown by `GET /subjects/:name/fix.md`. It **quotes**: findings, severities,
   evidence and remedies all come out of the frontmatter, and where the agent proposed no remedy
@@ -401,26 +417,35 @@ because its data access was smeared through two 200-line n8n Code nodes.
     for re-audit (`domain/standards.ts`), or a threshold change in `currency.sh` would spend
     three days of agent time re-running full audits to re-measure something the next ordinary
     run re-measures for free.
+13. **The knowledge base never judges.** It is handed to the agent after the rubric, under a
+    fence saying the rubric governs on conflict, and it may not add a requirement, excuse one,
+    or decide a verdict. Two things follow and both are load-bearing: it is **not** the standard
+    (no chip, no re-eligibility — an edit to a reference page must not spend three days of agent
+    time re-auditing 72 apps, which is invariant 12's argument again), and it is **still
+    recorded** (`kb_sha256` on every assay the agent produced, bytes in `data/kb/.history/`),
+    because a page that changes what an audit concludes while leaving no trace is the "the
+    archive says v7 and no v7 exists" problem wearing a different hat. When a KB page turns out
+    to be deciding something — *credentials in Tips count as documented* — that sentence belongs
+    in the protocol, as a revision with a reason. The KB says where to look; the rubric says
+    what makes it a pass.
 
 ## Safety switches (both default off)
 
 - `scheduler.armed: false` — the tick still runs, decides and logs every hour, but claims and
-  dispatches nothing. That dry run is the point: its pick is diffed against the live n8n loop's.
-  Since 2026-08-20 it is also settable at runtime from the Automation page, which persists an
+  dispatches nothing — the dry run the cutover was validated against. Since 2026-08-20 it is also settable at runtime from the Automation page, which persists an
   **override** into `state/schedule.json`; absent, the config value stands. Stopping means "claim
   nothing further" and deliberately leaves the audit in flight alone.
 - `runner.enabled: false` — refuses every job and says so. Validation is a **single hand-run assay**
-  through `POST /api/v1/assays`, never a loop: `AppStore PR Review` is still in n8n on the same
-  agent endpoint and two systems auditing at once contend for it. Since 2026-08-25 it is settable
+  through `POST /api/v1/assays`, never a loop: other work shares this agent endpoint, and two
+  systems auditing at once contend for it. Since 2026-08-25 it is settable
   at runtime too, as a **control** — the override is `state/controls.json`'s, the config value is
   still what a fresh boot falls back to, and the flag is read when a job arrives, so turning it off
   leaves the audit in flight alone.
 
 Both are therefore reachable from the Automation page, from the chat (`set_control`) and — unless
 `admin_mcp.read_only` — over the admin MCP. That is deliberate, and it does not change the rule
-below: **do not arm either without the user's say-so** while n8n is still driving. Do not edit the
-live n8n workflows either — the one sanctioned waiver (the login preflight, 2026-08-19) was explicitly
-approved and is documented in HANDOFF.md §5c.
+below: **do not arm or disarm either without the user's say-so.** Touchstone is what drives the
+audits now, so a switch flipped in passing is not a dry run any more — it is the loop.
 
 ## Gotchas
 

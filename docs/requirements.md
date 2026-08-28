@@ -3,14 +3,15 @@
 **Raised by the operator on 2026-08-20, from notes taken while reviewing the running app.**
 Four scope questions in them were answered the same day and are recorded in §2.
 
-This document is deliberately separate from [MVP.md](MVP.md). MVP is the *parity* specification —
-"if n8n does not do it, it is not in the plan" — and every one of its 36 rows is now covered
-([ARCHITECTURE.md §1.4](ARCHITECTURE.md#14-capability-inventory-and-parity-matrix)). Everything
-below is **beyond parity**: none of it is a capability of the two workflows being replaced. Keeping
-it in its own file preserves the property that made the parity rule useful, which is that you can
-tell at a glance whether a thing is required to switch n8n off or required to make Touchstone good.
+This document is deliberately separate from the *parity* specification — "if the workflow being
+replaced does not do it, it is not in the plan" — whose 36 rows are all covered
+([architecture.md §1.4](architecture.md#14-capability-inventory-and-parity-matrix)). Everything
+below is **beyond parity**: none of it was a capability of the two workflows Touchstone absorbed.
+Keeping it in its own file preserves the property that made the parity rule useful, which is that
+you can tell at a glance whether a thing was required to complete the replacement or is required
+to make Touchstone good.
 
-**What it costs to accept these.** R1, R5–R8 turn Touchstone from "a replacement for two n8n
+**What it costs to accept these.** R1, R5–R8 turn Touchstone from "a replacement for two
 workflows" into a conformance product with AppStore QA as its first tenant. `generic subject.kind,
 pluggable tenants` is on the deliberately-dropped list in §1.4 G, and R1 in particular walks toward
 it. The switch-off stops being the last milestone and becomes one milestone among several. That is
@@ -37,6 +38,7 @@ surprise.
 | **R12** | How far behind its own upstream each app is, and for how long | ✅ built 2026-08-22 — §14 |
 | **R13** | What the standard said when it judged, and what changed since | ✅ built 2026-08-23 — §15 |
 | **R14** | The administrator can change how this instance behaves, from inside it | ✅ built 2026-08-25 — §16 |
+| **R15** | Supporting knowledge lives beside the rubric instead of inside it — a *knowledge base* | ✅ built 2026-08-28 — §17 |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -935,3 +937,114 @@ Four rules hold it together.
 - **No per-control permissions.** There is one authenticated audience (UX §5), and the two
   safety switches are as reachable as the cadence. What separates them from the read surface
   is the `writes` mark that `read_only` filters on, not a role.
+
+
+## 17. R15 — What an auditor needs to know, which is not what an app is judged by — 2026-08-28
+
+### 17.1 What was true before
+
+`functional.md` was 24 KB, and roughly a third of it was not a rubric. §2 "The platform is
+Maison" described routes and dialogs. Phase C explained the backup picker, the Tips dialog and
+what the install progress bar does. Phase G explained that the uninstall confirm offers to zip
+the archive and that you should leave that off. There was a postmortem about a store cache in
+the middle of it.
+
+All of it is true and all of it is worth writing down. None of it says what makes an app pass.
+
+Three costs, and the third is the one that forced the change:
+
+1. **It reads as rubric.** Everything inside a document titled *Functional Review Protocol* looks
+   like something apps are being judged on. An agent given 24 KB of it cannot tell which
+   sentences are the gate.
+2. **The gate is diluted.** The verdict criteria compete for attention with a paragraph about a
+   progress bar.
+3. **Writing a fact down re-versions the standard.** The protocol's identity is the sha256 of the
+   file (invariant 9, R13). Recording *the Tips dialog is where credentials usually are* meant
+   editing the rubric — which moves `moved_at`, makes every subject eligible for re-audit, and
+   spends days of agent time re-running full audits because somebody documented a dialog.
+
+The trigger was an audit of FileBrowser reporting that *the app's documented default account
+must work on a fresh install, with no need to read logs or run commands* — when the default
+credentials **were** documented, in the Tips dialog, which the run had dismissed unread. The
+audit was not wrong about its own evidence. It had never been told where an app documents that.
+
+### 17.2 The requirement
+
+> A knowledge base beside the rubrics: markdown pages of supporting knowledge, with an index so
+> the agent knows where to look. The rubric stays about the requirement gate.
+
+### 17.3 What it took
+
+`data/kb/`, a sibling of `data/protocols/` — not a folder inside it, because that directory is
+scanned for sections and for executors and a page is neither.
+
+- **`KB.md` is the index**, hand-written. "Where do I look" is a judgement, not a listing, so it
+  is not generated. It rides along with the pages and never alone: an index is a table of which
+  page to read for what, and handing it over with none of those pages attached describes
+  material the agent has not been given.
+- **Every other `*.md` is a page.** `sections:` in its frontmatter says which sections it bears
+  on; declaring none means all. A static-only run — which is every run made while the demo pool
+  is down — is therefore handed nothing about a dashboard it will not open.
+- **It is appended to the prompt after the protocol**, under a fence that says what it is: *it
+  never adds a requirement, never excuses one, and never decides a verdict; where it and the
+  protocol disagree, the protocol governs.* The order is part of the claim — a page arriving
+  before the rubric would read as a qualification of it.
+- **Absent, nothing changes.** `forSections()` answers null when the volume has no KB and the
+  prompt is byte-for-byte what it was before one existed, which is what keeps the archive's
+  earlier reports comparable with the next one.
+
+### 17.4 The line, and where the FileBrowser case actually landed
+
+The motivating case is two statements, and they went to different files:
+
+| | Where | Why |
+| --- | --- | --- |
+| *Maison shows a Tips dialog at install and keeps it on the tile menu; it is where an app's first URL, path or credentials are usually documented* | `kb/maison.md` | a fact about the platform — it tells the auditor where to look |
+| *Credentials the platform surfaces — Tips, the store description, the app's own first screen — count as **documented**; finding the same value by reading logs or opening a shell does not* | `functional.md` §3 Phase F | it decides whether the app passes |
+
+Putting the second in the KB would have made the KB an unversioned rubric, which is the exact
+failure R13 was built to end. **The KB says where to look; the protocol says what makes it a
+pass.**
+
+### 17.5 Recorded, but not a standard
+
+A KB page can change what an audit concludes. A hash on an assay that resolves to nothing is the
+"the archive says v7 and no v7 exists" problem R13 fixed, so the KB is recorded — and it is
+recorded *as what it is*:
+
+- Every assay the agent produced carries **`kb_sha256`**, a digest over the pages it was actually
+  shown. Over the *selection*, not the directory: two runs given different pages were reading
+  different material, and a hash that could not tell them apart would be a hash of something
+  nobody saw.
+- A second `RevisionStore` over `data/kb/` keeps the bytes, with the same sweep-on-observe
+  behaviour, so an edit made over SSH is recorded too. Two stores rather than one over two
+  directories: revision file names are bare (`functional.md`), so one log could not say which
+  `maison.md` it meant.
+- **`domain/standards.ts` never reads it.** No `older standard` chip, and no re-eligibility: an
+  edit to a reference page must not spend three days of agent time re-auditing 72 apps. That is
+  invariant 12's argument, applied to the same class of thing.
+
+The digest answers *was the agent reading the same material as today*; the history, being
+time-ordered, answers *what did it say when this ran*. Those are the two questions anybody asks
+of a document that was in the room.
+
+### 17.6 What moved
+
+`functional.md` 24.0 KB → 21.0 KB, and what left is the 8 KB of `kb/maison.md`: the CasaOS
+comparison, the routes, the accessibility-tree advice, the store cache and its postmortem, the
+`?store=` canonicalisation, the backup picker, Tips, the install progress bar, the uninstall
+dialog, and the list of platform behaviours that are never an app's fault. What stayed is the
+result vocabulary, the coverage sentence, the inputs, the phase plan with its pass criteria, the
+gate, determinism, and the cleanup obligation.
+
+### 17.7 Not done, deliberately
+
+- **No route writes a KB page.** It is operator-authored on the volume, like `config.yaml`. If
+  the chat is later given `edit_kb`, it goes through the shape `edit_protocol` has — a required
+  reason, a recorded revision, dropped under `admin_mcp.read_only` — because prose that changes
+  what the next audit concludes is the same class of thing whatever folder it is in.
+- **No UI.** Nothing renders the KB or its history; the bytes and the log are on the volume. A
+  page is worth building when there is more than one document to browse.
+- **No per-page inclusion in the report.** The digest says which set was given, not which page
+  the agent leaned on. Recording that would mean asking the agent, and an agent's account of
+  what influenced it is not evidence.

@@ -38,6 +38,7 @@ import { subjectRefOf, type OriginEntry } from '../store/config.js';
 import type { BenchProber } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 import { sectionsOf, type ExecutorRef, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
+import type { KbStore } from '../store/kb.js';
 import type { RevisionStore } from '../store/revisions.js';
 import { coverageOf, type CanonicalRequirement, type RunLedger, type RunState } from '../services/ledger.js';
 import type { EventLog } from '../services/events.js';
@@ -171,6 +172,16 @@ export interface RunnerOptions {
    * its history must still be able to audit (invariant 7).
    */
   revisions?: RevisionStore;
+  /**
+   * The knowledge base, read fresh per run for the same reason the rubric is: a page edited
+   * on the volume is meant to reach the next audit, not the next boot.
+   *
+   * Absent — and it is absent on any box whose volume has no `kb/` — the prompt is exactly
+   * what it was before the KB existed and no assay records a digest.
+   */
+  kb?: KbStore;
+  /** The KB's own history, so a recorded `kb_sha256` resolves to bytes. Same optionality. */
+  kbRevisions?: RevisionStore;
   /** Where the agent records requirements as it settles them. Absent = the old blob-only path. */
   ledger?: RunLedger;
   /** How the agent reaches this app's MCP surface. Named in the prompt. */
@@ -402,6 +413,9 @@ export class Runner {
     // After the store-reachability gate above on purpose: a run blocked by infra should not
     // manufacture a revision row. Awaited, not fired off, or it races the read below.
     await this.opts.revisions?.sweep();
+    // The same guarantee for the reference material: a page that changed what an audit
+    // concluded has to be readable back, and this is the last moment before it is read.
+    await this.opts.kbRevisions?.sweep();
 
     // Read per run, not cached: an operator who edits the protocol expects the next audit to
     // use it, and a rubric held in memory since boot is the kind of staleness nobody suspects.
@@ -541,6 +555,12 @@ export class Runner {
           })
         : null;
 
+    // Only the pages that bear on what is being audited. `forSections` reads the frontmatter;
+    // a run with no live section is given nothing about the dashboard it never opens.
+    const kb = this.opts.kb
+      ? await this.opts.kb.forSections(agentSections.map((s) => s.id)).catch(() => null)
+      : null;
+
     const { prompt } = buildPrompt({
       app_name: appName,
       repo: store.repo,
@@ -559,6 +579,7 @@ export class Runner {
           requires: s.requires,
         })),
       },
+      ...(kb ? { kb: { index: kb.index, docs: kb.docs.map((d) => ({ file: d.file, title: d.title, body: d.body })) } } : {}),
       skipped: skipped.map(({ section, reason }) => ({ id: section.id, name: section.name, reason })),
       ...(ticket && this.opts.callbackUrl
         ? { callback: { url: this.opts.callbackUrl, run_token: ticket.token } }
@@ -637,6 +658,7 @@ export class Runner {
       ...(benchHost ? { benchHost } : {}),
       ...(benchBuild ? { benchBuild } : {}),
       ...(browserEndpoint ? { browserEndpoint } : {}),
+      ...(kb ? { kbSha256: kb.sha256 } : {}),
       ...(flagged ? { requirements: flagged.requirements, phases: flagged.phases } : {}),
     });
 

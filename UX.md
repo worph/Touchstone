@@ -541,7 +541,11 @@ and bench gate as everything else. It is spent by the next attempt whatever that
 so it is a request rather than a switch somebody has to remember to turn off — which also means one
 flag buys one look, never one look per cooldown until the bench comes back. The button is on the
 queue row and on the subject page beside `re-assay`; the two verbs sit together there on purpose,
-one meaning *again* and the other meaning *now*.
+one meaning *again* and the other meaning *now*. It is **always drawn** on the queue row, muted
+until the row is hovered and carrying the running token once set. It shipped hover-only — on the
+theory that seventy-two buttons down a page read as seventy-two calls to action — and the first
+person to use it could not find it. A control discovered by sweeping a mouse down a list is a
+control that does not exist; quiet is a matter of weight, not of visibility.
 
 **Pressing Start decides immediately** rather than waiting for the top of the hour, so the button
 either produces a claim or says in one clause why it did not. An hour of silence is not an answer.

@@ -22,6 +22,7 @@ import { Scheduler } from './scheduler/index.js';
 import { Runner } from './runner/index.js';
 import { PortProber } from './services/ports.js';
 import { ensureProtocolFiles, ProtocolStore } from './store/protocols.js';
+import { ensureKbFiles, KbStore } from './store/kb.js';
 import { RevisionStore } from './store/revisions.js';
 import { StoreDocReader } from './services/storedoc.js';
 import { RunLedger } from './services/ledger.js';
@@ -56,6 +57,12 @@ const cfg = await loadConfig(dataDir);
 // means every run blocks `no_protocol`. Seeding never overwrites — an operator's edit outranks
 // the image's copy, or a redeploy would quietly change the standard.
 const seededProtocols = await ensureProtocolFiles(cfg.protocolsDir);
+
+// The knowledge base, on the same terms and for the same reason: an empty volume would
+// otherwise leave the agent operating a platform it has been told nothing about. Missing
+// entirely is a supported state — the prompt is then what it was before the KB existed — so
+// this failing is never fatal.
+const seededKb = await ensureKbFiles(cfg.kbDir);
 
 // Reports moved under a store folder when the store became a configured value:
 // `reports/<Subject>/` → `reports/<origin>/<Subject>/`. This runs before the index, or the
@@ -200,6 +207,39 @@ const revisions = new RevisionStore(cfg.protocolsDir, {
 await revisions.sweep();
 
 /**
+ * The knowledge base, and its own history.
+ *
+ * A second `RevisionStore` rather than a second directory inside the first: the protocol
+ * history's file names are bare (`functional.md`), so one log over two directories could not
+ * say which `maison.md` it meant. Two logs, two `.history/` folders, one class.
+ *
+ * The KB is **not** the standard — `domain/standards.ts` never reads it, an edit here puts no
+ * chip on a row and re-eligibles nobody — but it is still recorded, because a page can change
+ * what an audit concludes and a hash on an assay that resolves to nothing is the problem this
+ * class exists to end. See `store/kb.ts`.
+ */
+const kb = new KbStore(cfg.kbDir);
+const kbRevisions = new RevisionStore(cfg.kbDir, {
+  onWarn: (message) =>
+    events.log({
+      level: 'warn',
+      code: 'KB_HISTORY_FAILED',
+      message: `The knowledge base history is not being recorded — ${message}`,
+      detail: { dir: cfg.kbDir },
+    }),
+  onRecorded: (rev) => {
+    if (rev.source !== 'observed') return;
+    events.log({
+      level: 'info',
+      code: 'KB_REVISED',
+      message: `${rev.file} changed on disk outside the app, and was recorded as revision ${rev.seq}`,
+      detail: { file: rev.file, sha256: rev.sha256, seq: rev.seq },
+    });
+  },
+});
+await kbRevisions.sweep();
+
+/**
  * Reading the store's own documents — the contribution guide the rubric is meant to track.
  *
  * Constructed here rather than per request because the cache is the point: GitHub is read
@@ -230,6 +270,8 @@ const runner = new Runner({
   ports,
   protocols,
   revisions,
+  kb,
+  kbRevisions,
   ledger,
   callbackUrl: cfg.runner.callback_url,
   busyBackoffMs: cfg.runner.busy_backoff_min * 60_000,
@@ -576,6 +618,18 @@ if (seededProtocols.seeded.length > 0) {
     message: `The rubric was written into the data directory — ${seededProtocols.seeded.join(', ')}`,
     detail: { files: seededProtocols.seeded, dir: cfg.protocolsDir },
   });
+}
+if (seededKb.seeded.length > 0) {
+  events.log({
+    level: 'info',
+    code: 'KB_SEEDED',
+    message: `The knowledge base was written into the data directory — ${seededKb.seeded.join(', ')}`,
+    detail: { files: seededKb.seeded, dir: cfg.kbDir },
+  });
+}
+if (seededKb.failed) {
+  // Softer than the rubric's: an audit with no reference material still runs and still judges.
+  app.log.warn({ err: seededKb.failed }, 'could not seed the knowledge base into the data dir');
 }
 if (seededProtocols.failed) {
   // Not fatal: whatever is already on disk still loads, and a read-only data dir is a real

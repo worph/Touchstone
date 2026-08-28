@@ -1410,22 +1410,34 @@
 .auto-row[data-state='retry'] .env-status { color: var(--major); }
 .auto-row[data-state='fresh'] { color: var(--fg-2); }
 
-/* The flag sits at the end of the row and keeps its column whether or not the row has a
-   button in it, so a list of rows does not ripple as states change. It is quiet until the
-   row is hovered: seventy-two of these down a page must not read as seventy-two calls to
-   action. */
 /* The flag on the subject page: a normal button that reads as *set* rather than as an
    offer once it is on. Same token as the running state, because both mean "something is
    already happening about this app". */
 .flagbtn { display: inline-flex; align-items: center; gap: 8px; }
 .flagbtn--on { border-color: var(--running); color: var(--running); }
 
+/* The flag sits at the end of the queue row and keeps its column whether or not the row has
+   a button in it, so the list does not ripple as states change.
+
+   It shipped invisible until the row was hovered, on the theory that seventy-two of these
+   down a page would read as seventy-two calls to action. That was the wrong trade, and it
+   failed the only test that matters: deployed, the operator went looking for it and found
+   nothing. A control you have to discover by sweeping a mouse down a list is a control that
+   does not exist. So it is always drawn, and kept quiet by weight instead — muted until the
+   row is hovered, when it takes the ordinary button colour. */
 .auto-flag { justify-self: end; min-height: 22px; }
-.auto-flag .btn { opacity: 0; transition: opacity 90ms ease; }
+.auto-flag .btn {
+  color: var(--fg-2);
+  transition: color 90ms ease, border-color 90ms ease;
+}
 .auto-row:hover .auto-flag .btn,
-.auto-flag .btn:focus-visible { opacity: 1; }
-/* A flag that is *set* is a fact about the row, not an offer, so it stays visible. */
-.auto-row[data-flagged='true'] .auto-flag .btn { opacity: 1; color: var(--fg-2); }
+.auto-flag .btn:focus-visible { color: var(--fg); }
+/* A flag that is *set* is a fact about the row rather than an offer, so it carries the token
+   the running state does and reads as set without being hovered or compared. */
+.auto-row[data-flagged='true'] .auto-flag .btn {
+  color: var(--running);
+  border-color: var(--running);
+}
 
 @media (max-width: 720px) {
   /* Stack rather than squeeze: four columns at 190px each is a sideways scroll on a phone,
@@ -1435,9 +1447,7 @@
   .auto-row { grid-template-columns: 24px 1fr auto; }
   .auto-row .env-status,
   .auto-row .env-note { grid-column: 2; }
-  /* No hover on a phone, so the button is simply there. */
   .auto-flag { grid-row: 1; grid-column: 3; }
-  .auto-flag .btn { opacity: 1; }
 }
 
 
