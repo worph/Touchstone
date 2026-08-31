@@ -33,6 +33,18 @@ export interface AssayStore {
    */
   forSubject?(name: string): readonly AssayRecord[];
   latest?(subject: string, section: Section): AssayRecord | null;
+
+  /**
+   * Delete every report of one subject, from disk and from the index. Optional: the fixture
+   * store has no disk to delete from and simply does not offer it, and the route answers
+   * that it cannot rather than pretending it did.
+   *
+   * The **only** destructive verb in this interface, and deliberately coarse — a subject, not
+   * a file. There is no use for deleting one report of an audit and keeping the other: half
+   * an audit in the archive is a hallmark composed from one section, which reads as a verdict
+   * somebody reached rather than as a record somebody pruned.
+   */
+  purgeSubject?(name: string): MaybePromise<{ removed: number }>;
 }
 
 /** `forSubject` if the store has it, otherwise a scan of `all()`. Subject match is exact. */

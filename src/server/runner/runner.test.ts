@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { AlertStore } from '../services/alerts.js';
 import { EventLog } from '../services/events.js';
 import type { BenchProber } from '../services/bench.js';
 import { classify, extractText } from './agent.js';
@@ -249,9 +250,72 @@ describe('classifying a failure', () => {
     expect(!out.ok && out.error).toBe('parse-failed');
   });
 
+  /**
+   * The regression this whole ordering exists for.
+   *
+   * `AUTH_RE` used to be tested against the entire response before anything tried to parse it,
+   * so a completed audit whose prose contained "not logged in" was recorded `agent-auth`: the
+   * report discarded, a try burned, the subject parked, and a false "the agent is not logged
+   * in" in the log while the session was healthy. A functional section that *proves* an app's
+   * auth gate writes exactly that sentence. `yundera~UptimeKuma` lost three audits and five
+   * days to it in August 2026, each one compliant with 23 of 23 requirements settled.
+   */
+  it('accepts a completed audit whose report says "not logged in"', () => {
+    const out = classify(
+      '```json\n' +
+        JSON.stringify({
+          app_name: 'UptimeKuma',
+          title: 'Yundera/AppStore — UptimeKuma',
+          verdict: 'compliant',
+          severity: 'none',
+          risk_score: 0,
+          summary: 'All nine functional phases pass.',
+          report_markdown:
+            '# UptimeKuma\n\nE9 auth gate — **pass**: the server returned the login page ' +
+            'because we were not logged in, and no dashboard route leaked.',
+        }) +
+        '\n```',
+    );
+    expect(out.ok).toBe(true);
+    expect(out.ok && out.report.verdict).toBe('compliant');
+  });
+
+  it('still calls a bare auth message agent-auth, envelope or not', () => {
+    // The other half of the same rule: no JSON, so nothing can outrank the failure branches.
+    const out = classify('Error: your OAuth session has expired. Please run /login.');
+    expect(!out.ok && out.error).toBe('agent-auth');
+  });
+
+  /**
+   * A parsed object is only a report when it says something a report says. The agent answers
+   * this shape for a subject the store does not carry, and it must go on falling through
+   * rather than becoming an empty `errored` audit that overwrites a real verdict.
+   */
+  it('does not treat any JSON object as a report', () => {
+    const out = classify('```json\n{"error": "not-an-app", "app_name": "CasaOS"}\n```');
+    expect(!out.ok && out.error).toBe('parse-failed');
+  });
+
+  it('does not accept a null verdict as a verdict', () => {
+    const out = classify('{"verdict": null, "report_markdown": ""}');
+    expect(out.ok).toBe(false);
+  });
+
   it('keeps the raw text, capped, so the log can show what came back', () => {
-    const out = classify('x'.repeat(5000) + ' httpstatuserror');
-    expect(!out.ok && out.rawText.length).toBe(2000);
+    const text = 'x'.repeat(5000) + ' httpstatuserror';
+    // Whole, now that the cap is 20 000: this used to assert 2 000, i.e. that the evidence was
+    // truncated before anyone could read it.
+    const out = classify(text);
+    expect(!out.ok && out.rawText).toBe(text);
+  });
+
+  // 20 000 rather than the 2 000 this kept until 2026-08-31. The raw response is the only
+  // evidence a misclassification leaves, and 2 000 was not enough to see one: the phrase that
+  // made `classify` call three completed UptimeKuma audits `agent-auth` sat past the cut, so
+  // neither the event row nor the dump could say what had matched.
+  it('caps a very long failure at 20 000, as parse-failed already did', () => {
+    const out = classify('x'.repeat(50_000) + ' httpstatuserror');
+    expect(!out.ok && out.rawText.length).toBe(20_000);
   });
 });
 
@@ -504,6 +568,63 @@ describe('a failure that is not busy', () => {
     });
     await events.flush();
     expect(events.query({ code: 'AGENT_UNAUTHENTICATED' })).toHaveLength(1);
+  });
+
+  /**
+   * **Charging a try implies writing an attempt record.** The rule this pins.
+   *
+   * The scheduler holds two answers to "did we attempt this app?" — `try_n`/`parked_at` in
+   * `state/schedule.json`, and `lastAttemptAt` derived from the archive — and until
+   * 2026-08-31 a charged failure moved the first and not the second. Everything that asks
+   * "have we looked since X" reads the second: the re-audit flag, `standardMoved`,
+   * `subjectChanged`. So `yundera~UptimeKuma` walked to a park while its flag stayed set for
+   * ever, its `older standard` chip never cleared, and nothing would re-audit it.
+   *
+   * `blocked`, so it is excluded from `lastDoneAt` and cannot pose as a verdict: invariant 4
+   * holds, this says nothing about the app, only about what stopped us.
+   */
+  it('writes an attempt record when it charges a try', async () => {
+    const out = await make({}, [sse('Error calling remote tool: httpstatuserror 500')]).run({
+      subject: SUBJECT,
+      try_n: 1,
+    });
+    expect(out).toEqual({ kind: 'error', reason: 'agent-error' });
+
+    const files = await fs.readdir(subjectDir());
+    expect(files.length).toBeGreaterThan(0);
+    const body = await fs.readFile(path.join(subjectDir(), files[0]!), 'utf8');
+    expect(body).toContain('status: blocked');
+    expect(body).toContain('blocked_reason: agent_error');
+    // Never a verdict: `ReportIndex.latest()` filters on `status === 'done'`, so this must not
+    // move the subject's freshness or displace the hallmark it already carries.
+    expect(body).not.toContain('verdict: compliant');
+  });
+
+  /**
+   * The other half of the same rule, and why `agent-auth` is exempt: it charges nothing, so it
+   * records nothing. Writing here would spend the re-audit flag and settle the standard clause
+   * on behalf of a run that established nothing at all.
+   */
+  it('writes no attempt record when it charges nothing', async () => {
+    const out = await make({}, [sse('failed to authenticate, please run /login')]).run({
+      subject: SUBJECT,
+      try_n: 1,
+    });
+    expect(out).toEqual({ kind: 'agent_auth' });
+    expect(await reportFiles()).toHaveLength(0);
+  });
+
+  it('opens an alert, because a dead session stops every audit rather than one', async () => {
+    const alerts = new AlertStore(dir, {});
+    await make({ alerts }, [sse('failed to authenticate, please run /login')]).run({
+      subject: SUBJECT,
+      try_n: 1,
+    });
+    expect(alerts.isOpen('agent.auth')).toBe(true);
+
+    // And an answer we can use is proof the session is alive again.
+    await make({ alerts }).run({ subject: SUBJECT, try_n: 1 });
+    expect(alerts.isOpen('agent.auth')).toBe(false);
   });
 });
 

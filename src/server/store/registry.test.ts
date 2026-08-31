@@ -61,10 +61,17 @@ function make(
   origins: OriginEntry[],
   answers: Record<string, string[] | Error>,
   versions: Record<string, string> = {},
+  /** Subject keys the archive holds — what `delisted()` is computed against. */
+  archived?: string[],
 ): SubjectRegistry {
   const realFetch = globalThis.fetch;
   globalThis.fetch = fetcher(answers, versions);
-  const reg = new SubjectRegistry({ stateDir: dir, events, origins });
+  const reg = new SubjectRegistry({
+    stateDir: dir,
+    events,
+    origins,
+    ...(archived ? { archived: () => archived } : {}),
+  });
   // Restored in afterEach; the constructor does not fetch.
   void realFetch;
   return reg;
@@ -193,6 +200,72 @@ describe('a store taken out of config', () => {
     // `gone` has reports and stays reachable by URL, but it cannot be fetched or audited.
     // Leaving it schedulable would park it as the permanent stalest row and starve the rest.
     expect(reg.list()).toContain('acme~Widget');
+    expect(reg.list()).not.toContain('gone~Orphan');
+  });
+});
+
+/**
+ * An app the store stopped offering — **delisted**.
+ *
+ * The distinction the whole feature turns on is between "the store is unreadable, so keep
+ * what we knew" and "the store is readable and does not list this". Both arrive as an
+ * archived key with no live entry, and they mean opposite things: the first must change
+ * nothing, the second must take the subject out of the backlog. A rule that got this wrong in
+ * the permissive direction would retire every app in the store during a GitHub outage.
+ */
+describe('an app the store no longer offers', () => {
+  it('marks it delisted and takes it out of the backlog, keeping the rest', async () => {
+    const reg = make([YUNDERA], { 'Yundera/AppStore': ['Ntfy', 'Caddy'] }, {}, [
+      'yundera~Ntfy',
+      'yundera~CasaOS',
+    ]);
+    await reg.refresh();
+
+    expect(reg.delisted()).toEqual(['yundera~CasaOS']);
+    expect(reg.isDelisted('yundera~CasaOS')).toBe(true);
+    // Out of the candidate set — auditing it would fetch a directory that is not there.
+    expect(reg.list()).not.toContain('yundera~CasaOS');
+    // And nothing else moved: an app that IS on offer is untouched by any of this.
+    expect(reg.list()).toContain('yundera~Ntfy');
+    expect(reg.isDelisted('yundera~Ntfy')).toBe(false);
+  });
+
+  it('says so once, when it happens, rather than every refresh', async () => {
+    const reg = make([YUNDERA], { 'Yundera/AppStore': ['Ntfy'] }, {}, ['yundera~CasaOS']);
+    await reg.refresh();
+    await reg.refresh();
+
+    const rows = events.query({ limit: 50 }).filter((e) => e.code === 'SUBJECT_DELISTED');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.message).toContain('CasaOS');
+  });
+
+  /**
+   * The half that matters most. A store whose last fetch failed delists nobody — otherwise a
+   * GitHub outage would retire the whole archive at once, and the recovery would be silent.
+   */
+  it('delists nobody while the store cannot be read', async () => {
+    const reg = make([YUNDERA], { 'Yundera/AppStore': new Error('ECONNREFUSED') }, {}, [
+      'yundera~CasaOS',
+    ]);
+    await reg.refresh();
+
+    expect(reg.reachable('yundera')).toBe(false);
+    expect(reg.delisted()).toEqual([]);
+    // And it keeps its row in the list, which is the pre-existing outage behaviour unchanged.
+    expect(reg.list()).toContain('yundera~CasaOS');
+  });
+
+  /**
+   * A store dropped from `config.yaml` is a different condition and keeps its own answer: its
+   * subjects are already out of `list()`, and calling them delisted would put a chip on a row
+   * on the strength of a store nobody asked about.
+   */
+  it('says nothing about a store that is not configured at all', async () => {
+    const reg = make([YUNDERA], { 'Yundera/AppStore': ['Ntfy'] }, {}, ['gone~Orphan']);
+    await reg.refresh();
+
+    expect(reg.delisted()).toEqual([]);
     expect(reg.list()).not.toContain('gone~Orphan');
   });
 });

@@ -36,7 +36,12 @@ async function serve(adminMcp: Omit<AdminMcpOptions, 'ctx' | 'events'>): Promise
     chat: {
       ctx: {
         store: fixtureStore(),
-        registry: { list: () => [subjectKey(DEFAULT_ORIGIN, 'FileBrowser')] } as never,
+        registry: {
+          list: () => [subjectKey(DEFAULT_ORIGIN, 'FileBrowser')],
+          versions: () => ({}),
+          delisted: () => [],
+          isDelisted: () => false,
+        } as never,
       },
     },
   });

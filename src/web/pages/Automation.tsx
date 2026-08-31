@@ -17,9 +17,9 @@ import { Link } from 'react-router-dom';
 import type { ControlsResponse } from '@shared/controls';
 import type { QueueRow, QueueState, ScheduleResponse } from '@shared/schedule';
 import ControlList from '../components/ControlList';
+import FlagControl from '../components/FlagControl';
 import { ErrorState, Loading, Notice } from '../components/Ui';
 import {
-  flagSubject,
   getControls,
   getSchedule,
   resetControl,
@@ -110,20 +110,19 @@ export default function Automation() {
   );
 
   /**
-   * Flag or unflag one app.
+   * Repaint from the schedule a flag write returned.
    *
    * The response is the whole schedule, so the row moves into or out of the backlog and every
    * position below it renumbers in the same paint. Nothing is guessed at optimistically:
-   * whether a flag actually produces a queue position depends on rules this page does not
-   * hold a copy of.
+   * whether a flag actually produces a queue position depends on rules this page does not hold
+   * a copy of — and since a flag now releases a park, a parked row can become position 1.
+   *
+   * The request itself lives in `FlagControl`, shared with the Store table and the subject
+   * page. This is only what to do with the answer.
    */
-  const flag = useCallback(async (subject: string, flagged: boolean) => {
-    try {
-      setData(await flagSubject(subject, flagged));
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err : new Error(String(err)));
-    }
+  const flag = useCallback((schedule: ScheduleResponse) => {
+    setData(schedule);
+    setError(null);
   }, []);
 
   if (!data && error) return <ErrorState error={error} what="automated mode" />;
@@ -357,7 +356,7 @@ function QueueLine({
 }: {
   row: QueueRow;
   maxTries: number;
-  onFlag: (subject: string, flagged: boolean) => void;
+  onFlag: (schedule: ScheduleResponse) => void;
 }) {
   return (
     <div className="env-row auto-row" data-state={row.state} data-flagged={String(Boolean(row.flagged))}>
@@ -369,7 +368,7 @@ function QueueLine({
       </Link>
       <span className="env-status">{STATE_LABEL[row.state]}</span>
       <span className="env-note">{note(row, maxTries)}</span>
-      <FlagCell row={row} onFlag={onFlag} />
+      <FlagCell row={row} onChanged={onFlag} />
     </div>
   );
 }
@@ -377,36 +376,31 @@ function QueueLine({
 /**
  * The flag, on the row it applies to.
  *
- * Only on rows where it would mean something. A `running` subject is being looked at right
- * now and a `parked` one is being left alone on purpose; flagging either says nothing the
- * next attempt will not immediately erase, and a control that quietly does nothing is worse
- * than no control. Rows already in the backlog for another reason are offered it too — the
- * flag outlives that reason if the audit does not happen.
+ * Only on rows where it would mean something — which since 2026-08-31 includes a **parked**
+ * one. It did not: `plan()` skips a parked row before it looks at any eligibility clause, so
+ * flagging one changed nothing and the control was hidden rather than lie about it. That left
+ * the one row an operator most wants to act on as the one row offering nothing, which is how
+ * `yundera~UptimeKuma` sat parked for three days with no control anywhere on the page.
+ * `Scheduler.setFlagged` now releases the park, so the button means what it says. A `running`
+ * subject is still exempt: it is being looked at right now, and the flag would be spent by the
+ * attempt already in flight.
+ *
+ * `FlagControl` rather than a button of its own — it is the same verb as the Store table's and
+ * the subject page's, and three spellings of one action is what this replaced.
  */
-function FlagCell({
-  row,
-  onFlag,
-}: {
-  row: QueueRow;
-  onFlag: (subject: string, flagged: boolean) => void;
-}) {
-  if (row.state === 'running' || row.state === 'parked') {
+function FlagCell({ row, onChanged }: { row: QueueRow; onChanged: (s: ScheduleResponse) => void }) {
+  if (row.state === 'running') {
     return <span className="auto-flag" aria-hidden="true" />;
   }
   return (
     <span className="auto-flag">
-      <button
-        className="btn btn--sm"
-        type="button"
-        onClick={() => onFlag(row.subject, !row.flagged)}
-        title={
-          row.flagged
-            ? 'Drop the re-audit flag. It goes back to being scheduled by the calendar.'
-            : 'Put this app back in the backlog. It is audited in the queue order, not now.'
-        }
-      >
-        {row.flagged ? 'unflag' : 'flag'}
-      </button>
+      <FlagControl
+        variant="row"
+        subject={row.subject}
+        label={subjectName(row.subject)}
+        flagged={Boolean(row.flagged)}
+        onChanged={onChanged}
+      />
     </span>
   );
 }

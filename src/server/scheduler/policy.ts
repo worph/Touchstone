@@ -240,6 +240,18 @@ function plan(input: PolicyInput): {
   rechanged: Set<string>;
   /** Of those, the ones that are only eligible because somebody flagged them. */
   reflagged: Set<string>;
+  /**
+   * Subjects held out of the backlog by a park, right now.
+   *
+   * Not a transition set like `unparked` — this is the standing population, and it exists so
+   * `decide` can stop saying something untrue. The empty-backlog reason used to read *"all 73
+   * app(s) audited within 14d"*, which is a claim about every subject in the registry, while
+   * parked rows had been skipped a few lines above without being audited at all. On
+   * 2026-08-31 that sentence was the whole of what the operator could see about an app that
+   * had been parked for three days by a misclassified success, and it sent them looking for a
+   * bug in the scheduling rather than in the classifier.
+   */
+  parked: string[];
 } {
   const { constants, now } = input;
   const { schedule, reclaimed, busy } = reclaimExpired(input.schedule, input);
@@ -256,6 +268,7 @@ function plan(input: PolicyInput): {
   }
 
   const eligible: string[] = [];
+  const parked: string[] = [];
   const restandard = new Set<string>();
   const rechanged = new Set<string>();
   const reflagged = new Set<string>();
@@ -269,7 +282,10 @@ function plan(input: PolicyInput): {
     const flagged = flaggedForReaudit(input, subject, row);
     if (flagged) reflagged.add(subject);
     if (row?.claim) continue;
-    if (row?.parked_at) continue;
+    if (row?.parked_at) {
+      parked.push(subject);
+      continue;
+    }
     // An errored subject is retried on the next tick — no freshness wait. That is what
     // makes `MAX_TRIES` the thing that stops a loop, rather than the calendar.
     if ((row?.try_n ?? 0) > 0) {
@@ -314,7 +330,7 @@ function plan(input: PolicyInput): {
     return input.subjects.indexOf(a) - input.subjects.indexOf(b);
   });
 
-  return { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged };
+  return { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged, parked };
 }
 
 /**
@@ -325,13 +341,14 @@ function plan(input: PolicyInput): {
  */
 export function decide(input: PolicyInput): TickDecision {
   const { constants, now } = input;
-  const { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged } =
+  const { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged, parked } =
     plan(input);
 
   const base = {
     backlog: eligible.length,
     reclaimed,
     unparked,
+    parked: parked.length,
   };
 
   let action: 'audit' | 'idle' = 'idle';
@@ -354,7 +371,13 @@ export function decide(input: PolicyInput): TickDecision {
     const ago = Math.round(minutesSince(input.lastFinishedAt, now));
     reason = `cooldown — last audit finished ${ago}m ago, ${cooldownLeft}m left`;
   } else if (eligible.length === 0) {
-    reason = `backlog empty — all ${input.subjects.length} app(s) audited within ${constants.fresh_days}d`;
+    // Two clauses when there is something to say, because "empty" and "nothing left to do" are
+    // not the same statement and only one of them is ever true of a parked registry.
+    const fresh = input.subjects.length - parked.length;
+    reason =
+      parked.length > 0
+        ? `backlog empty — ${fresh} app(s) audited within ${constants.fresh_days}d, ${parked.length} parked`
+        : `backlog empty — all ${input.subjects.length} app(s) audited within ${constants.fresh_days}d`;
   } else {
     action = 'audit';
     subject = eligible[0];

@@ -224,6 +224,46 @@ describe('hallmarks({ include })', () => {
 
 
 /**
+ * The mark that qualifies the **subject** rather than the verdict: the store no longer offers
+ * this app.
+ *
+ * Deliberately not derivable here. The archive cannot tell "withdrawn" from "never audited"
+ * from "audited and still on sale" — that is the registry's answer, and this file takes it as
+ * an input for the same reason it takes `standards` and `versions`: so a row composed in a
+ * test is a row composed from records and nothing else.
+ */
+describe('an app the store no longer offers', () => {
+  const GONE = subjectKey(DEFAULT_ORIGIN, 'OpenClaw');
+
+  it('marks the row, and only the row it was told about', () => {
+    const rows = hallmarks(FIXTURE_RECORDS, { delisted: [GONE], now: NOW });
+    expect(rows.find((r) => r.name === GONE)?.delisted).toBe(true);
+    expect(rows.filter((r) => r.delisted)).toHaveLength(1);
+  });
+
+  /**
+   * Absent, not `false`. A reader cannot otherwise tell a row composed by a caller that asked
+   * the question from one composed by a caller that never did — and the second is the normal
+   * case in every test and every fixture path.
+   */
+  it('says nothing at all when the question was not asked', () => {
+    for (const row of hallmarks(FIXTURE_RECORDS, { now: NOW })) {
+      expect(row.delisted).toBeUndefined();
+    }
+  });
+
+  /** It is not a verdict, so it moves no verdict: same risk, same age, same order. */
+  it('changes nothing else about the row', () => {
+    const plain = hallmarks(FIXTURE_RECORDS, { now: NOW });
+    const marked = hallmarks(FIXTURE_RECORDS, { delisted: [GONE], now: NOW });
+    expect(marked.map((r) => r.name)).toEqual(plain.map((r) => r.name));
+    expect(marked.map((r) => r.risk)).toEqual(plain.map((r) => r.risk));
+    expect(marked.map((r) => r.age_days)).toEqual(plain.map((r) => r.age_days));
+  });
+});
+
+
+/**
  * The badge that qualifies a verdict — "this was reached under a rubric that has since been
  * edited". It reads the **done** record, never the current one: a blocked assay has no
  * verdict to qualify, and the caveat has to keep standing for as long as the verdict on

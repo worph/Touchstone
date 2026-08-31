@@ -111,6 +111,14 @@ export interface HallmarkOptions {
    * the question is not being asked and no row comes back with a `subject_version`.
    */
   versions?: Record<string, string>;
+  /**
+   * Subject keys the store no longer offers — `SubjectRegistry.delisted()`.
+   *
+   * Passed in for the third time and for the third time for the same reason: this file is
+   * pure over records, and "is this app still on sale" is not a question the archive can
+   * answer. Absent means it is not being asked, and no row comes back marked.
+   */
+  delisted?: readonly string[];
 }
 
 /**
@@ -245,6 +253,9 @@ export function subjectHallmark(
             return v ? { subject_version: v } : {};
           })()
         : {}),
+      // Only when true. An explicit `delisted: false` would be indistinguishable, to every
+      // reader, from a row composed by a caller that never asked the question.
+      ...(options.delisted?.includes(name) ? { delisted: true } : {}),
     },
   };
 }

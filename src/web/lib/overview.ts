@@ -133,6 +133,9 @@ export function applyShow(
     case 'running': return matchesKind(s, leg, ['running'], live);
     case 'not-run': return matchesKind(s, leg, ['none'], live);
     case 'stale': return isStale(s);
+    // The one filter that asks about the subject rather than about an assay of it, which is
+    // why it ignores `leg` — there is no per-section answer to "is this app still in the store".
+    case 'delisted': return Boolean(s.delisted);
   }
 }
 

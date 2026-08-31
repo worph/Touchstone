@@ -40,10 +40,27 @@ that last changed — `domain/standards.ts`; a verdict reached under an older on
 platform behaves, where an app documents its first credentials; `data/kb/*.md`, indexed by
 `KB.md`, handed to the agent after the rubric under a fence saying the rubric governs on
 conflict. It never judges, so it moves no verdict and re-eligibles nobody, and it is still
-recorded: each assay carries `kb_sha256`), **flag** (an operator asking for one
+recorded: each assay carries `kb_sha256`), **delisted** (a subject the archive knows and a
+*readable* store no longer offers — `SubjectRegistry.delisted()`. Not a verdict and not a
+finding: it qualifies the subject rather than any assay of it. It keeps every report it earned
+and its row on the Store page and the board, and it leaves `registry.list()`, which is also the
+scheduler's candidate set — a withdrawn app would otherwise be picked as the stalest row for
+ever, fail to fetch, and re-enter the backlog. Gated on `reachable()`, so an unreadable store
+delists nobody), **flag** (an operator asking for one
 more audit of one subject — `SubjectSchedule.flagged_at`, the third way past the freshness window
 and the only one that is not about the world changing; it adds to the backlog, starts nothing, and
-is spent by the next attempt).
+is spent by the next attempt. It also **releases a park**, since 2026-08-31: a park is an
+automatic judgement about a failing app and a person asking outranks it, and while it did not,
+the control had to be hidden on parked rows — leaving the one row an operator most wants to act
+on as the one row offering nothing).
+
+**Two verbs, two words.** `assay now` (`AssayButton`, `POST /assays`) takes the single agent
+immediately; the **flag** (`FlagControl`, `POST /schedule/flag`) queues. Until 2026-08-31 the
+first was spelled `audit` on the Store table, `re-assay` on the subject page and `Run first
+assay` in an empty state, while the second was `flag for re-audit` in one place and `flag` in
+another — five spellings for two actions, which is why an operator reasonably asked whether they
+were the same thing. The Store table carries only the flag: seventy-three rows offering to
+interrupt everything are seventy-two disabled buttons and one footgun.
 
 A subject's identity is `<origin>~<name>` — `yundera~FileBrowser`. The separator is `~` because
 it is unreserved in `encodeURIComponent` and therefore survives a URL untouched, which is what
@@ -247,6 +264,12 @@ because its data access was smeared through two 200-line n8n Code nodes.
   free — a directory is the compose plus ~3 MB of icon and screenshots, so a screenshot refresh
   would re-audit the app. The tree fetch runs *after* the app list and cannot fail the refresh:
   the list is what gates dispatch, and a version lookup is not allowed to stop an audit.
+  It also answers **which archived subjects the store has stopped offering** — `delisted()`,
+  gated on `reachable()` so an outage delists nobody, and subtracted from `list()` so a
+  withdrawn app leaves the backlog rather than being picked, failing to fetch and re-picked for
+  ever. `DELETE /subjects/:name` (`routes/index.ts` → `ReportIndex.purgeSubject`) is the only
+  thing that ever takes a report out of the archive, and it refuses any subject `isDelisted()`
+  does not name — which is what makes it safe to put a button on.
 - **`routes/public.ts`** — `/public/subjects`, one subject, and its `fix.md`: the only prefix meant
   to be readable by somebody who does not operate Touchstone, and therefore the only one that may
   be excluded from the SSO sidecar (ARCHITECTURE §8.1). It is **read-only by construction** — an
@@ -299,11 +322,27 @@ because its data access was smeared through two 200-line n8n Code nodes.
   rather than values, because `config.yaml` merges over the defaults with an index signature:
   whatever an operator puts in it otherwise comes straight back out of `GET /config`.
 - **`services/ports.ts`** — probes the two non-bench dependencies (agent, browser) by `tools/list`
-  over MCP. `services/bench.ts` keeps its own prober because the bench pool is **discovered** from
-  the pool API, not configured.
+  over MCP, and a **browser by one more thing on top**: `tools/list` is served by the sidecar's
+  Node wrapper, which stays up and cheerful while Chrome is unreachable underneath it. So
+  `browserLiveness()` reads the sidecar's own `/api/status` and `/api/health` and downgrades the
+  port on a **positive** wedge signal only — health claiming `chrome: running` while nothing can
+  be driven, or the sidecar saying `wedged`/`failing` itself. `running: false` alone is *not* a
+  fault: it is the normal state after the idle reaper frees Chrome's RSS, and reading it as an
+  outage would block every functional section between audits. Anything unreadable — a 404, an
+  endpoint that is not ours — is "cannot tell", never "broken". This is the gate that was missing
+  on 2026-08-24, when a CDP-wedged sidecar answered `tools/list` for a week and six audits were
+  dispatched into it. `services/bench.ts` keeps its own prober because the bench pool is
+  **discovered** from the pool API, not configured.
 - **`services/events.ts` → `alerts.ts` → `notify.ts` / `push.ts`** — the local log is
   authoritative; alerts dedup an environment condition to one row; outlets and push are
-  best-effort.
+  best-effort. An alert and its event must not *both* route to an outlet, or one condition
+  sends two notifications and the dedup buys nothing — which is why `AGENT_UNAUTHENTICATED` is
+  `{ beacon: false, push: false }` in `ROUTES` now that `agent.auth` exists. **`agent.auth` is
+  opened by the runner, not by a prober**, and that is not an oversight in `ports.ts`: its
+  probe is `tools/list`, which a Claude Code endpoint answers perfectly well while its session
+  is dead, so the only code that ever learns the truth is the code making the call. It is the
+  same shape as the browser wedge `browserLiveness()` exists for — a wrapper answering
+  cheerfully while the thing underneath is broken.
 - **`src/server/chat/`** — the administrator chat: a bounded turn loop (`loop.ts`, 8 calls and
   120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), eighteen tools wrapping the
   API (`registry.ts`), and the agent call (`driver.ts`) reusing `postToAgent` from the runner.
@@ -345,9 +384,13 @@ because its data access was smeared through two 200-line n8n Code nodes.
   layout routes rather than a flag, so a public page cannot render operator chrome — it is not in
   its tree. `components/SubjectTable.tsx` is shared by both tables on purpose: an author must be
   reading the operator's verdicts, not a restyled copy of them — which is why the Store page's
-  per-row **audit** button is an `action` render prop the *caller* supplies rather than a flag
+  per-row control is an `action` render prop the *caller* supplies rather than a flag
   the table reads: the board passes nothing, so the column is not in its DOM at all
-  (invariant 10). The **Store page is the former Overview**, answering a different question:
+  (invariant 10). That control is the **re-audit flag** (`FlagControl`, variant `row`), or a
+  delete on a delisted row — never `assay now`, which lives on the subject page. The flag's
+  state comes from a `GET /schedule` join rather than from `SubjectState`, because a field on
+  the row type would also be a field on `/public/subjects`, and a board addressed to app
+  authors must not publish which of their apps the operator has queued. The **Store page is the former Overview**, answering a different question:
   `GET /subjects` returns the union of the registry and the archive, so an app that has never
   been audited gets a row and a button instead of being missing — 52 of 72 apps were invisible
   to the operator while that route composed `store.all()` alone. `/public/subjects` still does
@@ -374,11 +417,18 @@ because its data access was smeared through two 200-line n8n Code nodes.
    `requires: [that capability]`, and each is written `blocked` on its own while the rest of the
    run proceeds. Adding `data/protocols/security.md` adds a section, with no code change.
 3. **No infra condition consumes a subject's retry budget or produces a verdict about the subject.**
-   `agent_busy` and an unclaimable bench restore the subject *untouched* — no try burned, no
-   last-run stamped. This is the rule that keeps an outage from parking thirteen innocent apps.
-   Every other completion — **including an errored one** — stamps the finish time, or a reliably
-   failing app starves the whole backlog by staying the stalest row forever.
-4. **`blocked` is never a statement about the subject.** It means infra prevented the assay.
+   `agent_busy`, an unclaimable bench and — since 2026-08-31 — `agent_auth` restore the subject
+   *untouched*: no try burned. This is the rule that keeps an outage from parking thirteen
+   innocent apps, and `agent-auth` was violating it for as long as it existed, which is what
+   parked `UptimeKuma` for a week over an agent that was never logged out. Every other
+   completion — **including an errored one** — stamps the finish time, or a reliably failing app
+   starves the whole backlog by staying the stalest row forever. `agent_auth` is the one hybrid
+   and deliberately so: free, but it *does* stamp the finish, because unlike a 409 it has
+   already spent a full agent call, and without the cooldown anchor a dead endpoint would be
+   marched through the whole registry one 26-minute failure at a time.
+4. **`blocked` is never a statement about the subject.** It means infra prevented the assay, or
+   that the agent's answer could not be used (`agent_error`, `parse_failed`) — never that
+   anything is wrong with the app.
 5. **The browser profile is ephemeral, by design.** No volume on the browser sidecar: a surviving
    session cookie makes an unprotected app look protected on the one check that catches auth
    bypass. This is the single deliberate divergence from Newsdesk's packaging.
@@ -433,6 +483,28 @@ because its data access was smeared through two 200-line n8n Code nodes.
     to be deciding something — *credentials in Tips count as documented* — that sentence belongs
     in the protocol, as a revision with a reason. The KB says where to look; the rubric says
     what makes it a pass.
+
+14. **Only a delisted subject may be deleted, and no model may delete one.** The archive is
+    permanent by design; `DELETE /subjects/:name` is the single hole in that, and the guard is
+    `SubjectRegistry.isDelisted()` — the store was *read* and does not list this app. So a live
+    app cannot be purged by a mistyped name, and during a store outage nothing is deletable at
+    all, because an unreadable store delists nobody. The verb is HTTP-only: `CHAT_TOOLS` has no
+    delete and therefore neither does the admin MCP, by invariant 6's neighbouring argument —
+    an irreversible delete over a surface that authenticates nobody is not handed out for
+    symmetry. It logs `SUBJECT_PURGED` at `warn`, because the archive was the only record that
+    the app was ever audited.
+14. **Charging a try implies writing an attempt record.** An outcome either costs the subject
+    nothing and records nothing, or costs a try and leaves a record `lastAttemptAt` can see.
+    Never one without the other. The scheduler holds *two* answers to "did we attempt this
+    app?" — `try_n`/`parked_at` in `state/schedule.json`, and `lastAttemptAt` derived from the
+    archive — and a failed run used to move the first and not the second. Everything that asks
+    "have we looked since X" reads the second: the re-audit flag, `standardMoved`,
+    `subjectChanged`. So a charged failure walked a subject toward parking while its flag
+    stayed set for ever, its `older standard` chip never cleared and no rule would re-audit it.
+    `Runner.recordAttempt` closes it by writing one `blocked` assay per section — which is why
+    invariant 4 now names two reasons that are not infrastructure. The converse holds too:
+    `agent_auth` charges nothing, so it records nothing, or an outage would spend every
+    subject's flag on runs that established nothing.
 
 ## Safety switches (both default off)
 

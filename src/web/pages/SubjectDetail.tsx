@@ -14,13 +14,13 @@ import MarkdownView, { MissingReport } from '../components/MarkdownView';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getReport, getSubject } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
-import FlagButton from '../components/FlagButton';
-import ReassayButton from '../components/ReassayButton';
+import FlagControl from '../components/FlagControl';
+import AssayButton from '../components/AssayButton';
 import FixReportPanel, { FixReportButton } from '../components/FixReport';
 import LegCard, { StandardTag, verdictSections } from '../components/LegCard';
 import { RequirementsPanel } from '../components/RequirementList';
 import RunCard from '../components/RunCard';
-import StandardChip, { VersionChip } from '../components/StandardChip';
+import StandardChip, { DelistedChip, VersionChip } from '../components/StandardChip';
 import { ReadingPanel } from '../components/Reading';
 import { readingOf, readingSections } from '../lib/reading';
 import { num, stamp } from '../lib/format';
@@ -115,6 +115,7 @@ export default function SubjectDetail() {
             </h1>
             {/* The same caveat the Store row carried, so clicking the chip does not land on a
                 page that has forgotten about it. */}
+            <DelistedChip delisted={subject.delisted} />
             <StandardChip standard={subject.standard} />
             <VersionChip version={subject.subject_version} />
             <div style={{ flex: 1 }} />
@@ -129,8 +130,8 @@ export default function SubjectDetail() {
             {fixable ? <FixReportButton open={fixOpen} onToggle={() => setFixOpen((v) => !v)} /> : null}
             {/* The queue's verb beside the agent's. One asks for the app to be looked at
                 again in the ordinary rotation; the other takes the agent now. */}
-            <FlagButton subject={subject.name} flagged={data.flagged} onChanged={reload} />
-            <ReassayButton subject={subject.name} onFinished={reload} />
+            <FlagControl subject={subject.name} flagged={data.flagged} onChanged={() => reload()} />
+            <AssayButton subject={subject.name} onFinished={reload} />
           </div>
 
           {refs ? (
@@ -208,7 +209,7 @@ export default function SubjectDetail() {
                 ? 'There is nothing to read yet. The report is written when the run finishes, and this page picks it up without a reload.'
                 : 'It is in the registry and nothing more. There is no verdict to disagree with, and no report to read.'
             }
-            action={<ReassayButton subject={subject.name} onFinished={reload} label="Run first assay" />}
+            action={<AssayButton subject={subject.name} onFinished={reload} label="first assay" />}
           />
         </div>
       ) : (

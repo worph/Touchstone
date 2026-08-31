@@ -76,7 +76,18 @@ const ROUTES: Record<string, { beacon: boolean; push: boolean }> = {
   ASSAY_COMPLETED: { beacon: true, push: true },
   ASSAY_FAILED: { beacon: true, push: true },
   ASSAY_BLOCKED: { beacon: false, push: true },
-  AGENT_UNAUTHENTICATED: { beacon: true, push: true },
+  /**
+   * **Not routed here, since 2026-08-31 — it is an alert now.**
+   *
+   * A dead agent session stops *every* audit rather than one, which is what makes it a
+   * condition rather than an incident, and `Runner.fail` opens `agent.auth` for it. Routing
+   * the event as well would send the operator two notifications for one fact, which is the
+   * exact rule the docblock above this table states. Leaving it here is also what made the
+   * dedup pointless: three failed audits in a row are one condition and should be one
+   * notification, and only the alert store knows that — `open` fires a transition on the
+   * first and refreshes silently after.
+   */
+  AGENT_UNAUTHENTICATED: { beacon: false, push: false },
 
   /**
    * Trials notify nowhere.

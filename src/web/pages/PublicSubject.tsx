@@ -28,7 +28,7 @@ import CoverageCell from '../components/CoverageCell';
 import { ReadingPanel } from '../components/Reading';
 import { isReading, readingOf, readingSections } from '../lib/reading';
 import RequirementList from '../components/RequirementList';
-import StandardChip, { VersionChip } from '../components/StandardChip';
+import StandardChip, { DelistedChip, VersionChip } from '../components/StandardChip';
 import StatusCell from '../components/StatusCell';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getPublicFixReport, getPublicSubject } from '../data/client';
@@ -75,6 +75,7 @@ export default function PublicSubject() {
             {/* The store the app comes from. Always shown here, unlike on the board: a reader
                 arriving from a deep link has no table beside them to infer it from. */}
             <span className="tag store-tag">{subject.origin}</span>
+            <DelistedChip delisted={subject.delisted} />
             <StandardChip standard={subject.standard} />
             <VersionChip version={subject.subject_version} />
             <div style={{ flex: 1 }} />

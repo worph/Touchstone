@@ -168,6 +168,62 @@ describe('a section whose phases never produced a result', () => {
   });
 });
 
+/**
+ * The wedged-browser case, and the reason `scopeVerdict` asks about the primary rather than
+ * about the other sections.
+ *
+ * On 2026-08-28/29 the sidecar's CDP hung while its MCP surface kept answering, so the agent
+ * drove the bench over `curl` instead: the functional section *ran*, most of its phases
+ * passed, and only the one needing a real browser came back `errored`. Six subjects then
+ * recorded a `static` section — 18 of 18 items passing, `requires: []`, never opens a browser
+ * — as `errored`, while the functional section that actually held the unmeasured phase
+ * recorded `compliant`. The two had swapped verdicts.
+ */
+describe('a live section that ran but could not measure one of its phases', () => {
+  const partial = {
+    declared: {
+      verdict: 'errored' as const,
+      severity: 'None',
+      risk_score: 0,
+      report_markdown: REPORT.replace('**NON-COMPLIANT · Major · risk score 12**', '**ERRORED · none · risk score 0**'),
+    },
+    phases: [phase('A', 'functional'), phase('C', 'functional'), phase('E8', 'functional', 'errored')],
+  };
+
+  it('leaves the errored headline off a primary that is not what failed to be measured', () => {
+    const out = compose(partial);
+    expect(out[0]?.meta.section).toBe('static');
+    expect(out[0]?.meta.status).toBe('done');
+    expect(out[0]?.meta.verdict).toBe('compliant');
+  });
+
+  it('says errored on the section that actually holds the unmeasured phase', () => {
+    const out = compose(partial);
+    expect(out[1]?.meta.section).toBe('functional');
+    expect(out[1]?.meta.status).toBe('done');
+    expect(out[1]?.meta.verdict).toBe('errored');
+  });
+
+  /** A failing item is a statement about the app and outranks a measurement never taken. */
+  it('still prefers non-compliant when that section also failed something', () => {
+    const out = compose({
+      ...partial,
+      requirements: [req('phase-g-persistence', 'functional', { verdict: 'fail', severity: 'critical' })],
+    });
+    expect(out[1]?.meta.verdict).toBe('non-compliant');
+  });
+
+  /** And the primary keeps `errored` when the primary is the section that could not be read. */
+  it('keeps the errored headline when the primary is itself unmeasured', () => {
+    const out = compose({
+      ...partial,
+      sections: [FUNCTIONAL, STATIC],
+    });
+    expect(out[0]?.meta.section).toBe('functional');
+    expect(out[0]?.meta.verdict).toBe('errored');
+  });
+});
+
 describe('a section that was never attempted', () => {
   it('is written blocked, with the reason and nowhere else to look for a verdict', () => {
     const out = compose({

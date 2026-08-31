@@ -12,6 +12,10 @@
  *   the subject was learned. This is principle 5, and it is the rule that keeps an
  *   infrastructure outage from parking thirteen innocent apps.
  * - **E6** — `max_tries` consecutive errors parks the subject for `stuck_days`.
+ * - **E5b** — an agent whose *session* is dead is free too, added 2026-08-31. Same argument as
+ *   E5 — nothing about the app was learned — but it stamps the finish time, because unlike a
+ *   409 it has already burned a full agent call and the cooldown is what stops the loop
+ *   marching the whole registry through a dead endpoint.
  * - **E7** — every other completion stamps the finish time, *including* an errored one. That
  *   is deliberate: without it an app that errors reliably starves every other app, because it
  *   would stay the stalest row forever and win the pick on every tick.
@@ -37,6 +41,8 @@ export type Outcome =
   | { kind: 'error'; reason: string }
   /** The agent was busy (409) — someone else's PR review had it. Costs nothing. */
   | { kind: 'agent_busy' }
+  /** The agent's own session is dead. Costs no try, but does move the cooldown — see below. */
+  | { kind: 'agent_auth' }
   /** No bench could be claimed. Costs nothing, by principle 5. */
   | { kind: 'blocked'; reason: string };
 
@@ -78,6 +84,27 @@ export function recordResult(input: RecordInput): RecordResult {
         outcome.kind === 'agent_busy'
           ? 'the agent was busy, so the subject keeps its try'
           : `blocked (${outcome.reason}), so the subject keeps its try`,
+    };
+  }
+
+  /**
+   * The agent is not logged in: no try burned, but the cooldown anchor **does** move.
+   *
+   * The pairing is deliberate and it is the one place this outcome differs from `agent_busy`.
+   * Nothing about the app was learned, so charging it would walk innocent subjects toward
+   * parking during an outage — invariant 3, and the failure that cost `yundera~UptimeKuma`
+   * three audits and five days in August 2026. But unlike a 409, which comes back in
+   * milliseconds having attempted nothing, an auth failure has already spent a full agent
+   * call — twenty-six minutes, in that incident. Leaving the anchor alone would let the next
+   * tick claim the next subject at once and march the whole registry through the same dead
+   * endpoint, one 26-minute failure after another. Free, and still spaced.
+   */
+  if (outcome.kind === 'agent_auth') {
+    return {
+      schedule: { ...previous, claim: undefined },
+      stampsFinish: true,
+      parked: false,
+      note: 'the agent is not logged in, so the subject keeps its try',
     };
   }
 

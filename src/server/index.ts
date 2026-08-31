@@ -259,6 +259,9 @@ const runner = new Runner({
   enabled: cfg.runner.enabled,
   reportsRoot: cfg.reportsRoot,
   origins: cfg.origins,
+  // For `agent.auth` only. The runner is the one place that can observe a dead agent session:
+  // `services/ports.ts` probes with `tools/list`, which answers fine when it is.
+  alerts,
   storeReachable: (id) => registry.reachable(id),
   storeFailure: (id) => registry.failureOf(id),
   // Recorded onto every assay this run writes, so the archive can later say whether a verdict
@@ -372,9 +375,11 @@ const scheduler = new Scheduler({
         ? { kind: 'verdict' }
         : outcome.kind === 'agent_busy'
           ? { kind: 'agent_busy' }
-          : outcome.kind === 'blocked'
-            ? { kind: 'blocked', reason: outcome.reason }
-            : { kind: 'error', reason: outcome.reason },
+          : outcome.kind === 'agent_auth'
+            ? { kind: 'agent_auth' }
+            : outcome.kind === 'blocked'
+              ? { kind: 'blocked', reason: outcome.reason }
+              : { kind: 'error', reason: outcome.reason },
     );
   },
 });
@@ -540,9 +545,11 @@ await app.register(registerRoutes, {
                   ? { kind: 'verdict' }
                   : outcome.kind === 'agent_busy'
                     ? { kind: 'agent_busy' }
-                    : outcome.kind === 'blocked'
-                      ? { kind: 'blocked', reason: outcome.reason }
-                      : { kind: 'error', reason: outcome.reason },
+                    : outcome.kind === 'agent_auth'
+                      ? { kind: 'agent_auth' }
+                      : outcome.kind === 'blocked'
+                        ? { kind: 'blocked', reason: outcome.reason }
+                        : { kind: 'error', reason: outcome.reason },
               );
             } finally {
               // `finally`, so a schedule that could not be written does not also cost the

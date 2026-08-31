@@ -284,11 +284,13 @@ describe('the catalogue', () => {
  * is the one thing a restart empties.
  */
 describe('reading what was written down', () => {
-  // `versions` as well as `list`: `get_board` asks for both, and a stub missing one turns a
-  // wiring bug into a passing test.
+  // `versions` and `delisted` as well as `list`: `get_board` asks for all three, and a stub
+  // missing one turns a wiring bug into a passing test.
   const registry = {
     list: () => ['yundera~OpenClaw', 'yundera~NeverAssayed'],
     versions: () => ({}),
+    delisted: () => [],
+    isDelisted: () => false,
   } as never;
   const archive = { store: memoryStore(), registry };
 
@@ -372,7 +374,7 @@ describe('reading what was written down', () => {
     expect(res.ok).toBe(true);
 
     const lines = res.text.split('\n');
-    expect(lines[0]).toMatch(/app\(s\), worst risk first/);
+    expect(lines[0]).toMatch(/app\(s\) in the store, worst risk first/);
 
     // Every subject in the archive gets a row, and OpenClaw's risk 232 puts it above the rest.
     expect(res.text).toContain('OpenClaw');
@@ -402,6 +404,73 @@ describe('reading what was written down', () => {
     expect(res.ok).toBe(true);
     expect(res.text).toContain('# Yundera/AppStore — OpenClaw');
     expect(res.text).toContain('## Evidence');
+  });
+
+  /**
+   * A delisted app, from the other end of the MCP.
+   *
+   * This is the half the chip on the Store page cannot do anything about: an operator asking
+   * "how is the store doing" gets an answer composed by a model reading these tools, and a
+   * model that cannot see that CasaOS was removed will fold its Critical into the roll-up and
+   * report a store that is worse than it is. So every tool that reads about one subject says
+   * so first, and the board both marks the row and takes it out of its own counts.
+   */
+  describe('an app the store no longer offers', () => {
+    const withGone = {
+      store: memoryStore(),
+      registry: {
+        list: () => ['yundera~NeverAssayed'],
+        versions: () => ({}),
+        delisted: () => ['yundera~OpenClaw'],
+        isDelisted: (key: string) => key === 'yundera~OpenClaw',
+      },
+    };
+
+    it('says so on the board, and leaves it out of the counts', async () => {
+      const res = await dispatch({ tool: 'get_board', input: {} }, withGone as never);
+      expect(res.ok).toBe(true);
+
+      const lines = res.text.split('\n');
+      // The headline counts the store, not the archive, and says where the rest went.
+      expect(lines[1]).toContain('1 DELISTED app(s)');
+      // The row is still there — it is the record — and it is marked.
+      expect(lines.find((l) => l.startsWith('OpenClaw'))).toContain('DELISTED');
+      // Nothing else picked up the mark.
+      expect(lines.filter((l) => l.includes('DELISTED'))).toHaveLength(2);
+    });
+
+    it.each(['get_subject', 'get_fix_brief', 'get_report'])(
+      'warns before it answers — %s',
+      async (tool) => {
+        const res = await dispatch({ tool, input: { subject: 'OpenClaw' } }, withGone as never);
+        expect(res.ok).toBe(true);
+        // First line, not somewhere in the middle: a report runs to hundreds of lines and a
+        // caveat below the fold is a caveat that does not arrive.
+        expect(res.text.split('\n')[0]).toContain('DELISTED');
+        expect(res.text).toContain('Do not count it in a roll-up');
+      },
+    );
+
+    /**
+     * The refusal has to name the reason. Without this the answer is "there is no subject
+     * called OpenClaw", which reads as a misspelling and sends the turn hunting for one.
+     */
+    it('refuses to audit it, and says why rather than denying it exists', async () => {
+      const res = await dispatch(
+        { tool: 'run_assay', input: { subject: 'OpenClaw' } },
+        { ...withGone, runner: { enabled: true, busy: false } } as never,
+      );
+      expect(res.ok).toBe(false);
+      expect(res.text).toContain('delisted');
+      expect(res.text).not.toContain('There is no subject');
+    });
+
+    it('still lists it, marked, so a name the operator says can be resolved', async () => {
+      const res = await dispatch({ tool: 'list_subjects', input: {} }, withGone as never);
+      expect(res.ok).toBe(true);
+      expect(res.text).toContain('yundera~OpenClaw');
+      expect(res.text).toContain('DELISTED');
+    });
   });
 
   it('reads a named section, and names the ones it has when asked for one it has not', async () => {
@@ -443,7 +512,7 @@ describe('a run started here reports back into the conversation', () => {
       threadId: thread.id,
       message: 'review OpenClaw',
       ctx: {
-        registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}) } as never,
+        registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}), delisted: () => [], isDelisted: () => false } as never,
         runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }) } as never,
         startAssay: (job, opts) => started.push({ subject: job.subject, threadId: opts?.threadId }),
       },
@@ -473,7 +542,7 @@ describe('a run started here reports back into the conversation', () => {
       threadId: thread.id,
       message: 'review OpenClaw',
       ctx: {
-        registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}) } as never,
+        registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}), delisted: () => [], isDelisted: () => false } as never,
         runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }), ...runner } as never,
         prober: { window: () => 'demostaging1 is mid-cleanup — usually back within minutes' } as never,
         startAssay: () => {},
@@ -676,7 +745,7 @@ describe('trialling supplied files', () => {
       trials,
       ctx: {
         store: memoryStore(),
-        registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}) },
+        registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}), delisted: () => [], isDelisted: () => false },
         originRepo: (origin: string) => (origin === 'yundera' ? 'Yundera/AppStore' : undefined),
         trials: {
           runner: busyRunner(opts.busy ?? false),

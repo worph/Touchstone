@@ -15,7 +15,7 @@ import { Link } from 'react-router-dom';
 
 import type { Leg, SubjectState } from '@shared/types';
 import CoverageCell from './CoverageCell';
-import StandardChip, { VersionChip } from './StandardChip';
+import StandardChip, { DelistedChip, VersionChip } from './StandardChip';
 import StatusCell from './StatusCell';
 import { ReadingBadge } from './Reading';
 import { readingOf, readingSections } from '../lib/reading';
@@ -107,7 +107,7 @@ function Row({
   const running = live?.subject === s.name;
   const to = href(s);
   return (
-    <tr data-running={running || undefined}>
+    <tr data-running={running || undefined} data-delisted={s.delisted || undefined}>
       <td>
         {/* Linked by key, rendered by label: `s.name` is `<origin>~<app>`, which is an
             address, not something to show a person. */}
@@ -117,6 +117,9 @@ function Row({
         {/* Only when there is more than one store. Two stores may legitimately ship the same
             app name — at which point the label alone stops identifying the row. */}
         {showOrigin ? <span className="tag store-tag">{s.origin}</span> : null}
+        {/* First of the three: the other two qualify a verdict about an app you can still
+            install, this one says you cannot. */}
+        <DelistedChip delisted={s.delisted} />
         <StandardChip standard={s.standard} />
         <VersionChip version={s.subject_version} />
       </td>

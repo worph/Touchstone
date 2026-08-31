@@ -171,6 +171,7 @@ audit rotation anyway.
 │  Radarr                ✅ compliant    ✅ compliant         0   7d      ▸    │
 │  ConvertX              ⚠ parked ·3     ▨ blocked           —   5d      ▸    │
 │  Nginx                 ⬜ not yet run  ▨ blocked           —   —       ▸    │
+│  CasaOS  · delisted    ⛔ Critical     ▨ blocked          88   9d      ▸    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -194,7 +195,16 @@ audit rotation anyway.
 - **`⚠ parked ·3`** is its own state, not an error: three tries used, waiting out `STUCK_DAYS`.
   Today this is legible only by reading `stuck after 3 tries` out of a wiki cell.
 - **Age, not timestamp.** `7d` is actionable; `2026-07-30` requires arithmetic.
-- Filters: severity, section, blocked-only, parked-only, stale-only.
+- **A `delisted` row recedes and offers `delete` where the others offer `audit`.** An app the
+  store has stopped offering keeps its row — the verdicts are a record of an app that was
+  audited, and hiding it is how an archive quietly loses things — but it is dimmed, carries a
+  slate `delisted` chip beside its name, and the verb in the action column changes. The two are
+  mutually exclusive by definition: a withdrawn app cannot be fetched, so `audit` on that row
+  could only start a run that errors; a live app must not be deletable, so `delete` on that row
+  must not exist. The delete asks twice (`delete` → `delete forever`) in the row itself, so
+  there is no question which app it is about, and the server refuses anything the store still
+  lists — the confirm step stops a misclick, the guard is the route's.
+- Filters: severity, section, blocked-only, parked-only, stale-only, delisted-only.
 
 ---
 
@@ -237,7 +247,7 @@ from the report prose is precisely the mistake the archive was cleaned of in P1.
 ### 2.2 Subject detail — one app
 
 ```
-┌ ‹ OpenClaw ─────────────────────── risk 232  [ fix report ]  [ re-assay ▾ ]──┐
+┌ ‹ OpenClaw ─────────────────────── risk 232  [ fix report ]  [ ⚑ flag ]  [ assay now ]──┐
 │ Yundera/AppStore@main:Apps/OpenClaw                                          │
 │ openclaw:2.1.0 · appshield:2.0.7 · commit 6b9af120                           │
 │                                                                              │
@@ -264,7 +274,7 @@ from the report prose is precisely the mistake the archive was cleaned of in P1.
 - **The blocked card names the reason and says `no try used`.** That sentence is the product.
 - **`try N · trigger`** on each card, because "why did this run" and "how many attempts has it had"
   are questions the wiki table could only answer in emoji.
-- `re-assay` is **one button and no menu**, and calls `POST /api/v1/assays` with a subject and
+- `assay now` is **one button and no menu**, and calls `POST /api/v1/assays` with a subject and
   nothing else. Its bench note reads the **shared run-status poller** rather than a fetch of its
   own — it used to call `GET /benches` once on mount, so the note was a snapshot from page load,
   and on 2026-08-23 an operator acted on one five minutes after it stopped being true. There is no depth to choose: a run audits every section of the protocol, and a
@@ -452,7 +462,7 @@ routine completions is a badge people stop reading.
 
 **`assay finished` began pushing on 2026-08-20**, where this table had said it should not. That
 row was written for a loop grinding through 69 subjects unattended; the case that decided it is
-an operator who *asks* for a review — from the administrator chat, or the re-assay button — and
+an operator who *asks* for a review — from the administrator chat, or the `assay now` button — and
 walks away. For them the finished audit is the entire point of being notified, and an audit
 outlasts the page they asked from. The ceiling is one an hour even with the scheduler armed. If
 that ever becomes too many, the fix is to push only operator-initiated runs, which needs a
@@ -540,7 +550,8 @@ joins the queue at its ordinary position, behind everything staler, under the sa
 and bench gate as everything else. It is spent by the next attempt whatever that attempt concluded,
 so it is a request rather than a switch somebody has to remember to turn off — which also means one
 flag buys one look, never one look per cooldown until the bench comes back. The button is on the
-queue row and on the subject page beside `re-assay`; the two verbs sit together there on purpose,
+queue row, on the Store table (where it is the *only* per-row verb) and on the subject page beside
+`assay now`; the two verbs sit together there on purpose,
 one meaning *again* and the other meaning *now*. It is **always drawn** on the queue row, muted
 until the row is hovered and carrying the running token once set. It shipped hover-only — on the
 theory that seventy-two buttons down a page read as seventy-two calls to action — and the first
@@ -708,7 +719,7 @@ with the standard version that judged it, the requirements the audit settled (fa
 the **fix brief** — the audit's own findings, evidence and proposed remedies, fetched from
 `/public/subjects/:name/fix.md` rather than composed again in the browser.
 
-No history, no report source, no re-assay. An author cannot ask for a re-run from here, and that is
+No history, no report source, no `assay now`. An author cannot ask for a re-run from here, and that is
 the intent: the loop decides what is audited and when. A hallmark is what the subject carries now,
 which is what a hallmark *is*.
 
@@ -818,8 +829,10 @@ These matter more than usual, because the system's normal condition includes "la
 | Bench pool down | The open alert's own `impact` as the banner's second line — what is stopped, that no try is consumed, and **when the pool is usable again**. Functional column uniformly `▨ blocked`. Re-assay stays **enabled** and says the same window beneath itself: the audit is still worth running, it will simply be narrower. Static work continues visibly. |
 | Assay running | The row shows `◴ running · 7/24`, the shell shows the strip, the tab title shows the clock, and both Activity and the subject's own page show the card. All of them come from `GET /assays/current` and none from a file: the runner writes a report when it has a verdict, so a run in progress has no record and must not be given a placeholder one. |
 | Subject parked | `⚠ parked ·3` with the date it is released. Not styled as an error. |
+| App removed from the store | The row stays, dimmed, with a `delisted` chip and a **delete** button in place of **audit**. It is out of the backlog, so nothing will re-audit it; its verdicts stand as a record. The board (`/public`) marks it too — an author whose app is gone should not be reading a live-looking verdict about it. |
+| Store unreachable *and* an app missing from the last list | Nothing is marked delisted, nothing leaves the backlog, nothing is deletable. "We could not ask" and "the store does not list it" are different claims and only the second may act. |
 | Agent busy | Log row and a `agent.unavailable` alert if it persists. The row is restored, not failed. |
-| Report file missing | The section card still renders from the index; the report pane says the file is gone and offers a re-assay. |
+| Report file missing | The section card still renders from the index; the report pane says the file is gone and offers `assay now`. |
 | Beacon or push down | Everything still renders. Undelivered notifications are marked in the log. |
 | No scheduler wired up | Automation says so and offers no button. `armed: null` is not `armed: false` — one has a Start button and the other has nothing to start. |
 | Automation not refreshing | A notice, and the page keeps its last state: this is the view, not the driver, and the loop carries on. |

@@ -13,10 +13,20 @@
  * | `browser` | our own `browser-mcp` sidecar, §5.4 | the functional leg only |
  * | bench | the demo instances — `services/bench.ts`, which keeps its own prober | the functional leg only |
  *
- * The probe is the same for both: `tools/list` over MCP. It is the honest one, because it is
- * the surface the work actually uses — `browser-mcp` serves a landing page on `/health` that
- * answers `200` whether or not Chrome is reachable, which is precisely the kind of green
+ * The probe starts the same for both: `tools/list` over MCP. It is the honest one, because it
+ * is the surface the work actually uses — `browser-mcp` serves a landing page on `/health`
+ * that answers `200` whether or not Chrome is reachable, which is precisely the kind of green
  * light this codebase has been burned by twice.
+ *
+ * For a **browser** it is not sufficient, which is the third burn. On 2026-08-24 the sidecar's
+ * `stop()` failed to reap Chrome and every relaunch bound nothing, leaving four Chromes on one
+ * profile and the CDP port held by an orphan: `tools/list` kept answering — the MCP wrapper
+ * was fine — while every call through it timed out on `Network.enable`. Six audits were
+ * dispatched into that and came back errored, which invariant 4 exists to forbid: infra must
+ * make a section `blocked`, never a verdict. So a browser gets a second, liveness sub-probe —
+ * `browserLiveness` below — and only a **positive** wedge signal downgrades it, because a
+ * browser endpoint that is not our sidecar (an aggregator, say) has no such endpoints and
+ * "cannot tell" must not read as "broken".
  */
 
 import path from 'node:path';
@@ -102,9 +112,32 @@ export async function probeMcp(
       return { status: 'unreachable', detail: 'the endpoint offers no tools', tools: 0, latencyMs };
     }
     const hasExpected = port.expectTool ? names.includes(port.expectTool) : undefined;
+    if (hasExpected === false) {
+      return {
+        status: 'unreachable',
+        detail: `${port.expectTool} is not on this endpoint`,
+        tools: names.length,
+        hasExpected,
+        latencyMs,
+      };
+    }
+
+    // The surface is there. For a browser that is only half the question — see the header.
+    if (port.kind === 'browser') {
+      const live = await browserLiveness(port.url, Math.min(timeoutMs, 4000), fetchImpl);
+      if (live.wedged) {
+        return {
+          status: 'unreachable',
+          detail: live.detail ?? 'the browser is not drivable',
+          tools: names.length,
+          hasExpected,
+          latencyMs: Date.now() - started,
+        };
+      }
+    }
+
     return {
-      status: hasExpected === false ? 'unreachable' : 'healthy',
-      detail: hasExpected === false ? `${port.expectTool} is not on this endpoint` : undefined,
+      status: 'healthy',
       tools: names.length,
       hasExpected,
       latencyMs,
@@ -119,6 +152,95 @@ export async function probeMcp(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * The sidecar's REST base, from the MCP endpoint we were configured with.
+ *
+ * `null` for any shape that is not `…/mcp`, which is the whole safety property: a browser
+ * reached through a Beacon aggregator, or any endpoint that is not our `browser-mcp`, has no
+ * `/api/status` to ask and must come back "cannot tell" rather than "broken".
+ */
+export function sidecarBase(mcpUrl: string): string | null {
+  try {
+    const u = new URL(mcpUrl);
+    if (!/\/mcp\/?$/.test(u.pathname)) return null;
+    u.pathname = u.pathname.replace(/\/mcp\/?$/, '');
+    u.search = '';
+    u.hash = '';
+    return u.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is the browser behind this MCP endpoint actually drivable?
+ *
+ * `tools/list` cannot answer that: it is served by the Node wrapper, which stays up and
+ * cheerful while Chrome is unreachable underneath it. Two endpoints can:
+ *
+ * - **`/api/status`** does a real CDP round-trip. `running: false` on its own is *not* a
+ *   fault — it is the normal state after the idle reaper has freed Chrome's RSS, and the next
+ *   call relaunches it. Treating it as unreachable would block every functional section
+ *   between runs, which is why this function exists rather than a one-line status check.
+ * - **`/api/health`** reports Chrome's lifecycle. Its `chrome` field disagreeing with
+ *   `/api/status` is the wedge: the manager still holds a live process handle (`running`)
+ *   while nothing can be driven through it. That is exactly what the box looked like for the
+ *   six errored audits — `{"chrome":"running"}` beside `{"running":false}` — and the audit
+ *   reports called it out in prose before anything checked it.
+ *
+ * Only a positive signal downgrades. Anything unreadable — a 404, a non-JSON body, an
+ * endpoint that is not ours — is `wedged: false`, because a browser we cannot interrogate is
+ * not the same as a browser we know is broken.
+ */
+export async function browserLiveness(
+  mcpUrl: string,
+  timeoutMs = 4000,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ wedged: boolean; detail?: string }> {
+  const base = sidecarBase(mcpUrl);
+  if (!base) return { wedged: false };
+
+  const get = async (path: string): Promise<{ body: Record<string, unknown> | null; timedOut: boolean }> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetchImpl(`${base}${path}`, { signal: controller.signal });
+      const text = await res.text();
+      try {
+        const parsed: unknown = JSON.parse(text);
+        return { body: parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null, timedOut: false };
+      } catch {
+        return { body: null, timedOut: false };
+      }
+    } catch {
+      return { body: null, timedOut: controller.signal.aborted };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const [status, health] = await Promise.all([get('/api/status'), get('/api/health')]);
+
+  // The wrapper answered `tools/list` a moment ago, so a status call that hangs is the
+  // browser layer hanging rather than the box being away.
+  if (status.timedOut) return { wedged: true, detail: 'the browser did not answer /api/status' };
+  if (!status.body) return { wedged: false };
+
+  const chrome = typeof health.body?.['chrome'] === 'string' ? (health.body['chrome'] as string) : null;
+  const running = status.body['running'] === true;
+
+  // The sidecar's own word for it, once it is new enough to say so.
+  if (chrome === 'wedged') return { wedged: true, detail: 'the sidecar reports Chrome wedged' };
+
+  // …and the same condition seen from outside, on an image that cannot.
+  if (chrome === 'running' && !running) {
+    return { wedged: true, detail: '/api/health says Chrome is running but nothing can be driven through it' };
+  }
+  if (chrome === 'failing') return { wedged: true, detail: 'Chrome is failing to launch' };
+
+  return { wedged: false };
 }
 
 /** Tool names out of a JSON-RPC answer, SSE-framed or plain. `null` means it was neither. */
@@ -158,9 +280,16 @@ export interface PortProberOptions {
  *
  * No alerts here on purpose. A bench outage pauses a queue and deserves a card; a port being
  * down is either the same thing said twice (no browser → the functional queue is already
- * paused by the bench gate) or it is total (no agent → nothing runs, and the failed assay
- * says so with its own event). Adding a third alert source would mean one outage opening
- * three cards, which is the thing alerts exist to stop.
+ * paused by the bench gate) or it is total. Adding a third alert source would mean one outage
+ * opening three cards, which is the thing alerts exist to stop.
+ *
+ * The total case *is* worth a card, and since 2026-08-31 it gets one — but from the **runner**,
+ * as `agent.auth`, not from here. That is not a hedge: this prober asks `tools/list`, which a
+ * Claude Code endpoint answers perfectly well while its own session is dead, so for three days
+ * in August it reported the agent healthy beside audits that were failing to authenticate. A
+ * dead session is only ever observable to the code making the call. The clause this comment
+ * used to carry — "the failed assay says so with its own event" — was the other half of that
+ * mistake: an event is not an alert, and the banner, the chat and `get_status` all read alerts.
  */
 export class PortProber {
   private readonly file: string;

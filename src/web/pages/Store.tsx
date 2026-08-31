@@ -18,17 +18,19 @@
  * largely hatched and the story tells itself: nothing is wrong with these apps' functional
  * behaviour, we simply have not been able to look.
  */
-import { useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { subjectName } from '@shared/subject';
+import type { ScheduleResponse } from '@shared/schedule';
 import type { Leg, SubjectState } from '@shared/types';
-import AuditButton from '../components/AuditButton';
-import ReassayButton from '../components/ReassayButton';
+import AssayButton from '../components/AssayButton';
+import DeleteSubjectButton from '../components/DeleteSubjectButton';
+import FlagControl from '../components/FlagControl';
 import { StatusLegend } from '../components/StatusCell';
 import SubjectTable, { SubjectSummary } from '../components/SubjectTable';
 import { EmptyState, Loading, Notice } from '../components/Ui';
-import { getAlerts, getSubjects } from '../data/client';
+import { getAlerts, getSchedule, getSubjects } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
 import { duration, num, plural } from '../lib/format';
 import {
@@ -48,6 +50,7 @@ const SHOW_OPTIONS: { value: ShowFilter; label: string }[] = [
   { value: 'not-run', label: 'not yet run' },
   { value: 'running', label: 'running' },
   { value: 'stale', label: `stale (≥ ${FRESH_DAYS}d)` },
+  { value: 'delisted', label: 'delisted' },
 ];
 
 export default function Store() {
@@ -60,6 +63,33 @@ export default function Store() {
    * as the first is how this page came to announce a bench outage over a healthy pool.
    */
   const alerts = useAsync(getAlerts, []);
+  /**
+   * The scheduler's opinion of each row, for the flag.
+   *
+   * A separate fetch rather than a field on `SubjectState`, deliberately. `flagged` is the
+   * *loop's* state, not part of the hallmark — see `routes/index.ts`, where it is attached
+   * beside the hallmark rather than inside it — and putting it on `SubjectState` would also put
+   * it on `/public/subjects`, which shares this table's row type. A board addressed to app
+   * authors must not publish which of their apps the operator has queued for another look.
+   *
+   * Its own state rather than `useAsync`'s, because a write returns the whole schedule and
+   * repainting from that answer is what lets a flag land without a second round trip.
+   */
+  const schedule = useAsync(getSchedule, []);
+  const [flags, setFlags] = useState<ScheduleResponse | null>(null);
+  const live_schedule = flags ?? schedule.data;
+  /**
+   * `undefined` — not `false` — when there is no scheduler, no row for this app, or the
+   * schedule request failed. `FlagControl` renders nothing for that, so the column degrades to
+   * empty rather than to a button that cannot work.
+   */
+  const flagOf = useCallback(
+    (name: string): boolean | undefined => {
+      const row = live_schedule?.queue.find((r) => r.subject === name);
+      return row ? Boolean(row.flagged) : undefined;
+    },
+    [live_schedule],
+  );
   const [params, setParams] = useSearchParams();
   const status = useRunStatus();
 
@@ -253,8 +283,31 @@ export default function Store() {
             live={live}
             showOrigin={showOrigin}
             /* The operator's table gets the verb; the board that shares this component
-               passes nothing and so has no column to reach. */
-            action={(s) => <AuditButton subject={s.name} label={s.label} />}
+               passes nothing and so has no column to reach.
+
+               Which verb depends on the row, and the two are exclusive by definition: an app
+               the store no longer offers cannot be fetched, so auditing it could only start a
+               run that errors — and an app it does offer must not be deletable at all. One
+               column, one control, chosen by the same fact the chip draws.
+
+               The live app's control is the *flag*, not `assay now`. Seventy-three rows
+               offering to take the single agent immediately are seventy-two disabled buttons
+               and one footgun; the row-level question is almost always "look at this one
+               again", which is what the flag asks. `assay now` lives on the subject page,
+               where there is room to say what it costs. */
+            action={(s) =>
+              s.delisted ? (
+                <DeleteSubjectButton subject={s.name} label={s.label} onDone={reload} />
+              ) : (
+                <FlagControl
+                  variant="row"
+                  subject={s.name}
+                  label={s.label}
+                  flagged={flagOf(s.name)}
+                  onChanged={setFlags}
+                />
+              )
+            }
           />
         )}
         <StatusLegend />
@@ -308,7 +361,7 @@ function BacklogNote({
           show {backlog.count === 1 ? 'it' : 'them'}
         </button>
       ) : null}
-      {only ? <ReassayButton subject={only.subject} onFinished={onFinished} label="re-assay" /> : null}
+      {only ? <AssayButton subject={only.subject} onFinished={onFinished} /> : null}
     </div>
   );
 }

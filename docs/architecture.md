@@ -777,7 +777,7 @@ n8n, which §9 explains.
 | `GET` | `/api/v1/subjects` | registry + current hallmark, both legs |
 | `GET` | `/api/v1/subjects/:name` | one subject, both legs, latest assay each |
 | `GET` | `/api/v1/reports/:subject/:file` | the markdown file, rendered and raw. `:subject` is the key `<origin>~<name>`; a bare name still resolves |
-| `POST` | `/api/v1/assays` | request an assay now (subject) — the re-assay button. No depth: a run covers every section |
+| `POST` | `/api/v1/assays` | request an assay now (subject) — the `assay now` button. No depth: a run covers every section |
 | `GET` | `/api/v1/benches` | pool health, last probe |
 | `GET` | `/api/v1/events` | the log feed, filterable by level and category |
 | `GET` | `/api/v1/alerts` | open alerts for the Activity page |

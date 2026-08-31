@@ -171,11 +171,44 @@
  * and the button is what you may do about it.
  */
 .tbl .col-action { width: 1%; white-space: nowrap; text-align: right; padding-left: 4px; }
-.row-audit { display: inline-flex; align-items: center; gap: 4px; }
-.row-audit__err { color: var(--crit); font-weight: 600; }
-/* The row that owns the agent. Not a button — there is nothing to press — and not a spinner
-   either: the strip in the shell already counts this run's elapsed time, once. */
-.row-audit__state { color: var(--fg-3); font-size: 11.5px; font-style: italic; }
+
+/*
+ * The flag, in a table row. Same treatment as `.auto-flag` on Automation and for the same
+ * reason recorded there: always drawn, kept quiet by weight rather than by hiding, because a
+ * control you have to discover by sweeping a mouse down a list is a control that does not
+ * exist. Muted until the row is hovered; the ordinary button colour then.
+ *
+ * It replaced an `audit` button here on 2026-08-31. Seventy-three rows offering to take the
+ * single agent immediately were seventy-two disabled buttons and one footgun — the row-level
+ * question is "look at this one again", which is what the flag asks.
+ */
+.row-flag { display: inline-flex; align-items: center; gap: 4px; }
+.row-flag__btn { color: var(--fg-3); padding-inline: 7px; transition: color 90ms ease, border-color 90ms ease; }
+.tbl tr:hover .row-flag__btn,
+.row-flag__btn:focus-visible { color: var(--fg); }
+/* A flag that is *set* is a fact about the row rather than an offer, so it carries the token
+   the running state does and reads as set without being hovered or compared. */
+.row-flag__btn--on,
+.tbl tr:hover .row-flag__btn--on { color: var(--running); border-color: var(--running); }
+/* Shared by every row-level control's failure marker — the flag's and the delete's. */
+.row-action__err { color: var(--crit); font-weight: 600; }
+
+/* The same column, the other verb — a delisted row offers `delete` where a live one offers
+   `audit`. The confirm step is two buttons rather than a modal: it lives in the row it is
+   about, so there is no question about which app is being deleted. */
+.row-delete { display: inline-flex; align-items: center; gap: 4px; }
+/* The one destructive button in the app, and the only place `--crit` is used for a control
+   rather than for a verdict. It borrows the token deliberately: red already means "this is
+   the bad one" everywhere else on the page. */
+.btn--danger {
+  color: var(--crit);
+  border-color: var(--crit);
+}
+.btn--danger:hover:not(:disabled) {
+  color: var(--bg-1);
+  background: var(--crit);
+  border-color: var(--crit);
+}
 
 
 .row-link {
@@ -315,6 +348,21 @@
   color: var(--link);
   border-color: var(--bg-2);
   background: var(--bg-2);
+}
+
+/* The third chip, and the one that is not a caveat about a verdict: the store has stopped
+   offering this app. Slate rather than warm, because it is not a shortfall — the app was
+   audited fairly and then withdrawn — and because `older standard` and `app changed` already
+   own the two warm tints and a row can carry all three at once. */
+.delisted-tag {
+  margin-left: 7px;
+  font: 500 10px/1.5 var(--sans);
+  letter-spacing: 0.03em;
+  vertical-align: 1px;
+  white-space: nowrap;
+  color: var(--unknown);
+  border-color: var(--unknown-dim);
+  background: var(--unknown-dim);
 }
 
 /* The store a subject came from, beside its name. Only rendered when more than one store is
@@ -623,7 +671,6 @@
   gap: 8px;
 }
 
-.reassay-menu {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
@@ -638,7 +685,6 @@
   box-shadow: var(--shadow);
 }
 
-.reassay-menu button {
   padding: 8px 10px;
   font: inherit;
   color: var(--fg);
@@ -649,9 +695,7 @@
   border-radius: 6px;
 }
 
-.reassay-menu button:hover:not(:disabled) { background: var(--bg-3); }
 
-.reassay-menu button:disabled {
   color: var(--fg-3);
   cursor: not-allowed;
 }
@@ -1217,6 +1261,15 @@
 /* The row whose audit is in flight, on the Overview. A tint, because the cell already says
    `◴ running` in words — this only helps the eye find the row it is waiting on. */
 .tbl tbody tr[data-running] { background: var(--running-dim); }
+
+/* A withdrawn app's row recedes, and comes back on hover so it stays readable when somebody
+   deliberately looks at it. Deliberately not `display: none` and not a filter default: the
+   row is still the operator's record, and hiding it is how an archive quietly loses things.
+   `data-running` keeps its background — nothing delisted can be running, but the rule below
+   is written not to fight it if that ever stops being true. */
+.tbl tbody tr[data-delisted] { opacity: 0.6; }
+.tbl tbody tr[data-delisted]:hover,
+.tbl tbody tr[data-delisted]:focus-within { opacity: 1; }
 
 /* -- the fix report ------------------------------------------------------- */
 /* Raw markdown, monospaced and scrollable. It is shown to be taken away, not to be read

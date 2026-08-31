@@ -263,16 +263,53 @@ export class Scheduler {
     const row = this.subjects[subject] ?? { try_n: 0 };
     if (Boolean(row.flagged_at) === flagged) return false;
     const at = new Date().toISOString();
-    this.subjects[subject] = { ...row, flagged_at: flagged ? at : undefined };
+    // Flagging releases a park, and that is the point rather than a side effect.
+    //
+    // `plan()` skips a parked row *before* it looks at any eligibility clause, so until now a
+    // flag on a parked subject was a control that quietly did nothing — the Automation page
+    // hid the button on those rows for exactly that reason, which left the one row an operator
+    // most wants to act on as the one row offering nothing. A park exists to stop a reliably
+    // failing app starving the backlog *automatically*; a person asking for a look is not that,
+    // and outranks it. The try count goes back to zero with it, or the next single failure
+    // would re-park the app immediately and the flag would have bought one attempt.
+    const unparked = flagged && Boolean(row.parked_at);
+    this.subjects[subject] = {
+      ...row,
+      flagged_at: flagged ? at : undefined,
+      ...(unparked ? { parked_at: undefined, try_n: 0 } : {}),
+    };
     this.opts.events.log({
       level: 'info',
       code: flagged ? 'SUBJECT_FLAGGED' : 'SUBJECT_UNFLAGGED',
       message: flagged
-        ? 'An app has been flagged for re-audit and joins the backlog'
+        ? unparked
+          ? 'An app has been flagged for re-audit, releasing its park, and joins the backlog'
+          : 'An app has been flagged for re-audit and joins the backlog'
         : 'An app is no longer flagged for re-audit',
       subject,
-      detail: { subject, by, ...(flagged ? { flagged_at: at } : {}) },
+      detail: { subject, by, ...(flagged ? { flagged_at: at } : {}), ...(unparked ? { unparked: true } : {}) },
     });
+    await this.persist();
+    return true;
+  }
+
+  /**
+   * Drop everything the loop remembers about one subject — its tries, its park, its flag.
+   *
+   * Called when its archive is deleted, and only then. A `state/schedule.json` row for a
+   * subject that no longer exists is harmless (nothing enumerates it; the candidate set is
+   * the registry's) but it is the kind of harmless leftover that makes a state file stop
+   * being readable by a person, and the whole point of deleting a delisted app is that
+   * nothing about it is left.
+   *
+   * Refuses while the subject holds the claim. A row deleted underneath a run in flight
+   * would be re-created by `record.ts` when that run finished, so the delete would appear to
+   * work and then quietly undo itself — a worse answer than saying no.
+   */
+  async forget(subject: string): Promise<boolean> {
+    if (this.subjects[subject]?.claim) return false;
+    if (!(subject in this.subjects)) return false;
+    delete this.subjects[subject];
     await this.persist();
     return true;
   }
