@@ -13,6 +13,12 @@
  * - **Anything already in the archive stays in the registry**, appended after the live list.
  *   An app removed from the store still has reports and still deserves a row; dropping it
  *   would make the roll-up quietly shrink and take its history out of view.
+ *
+ * With one qualification the port did not have, added 2026-08-31: an archived app that a
+ * *readable* store no longer offers is **delisted**. It keeps its row and its verdicts — that
+ * is the rule above, unchanged — but it leaves `list()`, because `list()` is also the
+ * scheduler's candidate set and a delisted app is one the loop would pick, fail to fetch and
+ * pick again. See {@link SubjectRegistry.delisted}.
  */
 
 import path from 'node:path';
@@ -258,14 +264,61 @@ export class SubjectRegistry {
     // reports and stays reachable by URL, and must not stay schedulable: it cannot be fetched
     // or audited, so leaving it in the backlog would park it as the permanent stalest row and
     // starve every app behind it.
+    //
+    // And only while the store has not *said* it is gone. `delisted()` is the same argument
+    // one step in: an app the store has been read live and does not offer any more cannot be
+    // fetched either, so keeping it here would make it a permanent backlog row that errors
+    // every time it is picked. It keeps its verdicts — the archive is what it is — it simply
+    // stops being something to audit.
     const configured = new Set(this.origins.map((o) => o.id));
+    const gone = new Set<string>(this.delisted());
     for (const key of this.opts.archived?.() ?? []) {
       if (seen.has(key)) continue;
       if (!configured.has(splitSubjectKey(key).origin)) continue;
+      if (gone.has(key)) continue;
       seen.add(key);
       out.push(key as SubjectKey);
     }
     return out;
+  }
+
+  /**
+   * Subjects the archive knows and the store no longer offers — **delisted**.
+   *
+   * The distinction this draws is the whole point, and it is the one `list()` could not make
+   * on its own: "the store is unreadable, keep what we knew" and "the store is readable and
+   * this app is not in it" arrive at the same place — an archived key with no live entry —
+   * and mean opposite things. So the answer is gated on {@link reachable}: a store whose last
+   * fetch failed delists nobody, because a GitHub outage must never be able to retire 72 apps.
+   *
+   * Being delisted is not a verdict and not a finding. It says the subject of the verdicts is
+   * no longer on sale, which is why it stops the subject being scheduled (the audit would
+   * fetch a directory that is not there and error) while leaving every report it earned
+   * exactly where it is. Removing those is a separate, deliberate act — `DELETE /subjects/:name`.
+   */
+  delisted(): SubjectKey[] {
+    const live = new Set(this.origins.filter((o) => this.reachable(o.id)).map((o) => o.id));
+    if (live.size === 0) return [];
+    const offered = new Set<string>();
+    for (const origin of this.origins) {
+      if (!live.has(origin.id)) continue;
+      for (const name of this.namesFor(origin)) offered.add(subjectKey(origin.id, name));
+    }
+    const out: SubjectKey[] = [];
+    const seen = new Set<string>();
+    for (const key of this.opts.archived?.() ?? []) {
+      if (seen.has(key)) continue;
+      if (!live.has(splitSubjectKey(key).origin)) continue;
+      if (offered.has(key)) continue;
+      seen.add(key);
+      out.push(key as SubjectKey);
+    }
+    return out.sort((a, b) => a.localeCompare(b));
+  }
+
+  /** Whether one subject key is delisted. The row badge and the delete guard both ask this. */
+  isDelisted(key: string): boolean {
+    return this.delisted().includes(key as SubjectKey);
   }
 
   /** The newest fetch across all stores — what the Automation page dates the registry by. */
@@ -311,8 +364,23 @@ export class SubjectRegistry {
    * origin's catch keeps its own previous list rather than emptying it.
    */
   async refresh(): Promise<SubjectKey[]> {
+    // Taken before, so the event below names what *this* refresh retired rather than
+    // re-announcing every app that has been gone for a month.
+    const before = new Set<string>(this.delisted());
     await Promise.allSettled(this.origins.map((o) => this.refreshOne(o)));
     await this.persist();
+    const now = this.delisted().filter((key) => !before.has(key));
+    if (now.length > 0) {
+      this.opts.events?.log({
+        level: 'info',
+        code: 'SUBJECT_DELISTED',
+        message:
+          now.length === 1
+            ? `${splitSubjectKey(now[0]!).name} is no longer in the store — it keeps its verdicts and leaves the backlog`
+            : `${now.length} apps are no longer in the store — they keep their verdicts and leave the backlog`,
+        detail: { subjects: [...now] },
+      });
+    }
     return this.list();
   }
 

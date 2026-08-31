@@ -27,7 +27,19 @@ function event(over: Partial<EventRecord>): EventRecord {
 
 describe('routing', () => {
   /** Every way an audit can end reaches the phone. Silence must mean "still running". */
-  it.each(['ASSAY_COMPLETED', 'ASSAY_FAILED', 'ASSAY_BLOCKED', 'AGENT_UNAUTHENTICATED'])(
+  /**
+ * A dead agent session notifies through its alert, not through its event.
+ *
+ * It is a condition rather than an incident — it stops every audit, not one — so `Runner.fail`
+ * opens `agent.auth` and `handleAlert` carries it. Routing the event too would send two
+ * notifications for one fact and would defeat the dedup: three failed audits in a row are one
+ * condition, and only the alert store knows that.
+ */
+it('does not route AGENT_UNAUTHENTICATED, because its alert does', () => {
+  expect(routeFor('AGENT_UNAUTHENTICATED')).toEqual({ beacon: false, push: false });
+});
+
+it.each(['ASSAY_COMPLETED', 'ASSAY_FAILED', 'ASSAY_BLOCKED'])(
     'pushes %s',
     (code) => {
       expect(routeFor(code).push).toBe(true);

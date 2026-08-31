@@ -17,12 +17,20 @@
  * common case, and the absence of one is already the statement. A row may legitimately carry
  * both chips at once.
  *
+ * A third joined them on 2026-08-31 — `delisted`, the store no longer offers this app — and
+ * it is a different kind of statement from the other two: they qualify a verdict about a live
+ * app, it says the app itself is withdrawn. Same reason for keeping it a separate chip, one
+ * step further out.
+ *
  * Shared by the Store table, the public board and both subject pages, because the chip is
  * where somebody first sees the caveat and the detail page is where they land when they click
  * it — one that vanished on the way would read as having been withdrawn.
  */
 
 import type { StandardState, SubjectVersionState } from '@shared/types';
+
+const DELISTED_TITLE =
+  'The store no longer offers this app. Its verdicts stand as a record of an app that was audited, but nothing will re-audit it and nobody can install it — the archive is kept until somebody deletes it.';
 
 const STANDARD_TITLE: Record<'older' | 'unknown', string> = {
   older:
@@ -39,6 +47,27 @@ export default function StandardChip({ standard }: { standard?: StandardState })
   return (
     <span className="tag standard-tag" data-standard={standard} title={STANDARD_TITLE[standard]}>
       {standard === 'older' ? 'older standard' : 'standard unknown'}
+    </span>
+  );
+}
+
+/**
+ * The third chip, and the one that is not about a verdict at all.
+ *
+ * `older standard` and `app changed` both say something moved underneath a verdict that is
+ * still about a live app. This one says the *app* is gone: the store was read, and it does
+ * not list it any more. That is why it draws in its own colour and why it draws first — a
+ * reader who takes in one mark on the row should take in this one, because it is the one
+ * that decides whether the rest of the row is worth acting on.
+ *
+ * It is never drawn from the archive's silence. `SubjectState.delisted` is set only when the
+ * store answered, so a GitHub outage cannot paper the board with these.
+ */
+export function DelistedChip({ delisted }: { delisted?: boolean }) {
+  if (!delisted) return null;
+  return (
+    <span className="tag delisted-tag" title={DELISTED_TITLE}>
+      delisted
     </span>
   );
 }

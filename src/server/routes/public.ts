@@ -48,13 +48,18 @@ export interface PublicRoutesOptions {
    */
   protocols?: ProtocolStore;
   /**
-   * The versions the stores offer, for the `app changed` badge.
+   * What the stores currently offer: each app's version, for the `app changed` badge, and
+   * which archived apps are gone from the store entirely, for the `delisted` one.
    *
    * The board's readers are the app authors, and "this verdict is about a compose you have
-   * since rewritten" is the single most useful thing it can tell them. Read-only, like
-   * everything here.
+   * since rewritten" is the single most useful thing it can tell them — with "and this app
+   * is not in the store any more" a close second, since a board that goes on publishing a
+   * verdict about a withdrawn app is publishing it about nothing.
+   *
+   * Structurally typed rather than `SubjectRegistry`, and both members are read-only, which
+   * is invariant 10 expressed in the type: nothing this file can reach has a verb.
    */
-  registry?: { versions: () => Record<string, string> };
+  registry?: { versions: () => Record<string, string>; delisted: () => string[] };
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
@@ -117,6 +122,10 @@ const routes: FastifyPluginAsync<PublicRoutesOptions> = async (app, options) => 
     hallmarks(store.all(), {
       standards: await currentStandards(),
       ...(options.registry ? { versions: options.registry.versions() } : {}),
+      // An app author looking for their own app is the reader most owed this: their app is
+      // on a public board carrying a verdict, and it is not in the store any more. Without
+      // the mark the row is indistinguishable from one we are still auditing.
+      ...(options.registry ? { delisted: options.registry.delisted() } : {}),
     }));
 
   // GET /public/subjects/:name — one app. The current assay per section and what each
@@ -130,6 +139,7 @@ const routes: FastifyPluginAsync<PublicRoutesOptions> = async (app, options) => 
     return subjectHallmark(resolved.name, resolved.records, {
       standards: await currentStandards(),
       ...(options.registry ? { versions: options.registry.versions() } : {}),
+      ...(options.registry ? { delisted: options.registry.delisted() } : {}),
     }).state;
   });
 

@@ -41,6 +41,7 @@ surprise.
 | **R15** | Supporting knowledge lives beside the rubric instead of inside it — a *knowledge base* | ✅ built 2026-08-28 — §17 |
 | — | The rubric cleanup: one id space, severity defined, the static leaf's mechanics to the KB | ✅ done 2026-08-28 — §18 |
 | — | The rubric is seeded from `seed/`, not committed as if it were the live standard | ✅ done 2026-08-28 — §19 |
+| — | An app the store has stopped offering is marked, unscheduled, and deletable — *delisted* | ✅ done 2026-08-31 — §20 |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -237,6 +238,12 @@ Both are configured, and both are *probed* — that landed on 2026-08-19 with `s
 which asks each endpoint for `tools/list` because that is the surface the work actually uses
 (`browser-mcp` serves a `/health` that answers 200 whether or not Chrome is reachable). Their health
 shows on the Activity page beside the bench pool.
+
+Since 2026-08-31 a **browser** is asked a second question, because `tools/list` turned out to be
+the same class of green light: it is answered by the sidecar's Node wrapper, and on 2026-08-24 that
+wrapper stayed healthy for a week over a Chrome nothing could drive. `browserLiveness()` reads the
+sidecar's `/api/status` and `/api/health` and marks the port unreachable on a positive wedge signal
+— not on `running: false`, which is what a perfectly healthy idle-reaped browser reports.
 
 What does not exist is **any way to change them from inside the app.** `runner.agent_url`,
 `runner.agent_tool`, `runner.agent_via` and the `browsers:` list live in `data/config.yaml` and are
@@ -1248,3 +1255,188 @@ a reason, rather than half-read. §19.4 is the cheap guard; this is the correct 
 **A drift indicator.** The revision log already knows — a file whose newest revision is `source:
 seed` is pristine, anything else has diverged — so the Protocols page could say "edited on this
 box, 2 revisions since the shipped default" instead of leaving it to be diffed by hand.
+
+---
+
+## 20. An app the store no longer offers — 2026-08-31
+
+### 20.1 The report
+
+CasaDash and CasaOS were removed from the AppStore. Both went on appearing in the Store table on
+`yunderalabs`, with their verdicts and their risk, indistinguishable from the 71 apps still on
+sale.
+
+### 20.2 Why, and the half that was worse than cosmetic
+
+The Store page is the union of the registry and the archive, which is §11's design and is right:
+a store that goes unreachable must not blank 72 rows, so a subject that drops out of the live
+list keeps its row through its reports. `SubjectRegistry.list()` implemented that by appending
+every archived key under a configured origin, unconditionally.
+
+The rule cannot tell two situations apart, and they mean opposite things:
+
+- **the store is unreadable** — keep everything, change nothing; and
+- **the store is readable and does not list this app** — it is gone.
+
+Both arrive as an archived key with no live entry. Reading the second as the first is what put
+the rows on the page.
+
+The half that was not cosmetic is that `list()` is also the **scheduler's candidate set**
+(`scheduler/index.ts` `subjects()`). A withdrawn app therefore stayed in the backlog for ever: it
+would be picked as the stalest row, dispatched, fail to fetch a directory that is not there,
+record an errored assay, stamp its finish time and go round again — spending agent time on an app
+nobody can install, in front of apps that could be audited instead. CasaOS's last report is dated
+2026-08-25, three days after it left the store.
+
+### 20.3 Delisted
+
+**A subject is `delisted` when the archive knows it, its origin is configured, that origin's last
+fetch *succeeded*, and the live list does not contain it.** `SubjectRegistry.delisted()`.
+
+The gate on `reachable()` is the whole safeguard, and it is the same asymmetry `subject_version`
+uses for `unknown`: doubt must never delist. A GitHub outage that made every store unreadable
+would otherwise retire the entire archive at once, take 72 apps out of the backlog and put a chip
+on every row, and it would do it silently.
+
+What follows from it:
+
+- **It leaves `list()`**, so the scheduler stops picking it. Nothing else about scheduling
+  changed; there is still no queue and no exception list (invariant 8).
+- **It keeps every report it earned.** A verdict reached about an app that existed is not
+  falsified by the app being withdrawn. The row stays on the Store page and on the board.
+- **It is not a verdict.** It sums into no risk, sets no age, moves nothing. It qualifies the
+  *subject*, where `older standard` and `app changed` qualify a *verdict* — which is why it is a
+  third chip rather than a widened one, in its own slate colour, drawn first.
+- **It is said once, when it happens** — a `SUBJECT_DELISTED` row on the refresh that noticed,
+  not on every refresh after.
+
+### 20.4 Saying it where the answer is composed
+
+The chip fixes the page. It does not fix the question the operator actually asks, which arrives
+through the admin MCP: *how is the store doing?* — answered by a model reading `get_board`,
+`get_subject`, `get_fix_brief` and `get_report`. A model that cannot see that an app was withdrawn
+folds its Critical into the roll-up and reports a store worse than it is.
+
+So the tools say it, in the place a model reading half a long answer will still see:
+
+- `get_board` marks the row **and takes it out of its own counts** — "N app(s) in the store …
+  plus M DELISTED", because the mark alone does not prevent the arithmetic error.
+- `get_subject`, `get_fix_brief` and `get_report` **lead** with one sentence saying what delisted
+  means and asking for it to be left out of any roll-up. First line, because a report runs to
+  hundreds of lines and a caveat below the fold does not arrive.
+- `list_subjects` still lists it, marked — an operator naming CasaOS is owed "it was removed",
+  not "no such subject", which reads as a typo.
+- `run_assay` refuses it by name and says why, for the same reason.
+
+### 20.5 Deleting one
+
+`DELETE /subjects/:name` removes a subject's reports from disk and from the index, and drops the
+scheduler's row for it. It is the only destructive verb in the app and the only thing that ever
+takes something out of the archive.
+
+Three guards, and the first is the feature rather than caution:
+
+1. **It refuses anything that is not delisted.** `delisted()` already draws the one distinction
+   that makes a delete safe, so a live app cannot be purged by a mistyped name or a stray click,
+   and nothing at all is deletable while the store is unreachable.
+2. **It refuses while that subject is being audited**, rather than racing the process that is
+   about to write its next report.
+3. **It is not reachable from the chat or the admin MCP.** `CHAT_TOOLS` has no delete, by the
+   argument next to invariant 6: an irreversible delete over a surface that authenticates nobody
+   is not a thing to hand out for symmetry. The button is on the Store page, on the delisted row,
+   where the audit button would be — the two verbs are mutually exclusive by definition.
+
+It logs `SUBJECT_PURGED` at `warn`, naming the subject and the file count. The archive is the
+only record that an app was ever audited; its deletion has to leave one of its own.
+
+### 20.6 Still open
+
+**Nothing re-lists an app.** If a withdrawn app comes back to the store it simply stops being
+delisted on the next refresh, joins the backlog again, and its old verdicts stand under the
+`older standard` and `app changed` chips as usual. That is the right behaviour and it is
+untested — no app has come back yet.
+
+**The delete is one subject at a time.** Clearing an accumulation of withdrawn apps is one
+confirm per row. Fine for two; a "delete all delisted" would need a different confirmation than
+this one, and there is no evidence yet about how often it is wanted.
+
+## 20. A completed audit that was thrown away — 2026-08-31
+
+### 20.1 The bug that made the point
+
+`yundera~UptimeKuma` was audited on 2026-08-28, 08-30 and 08-31. Every one of those runs
+**succeeded**: `verdict: compliant`, 23 of 23 requirements settled, both sections, a full report
+body. Touchstone discarded all three and logged `AGENT_UNAUTHENTICATED` — "the audit agent is not
+logged in, so no audit can run" — over a Claude Code session whose OAuth credential was refreshing
+on schedule and valid the whole time.
+
+`classify()` in `runner/agent.ts` tested `AUTH_RE` against the **entire** agent response, report
+body included, and returned before the envelope-parsing loop further down the same function was
+ever reached. `AUTH_RE` matches `not logged in`. A functional section that *proves* an app's auth
+gate writes exactly that phrase — *"the server returned the login page because we were not logged
+in"* — so the audits most likely to be binned were the ones that had done their job.
+
+The rule that prevents it coming back is one sentence: **a response that parses into a valid
+report is never an infrastructure error.** An auth failure is two lines long and carries no JSON,
+so it cannot reach `envelopeOf` and every failure branch below is left exactly as n8n wrote it.
+
+### 20.2 What it cost, which was not one report
+
+The classifier was one bug. What made it a five-day outage was four rules downstream that trusted
+it, each defensible alone:
+
+- **The subject was charged.** `agent-auth` mapped to `{ kind: 'error' }`, so three false failures
+  burned `max_tries` and parked the app for `stuck_days`. `agent.ts`'s own header table had said
+  `agent-auth` costs no try since the file was written; `record.ts` had always disagreed with it.
+- **Nothing recorded that we had looked.** A failed run wrote no assay file, and `lastAttemptAt`
+  reads the archive. So the re-audit flag set on 08-28 was never spent, `standardMoved` never
+  settled, and the `older standard` chip could never clear — while `try_n` and `parked_at`, which
+  live in `state/schedule.json`, moved every time.
+- **The loop said nothing was wrong.** `decide()` reported `backlog empty — all 73 app(s) audited
+  within 14d`, a claim about every subject in the registry, while a parked row had been skipped a
+  few lines earlier without being audited at all.
+- **No alert, and no control.** `AlertKey` declared `agent.unavailable` and nothing had ever
+  opened it — `alerts.open` was called only from `services/bench.ts` — so three days of failing
+  audits produced no card, while `get_status` reported *"Port agent: healthy"* because `ports.ts`
+  probes with `tools/list`, which answers fine when a session is dead. Meanwhile the Automation
+  page hid the flag on parked rows, on the correct reasoning that flagging one did nothing.
+
+The operator's own summary was *"I feel like we have a big hole in our automation algorithm"*. The
+algorithm was fine: the standard moved on 08-28 and the loop re-audited the store to the end of the
+alphabet on 08-29/08-30 unprompted. Every symptom was this one regex and the four rules that
+believed it.
+
+### 20.3 What it took
+
+- **Parse first.** `envelopeOf()` split out of `classify()` and called ahead of the failure
+  branches. Its predicate tightened from "has a `report_markdown` or `verdict` key" to a non-empty
+  body or a verdict in the enum, so `{"verdict": null}` cannot outrank a real failure and
+  `{"error": "not-an-app"}` still falls through to `parse-failed`.
+- **`agent_auth`, a `RunOutcome` of its own** — free of a retry (invariant 3) but stamping the
+  cooldown, which is the one asymmetry with `agent_busy` and is there so a genuine outage cannot
+  be marched through the whole registry one 26-minute failure at a time.
+- **`Runner.recordAttempt`** — one `blocked` assay per section for `agent-error` and
+  `parse-failed`, establishing invariant 14: charging a try implies writing an attempt record.
+  `blocked` rather than a new status, because `ReportIndex.latest()` already filters it out of
+  `lastDoneAt` while `latestAny()` feeds `lastAttemptAt` — exactly the two behaviours wanted.
+- **The `agent.auth` alert**, opened by the runner on the first failure and resolved by the next
+  usable answer, with `AGENT_UNAUTHENTICATED` dropped from `notify.ts`'s routes so one condition
+  sends one notification.
+- **Honest reason strings.** `TickDecision.parked`, and `backlog empty — 72 fresh, 1 parked`.
+- **Evidence kept.** `dump()` writes for every failure class to `last-failed-response-<class>.txt`,
+  and the error branch's `rawText` cap went from 2 000 to 20 000 — the phrase that caused all of
+  this sat past the old cut, which is why five days of it left nothing to diagnose.
+- **A flag releases a park**, so the control means something on the row that needs it most.
+- **One vocabulary.** `assay now` and the flag, two verbs and two words, replacing five spellings.
+  `AuditButton` is deleted; the Store table carries the flag.
+
+### 20.4 Not done, deliberately
+
+- **`parse-failed` still charges a try.** Unlike auth, retrying can genuinely fix a truncated
+  answer, and E7's starvation rule needs something to eventually park an app whose reports never
+  parse.
+- **No deep auth probe** in `ports.ts` mirroring `browserLiveness()`. Same shape of problem, but a
+  real probe costs a token per tick and the runner learns it for free on the next dispatch.
+- **No dispatch gate while `agent.auth` is open**, the way the bench gate works. The cooldown stamp
+  already prevents hammering; if that proves insufficient the gate is the next step, not the first.
+- **No rewrite of `policy.ts`.** It was never the problem, and §20.2 is the evidence.

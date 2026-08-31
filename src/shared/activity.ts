@@ -56,7 +56,13 @@ export interface EventsResponse {
 // ── alerts ─────────────────────────────────────────────────────────────────────────────
 
 /** Closed set: dedup is by key, so an interpolated key would mean one row per occurrence. */
-export type AlertKey = 'bench.auth' | 'bench.unreachable' | 'agent.unavailable' | 'browser.unavailable';
+export type AlertKey =
+  | 'bench.auth'
+  | 'bench.unreachable'
+  /** The agent answered, and told us its own session is dead. Only the runner ever sees this. */
+  | 'agent.auth'
+  | 'agent.unavailable'
+  | 'browser.unavailable';
 
 export interface Alert {
   key: AlertKey;
@@ -249,6 +255,13 @@ export type RunOutcome =
   | { kind: 'verdict'; verdict: string; risk: number; files: string[] }
   | { kind: 'error'; reason: string }
   | { kind: 'agent_busy' }
+  /**
+   * The agent's own session is dead. Its own kind rather than an `error`, because it is the
+   * one failure class where nothing about any app is wrong and no amount of retrying helps —
+   * somebody has to log the agent in. Charging it a try walked innocent subjects toward
+   * parking during an outage, which is what invariant 3 exists to forbid.
+   */
+  | { kind: 'agent_auth' }
   | { kind: 'blocked'; reason: string };
 
 /**
@@ -290,6 +303,8 @@ export function outcomeClause(outcome: RunOutcome): string {
       return `blocked — ${outcome.reason}, which says nothing about the app`;
     case 'agent_busy':
       return 'not run — the agent was busy';
+    case 'agent_auth':
+      return 'not run — the agent is not logged in';
     case 'error':
       return `failed — ${outcome.reason}`;
   }

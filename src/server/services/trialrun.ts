@@ -328,8 +328,16 @@ export async function dispatchTrial(
         });
         return;
       }
-      const reason = outcome.kind === 'agent_busy' ? 'the agent was busy' : outcome.reason;
-      await trials.update(spec.slug, { finished_at: finished, outcome: outcome.kind, error: reason });
+      const reason =
+        outcome.kind === 'agent_busy'
+          ? 'the agent was busy'
+          : outcome.kind === 'agent_auth'
+            ? 'the agent is not logged in'
+            : outcome.reason;
+      // A trial has no retry budget and no schedule row, so `agent_auth` has nothing to be
+      // free *of* here — it is recorded as the error it was, like any other failure to finish.
+      const kind = outcome.kind === 'agent_auth' ? 'error' : outcome.kind;
+      await trials.update(spec.slug, { finished_at: finished, outcome: kind, error: reason });
       deps.events?.log({
         level: 'warn',
         code: 'TRIAL_FAILED',

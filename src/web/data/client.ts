@@ -105,6 +105,36 @@ export function getSubject(name: string): Promise<SubjectDetail> {
   return get<SubjectDetail>(`/subjects/${encodeURIComponent(name)}`);
 }
 
+/**
+ * Throw away one app's archive. The only destructive call this client makes.
+ *
+ * The server refuses anything that is not delisted, so this cannot be aimed at a live app
+ * however it is called — the confirm dialog in the UI is courtesy, the guard is the route's.
+ * `removed` is how many report files went, which is what the row says afterwards.
+ */
+export async function deleteSubject(
+  name: string,
+): Promise<{ subject: string; removed: number; forgotten: boolean }> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/subjects/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      headers: { accept: 'application/json' },
+    });
+  } catch {
+    throw new ApiError(0, 'The API is not reachable.');
+  }
+  const parsed = (await res.json().catch(() => null)) as unknown;
+  if (!res.ok) {
+    const msg =
+      parsed && typeof parsed === 'object' && 'error' in parsed
+        ? String((parsed as { error: unknown }).error)
+        : `Request failed with ${res.status}.`;
+    throw new ApiError(res.status, msg);
+  }
+  return parsed as { subject: string; removed: number; forgotten: boolean };
+}
+
 export function getReport(subject: string, file: string): Promise<ReportResponse> {
   return get<ReportResponse>(
     `/reports/${encodeURIComponent(subject)}/${encodeURIComponent(file)}`,

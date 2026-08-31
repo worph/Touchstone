@@ -150,11 +150,88 @@ export function matchingBrace(text: string, from: number): number {
   return -1;
 }
 
-/** The classification, branch for branch as n8n applies it. */
+/**
+ * The three verdicts the contract allows.
+ *
+ * Used to tell a report from any other JSON object the agent might have emitted. It is a
+ * membership test rather than a presence test because `{"verdict": null}` satisfied the old
+ * `!== undefined` check and would now be accepted *ahead of* a genuine failure classification.
+ */
+const VERDICTS: ReadonlySet<string> = new Set(['compliant', 'non-compliant', 'errored']);
+
+/**
+ * The report envelope somewhere in `t`, or `null` when there is none.
+ *
+ * Split out of `classify` so the envelope can be looked for *before* the failure branches run
+ * rather than after them — see the comment there. The scanning itself is unchanged.
+ *
+ * The object may arrive fenced, prefixed with prose, or both — and the fence handling that
+ * used to be here caused three separate failures against real answers, each one discarding a
+ * complete, correct audit:
+ *
+ *   1. it unwrapped the FIRST ``` anywhere, and `report_markdown` almost always contains one;
+ *   2. it took `lastIndexOf('}')` as the object's end, which is wrong the moment anything
+ *      follows the object;
+ *   3. even unwrapping only a LEADING fence, it took the next ``` as the closing one — and
+ *      that next fence was a ```yaml block inside the report.
+ *
+ * All three vanish if the fence is simply ignored. A fence marker contains no braces, so the
+ * object still begins at a `{`, and a scanner that tracks string state finds its end without
+ * caring what comes after. Each candidate `{` is tried in order, so prose containing a brace
+ * before the object costs an attempt rather than the run.
+ */
+export function envelopeOf(t: string): AgentReport | null {
+  for (let from = t.indexOf('{'); from >= 0; from = t.indexOf('{', from + 1)) {
+    const close = matchingBrace(t, from);
+    if (close < 0) break; // nothing after this opens and closes; later braces cannot either
+    let obj: Partial<AgentReport> | null = null;
+    try {
+      obj = JSON.parse(t.slice(from, close + 1)) as Partial<AgentReport>;
+    } catch {
+      continue; // not this brace; try the next
+    }
+    if (!obj || typeof obj !== 'object') continue;
+    const body = typeof obj.report_markdown === 'string' ? obj.report_markdown : '';
+    const verdict = typeof obj.verdict === 'string' ? obj.verdict : '';
+    // An object is a *report* when it says something a report says. An agent that answered
+    // `{"error": "not-an-app"}` has emitted valid JSON and no verdict, and must go on falling
+    // through to `parse-failed` rather than becoming an empty compliant audit.
+    if (!body && !VERDICTS.has(verdict)) continue;
+    return {
+      app_name: String(obj.app_name ?? ''),
+      title: String(obj.title ?? ''),
+      verdict: (VERDICTS.has(verdict) ? verdict : 'errored') as AgentReport['verdict'],
+      severity: String(obj.severity ?? 'none'),
+      risk_score: Number(obj.risk_score ?? 0) || 0,
+      summary: String(obj.summary ?? ''),
+      report_markdown: body,
+    };
+  }
+  return null;
+}
+
+/** The classification, branch for branch as n8n applies it — with one deliberate reordering. */
 export function classify(text: string, fallback = ''): AgentOutcome {
   const t = String(text ?? '').trim();
-  const lower = t.toLowerCase();
 
+  // ── the envelope decides first, and that ordering is the whole of this function ────────
+  //
+  // `AUTH_RE` used to be tested against the *entire* response before anything tried to parse
+  // it. So a completed audit whose prose contained "not logged in" — which is exactly what a
+  // functional section writes when it proves an app's auth gate — was classified `agent-auth`:
+  // the report discarded, a try burned, the subject parked, and a false "the agent is not
+  // logged in" put in the log while the session was healthy. `yundera~UptimeKuma` lost three
+  // audits and five days to it in August 2026, every one of them `compliant` with 23 of 23
+  // requirements settled.
+  //
+  // The rule that prevents it coming back: **a response that parses into a valid report is
+  // never an infrastructure error.** An auth failure is two lines long and carries no JSON, so
+  // it cannot reach `envelopeOf`, and every failure branch below is left exactly as n8n wrote
+  // it.
+  const report = t ? envelopeOf(t) : null;
+  if (report) return { ok: true, report };
+
+  const lower = t.toLowerCase();
   const isAuth = AUTH_RE.test(t);
   const isError =
     !t || isAuth || /^error calling remote tool/i.test(t) || lower.includes('httpstatuserror');
@@ -165,47 +242,14 @@ export function classify(text: string, fallback = ''): AgentOutcome {
     return {
       ok: false,
       error: isAuth ? 'agent-auth' : isBusy ? 'agent-busy' : 'agent-error',
-      rawText: String(t || fallback).slice(0, 2000),
+      // 20 000, matching `parse-failed` below. The raw response is the only evidence a
+      // misclassification leaves behind, and 2 000 characters was not enough to see one: the
+      // phrase that triggered the UptimeKuma failures sat past the cut, so the dump could not
+      // say what had matched. `Runner.fail` still trims what reaches `events.jsonl`.
+      rawText: String(t || fallback).slice(0, 20_000),
     };
   }
 
-  // The object may arrive fenced, prefixed with prose, or both — and the fence handling that
-  // used to be here caused three separate failures against real answers, each one discarding a
-  // complete, correct audit:
-  //
-  //   1. it unwrapped the FIRST ``` anywhere, and `report_markdown` almost always contains one;
-  //   2. it took `lastIndexOf('}')` as the object's end, which is wrong the moment anything
-  //      follows the object;
-  //   3. even unwrapping only a LEADING fence, it took the next ``` as the closing one — and
-  //      that next fence was a ```yaml block inside the report.
-  //
-  // All three vanish if the fence is simply ignored. A fence marker contains no braces, so the
-  // object still begins at a `{`, and a scanner that tracks string state finds its end without
-  // caring what comes after. Each candidate `{` is tried in order, so prose containing a brace
-  // before the object costs an attempt rather than the run.
-  for (let from = t.indexOf('{'); from >= 0; from = t.indexOf('{', from + 1)) {
-    const close = matchingBrace(t, from);
-    if (close < 0) break; // nothing after this opens and closes; later braces cannot either
-    try {
-      const obj = JSON.parse(t.slice(from, close + 1)) as Partial<AgentReport>;
-      if (obj && typeof obj === 'object' && (obj.report_markdown !== undefined || obj.verdict !== undefined)) {
-        return {
-          ok: true,
-          report: {
-            app_name: String(obj.app_name ?? ''),
-            title: String(obj.title ?? ''),
-            verdict: (obj.verdict as AgentReport['verdict']) ?? 'errored',
-            severity: String(obj.severity ?? 'none'),
-            risk_score: Number(obj.risk_score ?? 0) || 0,
-            summary: String(obj.summary ?? ''),
-            report_markdown: String(obj.report_markdown ?? ''),
-          },
-        };
-      }
-    } catch {
-      /* not this brace; try the next */
-    }
-  }
   return { ok: false, error: 'parse-failed', rawText: String(t || fallback).slice(0, 20_000) };
 }
 

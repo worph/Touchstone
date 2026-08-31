@@ -1,5 +1,10 @@
 /**
- * The manual trigger — n8n's `Audit an app` form, as a button.
+ * `assay now` — the manual trigger, and the only control that takes the agent immediately.
+ *
+ * The other verb is `FlagControl`, which queues. Keeping the two apart in words as well as in
+ * behaviour is the point of the 2026-08-31 rename: this was `re-assay` here, `audit` on the
+ * Store table and `Run first assay` in an empty state, for one action, beside a flag that said
+ * `flag for re-audit` in one place and `flag` in another. Two verbs, two words.
  *
  * Three things it has to get right, and each of them is why it is not a plain `onClick`:
  *
@@ -35,7 +40,7 @@ interface Props {
   label?: string;
 }
 
-export default function ReassayButton({ subject, onFinished, label = 're-assay' }: Props) {
+export default function AssayButton({ subject, onFinished, label = 'assay now' }: Props) {
   const status = useRunStatus();
   const [error, setError] = useState<string | null>(null);
   const wasRunning = useRef(false);

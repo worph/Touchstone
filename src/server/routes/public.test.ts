@@ -94,6 +94,7 @@ describe('GET /public/subjects', () => {
       registry: {
         list: () => [subjectKey(DEFAULT_ORIGIN, 'NeverAudited')],
         versions: () => ({}),
+        delisted: () => [],
       } as never,
     });
     await withRegistry.ready();

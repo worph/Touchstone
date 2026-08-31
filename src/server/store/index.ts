@@ -160,9 +160,70 @@ export class ReportIndex {
     this.byPath.delete(relPath);
   }
 
+  /**
+   * Delete every report of one subject — the files and the index entries together.
+   *
+   * The only thing in this app that takes anything out of the archive, and it exists for one
+   * situation: an app the store has stopped offering (**delisted**), whose verdicts are about
+   * something nobody can install any more. It is `DELETE /subjects/:name`'s implementation and
+   * nothing else calls it.
+   *
+   * Three things it deliberately does *not* do. It does not consult the registry — the route
+   * owns that judgement, and a store method that refused on its own would be a second place
+   * the rule lived. It does not touch `state/index.json`: the cache is keyed per file and the
+   * scan simply stops finding these, which is what "deleting it is always safe" means read the
+   * other way. And it does not recurse — it removes the subject's own directory's files, then
+   * the (now empty) directory and, if it is left empty too, the origin's, so the tree does not
+   * accumulate husks. `rmdir` without `recursive` is the point: it fails loudly rather than
+   * quietly taking a sibling with it if the layout is not what this thinks it is.
+   *
+   * The subject's records are looked up **before** anything is unlinked, and the index is only
+   * told about a file once that file is actually gone — an index that had forgotten a report
+   * still on disk would come back at the next boot, which is the confusing half of a partial
+   * failure rather than the honest half.
+   */
+  async purgeSubject(subject: string): Promise<{ removed: number }> {
+    const records = this.forSubject(subject);
+    let removed = 0;
+    const dirs = new Set<string>();
+    for (const record of records) {
+      const abs = path.resolve(this.reportsRoot, record.path);
+      if (abs !== this.reportsRoot && !abs.startsWith(this.reportsRoot + path.sep)) continue;
+      try {
+        await fs.unlink(abs);
+      } catch (err) {
+        // Already gone is the outcome asked for. Anything else is a real failure and the
+        // caller has to hear about it rather than be told a count that did not happen.
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+      this.byPath.delete(record.path);
+      dirs.add(path.dirname(abs));
+      removed += 1;
+    }
+    for (const dir of dirs) {
+      await rmdirIfEmpty(dir, this.reportsRoot);
+      await rmdirIfEmpty(path.dirname(dir), this.reportsRoot);
+    }
+    return { removed };
+  }
+
   /** Stable, comparable snapshot — two indexes are equal iff these are equal. */
   toJSON(): AssayRecord[] {
     return [...this.byPath.keys()].sort().map((k) => this.byPath.get(k)!);
+  }
+}
+
+/**
+ * Remove a directory if it is empty and inside the root. Any other condition — not empty,
+ * not there, not ours — is left alone silently: this is tidying, and a failure to tidy must
+ * never turn a completed delete into an error.
+ */
+async function rmdirIfEmpty(dir: string, root: string): Promise<void> {
+  if (dir === root || !dir.startsWith(root + path.sep)) return;
+  try {
+    await fs.rmdir(dir);
+  } catch {
+    /* not empty, not there, or not ours */
   }
 }
 

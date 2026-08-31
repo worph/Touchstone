@@ -292,6 +292,20 @@ export interface SubjectState {
    * would lose exactly the distinction an app author cares about.
    */
   subject_version?: SubjectVersionState;
+  /**
+   * The store no longer offers this app, and we know that because we could read the store.
+   *
+   * A third caveat, and a different kind from the two above: those qualify a verdict, this
+   * one qualifies the *subject*. The verdicts stay true — they were reached about an app
+   * that existed — but nobody can act on them and nothing will re-audit it, so a reader who
+   * is not told will go on counting it among the apps that are failing.
+   *
+   * Absent rather than `false` when the app is on offer, and absent when the store could not
+   * be read at all: "the store does not list it" and "we could not ask" are different claims,
+   * and only the first is safe to draw a chip for. Set from
+   * `SubjectRegistry.delisted()` — the archive on its own cannot know.
+   */
+  delisted?: boolean;
 }
 
 /**

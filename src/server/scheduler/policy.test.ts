@@ -87,7 +87,31 @@ describe('the order of the branches', () => {
     );
     expect(d.action).toBe('idle');
     expect(d.reason).toContain('backlog empty');
+    expect(d.reason).toContain('all 3 app(s)');
     expect(d.backlog).toBe(0);
+    expect(d.parked).toBe(0);
+  });
+
+  /**
+   * The empty-backlog reason must not claim a parked subject was audited.
+   *
+   * It did, and the sentence cost real debugging time. On 2026-08-31 an operator read
+   * *"backlog empty — all 73 app(s) audited within 14d"* over an app that had been parked for
+   * three days by a misclassified success, never audited under the current standard, and
+   * skipped a few lines above this branch without a word. The reason string was the only thing
+   * the page could say about it, and it said the opposite of the truth.
+   */
+  it('does not count a parked subject as audited', () => {
+    const d = decide(
+      input({
+        lastDoneAt: { Alpha: daysAgo(1), Beta: daysAgo(2) },
+        schedule: { Gamma: { try_n: 3, parked_at: daysAgo(1) } },
+      }),
+    );
+    expect(d.action).toBe('idle');
+    expect(d.parked).toBe(1);
+    expect(d.reason).toBe('backlog empty — 2 app(s) audited within 7d, 1 parked');
+    expect(d.reason).not.toContain('all 3');
   });
 });
 

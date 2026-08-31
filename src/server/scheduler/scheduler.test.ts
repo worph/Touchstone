@@ -649,6 +649,38 @@ describe('flagging a subject for re-audit', () => {
     expect(rows.find((r) => r.subject === BETA)?.position).toBeUndefined();
   });
 
+  /**
+   * A park is an automatic judgement about a failing app; a flag is a person asking. The
+   * person wins, or the control is offered on the one row it cannot act on — which is how the
+   * Automation page came to hide it on parked rows, leaving an operator staring at a stuck app
+   * with nothing to press. `try_n` resets with the park, or the next single failure would
+   * re-park immediately and the flag would have bought one attempt.
+   */
+  it('releases a park, because an operator asking outranks an automatic one', async () => {
+    const scheduler = fresh();
+    await scheduler.load();
+    // Park it the way three failed attempts would.
+    await scheduler.record(ALPHA, { kind: 'error', reason: 'agent-error' });
+    await scheduler.record(ALPHA, { kind: 'error', reason: 'agent-error' });
+    await scheduler.record(ALPHA, { kind: 'error', reason: 'agent-error' });
+    expect((await scheduler.previewQueue()).find((r) => r.subject === ALPHA)?.state).toBe('parked');
+
+    await scheduler.setFlagged(ALPHA, true);
+
+    const alpha = (await scheduler.previewQueue()).find((r) => r.subject === ALPHA);
+    expect(alpha?.state).not.toBe('parked');
+    expect(alpha?.position).toBeDefined();
+    expect(alpha?.try_n).toBe(0);
+  });
+
+  it('leaves try_n alone when the subject was not parked', async () => {
+    const scheduler = fresh();
+    await scheduler.load();
+    await scheduler.record(ALPHA, { kind: 'error', reason: 'agent-error' });
+    await scheduler.setFlagged(ALPHA, true);
+    expect((await scheduler.previewQueue()).find((r) => r.subject === ALPHA)?.try_n).toBe(1);
+  });
+
   it('survives a restart, because it is state rather than a request', async () => {
     const first = fresh();
     await first.load();

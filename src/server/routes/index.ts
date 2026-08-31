@@ -17,6 +17,7 @@
  */
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
+import { subjectName } from '../../shared/subject.js';
 import type { ReportResponse, SubjectState } from '../../shared/types.js';
 import { fixtureStore } from '../domain/fixtures.js';
 import { buildFixReport, fixReportFilename } from '../domain/fixreport.js';
@@ -235,12 +236,18 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
    * The registry is asked for names only. Nothing about a verdict comes from it, so a store
    * that has gone unreachable cannot blank a row — `registry.list()` keeps serving its last
    * good list, and a subject that drops out of the store keeps its row through the archive.
+   *
+   * Keeping the row is not the same as saying nothing about it, which is what `delisted` is
+   * for. `list()` no longer carries a delisted subject — it is the scheduler's candidate set
+   * too — so those rows arrive here through the archive alone, and would otherwise be
+   * indistinguishable from apps still on sale. See `SubjectRegistry.delisted`.
    */
   app.get('/subjects', async (): Promise<SubjectState[]> =>
     hallmarks(store.all(), {
       include: options.registry?.list() ?? [],
       standards: await currentStandards(),
       ...(options.registry ? { versions: options.registry.versions() } : {}),
+      ...(options.registry ? { delisted: options.registry.delisted() } : {}),
     }));
 
   /**
@@ -265,6 +272,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
         subject: subjectHallmark(resolved.name, resolved.records, {
           standards: await currentStandards(),
           ...(options.registry ? { versions: options.registry.versions() } : {}),
+          ...(options.registry ? { delisted: options.registry.delisted() } : {}),
         }).state,
         history: sortNewestFirst(resolved.records), // newest first, both legs interleaved
         ...(flagOf(resolved.name) === undefined ? {} : { flagged: flagOf(resolved.name) }),
@@ -294,6 +302,67 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
       history: [],
       ...(flagOf(fromRegistry.key) === undefined ? {} : { flagged: flagOf(fromRegistry.key) }),
     };
+  });
+
+  /**
+   * DELETE /subjects/:name — throw away one app's archive.
+   *
+   * The only destructive verb in the read API, and the only place anything leaves the
+   * archive. It exists because the archive is otherwise permanent by design and a store does
+   * not stay still: an app the store has stopped offering keeps its rows, its risk in the
+   * roll-up and its name in every count, for ever, about something nobody can install.
+   *
+   * **It refuses anything that is not delisted**, and that guard is the feature rather than
+   * caution. `SubjectRegistry.delisted()` already draws the one distinction that makes this
+   * safe — the store was *read* and does not list this app — so a live app cannot be purged
+   * by a mistyped name or a stray click on a row, and neither can anything at all while the
+   * store is unreachable. An operator who genuinely wants a live app's history gone has the
+   * volume; that is a deliberate act and it should look like one.
+   *
+   * Not reachable from the chat or the admin MCP: `CHAT_TOOLS` has no delete. The registry is
+   * what an agent may ask this app to do (invariant 6's neighbouring argument), and an
+   * irreversible delete over a surface that authenticates nobody is not a thing to hand out
+   * for the sake of symmetry.
+   *
+   * It answers with a count rather than a bare 204, because "0 files removed" is the truthful
+   * answer for a subject somebody had already cleared off the volume by hand, and a caller
+   * that is told nothing cannot tell that case from a delete that worked.
+   */
+  app.delete<{ Params: { name: string } }>('/subjects/:name', async (request, reply) => {
+    const registry = options.registry;
+    if (!registry) return fail(reply, 503, 'no registry is wired up, so nothing can be shown to be delisted');
+    if (!store.purgeSubject) return fail(reply, 503, 'this archive cannot be written to');
+
+    const resolved = resolveSubject(request.params.name);
+    if (resolved.kind === 'ambiguous') {
+      return fail(reply, 400, ambiguousMessage(request.params.name, resolved.candidates));
+    }
+    if (resolved.kind !== 'ok') return fail(reply, 404, `unknown subject: ${request.params.name}`);
+
+    if (!registry.isDelisted(resolved.name)) {
+      return fail(
+        reply,
+        409,
+        `${resolved.name} is still in the store, or the store could not be read — only a delisted app's archive can be deleted`,
+      );
+    }
+
+    // The run in flight is the one thing that can put files back after this returns, and the
+    // scheduler is what knows about it. Refusing here rather than racing it.
+    if (options.runner?.status().running?.subject === resolved.name) {
+      return fail(reply, 409, `${resolved.name} is being audited right now`);
+    }
+
+    const { removed } = await store.purgeSubject(resolved.name);
+    const forgotten = (await options.scheduler?.forget(resolved.name)) ?? false;
+    options.events?.log({
+      level: 'warn',
+      code: 'SUBJECT_PURGED',
+      message: `The archive for ${subjectName(resolved.name)} was deleted — it is no longer in the store`,
+      subject: resolved.name,
+      detail: { subject: resolved.name, files: removed, by: 'operator' },
+    });
+    return { subject: resolved.name, removed, forgotten };
   });
 
   /**

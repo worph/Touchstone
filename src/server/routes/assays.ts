@@ -203,6 +203,8 @@ function toSchedulerOutcome(outcome: RunOutcome) {
       return { kind: 'verdict' as const };
     case 'agent_busy':
       return { kind: 'agent_busy' as const };
+    case 'agent_auth':
+      return { kind: 'agent_auth' as const };
     case 'blocked':
       return { kind: 'blocked' as const, reason: outcome.reason };
     default:

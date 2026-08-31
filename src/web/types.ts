@@ -54,7 +54,9 @@ export type ShowFilter =
   | 'blocked'
   | 'not-run'
   | 'stale'
-  | 'running';
+  | 'running'
+  /** The store no longer offers the app. Not a state of the audit — a state of the subject. */
+  | 'delisted';
 
 /**
  * `notice:<section>` sorts by a reading column — one exists per section in the archive that

@@ -350,7 +350,31 @@ function boardRow(state: SubjectState): string {
   // rubric moved, the other says the app did. A model told only "out of date" cannot tell an
   // author which of the two happened.
   const version = state.subject_version === 'changed' ? ' · the app has changed in the store since' : '';
-  return `${state.label} (${state.origin}) · risk ${state.risk} · ${cells.join(' · ')} · ${age}${standard}${version}`;
+  // Said loudest of the three, and first among them, because it is the only one that changes
+  // whether the row belongs in an answer at all. The other two qualify a verdict; this one
+  // says the app it is about is not in the store any more, so counting it among "the apps
+  // that are failing" is counting something nobody can install.
+  const gone = state.delisted ? ' · DELISTED: no longer in the store' : '';
+  return `${state.label} (${state.origin}) · risk ${state.risk} · ${cells.join(' · ')} · ${age}${gone}${standard}${version}`;
+}
+
+/**
+ * The one sentence a delisted subject has to carry into every tool that reads about it.
+ *
+ * Prepended rather than appended: a model that stops reading a long report early must still
+ * have seen it, and a report *is* long. Says what to do about it as well as what it is,
+ * because "delisted" on its own is a word a model will helpfully interpret, and the
+ * interpretation that matters — leave it out of the roll-up — is not the obvious one.
+ */
+function delistedNote(ctx: ChatToolContext, key: string): string | null {
+  if (!ctx.registry?.isDelisted(key)) return null;
+  return (
+    `NOTE: ${subjectName(key)} is DELISTED — the store no longer offers this app. ` +
+    'What follows is a historical record about something nobody can install now. It will ' +
+    'never be audited again, so its verdicts cannot improve. Do not count it in a roll-up of ' +
+    'what is failing, what needs fixing or what the store\'s conformance is; say it is ' +
+    'delisted if you mention it at all.'
+  );
 }
 
 function describeEvent(event: EventRecord): string {
@@ -413,9 +437,27 @@ export const CHAT_TOOLS: ChatTool[] = [
       const all = ctx.registry?.list() ?? [];
       if (all.length === 0) return failed('The subject registry is empty — it has not been read yet.');
       const needle = String(input.contains ?? '').toLowerCase();
-      const hits = needle ? all.filter((s) => s.toLowerCase().includes(needle)) : all;
-      if (hits.length === 0) return failed(`No subject matches "${input.contains}". There are ${all.length} in total.`);
-      return ok(hits.join('\n'));
+      const match = (name: string) => !needle || name.toLowerCase().includes(needle);
+      const hits = all.filter(match);
+      /**
+       * Delisted apps are listed too, and marked.
+       *
+       * They are no longer in `list()` — that is also the scheduler's candidate set, and an
+       * app the store does not offer is not something to audit. But this tool's job is
+       * resolving a name the operator said, and an operator asking about CasaOS by name is
+       * owed "it was removed from the store" rather than "no such subject", which reads as a
+       * typo and sends the conversation looking for one.
+       */
+      const gone = (ctx.registry?.delisted() ?? []).filter(match);
+      if (hits.length === 0 && gone.length === 0) {
+        return failed(`No subject matches "${input.contains}". There are ${all.length} in total.`);
+      }
+      return ok(
+        [
+          ...hits,
+          ...gone.map((name) => `${name}  [DELISTED — no longer in the store; it cannot be audited]`),
+        ].join('\n'),
+      );
     },
   },
 
@@ -434,14 +476,25 @@ export const CHAT_TOOLS: ChatTool[] = [
       const rows = hallmarks(store.all(), {
         standards: await currentStandards(ctx),
         ...(ctx.registry ? { versions: ctx.registry.versions() } : {}),
+        ...(ctx.registry ? { delisted: ctx.registry.delisted() } : {}),
       });
       if (rows.length === 0) {
         return failed('Nothing has been audited yet, so the board is empty. list_subjects has the names.');
       }
 
-      const audited = rows.filter((row) => row.age_days !== null);
+      // Counted out of the headline as well as marked on the row. A model handed "72 apps,
+      // 20 audited" answers questions about 72 apps, and two of them are no longer on sale —
+      // an arithmetic error the per-row mark on its own does not prevent.
+      const gone = rows.filter((row) => row.delisted);
+      const live = rows.filter((row) => !row.delisted);
+      const audited = live.filter((row) => row.age_days !== null).length;
       const lines = [
-        `${rows.length} app(s), worst risk first — ${audited.length} audited, ${rows.length - audited.length} never.`,
+        `${live.length} app(s) in the store, worst risk first — ${audited} audited, ${live.length - audited} never.`,
+        ...(gone.length > 0
+          ? [
+              `Plus ${gone.length} DELISTED app(s) the store no longer offers — listed below for the record and excluded from those counts. They will never be audited again, so leave them out of any roll-up of what the store carries.`,
+            ]
+          : []),
         ...rows.map(boardRow),
       ];
       return ok(lines.join('\n'));
@@ -558,6 +611,15 @@ export const CHAT_TOOLS: ChatTool[] = [
         );
       }
       if (known.length > 0 && resolved.kind !== 'ok') {
+        // A delisted app is absent from `known` on purpose, so without this the refusal
+        // would be "no such subject" — which reads as a misspelling and sends the turn
+        // hunting for one that does not exist.
+        const gone = resolveSubjectKey(subject, ctx.registry?.delisted() ?? []);
+        if (gone.kind === 'ok') {
+          return failed(
+            `${subjectName(gone.key)} is delisted — the store no longer offers it, so there is nothing to fetch and audit. Its existing reports are still readable with get_subject and get_report. Nothing was started.`,
+          );
+        }
         return failed(`There is no subject called "${subject}". Call list_subjects to see the names.`);
       }
 
@@ -634,6 +696,7 @@ export const CHAT_TOOLS: ChatTool[] = [
 
       const { state, legs } = subjectHallmark(found.key, found.records);
       const lines = [
+        ...(delistedNote(ctx, found.key) ? [delistedNote(ctx, found.key)!] : []),
         `${state.label} (${state.origin}) — total risk ${state.risk}, ` +
           (state.age_days === null
             ? 'never assayed.'
@@ -684,7 +747,11 @@ export const CHAT_TOOLS: ChatTool[] = [
           `There is no assay of ${state.label} to brief anyone on. get_subject says what it does and does not have.`,
         );
       }
-      return ok(markdown);
+      // The note goes above the document rather than inside it — `buildFixReport` composes
+      // the same markdown the route serves to a person, and a fact about the store is not
+      // part of the brief that is handed to whoever fixes the app.
+      const note = delistedNote(ctx, found.key);
+      return ok(note ? `${note}\n\n${markdown}` : markdown);
     },
   },
 
@@ -773,7 +840,12 @@ export const CHAT_TOOLS: ChatTool[] = [
       // gone is a real state (a hand-deleted archive), and saying so beats an empty answer.
       if (!stored) return failed(`The report file is missing from disk: ${record.path}`);
 
-      return ok(stored.raw ?? stored.body);
+      // Above the file, never inside it — what comes back is meant to be the bytes on disk,
+      // and a note spliced into the frontmatter would be a report that says something the
+      // report does not say. A trial has no store row to be delisted from, hence the guard.
+      const raw = stored.raw ?? stored.body;
+      const note = wantedTrial ? null : delistedNote(ctx, key);
+      return ok(note ? `${note}\n\n${raw}` : raw);
     },
   },
 
@@ -1033,7 +1105,7 @@ export const CHAT_TOOLS: ChatTool[] = [
     name: 'flag_reaudit',
     writes: true,
     description:
-      'Flag one app so the automatic loop audits it again, or take that flag off. This does NOT start a run: it puts the app back in the backlog and the loop reaches it in its own order, under the same cooldown and the same one-audit-at-a-time rule as everything else — use run_assay when the operator wants it audited now. It is the answer to an app that is stuck looking fresh when it is not: a section that was recorded blocked stamps nothing, but a sibling section that completed keeps the whole app out of the backlog until the re-audit window runs out. The flag is spent by the next attempt whatever that attempt concludes, so it never has to be cleared by hand.',
+      'Flag one app so the automatic loop audits it again, or take that flag off. This does NOT start a run: it puts the app back in the backlog and the loop reaches it in its own order, under the same cooldown and the same one-audit-at-a-time rule as everything else — use run_assay when the operator wants it audited now. It is the answer to an app that is stuck looking fresh when it is not: a section that was recorded blocked stamps nothing, but a sibling section that completed keeps the whole app out of the backlog until the re-audit window runs out. It also releases a park, so it is the right verb for an app that has been left alone after repeated failures — an automatic park does not outrank an operator asking. The flag is spent by the next attempt whatever that attempt concludes, so it never has to be cleared by hand.',
     inputSchema: {
       type: 'object',
       properties: {

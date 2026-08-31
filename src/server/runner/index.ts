@@ -35,6 +35,7 @@ import { assayFromScript } from '../domain/scripted.js';
 import type { ReportIndex } from '../store/index.js';
 import { recordFor, writeReport } from '../store/reports.js';
 import { subjectRefOf, type OriginEntry } from '../store/config.js';
+import type { AlertStore } from '../services/alerts.js';
 import type { BenchProber } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 import { sectionsOf, type ExecutorRef, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
@@ -161,6 +162,15 @@ export interface RunnerOptions {
    */
   subjectVersion?: (key: string) => string | undefined;
   events: EventLog;
+  /**
+   * The alert set, for the one condition only the runner can see.
+   *
+   * `services/ports.ts` deliberately raises no alerts and should not start: it probes with
+   * `tools/list`, which a Claude Code endpoint answers perfectly well while its session is
+   * dead — which is how "Port agent: healthy" sat beside three days of failing audits. The
+   * only code that ever learns the session is gone is the one making the call.
+   */
+  alerts?: AlertStore;
   index?: ReportIndex;
   prober?: BenchProber;
   /** The agent and browser endpoints, so a section that needs a browser can lease one. */
@@ -637,7 +647,16 @@ export class Runner {
     const flagged = ticket ? this.opts.ledger?.close(ticket.token) ?? null : null;
 
     if (!outcome.ok) {
-      return this.fail(job, outcome, flagged);
+      return this.fail(job, outcome, flagged, {
+        sections: agentSections,
+        skipped,
+        reportsRoot,
+        appName,
+        ...(origin ? { origin } : {}),
+        subjectRef,
+        ...(subjectSha ? { subjectSha } : {}),
+        startedAt,
+      });
     }
 
     // ── the result ───────────────────────────────────────────────────────────────────────
@@ -679,6 +698,9 @@ export class Runner {
     reportsRoot: string,
     events: EventLog,
   ): Promise<RunOutcome> {
+    // An answer we could use is proof the session is alive. Resolving here rather than from a
+    // prober is the same argument as opening there: this is the only place that finds out.
+    this.opts.alerts?.resolve('agent.auth', 'The audit agent is answering again');
     const files: string[] = [];
     for (const assay of assays) {
       const res = await writeReport(reportsRoot, assay.meta, assay.body);
@@ -718,13 +740,6 @@ export class Runner {
     };
   }
 
-  /**
-   * A failure that is not busy.
-   *
-   * `agent-auth` is called out separately because it is the one class where *nothing* about
-   * any app is wrong and no amount of retrying will help — somebody has to log the agent in.
-   * It still costs a try, as n8n charges it, but it opens the alert that says where to look.
-   */
   /**
    * Perform the sections whose executor is a script, one assay each.
    *
@@ -857,10 +872,20 @@ export class Runner {
     };
   }
 
+  /**
+   * The agent's answer, kept where a person can read it.
+   *
+   * Written for **every** failure class, and to a file named after the class. It used to fire
+   * only for `parse-failed`, which left the one class that most needed its evidence with none:
+   * an `agent-auth` misclassification in August 2026 survived five days precisely because all
+   * that remained of it was 800 characters in `events.jsonl`, and the phrase that had matched
+   * sat past the cut. One file per class, so a later parse failure cannot overwrite the auth
+   * response somebody is still trying to explain.
+   */
   private async dump(job: RunnerJob, outcome: Extract<AgentOutcome, { ok: false }>): Promise<void> {
-    if (!this.opts.dumpDir || outcome.error !== 'parse-failed') return;
+    if (!this.opts.dumpDir) return;
     try {
-      const file = path.join(this.opts.dumpDir, 'last-unparsed-response.txt');
+      const file = path.join(this.opts.dumpDir, `last-failed-response-${outcome.error}.txt`);
       await fs.mkdir(this.opts.dumpDir, { recursive: true });
       await fs.writeFile(file, `# ${job.subject} · ${this.now().toISOString()}\n\n${outcome.rawText}\n`, 'utf8');
     } catch {
@@ -868,31 +893,145 @@ export class Runner {
     }
   }
 
-  private fail(
+  /**
+   * A failure that is not busy: log it, keep the evidence, and — when the subject is charged
+   * for it — leave a record saying we looked.
+   *
+   * **Charging a try implies writing an attempt record.** That pairing is the rule this
+   * function exists to hold. The scheduler keeps two answers to "did we attempt this app?" —
+   * `try_n`/`parked_at` in `state/schedule.json`, and `lastAttemptAt` derived from the archive
+   * — and until 2026-08-31 a failed run moved the first and not the second. Everything that
+   * asks "have we looked since X" reads the second: the re-audit flag, `standardMoved`,
+   * `subjectChanged`. So a charged failure left a subject walking toward parking while its
+   * flag stayed set for ever and the standard clause never settled. An outcome now either
+   * costs nothing and records nothing, or costs a try and leaves a record.
+   *
+   * `agent-auth` is the free half of that: no try (invariant 3 — nothing about the app is
+   * wrong and retrying will not help), and therefore no record either. `agent_busy` never
+   * reaches here at all.
+   */
+  private async fail(
     job: RunnerJob,
     outcome: Extract<AgentOutcome, { ok: false }>,
     flagged: RunState | null,
-  ): RunOutcome {
+    attempt: {
+      sections: ProtocolSection[];
+      skipped: { section: ProtocolSection; reason: string }[];
+      reportsRoot: string;
+      appName: string;
+      origin?: string;
+      subjectRef: string;
+      subjectSha?: string;
+      startedAt: string;
+    },
+  ): Promise<RunOutcome> {
     void this.dump(job, outcome);
+    const isAuth = outcome.error === 'agent-auth';
     // A run that died at requirement 12 of 16 established twelve facts. Saying so is the
     // difference between "we know nothing" and "we know most of it and the rest is unknown".
     const partial = flagged ? coverageOf(flagged.requirements) : null;
     this.opts.events.log({
       level: 'error',
-      code: outcome.error === 'agent-auth' ? 'AGENT_UNAUTHENTICATED' : 'ASSAY_FAILED',
-      message:
-        outcome.error === 'agent-auth'
-          ? 'The audit agent is not logged in, so no audit can run'
-          : 'An audit failed to produce a report',
+      code: isAuth ? 'AGENT_UNAUTHENTICATED' : 'ASSAY_FAILED',
+      message: isAuth
+        ? 'The audit agent is not logged in, so no audit can run'
+        : 'An audit failed to produce a report',
       subject: job.subject,
       detail: {
         subject: job.subject,
         error: outcome.error,
+        // Still trimmed hard. `classify` keeps 20 000 characters and `dump` writes them to a
+        // file; `events.jsonl` is append-only and read whole at boot, so it gets the excerpt.
         raw: outcome.rawText.slice(0, 800),
         ...(partial ? { verified: partial.verified, of: partial.applicable } : {}),
       },
     });
+
+    if (isAuth) {
+      // The condition, not the run. A dead session stops every audit rather than one, which
+      // is what makes it an alert instead of one more error row — and `AlertStore.open`
+      // refreshes an open key rather than stacking, so a fourth failure adds no second card.
+      this.opts.alerts?.open({
+        key: 'agent.auth',
+        title: 'The audit agent is not logged in',
+        detail: `${job.subject} → the agent's session was rejected`,
+        // Only true because `agent-auth` is free in `scheduler/record.ts`. The two shipped
+        // together for that reason: a banner promising no app is charged, over code that
+        // charged them, is worse than no banner.
+        impact:
+          'no audit can complete until the agent is logged in again · no app is charged a retry for this and no verdict is reached about one',
+      });
+      return { kind: 'agent_auth' };
+    }
+
+    // `AgentFailure` is hyphenated (`agent-error`); `blocked_reason` is underscored, as
+    // `bench_unavailable` and `store_unreachable` are. One convention per field.
+    await this.recordAttempt(job, outcome.error.replace(/-/g, '_'), attempt);
     return { kind: 'error', reason: outcome.error };
+  }
+
+  /**
+   * One `blocked` assay per section the run meant to cover, so the archive records that we
+   * looked and learned nothing.
+   *
+   * `blocked` rather than a new status, because it already means exactly this and is already
+   * read exactly the right way: `ReportIndex.latest()` filters it out of `lastDoneAt` so the
+   * subject's freshness and its hallmark are untouched, while `latestAny()` feeds
+   * `lastAttemptAt` so the flag is spent and the standard clause settles. Invariant 4 holds —
+   * this is still never a statement about the app, only about what stopped us.
+   *
+   * A failure to write one must not turn a classified failure into a thrown one; the scheduler
+   * has already been told what happened by the return value.
+   */
+  private async recordAttempt(
+    job: RunnerJob,
+    reason: string,
+    attempt: {
+      sections: ProtocolSection[];
+      skipped: { section: ProtocolSection; reason: string }[];
+      reportsRoot: string;
+      appName: string;
+      origin?: string;
+      subjectRef: string;
+      subjectSha?: string;
+      startedAt: string;
+    },
+  ): Promise<void> {
+    const finishedAt = this.now().toISOString();
+    // A section the run never got to keeps its own reason — "no bench" is a truer account of
+    // that section than "the agent's answer was unusable", which is only true of the rest.
+    const all = [
+      ...attempt.sections.map((section) => ({ section, reason })),
+      ...attempt.skipped,
+    ];
+    for (const { section, reason: why } of all) {
+      try {
+        const assay = blockedSectionAssay({
+          subject: attempt.appName,
+          ...(attempt.origin ? { origin: attempt.origin } : {}),
+          section: this.assaySection(section),
+          reason: why,
+          startedAt: attempt.startedAt,
+          finishedAt,
+          subjectRef: attempt.subjectRef,
+          ...(attempt.subjectSha ? { subjectSha: attempt.subjectSha } : {}),
+        });
+        const res = await writeReport(attempt.reportsRoot, assay.meta, assay.body);
+        if (!job.trial) this.opts.index?.upsert(recordFor(assay.meta, res.rel));
+      } catch (err) {
+        this.opts.events.log({
+          level: 'warn',
+          code: 'ASSAY_FAILED',
+          message: 'An attempt record could not be written',
+          subject: job.subject,
+          detail: {
+            subject: job.subject,
+            error: err instanceof Error ? err.message : String(err),
+            raw: section.id,
+          },
+        });
+      }
+    }
   }
 }
 

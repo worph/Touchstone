@@ -27,6 +27,7 @@ export type { Alert, AlertKey };
 export const ALERT_KEYS: AlertKey[] = [
   'bench.auth',
   'bench.unreachable',
+  'agent.auth',
   'agent.unavailable',
   'browser.unavailable',
 ];

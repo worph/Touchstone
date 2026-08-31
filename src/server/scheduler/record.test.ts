@@ -38,6 +38,30 @@ describe('the two outcomes that cost nothing', () => {
     expect(record({ kind: 'agent_busy' }, claimed(2)).stampsFinish).toBe(false);
   });
 
+  /**
+   * Row E5b. The agent's session being dead is not a fact about any app, so it must not walk
+   * one toward parking — the failure that cost `yundera~UptimeKuma` three audits and five days
+   * in August 2026, when a misclassified *successful* audit was charged as an error three times
+   * over and parked the app for a week.
+   */
+  it('an agent that is not logged in leaves the try count exactly where it was', () => {
+    const r = record({ kind: 'agent_auth' }, claimed(2));
+    expect(r.schedule.try_n).toBe(1);
+    expect(r.schedule.claim).toBeUndefined();
+    expect(r.parked).toBe(false);
+  });
+
+  /**
+   * ...but unlike a 409 it *does* start the cooldown, and that asymmetry is deliberate. A busy
+   * agent comes back in milliseconds having attempted nothing. An auth failure has already
+   * spent a full agent call — twenty-six minutes, in the incident above — so leaving the anchor
+   * alone would let the next tick claim the next subject at once and march the whole registry
+   * through the same dead endpoint. Free, and still spaced.
+   */
+  it('but does stamp a finish, so a dead agent cannot be hammered once per tick', () => {
+    expect(record({ kind: 'agent_auth' }, claimed(2)).stampsFinish).toBe(true);
+  });
+
   it('a bench we could not claim behaves the same way', () => {
     const r = record({ kind: 'blocked', reason: 'bench_unavailable' }, claimed(3));
     expect(r.schedule.try_n).toBe(2);
@@ -151,8 +175,9 @@ describe('the re-audit flag', () => {
     expect(r.schedule.flagged_at).toBe(FLAGGED);
   });
 
-  it('survives the two outcomes that cost nothing', () => {
+  it('survives every outcome that costs nothing', () => {
     expect(record({ kind: 'agent_busy' }, flagged).schedule.flagged_at).toBe(FLAGGED);
+    expect(record({ kind: 'agent_auth' }, flagged).schedule.flagged_at).toBe(FLAGGED);
     expect(record({ kind: 'blocked', reason: 'no bench' }, flagged).schedule.flagged_at).toBe(
       FLAGGED,
     );

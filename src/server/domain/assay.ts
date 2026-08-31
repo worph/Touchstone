@@ -18,7 +18,7 @@ import { coverageOf, type RecordedPhase, type RecordedRequirement } from '../ser
 import { parsePhases, shapeReport } from './extract.js';
 
 /**
- * Scope a combined `errored` verdict to the leg that actually caused it.
+ * Scope a combined `errored` verdict to the section that actually caused it.
  *
  * This is the migration's half of ARCHITECTURE.md §2.5. A report reads `errored` whenever a
  * mandatory phase could not run, and in this corpus that phase is almost always functional
@@ -27,17 +27,26 @@ import { parsePhases, shapeReport } from './extract.js';
  * independently found a Major fail"*, and its own headline still carries `Major · risk 12`
  * from the static findings that did complete.
  *
- * So when the functional leg never ran, `errored` is not a statement about the static leg
- * and must not be copied onto it: the static leg stands on its own tier. When the
- * functional leg *did* run, an `errored` headline means something else failed and is left
- * alone.
+ * The predicate is **whether this section is itself unmeasured**, and it used to be
+ * "whether the functional section ran". Those are not the same question, and the gap between
+ * them cost six apps their static verdict on 2026-08-28/29: the browser sidecar was
+ * CDP-wedged, the agent fell back to driving the bench over `curl`, so functional *ran* —
+ * seven or eight phases pass — and only `clean-boot` came back `errored`. Under the old
+ * predicate that counted as "functional ran", the rescue stood down, and `errored` landed on
+ * a static section that had passed 18 of 18 items and never opens a browser at all
+ * (`requires: []`). An audit that could not measure one live phase is not a statement about
+ * the checklist, whether the live section managed nothing or merely managed most of it.
+ *
+ * So the primary keeps `errored` only when the primary is what could not be measured.
+ * Otherwise it stands on its own tier, and the section that really errored says so itself —
+ * see the non-primary branch at the call site.
  */
 export function scopeVerdict(
   verdict: Verdict | null,
   tier: Severity,
-  functionalRan: boolean,
+  erroredHere: boolean,
 ): Verdict | null {
-  if (verdict !== 'errored' || functionalRan) return verdict;
+  if (verdict !== 'errored' || erroredHere) return verdict;
   return tier === 'none' ? 'compliant' : 'non-compliant';
 }
 
@@ -174,7 +183,14 @@ export function blockedSectionAssay(input: {
               'in config.yaml and this section will run. It is not a statement about the app, and ' +
               'not a limitation of trials: with that one setting a trial serves the exact archive ' +
               'it audited, so the bytes installed and the bytes judged are the same'
-            : `a prerequisite of this section was unavailable (${reason})`;
+            : // Not a prerequisite: the agent answered and the answer could not be used. The
+              // section is recorded rather than left silent because the subject is charged a
+              // try for it, and the two have to move together — see `Runner.recordAttempt`.
+              reason === 'agent_error'
+              ? 'the audit agent returned an error instead of a report, so this section was never judged'
+              : reason === 'parse_failed'
+                ? 'the audit agent answered, but the answer carried no report this build could read'
+                : `a prerequisite of this section was unavailable (${reason})`;
 
   return {
     meta: {
@@ -305,7 +321,7 @@ function sectionRan(
   recorded: RecordedPhase[],
   narrative: string | null,
   settled: number,
-): { ran: boolean; failed: boolean } {
+): { ran: boolean; failed: boolean; errored: boolean } {
   if (section.phases.length === 0) {
     // A section with no plan has no sequence to gate on. For a desk section — the static
     // checklist — answering at all is the whole of "it ran", and that is the common case.
@@ -319,9 +335,9 @@ function sectionRan(
     //
     // The test is evidence rather than shape, so a live section that genuinely has no
     // sequence still passes it by recording anything at all.
-    if ((section.requires ?? []).length === 0) return { ran: true, failed: false };
+    if ((section.requires ?? []).length === 0) return { ran: true, failed: false, errored: false };
     const evidence = settled > 0 || recorded.length > 0 || Boolean(narrative);
-    return { ran: evidence, failed: false };
+    return { ran: evidence, failed: false, errored: false };
   }
   const plan = section.phases;
   const mine: { id: string; result: string }[] =
@@ -334,6 +350,13 @@ function sectionRan(
   return {
     ran: planned.some((p) => p.result === 'pass' || p.result === 'fail'),
     failed: planned.some((p) => p.result === 'fail'),
+    // A planned phase the agent attempted and could not measure. Distinct from `failed`,
+    // which is a statement about the app, and distinct from `!ran`, which is the whole
+    // section going unattempted: this is the middle case — the section ran, and part of it
+    // is missing. It is the only place the run's `errored` headline can honestly be
+    // attributed, and before it existed the headline defaulted onto whichever section came
+    // first in protocol order.
+    errored: planned.some((p) => p.result === 'errored'),
   };
 }
 
@@ -380,7 +403,7 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
     recorded.filter((r) => (r.section ?? primary?.id) === section.id);
 
   const out: { meta: AssayMeta; body: string }[] = [];
-  const state = new Map<string, { ran: boolean; failed: boolean }>();
+  const state = new Map<string, { ran: boolean; failed: boolean; errored: boolean }>();
 
   for (const section of sections) {
     const narrative = shape.sections[section.id]?.text ?? null;
@@ -389,16 +412,23 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
     state.set(section.id, status);
   }
 
-  // Whether every *other* section ran, which is what scopes an `errored` headline: an audit
-  // reads errored when a mandatory phase could not run, and that is not a statement about the
-  // section that completed on its own.
-  const othersRan =
-    (input.blocked ?? []).length === 0 &&
-    sections.slice(1).every((s) => state.get(s.id)?.ran !== false);
+  // Whether the *primary* is itself the section that could not be measured, which is what
+  // scopes an `errored` headline. An audit reads errored when a mandatory phase could not
+  // run; that phase belongs to exactly one section, and the headline is only a statement
+  // about the primary when the primary is that section. Everywhere else the primary stands
+  // on its own tier and the section that really errored carries the word — see the
+  // non-primary branch below.
+  //
+  // Reading only the primary's own status is the point. The predicate used to be "did every
+  // other section run", which conflated two different worlds: a functional section that never
+  // started (browser missing → recorded blocked, static rescued) and one that started and
+  // came back with a hole in it (browser wedged mid-run → static wrongly errored). Both are
+  // infra, and neither is a statement about the checklist.
+  const erroredHere = Boolean(primary && state.get(primary.id)?.errored);
 
   for (const [i, section] of sections.entries()) {
     const isPrimary = i === 0;
-    const status = state.get(section.id) ?? { ran: true, failed: false };
+    const status = state.get(section.id) ?? { ran: true, failed: false, errored: false };
     const mine = mineOf(section);
     const coverage = mine.length > 0 ? coverageOf(mine) : null;
     const phases = recordedPhases.filter((p) => (p.section ?? primary?.id) === section.id);
@@ -415,10 +445,18 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
         status: status.ran ? 'done' : 'blocked',
         verdict: status.ran
           ? isPrimary
-            ? scopeVerdict(declared.verdict as Verdict, tier, othersRan)
-            : failedHere
+            ? scopeVerdict(declared.verdict as Verdict, tier, erroredHere)
+            : // A failure is a statement about the app and outranks a measurement that was
+              // never taken; `errored` then says the section ran but part of it is missing,
+              // which is the honest word for a live section whose browser died under it. It
+              // used to read `compliant` here, so the run that errored static for a wedged
+              // sidecar recorded the *functional* section — the one holding the errored
+              // phase — as compliant. The two sections had swapped verdicts.
+              failedHere
               ? 'non-compliant'
-              : 'compliant'
+              : status.errored
+                ? 'errored'
+                : 'compliant'
           : null,
         // The headline scores the audit as a whole, so it lands on one section. Attributing
         // it to each would multiply the store's risk by the number of sections.

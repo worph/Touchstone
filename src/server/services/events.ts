@@ -91,6 +91,13 @@ export const EVENT_CODES = {
   // when a flag is set and then thought better of.
   SUBJECT_FLAGGED: { category: 'scheduler', label: 'app flagged for re-audit' },
   SUBJECT_UNFLAGGED: { category: 'scheduler', label: 're-audit flag removed' },
+  // The store stopped offering an app we have audited. `scheduler`, because what it changes
+  // is what the loop may pick — the archive is untouched and no verdict moved.
+  SUBJECT_DELISTED: { category: 'scheduler', label: 'app no longer in the store' },
+  // An operator threw a delisted app's reports away. `config`, the category for changes a
+  // person made: this is the one place the archive loses something, and the row is the only
+  // record that it ever held anything.
+  SUBJECT_PURGED: { category: 'config', label: 'archive deleted for an app' },
   REGISTRY_REFRESHED: { category: 'scheduler', label: 'registry changed' },
   REGISTRY_FAILED: { category: 'scheduler', label: 'registry unreadable' },
   REGISTRY_VERSIONS_FAILED: { category: 'scheduler', label: 'app versions unreadable' },
@@ -308,6 +315,8 @@ interface EventDetails {
   CONTROL_IGNORED: { key: string; value: unknown; reason: string };
   AGENT_BUSY: { subject: string; waitMs: number; attempt: number };
   AGENT_UNAUTHENTICATED: { subject: string; error: string; raw: string };
+  SUBJECT_DELISTED: { subjects: string[] };
+  SUBJECT_PURGED: { subject: string; files: number; by: string };
   PORT_HEALTHY: { port: string; kind: 'agent' | 'browser'; tools: number };
   PORT_UNREACHABLE: { port: string; kind: 'agent' | 'browser'; url: string; error: string };
 }

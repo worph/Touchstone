@@ -70,6 +70,15 @@ export interface TickDecision {
   reclaimed: Reclaim[];
   /** Subjects whose park expired this tick and are eligible again. */
   unparked: string[];
+  /**
+   * How many subjects are being held out of the backlog by a park right now.
+   *
+   * The standing population, not `unparked`'s transition set. `backlog` counts what is
+   * eligible and says nothing about what was skipped, which is how an empty backlog came to
+   * be reported as "all 73 app(s) audited within 14d" over an app that had been parked for
+   * three days and never audited at all.
+   */
+  parked?: number;
   /** The try this attempt would be, when `action` is `audit`. */
   try_n?: number;
 }
