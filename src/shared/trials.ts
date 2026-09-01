@@ -103,11 +103,23 @@ export interface TrialRecord {
    */
   started_at: string;
   /**
+   * When it entered the queue. Written by `enqueueTrial`, and **only** by it.
+   *
+   * It looks redundant beside `started_at`, which is the same instant, and it is not. It is
+   * the marker that says *this row was written by a version of Touchstone that queues*. Rows
+   * predating the request queue have `started_at` and no `began_at`, which is byte-for-byte
+   * what a waiting trial looks like — so without this, every trial ever stranded by a restart
+   * would be read as freshly queued and dispatched on the first tick after the upgrade. Two
+   * such rows, eight and ten days old, were sitting on the box when this shipped.
+   */
+  queued_at?: string;
+  /**
    * When the agent actually picked it up. Absent while it is still in the queue.
    *
-   * This is the whole of the trial half of the queue: `began_at` unset and `finished_at` unset
-   * is *waiting*; `began_at` set and `finished_at` unset is *running*. Both set is over. A row
-   * left in the middle state by a restart is reconciled at boot — see `TrialStore.reconcile`.
+   * With `queued_at` this is the whole of the trial half of the queue: `queued_at` set and
+   * `began_at` unset is *waiting*; `began_at` set and `finished_at` unset is *running*; both
+   * set is over. A row left in the middle state by a restart is reconciled at boot, and so is
+   * a legacy row that has neither — see `TrialStore.reconcile`.
    */
   began_at?: string;
   finished_at?: string;

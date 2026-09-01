@@ -302,6 +302,9 @@ export async function enqueueTrial(
     ...(compareTo ? { compare_to: compareTo } : {}),
     store_token: spec.store_token,
     started_at: startedAt,
+    // The marker that this row entered a queue, as opposed to having been started outright by
+    // a version that had none. `queued()` requires it; `reconcile()` closes rows without it.
+    queued_at: startedAt,
   };
   await trials.add(record);
 

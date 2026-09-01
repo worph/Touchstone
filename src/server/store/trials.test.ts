@@ -96,6 +96,78 @@ describe('trialSlug', () => {
  * trials the oldest directories became orphaned — invisible in the UI, undeletable through it,
  * and carried in every backup and uninstall archive for good.
  */
+describe('the queue, and the rows that predate it', () => {
+  let dir: string;
+  let store: TrialStore;
+
+  const rowOf = (over: Partial<TrialRecord>): TrialRecord => ({
+    slug: 'Widget@aaaa1111-2026-09-01T09-00-00-000Z',
+    source_url: URL_OK,
+    repo: 'Acme/AppStore',
+    apps_path: 'Apps',
+    subject: 'Widget',
+    started_at: '2026-09-01T09:00:00.000Z',
+    ...over,
+  });
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'touchstone-trial-queue-'));
+    store = new TrialStore(dir, path.join(dir, 'trials'));
+    await store.load();
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * The upgrade hazard, pinned. A row written before trials were queued has `started_at`, no
+   * `began_at` and no `queued_at` — byte-for-byte what a waiting trial looks like — so without
+   * `queued_at` the first tick after the upgrade dispatches every trial the old code ever
+   * stranded. There were two of them on the box the day this shipped.
+   */
+  it('does not read a pre-queue row as queued, and closes it at boot', async () => {
+    await store.add(
+      rowOf({
+        slug: 'Hubs@eb0f2838-2026-08-23T17-56-55-138Z',
+        subject: 'Hubs',
+        started_at: '2026-08-23T17:56:55.138Z',
+      }),
+    );
+
+    expect(store.queued()).toEqual([]);
+
+    const closed = await store.reconcile('2026-09-01T10:00:00.000Z');
+    expect(closed).toEqual(['Hubs@eb0f2838-2026-08-23T17-56-55-138Z']);
+    const row = store.get('Hubs@eb0f2838-2026-08-23T17-56-55-138Z');
+    expect(row?.outcome).toBe('error');
+    expect(row?.finished_at).toBe('2026-09-01T10:00:00.000Z');
+  });
+
+  it('keeps a genuinely queued row across a restart', async () => {
+    await store.add(rowOf({ queued_at: '2026-09-01T09:00:00.000Z' }));
+
+    expect(store.queued().map((t) => t.slug)).toEqual(['Widget@aaaa1111-2026-09-01T09-00-00-000Z']);
+    // It was never started, so a restart costs it nothing and it is still in the line.
+    expect(await store.reconcile()).toEqual([]);
+    expect(store.queued()).toHaveLength(1);
+  });
+
+  it('closes a row that was running when the process stopped', async () => {
+    await store.add(
+      rowOf({
+        slug: 'Widget@bbbb2222-2026-09-01T09-00-00-000Z',
+        queued_at: '2026-09-01T09:00:00.000Z',
+        began_at: '2026-09-01T09:00:05.000Z',
+      }),
+    );
+
+    expect(store.queued()).toEqual([]);
+    expect(await store.reconcile()).toEqual(['Widget@bbbb2222-2026-09-01T09-00-00-000Z']);
+    expect(store.get('Widget@bbbb2222-2026-09-01T09-00-00-000Z')?.outcome).toBe('error');
+  });
+});
+
 describe('trial retention', () => {
   let dir: string;
   let root: string;

@@ -185,7 +185,7 @@ export class TrialStore {
    */
   queued(): TrialRecord[] {
     return this.trials
-      .filter((t) => !t.began_at && !t.finished_at)
+      .filter((t) => t.queued_at && !t.began_at && !t.finished_at)
       .sort((a, b) => a.started_at.localeCompare(b.started_at));
   }
 
@@ -220,8 +220,19 @@ export class TrialStore {
       t.outcome = 'error';
       t.error = 'Touchstone restarted while this trial was running';
     }
-    if (stranded.length > 0) await this.persist();
-    return stranded.map((t) => t.slug);
+    // Rows written before trials were queued at all: `started_at`, no `began_at`, and no
+    // `queued_at` to say they ever entered a queue. They are indistinguishable from a waiting
+    // trial by shape alone, which is precisely why `queued_at` exists — without this pass the
+    // first tick after the upgrade would dispatch every trial the old code ever stranded.
+    // Closed once, at the first boot on the new version, and never seen again.
+    const legacy = this.trials.filter((t) => !t.queued_at && !t.began_at && !t.finished_at);
+    for (const t of legacy) {
+      t.finished_at = at;
+      t.outcome = 'error';
+      t.error = 'This trial never finished, and predates the request queue';
+    }
+    if (stranded.length + legacy.length > 0) await this.persist();
+    return [...stranded, ...legacy].map((t) => t.slug);
   }
 
   /** Newest first — a trial is looked at immediately after it is run, or not at all. */
