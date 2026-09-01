@@ -184,11 +184,25 @@ export function sidecarBase(mcpUrl: string): string | null {
  *   fault — it is the normal state after the idle reaper has freed Chrome's RSS, and the next
  *   call relaunches it. Treating it as unreachable would block every functional section
  *   between runs, which is why this function exists rather than a one-line status check.
- * - **`/api/health`** reports Chrome's lifecycle. Its `chrome` field disagreeing with
- *   `/api/status` is the wedge: the manager still holds a live process handle (`running`)
- *   while nothing can be driven through it. That is exactly what the box looked like for the
- *   six errored audits — `{"chrome":"running"}` beside `{"running":false}` — and the audit
- *   reports called it out in prose before anything checked it.
+ * - **`/api/health`** reports Chrome's lifecycle, and **how much it can be trusted depends on
+ *   the sidecar's age**, which is the whole shape of what follows.
+ *
+ * A sidecar that carries a `cdp` field in `/api/health` has confirmed the state against the
+ * CDP port itself, and says `wedged` when it cannot: its `chrome` is an answer, and we take
+ * it. One without that field only ever held a process handle up to the light, so `running`
+ * meant "I have a child process", which for eight days on one box was true of a Chrome that
+ * answered nothing — `{"chrome":"running"}` beside `{"running":false}`, six audits dispatched
+ * into it. For those, and only for those, the contradiction between the two endpoints is
+ * inferred from outside.
+ *
+ * **The two endpoints do not answer the same question**, and reading them as though they did
+ * is what made this wrong. `health.chrome` is about the *process* — up, and drivable.
+ * `status.running` is about the *client* — whether it currently holds a page. On a
+ * self-diagnosing sidecar `chrome: "running"` beside `running: false` is the ordinary state of
+ * a browser that is up with no tab open: for the minute it is launching, and for the whole
+ * gap between a run releasing its page and the idle reaper firing. Inferring a wedge from it
+ * flapped `browser-1` down for ~30 minutes of every hour on 2026-08-31 and recorded fifteen
+ * functional sections blocked against a browser that was working.
  *
  * Only a positive signal downgrades. Anything unreadable — a 404, a non-JSON body, an
  * endpoint that is not ours — is `wedged: false`, because a browser we cannot interrogate is
@@ -231,11 +245,18 @@ export async function browserLiveness(
   const chrome = typeof health.body?.['chrome'] === 'string' ? (health.body['chrome'] as string) : null;
   const running = status.body['running'] === true;
 
+  // Does this sidecar check CDP for itself? The `cdp` field is the marker, and it is read as
+  // presence rather than value: `null` is what a self-diagnosing sidecar reports for a Chrome
+  // that is off, and that is exactly a box we want to stop second-guessing.
+  const selfDiagnosing = health.body !== null && 'cdp' in health.body;
+
   // The sidecar's own word for it, once it is new enough to say so.
   if (chrome === 'wedged') return { wedged: true, detail: 'the sidecar reports Chrome wedged' };
 
-  // …and the same condition seen from outside, on an image that cannot.
-  if (chrome === 'running' && !running) {
+  // …and the same condition inferred from outside, on an image that cannot say it. Only
+  // there: on a sidecar that does check CDP, this pair is a browser that is up with no page
+  // open, which is the normal state between runs and says nothing about drivability.
+  if (!selfDiagnosing && chrome === 'running' && !running) {
     return { wedged: true, detail: '/api/health says Chrome is running but nothing can be driven through it' };
   }
   if (chrome === 'failing') return { wedged: true, detail: 'Chrome is failing to launch' };

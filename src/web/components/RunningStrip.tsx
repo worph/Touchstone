@@ -23,6 +23,14 @@ export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 
   const status = useRunStatus();
   const live = status?.running ?? null;
   const seconds = useElapsed(live?.started_at);
+  /**
+   * How many requests are behind this one.
+   *
+   * The strip is on every page, so this is the ambient answer to "what is after this" — the
+   * one question the run in flight cannot answer about itself, and the one that used to need
+   * a trip to Automation to find out.
+   */
+  const waiting = Math.max(0, (status?.queued ?? 0) - 1);
 
   if (!live) return null;
 
@@ -43,6 +51,7 @@ export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 
         <span className="run-strip__mark" aria-hidden="true">◴</span>
         <span className="run-strip__name">{subjectName(live.subject)}</span>
         <span className="run-strip__clock num">{clock}</span>
+        {waiting > 0 ? <span className="run-strip__queued num">+{waiting}</span> : null}
       </Link>
     );
   }

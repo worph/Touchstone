@@ -60,8 +60,32 @@ export interface Reclaim {
 }
 
 export interface TickDecision {
-  action: 'audit' | 'idle';
+  /**
+   * What the tick decided to do.
+   *
+   * `trial` joined `audit` and `idle` on 2026-09-01, when the request queue landed: a trial
+   * and an audit are two things one agent can be asked for, and the decision about which one
+   * happens next has to name both or it is not the decision.
+   */
+  action: 'audit' | 'trial' | 'idle';
   subject?: string;
+  /** The trial slug, when `action` is `trial`. */
+  trial?: string;
+  /**
+   * Whether this came out of the request queue or out of the derived backlog.
+   *
+   * Load-bearing, not decoration: `armed` gates the backlog and nothing else, so `runTick`
+   * reads this to decide whether a disarmed scheduler may still dispatch. A request is
+   * somebody asking; the backlog is the loop helping itself.
+   */
+  source?: 'requested' | 'backlog';
+  /**
+   * What the queue is waiting on, when something is requested and the tick idled anyway.
+   *
+   * The head of the queue and the reason it is not moving. Without it "waiting" and "empty"
+   * render identically, which is the one thing a queue view must never do.
+   */
+  waiting_on?: string;
   /** One clause, in n8n's wording, so the two systems' State lines compare by eye. */
   reason: string;
   /** How many subjects are stale or never run — the roll-up's Backlog figure. */
@@ -81,6 +105,15 @@ export interface TickDecision {
   parked?: number;
   /** The try this attempt would be, when `action` is `audit`. */
   try_n?: number;
+  /**
+   * This is the *previous* tick's decision, handed back because a tick was already running.
+   *
+   * Two ticks racing could both claim, so `tick()` coalesces — but `lastTick` is written only
+   * at the end of a tick, so what a coalesced caller receives describes work it had no part
+   * in. Marked rather than hidden: a caller asking "did my request start" must be able to
+   * tell "no" from "I cannot say".
+   */
+  coalesced?: true;
 }
 
 /**
@@ -139,6 +172,37 @@ export interface QueueRow {
   claim_since?: string;
 }
 
+/**
+ * One thing somebody asked for, in the order they asked for it.
+ *
+ * The request queue is **derived**, not stored: an audit request is a subject whose
+ * `flagged_at` is newer than its last attempt, and a trial request is a trial row that has
+ * not been picked up yet. Nothing writes this list; it is composed per request from the two
+ * places the answers already live, which is what keeps invariant 8 true of the half of it
+ * that can be derived at all.
+ *
+ * The two kinds share one ordering key — when it was asked for — because they share one
+ * agent. A queue that ordered them separately would be two queues wearing one heading.
+ */
+export interface RequestRow {
+  kind: 'audit' | 'trial';
+  /** The subject key for an audit, the slug for a trial — the address, not the label. */
+  id: string;
+  /** What to show a person: the bare app name. */
+  label: string;
+  /** The ordering key. `flagged_at` for an audit, the trial row's creation time. */
+  requested_at: string;
+  /** 1-based, arrival order. Position 1 is what the next unblocked tick takes. */
+  position: number;
+  state: 'waiting' | 'running';
+  /**
+   * Why this is not moving. Only ever set on the head, because only the head is blocked —
+   * everything behind it is merely behind it, and saying "waiting for a bench" on all five
+   * rows would suggest five problems.
+   */
+  waiting_on?: string;
+}
+
 /** The knobs, echoed so the page can explain a countdown without hardcoding the defaults. */
 export interface ScheduleConstants {
   tick_min: number;
@@ -172,6 +236,15 @@ export interface ScheduleResponse {
   /** Minutes of cooldown left before another audit may start. 0 when clear. */
   cooldown_left_min: number;
   constants: ScheduleConstants;
+  /**
+   * What somebody asked for, oldest ask first — audits and trials in one line.
+   *
+   * Separate from `queue` below because they answer different questions. This is the work
+   * the loop was *told* to do and drains whether or not the scheduler is armed; `queue` is
+   * the rotation it works out for itself, which `armed` gates. Rendering them as one list is
+   * how an operator comes to think a flag started something.
+   */
+  requests: RequestRow[];
   /** Every subject, backlog first in the order they would be worked. */
   queue: QueueRow[];
   subjects: Record<string, SubjectSchedule>;

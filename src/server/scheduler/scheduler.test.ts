@@ -32,6 +32,11 @@ function indexOf(lastDone: Record<string, string>): ReportIndex {
   } as unknown as ReportIndex;
 }
 
+/** N days back, as an ISO string. */
+function daysAgo(n: number): string {
+  return new Date(Date.now() - n * 86_400_000).toISOString();
+}
+
 function registryOf(names: string[]): SubjectRegistry {
   return { list: () => names, isLive: true, lastFetchedAt: undefined } as unknown as SubjectRegistry;
 }
@@ -64,6 +69,10 @@ function make(over: Partial<SchedulerOptions> = {}): Scheduler {
     registry: registryOf(['Alpha', 'Beta']),
     events,
     prober: proberOf(1),
+    // Off by default. `record()` schedules a look-again, and a test that calls it directly
+    // would otherwise dispatch a real run a second later — into a temp directory `afterEach`
+    // has already deleted. The kick's own tests turn it back on.
+    kickMs: 0,
     ...over,
   });
 }
@@ -493,9 +502,13 @@ describe('a schedule file written before subjects were keyed', () => {
  * until `fresh_days` ran out. `yundera~Terminal` sat like that for two weeks.
  */
 describe('a run that straddled a standard edit', () => {
-  const STARTED = '2026-08-24T12:04:11.457Z';
-  const MOVED = '2026-08-24T12:12:25.097Z';
-  const FINISHED = '2026-08-24T12:12:57.785Z';
+  // Anchored to now rather than to the day this was written. Fixed dates made these three
+  // rot: by 2026-09-01 the "recent" run was seven days old, which is past `fresh_days` in
+  // this file's constants, so the subject was due by the calendar and the assertions about
+  // *why* it was due stopped meaning anything.
+  const STARTED = new Date(Date.now() - 3 * 60_000).toISOString();
+  const MOVED = new Date(Date.now() - 2 * 60_000).toISOString();
+  const FINISHED = new Date(Date.now() - 60_000).toISOString();
 
   /** One subject, one section, one assay that began before `MOVED` and ended after it. */
   function straddling(): ReportIndex {
@@ -519,6 +532,7 @@ describe('a run that straddled a standard edit', () => {
 
   it('is still eligible, because the standard it was judged by is not the one in force', async () => {
     const d = await scheduler().tick();
+    expect(d.source).toBe('backlog');
     expect(d.action).toBe('audit');
     expect(d.subject).toBe('Alpha');
     expect(d.reason).toContain('standard revised');
@@ -749,8 +763,151 @@ describe('flagging a subject for re-audit', () => {
     const d = await scheduler.tick();
     expect(d.action).toBe('audit');
     expect(d.subject).toBe(BETA);
-    expect(d.reason).toContain('flagged for re-audit');
+    expect(d.reason).toContain('requested');
+    expect(d.source).toBe('requested');
     await new Promise((r) => setImmediate(r));
     expect(picked).toEqual([BETA]);
+  });
+
+  /**
+   * **The bug that made the queue a no-op.** `flagged_at` is never cleared — it is spent by
+   * comparison against the last attempt — so after one request and one audit the field is
+   * still set while the derived read correctly says false. A guard on the stored field
+   * therefore refused to write a *new* request for any app that had ever carried one, which
+   * is to say: Audit did nothing, silently, on exactly the apps an operator returns to.
+   */
+  it('can be asked for again once an attempt has answered the first request', async () => {
+    const s = make({ index: indexOf({ Alpha: daysAgo(1) }), registry: registryOf(['Alpha']) });
+    await s.load();
+
+    expect(await s.setFlagged('Alpha', true)).toBe(true);
+    expect(s.isFlagged('Alpha')).toBe(true);
+
+    // An attempt lands a minute ago, and spends it. Nothing writes to `flagged_at`.
+    const answered = make({
+      index: indexOf({ Alpha: new Date(Date.now() - 60_000).toISOString() }),
+      registry: registryOf(['Alpha']),
+    });
+    await answered.load();
+    expect(answered.isFlagged('Alpha')).toBe(false);
+
+    // Asking again must write a new timestamp — it is the request *and* the ordering key.
+    expect(await answered.setFlagged('Alpha', true)).toBe(true);
+    expect(answered.isFlagged('Alpha')).toBe(true);
+  });
+
+  it('still reports nothing changed when the request is already counting', async () => {
+    const s = make({ index: indexOf({ Alpha: daysAgo(1) }), registry: registryOf(['Alpha']) });
+    await s.load();
+    expect(await s.setFlagged('Alpha', true)).toBe(true);
+    // Pressing Audit twice must not send the app to the back of its own queue.
+    expect(await s.setFlagged('Alpha', true)).toBe(false);
+  });
+});
+
+describe('the request queue', () => {
+  const ALPHA = 'yundera~Alpha';
+
+  /**
+   * `armed` stops the loop helping itself. It was never a lock on the agent — `POST /assays`
+   * has ignored it since it existed — and an operator who disarms and then presses Audit is
+   * asking for that one audit.
+   */
+  it('dispatches requested work while disarmed, and backlog work only when armed', async () => {
+    const picked: string[] = [];
+    const s = make({
+      armed: false,
+      index: indexOf({}),
+      registry: registryOf([ALPHA]),
+      dispatch: (job) => void picked.push(job.subject),
+    });
+    await s.load();
+
+    // Never audited, so it is squarely in the backlog. Disarmed, nothing goes.
+    expect((await s.tick()).action).toBe('audit');
+    await new Promise((r) => setImmediate(r));
+    expect(picked).toEqual([]);
+
+    await s.setFlagged(ALPHA, true);
+    const d = await s.tick();
+    expect(d.source).toBe('requested');
+    await new Promise((r) => setImmediate(r));
+    expect(picked).toEqual([ALPHA]);
+  });
+
+  /**
+   * A trial holds the agent while holding no claim, so the claim-derived `busy` is blind to
+   * it. Without `agentBusy` a tick kicked the moment an audit finished would dispatch into
+   * the running trial, get `runner_busy` back in two milliseconds, and go round again.
+   */
+  it('dispatches nothing while a trial holds the agent', async () => {
+    const picked: string[] = [];
+    const s = make({
+      armed: true,
+      index: indexOf({}),
+      registry: registryOf([ALPHA]),
+      agentBusy: () => true,
+      dispatch: (job) => void picked.push(job.subject),
+    });
+    await s.load();
+    await s.setFlagged(ALPHA, true);
+    expect((await s.tick()).action).toBe('idle');
+    await new Promise((r) => setImmediate(r));
+    expect(picked).toEqual([]);
+  });
+
+  /** Trials and audits are one line, ordered by when each was asked for. */
+  it('takes whichever was asked for first', async () => {
+    const started: string[] = [];
+    const s = make({
+      armed: true,
+      index: indexOf({ [ALPHA]: daysAgo(1) }),
+      registry: registryOf([ALPHA]),
+      trials: {
+        queued: () => [
+          { slug: 'FileBrowser@aaaa1111-x', subject: 'FileBrowser', queued_at: daysAgo(1) },
+        ],
+        running: () => undefined,
+        dispatch: (slug) => void started.push(slug),
+      },
+      dispatch: (job) => void started.push(job.subject),
+    });
+    await s.load();
+    // The trial was queued a day ago; this request is a moment old.
+    await s.setFlagged(ALPHA, true);
+    const d = await s.tick();
+    expect(d.action).toBe('trial');
+    expect(d.trial).toBe('FileBrowser@aaaa1111-x');
+    await new Promise((r) => setImmediate(r));
+    expect(started).toEqual(['FileBrowser@aaaa1111-x']);
+  });
+
+  /**
+   * **The rule that keeps the kick from being a spin loop.** `agent_busy` costs no try and
+   * writes no attempt record, so the next tick would decide exactly what this one decided —
+   * immediately, and for ever. Only an attempt record proves the queue moved.
+   */
+  it('looks again after an outcome that recorded an attempt, and not after one that did not', async () => {
+    const ticks: string[] = [];
+    const s = make({
+      armed: true,
+      kickMs: 1,
+      index: indexOf({ [ALPHA]: daysAgo(1) }),
+      registry: registryOf([ALPHA]),
+      dispatch: (job) => void ticks.push(job.subject),
+    });
+    await s.load();
+
+    // Requested, so the cooldown a completion stamps cannot be what keeps it still.
+    await s.setFlagged(ALPHA, true);
+
+    await s.record(ALPHA, { kind: 'agent_busy' });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(ticks).toEqual([]);
+
+    await s.record(ALPHA, { kind: 'verdict' });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(ticks).toEqual([ALPHA]);
+    s.stop();
   });
 });

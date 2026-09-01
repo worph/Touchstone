@@ -46,21 +46,32 @@ finding: it qualifies the subject rather than any assay of it. It keeps every re
 and its row on the Store page and the board, and it leaves `registry.list()`, which is also the
 scheduler's candidate set — a withdrawn app would otherwise be picked as the stalest row for
 ever, fail to fetch, and re-enter the backlog. Gated on `reachable()`, so an unreadable store
-delists nobody), **flag** (an operator asking for one
+delists nobody), **request** (an operator asking for one
 more audit of one subject — `SubjectSchedule.flagged_at`, the third way past the freshness window
-and the only one that is not about the world changing; it adds to the backlog, starts nothing, and
-is spent by the next attempt. It also **releases a park**, since 2026-08-31: a park is an
-automatic judgement about a failing app and a person asking outranks it, and while it did not,
-the control had to be hidden on parked rows — leaving the one row an operator most wants to act
-on as the one row offering nothing).
+and the only one that is not about the world changing. It is spent by the next attempt, whatever
+that attempt concluded, so nothing has to remember to clear it. It **releases a park**, since
+2026-08-31, because a park is an automatic judgement about a failing app and a person asking
+outranks it. And since 2026-09-01 it **goes to the front**: requests are worked before the
+backlog, in the order they were asked for, bypassing the cooldown but not the bench gate. The
+field is still called `flagged_at` on disk and the events are still `SUBJECT_FLAGGED` —
+identifiers are stable, vocabulary moved), **queue** (the requests, oldest ask first, audits and
+trials in one line because they share one agent — `policy.requests()`, `GET /schedule`'s
+`requests`. Derived, except for its trial half; see invariant 8).
 
-**Two verbs, two words.** `assay now` (`AssayButton`, `POST /assays`) takes the single agent
-immediately; the **flag** (`FlagControl`, `POST /schedule/flag`) queues. Until 2026-08-31 the
-first was spelled `audit` on the Store table, `re-assay` on the subject page and `Run first
-assay` in an empty state, while the second was `flag for re-audit` in one place and `flag` in
-another — five spellings for two actions, which is why an operator reasonably asked whether they
-were the same thing. The Store table carries only the flag: seventy-three rows offering to
-interrupt everything are seventy-two disabled buttons and one footgun.
+**One verb, one word: `Audit`.** `AuditControl`, `POST /assays`. It writes a request and asks
+the scheduler to look; the tick decides whether that means now or third in line, and the row
+says which. Every live row on the Store table carries it, the subject page carries it, the
+Automation queue carries it.
+
+This is the third vocabulary and the last. It was five spellings for two actions until
+2026-08-31 (`audit` / `re-assay` / `Run first assay` beside `flag for re-audit` / `flag`), then
+two spellings for two actions — `assay now` took the agent, the flag queued — and that was still
+wrong, because **the distinction was never the operator's to make**. Whether an audit starts now
+or waits is a fact about the line, not a choice at the point of pressing. Worse, the verb that
+always worked was the one that looked like it did nothing, and the two that read as decisive
+(`assay now`, `run trial`) both failed with a 409 whenever anything else held the agent — so the
+operator learned to press the ones that break. `flag_reaudit` is gone from the chat tools for the
+same reason: it was a second spelling of `run_assay`.
 
 A subject's identity is `<origin>~<name>` — `yundera~FileBrowser`. The separator is `~` because
 it is unreserved in `encodeURIComponent` and therefore survives a URL untouched, which is what
@@ -208,11 +219,13 @@ because its data access was smeared through two 200-line n8n Code nodes.
   later *attempt* exists: the next look spends it whatever that look concluded, nothing has to
   remember to clear it, and a flag set while a run is already in flight survives that run
   (the comparison is against the attempt's **start**). `record.ts` therefore never clears it —
-  a finisher cannot tell whether the flag arrived before it started. Like the other two it
-  only *adds to the backlog*: no jump, no forced run, no bypass of the cooldown, the park or
-  the bench gate. `run_assay`/`POST /assays` remains the other verb — that one means *now*,
-  and takes the single agent.
-- **`routes/mcp-admin.ts`** — the *same* eighteen tools, served as an MCP server at
+  a finisher cannot tell whether the flag arrived before it started. **Unlike** the other two
+  it goes to the *front*: a rubric edit and a compose change are facts about the world and can
+  wait for the rotation, while a request is a person waiting for an answer. It bypasses the
+  cooldown and releases a park; it does not bypass the bench gate, which holds the whole line
+  rather than skipping — a request that cannot run says why instead of producing a verdict about
+  half the rubric. `POST /assays` is now the only thing that writes it, so there is one verb.
+- **`routes/mcp-admin.ts`** — the *same* seventeen tools, served as an MCP server at
   `POST /api/v1/mcp/admin` so an agent can ask them: it renders `CHAT_TOOLS` into `tools/list`
   and hands `tools/call` to the same handlers with the chat's own `ChatToolContext`. There is
   no second definition of what an agent may ask this app, which is the point — a second one
@@ -220,7 +233,7 @@ because its data access was smeared through two 200-line n8n Code nodes.
   and disabled it registers no route at all: it is meant to be beaconified into an aggregator
   that authenticates nobody, so turning it on is a statement about the box. `read_only` drops
   every tool marked `writes` (`run_assay`, `open_trial`, `run_trial`, `edit_protocol`,
-  `set_control`, `flag_reaudit`) from the list *and*
+  `set_control`) from the list *and*
   refuses them if asked for anyway — the filter reads the mark rather than a list of names,
   so a new write tool is covered the day it lands; `token` is a bearer a beaconify sidecar can inject. `routes/rpc.ts` is the MCP
   envelope both surfaces share — `initialize`, `tools/list`, `tools/call`, and a `202` for the
@@ -344,20 +357,23 @@ because its data access was smeared through two 200-line n8n Code nodes.
   same shape as the browser wedge `browserLiveness()` exists for — a wrapper answering
   cheerfully while the thing underneath is broken.
 - **`src/server/chat/`** — the administrator chat: a bounded turn loop (`loop.ts`, 8 calls and
-  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), eighteen tools wrapping the
+  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), seventeen tools wrapping the
   API (`registry.ts`), and the agent call (`driver.ts`) reusing `postToAgent` from the runner.
-  Twelve of the eighteen **read**, and most of those read what is *written down* — the board, the
+  Twelve of the seventeen **read**, and most of those read what is *written down* — the board, the
   archive, a report file, the fix brief, the log, the backlog — not the live process, which a
   `tsx watch` restart empties while the operator is still waiting for the run it started
   (HANDOFF §5k). Four of them are the same question at four depths, which is why their
   descriptions work so hard to stay distinct: `get_board` (every app), `get_subject` (one
   app), `get_fix_brief` (its findings), `get_report` (the file, and the only place the
-  evidence behind a *passing* requirement survives). The six that act are `run_assay`, the
-  trial pair `open_trial` / `run_trial`, `edit_protocol`, `set_control`, and `flag_reaudit` —
-  which starts nothing, and is the one to reach for when the operator wants an app audited
-  *again* rather than *now*. A run started from a turn
-  appends a `note` row back into that thread when it finishes, so the conversation knows what
-  became of its own work.
+  evidence behind a *passing* requirement survives). The five that act are `run_assay`, the
+  trial pair `open_trial` / `run_trial`, `edit_protocol` and `set_control`. There were six
+  until 2026-09-01: `flag_reaudit` asked for an app to be audited *again* while `run_assay`
+  asked for it *now*, and the request queue collapsed the two — whether it starts now is the
+  line's answer, not the caller's. A run asked for in a turn appends a `note` row back into
+  that thread when it finishes, so the conversation knows what became of its own work; because
+  the run may start minutes later from a tick, the thread is held in an in-memory map in the
+  composition root rather than carried through the request, which is one timestamp with
+  nowhere to put a conversation id.
   **`get_protocol` / `get_store_file` / `edit_protocol` are the standard and the store it
   tracks.** They exist because "are the protocols still current against the AppStore's
   CONTRIBUTING.md?" was unanswerable: the chat could see neither side and inferred from
@@ -386,11 +402,13 @@ because its data access was smeared through two 200-line n8n Code nodes.
   reading the operator's verdicts, not a restyled copy of them — which is why the Store page's
   per-row control is an `action` render prop the *caller* supplies rather than a flag
   the table reads: the board passes nothing, so the column is not in its DOM at all
-  (invariant 10). That control is the **re-audit flag** (`FlagControl`, variant `row`), or a
-  delete on a delisted row — never `assay now`, which lives on the subject page. The flag's
-  state comes from a `GET /schedule` join rather than from `SubjectState`, because a field on
-  the row type would also be a field on `/public/subjects`, and a board addressed to app
-  authors must not publish which of their apps the operator has queued. The **Store page is the former Overview**, answering a different question:
+  (invariant 10). That control is **`AuditControl`** (variant `row`), or a delete on a delisted
+  row. Every live row carries it now: the reason it could not before was that a control seizing
+  the single agent made seventy-three rows into seventy-two disabled buttons and one footgun,
+  and a control that *queues* is safe on all of them. Its state comes from a `GET /schedule`
+  join rather than from `SubjectState`, because a field on the row type would also be a field on
+  `/public/subjects`, and a board addressed to app authors must not publish which of their apps
+  the operator has queued. The **Store page is the former Overview**, answering a different question:
   `GET /subjects` returns the union of the registry and the archive, so an app that has never
   been audited gets a row and a button instead of being missing — 52 of 72 apps were invisible
   to the operator while that route composed `store.all()` alone. `/public/subjects` still does
@@ -447,7 +465,16 @@ because its data access was smeared through two 200-line n8n Code nodes.
    an audit that has already run.
 7. **The app stays diagnosable with every outbound port broken.** Activity must render with Beacon
    unreachable and push unconfigured.
-8. **There is no queue.** The backlog is re-derived from last-run on every tick, so it cannot drift.
+8. **There is no queue of work the loop invented for itself.** The backlog is re-derived from
+   last-run on every tick, so it cannot drift. What an operator *asks* for is a queue, and
+   since 2026-09-01 there is one — but the audit half of it is still derived, not stored: a
+   subject is in the line exactly while its `flagged_at` is newer than its last attempt, which
+   is the same predicate the pick uses and the same one the button reads back. Nothing has to
+   remember to remove anything, and a run killed mid-flight leaves the request correctly still
+   queued. **Trials are the deliberate exception**: a trial has no subject row and no attempt
+   record to spend a timestamp against, so its place in the line is a fact on disk
+   (`began_at` unset). That is a decision, recorded here, not an oversight — `shared/trials.ts`
+   used to cite this invariant as the reason a queue could not exist at all.
 9. **Every assay records the standard *revision* that judged it, and that revision is
    retrievable.** The identity is the sha256 of the protocol file — and of the executor when a
    script performed it — not a number the file carries. An integer only moved when somebody
@@ -508,11 +535,20 @@ because its data access was smeared through two 200-line n8n Code nodes.
 
 ## Safety switches (both default off)
 
-- `scheduler.armed: false` — the tick still runs, decides and logs every hour, but claims and
-  dispatches nothing — the dry run the cutover was validated against. Since 2026-08-20 it is also settable at runtime from the Automation page, which persists an
-  **override** into `state/schedule.json`; absent, the config value stands. Stopping means "claim
-  nothing further" and deliberately leaves the audit in flight alone.
-- `runner.enabled: false` — refuses every job and says so. Validation is a **single hand-run assay**
+- `scheduler.armed: false` — the tick still runs, decides and logs every hour, and **works no
+  backlog**. Since 2026-08-20 it is also settable at runtime from the Automation page, which
+  persists an **override** into `state/schedule.json`; absent, the config value stands. Stopping
+  means "claim nothing further" and deliberately leaves the audit in flight alone.
+  **It gates the backlog and nothing else.** Requested audits and trials still drain while it is
+  off, which is not new behaviour dressed up — `POST /assays` never consulted this switch — but
+  it is newly *visible*, so the Automation page says so on the switch itself. The switch stops
+  the loop helping itself; it is not a lock on the agent, and an operator who disarms and then
+  presses Audit is asking for that one audit. It is therefore **no longer a dry run** in the
+  sense the cutover used: to stop everything, disarm *and* clear the queue.
+- `runner.enabled: false` — refuses every job and says so, and is the one condition `POST /assays`
+  and `POST /trials` still **refuse rather than queue**: it is off on purpose, waiting does not
+  fix it, and a request enqueued into work that can never run would sit at the head of the line
+  for ever. Validation is a **single hand-run assay**
   through `POST /api/v1/assays`, never a loop: other work shares this agent endpoint, and two
   systems auditing at once contend for it. Since 2026-08-25 it is settable
   at runtime too, as a **control** — the override is `state/controls.json`'s, the config value is

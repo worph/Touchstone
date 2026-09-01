@@ -7,15 +7,26 @@
  * `- **State:**` line over ~150 real ticks, and a decision that cannot be replayed from a
  * plain input object cannot be diffed.
  *
- * The order of the branches below is load-bearing. It is n8n's order, and a divergence
- * anywhere in it turns the shadow diff from a bug detector into noise:
+ * The order of the branches below is load-bearing:
  *
- *   busy → forced → cooldown → backlog empty → pick the stalest
+ *   busy → request (trial or audit, oldest ask first) → cooldown → backlog empty → stalest
  *
- * The bench gate is deliberately **after** that chain rather than woven into it, so the
- * pick is identical to n8n's and the gate is visibly a separate decision. n8n has no such
- * gate at all (row D7, §2.3), so a tick that idles on it is the one place this policy is
- * *expected* to differ — and it says so in `reason`.
+ * It was n8n's order — `busy → forced → cooldown → backlog empty → stalest` — for as long as
+ * the shadow diff was the validation technique, and it is not any more. On 2026-09-01 the
+ * `forced` slot became the **request queue**: `forced` was one name typed into a debug route
+ * that bypassed freshness and cooldown, and a request is the same thing arrived at honestly,
+ * from a button, with a place in a line. Parity is a record now rather than a gate
+ * (architecture §1.4), so this is a deliberate departure and row A3 says so.
+ *
+ * Two things about that queue are load-bearing here. **A request bypasses the cooldown**, so
+ * pressing Audit on an idle box starts an audit rather than explaining that it will in
+ * fifty-five minutes. And **a request is not gated by `armed`** — that switch stops the loop
+ * helping itself, not an operator asking — which is why the decision carries a `source`.
+ *
+ * The bench gate is deliberately **after** that chain rather than woven into it, so the gate
+ * is visibly a separate decision rather than a clause inside the pick. A request that cannot
+ * run holds the head of the line and says why, which is the whole reason `waiting_on`
+ * exists: "the queue is empty" and "the queue cannot move" must never render alike.
  */
 
 import type { Leg } from '../../shared/types.js';
@@ -23,6 +34,7 @@ import type {
   QueueRow,
   QueueState,
   Reclaim,
+  RequestRow,
   SubjectSchedule,
   TickDecision,
 } from '../../shared/schedule.js';
@@ -45,8 +57,33 @@ export interface PolicyInput {
   schedule: Record<string, SubjectSchedule | undefined>;
   /** When any assay last finished, anywhere. The cooldown anchor. */
   lastFinishedAt?: string;
-  /** A forced run bypasses freshness and cooldown, exactly as n8n's form trigger does. */
-  forced?: string[];
+  /**
+   * Whether the single agent is in somebody's hands right now — `Runner.busy`.
+   *
+   * Read separately from the claim-derived `busy` below it, and that is not redundancy: a
+   * **trial** holds the agent while holding no claim at all, because a trial has no schedule
+   * row and must never touch one (`routes/trials.ts`). Before this field existed the tick
+   * could not see a running trial, so a tick kicked the moment an audit finished would
+   * dispatch into a busy runner, get `blocked: runner_busy` back in two milliseconds, learn
+   * nothing, and go round again for as long as the trial lasted.
+   */
+  agentBusy?: boolean;
+  /**
+   * Trials waiting for the agent, oldest ask first.
+   *
+   * The one part of the request queue that is genuinely *stored*, because a trial has no
+   * subject row and no attempt record to spend a timestamp against. See invariant 8.
+   */
+  queuedTrials?: { slug: string; subject: string; queued_at: string }[];
+  /**
+   * The trial holding the agent right now, if one is.
+   *
+   * Kept out of `queuedTrials` rather than flagged inside it, because `decide` takes that
+   * list's head as the thing to dispatch and a running trial must never be dispatched twice.
+   * It exists for `requests()` alone: a queue view that hides the item currently being worked
+   * is a queue view that appears to have lost it.
+   */
+  runningTrial?: { slug: string; subject: string; queued_at: string };
   /**
    * Newest assay of **any status** per subject, ISO — a blocked or errored attempt counts.
    *
@@ -301,17 +338,20 @@ function plan(input: PolicyInput): {
       eligible.push(subject);
       continue;
     }
-    // Still fresh by the calendar, but judged by a rubric that has since been edited. It
-    // joins the backlog and nothing else: no jump, no forced run, no bypass of the cooldown
-    // or the bench gate. The loop is already saturated most of the time, so in practice this
-    // says "re-judge it with the spare hour rather than waiting out the week", which is
-    // exactly as much as it should say. It sorts last among the eligible — by `lastDoneAt`,
-    // and it is the freshest thing in the list — so a never-audited app still goes first.
     // Three ways past the freshness window, and they are independent: the question changed,
-    // the subject did, or somebody asked. All three merely add to the backlog — no jump, no
-    // forced run, no bypass of the cooldown, the park or the bench gate — so a flagged app
-    // that was audited yesterday sorts behind everything staler, which is the point: it is a
-    // request to include it in the ordinary rotation, not to interrupt it.
+    // the subject did, or somebody asked. **Two of the three merely add to the backlog** —
+    // no jump, no bypass of the cooldown, the park or the bench gate. A rubric edit and a
+    // compose change are facts about the world, and the world can wait for the rotation: the
+    // loop is saturated most of the time, so in practice they say "re-judge it with the
+    // spare hour rather than waiting out the week", which is exactly as much as they should
+    // say. Both sort last among the eligible — by `lastDoneAt`, and they are the freshest
+    // things in the list — so a never-audited app still goes first.
+    //
+    // The third is different and became different on 2026-09-01. A flag is not a fact about
+    // the world, it is a person waiting for an answer, and it now sorts to the **front** —
+    // see the comparator below. That asymmetry is the whole design: `standard_moved` and
+    // `subject_changed` must go on proving they do not jump, or a rubric edit would put
+    // seventy-three apps ahead of the one somebody actually pressed a button for.
     const moved = standardMoved(input, subject);
     const changed = subjectChanged(input, subject);
     if (!moved && !changed && !flagged) continue;
@@ -319,13 +359,31 @@ function plan(input: PolicyInput): {
     if (moved) restandard.add(subject);
     if (changed) rechanged.add(subject);
   }
+  // Requested first, oldest ask first; everything else by staleness underneath. Two
+  // comparators stacked rather than one, because they are answering different questions —
+  // "who asked first" has nothing to say about an app nobody asked for, and "who is stalest"
+  // has nothing to say about a queue.
+  const askedAt = (subject: string): number => {
+    if (!reflagged.has(subject)) return Number.NaN;
+    const t = Date.parse(schedule[subject]?.flagged_at ?? '');
+    // A flag whose timestamp will not parse still counts as a request — `reflagged` is the
+    // authority on *whether*, this is only the authority on *when*. Sorting it to the back of
+    // the requested block is the safe direction: it keeps its place in the queue.
+    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+  };
   eligible.sort((a, b) => {
+    const ra = askedAt(a);
+    const rb = askedAt(b);
+    const requestedA = Number.isNaN(ra) ? 1 : 0;
+    const requestedB = Number.isNaN(rb) ? 1 : 0;
+    if (requestedA !== requestedB) return requestedA - requestedB;
+    if (requestedA === 0 && ra !== rb) return ra - rb;
     const d = daysSince(input.lastDoneAt[b], now) - daysSince(input.lastDoneAt[a], now);
     // Only NaN falls through to the tie-break. `Infinity` is a real answer — it is what a
     // never-run subject scores against a dated one, and it must win. `Infinity - Infinity`
     // is the NaN case: two never-run subjects, where the comparator would otherwise leave
     // the order to the engine rather than to the data. Registry order settles it, so a
-    // replay of the same tick picks the same app n8n picked.
+    // replay of the same tick picks the same app it picked before.
     if (!Number.isNaN(d) && d !== 0) return d;
     return input.subjects.indexOf(a) - input.subjects.indexOf(b);
   });
@@ -351,22 +409,57 @@ export function decide(input: PolicyInput): TickDecision {
     parked: parked.length,
   };
 
-  let action: 'audit' | 'idle' = 'idle';
+  let action: 'audit' | 'trial' | 'idle' = 'idle';
   let subject: string | undefined;
+  let trial: string | undefined;
+  let source: 'requested' | 'backlog' | undefined;
   let reason: string;
 
   const cooldownLeft = Math.max(
     0,
     Math.ceil(constants.cooldown_min - minutesSince(input.lastFinishedAt, now)),
   );
-  const forced = (input.forced ?? []).filter(Boolean);
+
+  // ── the head of the request queue ─────────────────────────────────────────────────────
+  // Two halves, one line. A trial is stored and a subject request is derived, but they were
+  // both asked for at a moment, and that moment is the only thing that orders them: one
+  // agent, one queue, first come first served. Ordering them separately would be two queues
+  // wearing one heading, and the operator would have no way to answer "when does mine run".
+  const headTrial = (input.queuedTrials ?? [])[0];
+  const headSubject = eligible.find((s) => reflagged.has(s));
+  const trialAt = headTrial ? Date.parse(headTrial.queued_at) : Number.NaN;
+  const subjectAt = headSubject ? Date.parse(schedule[headSubject]?.flagged_at ?? '') : Number.NaN;
+  // An unparseable timestamp loses the comparison rather than winning it by accident, on
+  // either side. The consequence is a stable order, never a dropped request: both halves are
+  // still in the queue, only their order relative to each other is arbitrary.
+  const trialFirst =
+    Boolean(headTrial) &&
+    (!headSubject || Number.isNaN(subjectAt) || (!Number.isNaN(trialAt) && trialAt <= subjectAt));
+  // What the queue is waiting on, for the branches that idle while somebody is in line.
+  const waitingOn = headTrial || headSubject
+    ? trialFirst
+      ? `trial of ${headTrial!.subject}`
+      : headSubject
+    : undefined;
 
   if (busy) {
     reason = `audit already in progress (${busy.subject}, since ${busy.since})`;
-  } else if (forced.length > 0) {
+  } else if (input.agentBusy) {
+    // The agent is held by something holding no claim, which in practice means a trial: it
+    // owns no schedule row by design, so the claim-derived `busy` above is blind to it. Same
+    // answer, different evidence, and it must be its own branch or a tick kicked the instant
+    // an audit finishes would dispatch straight into the running trial and learn nothing.
+    reason = 'the agent is busy with a trial';
+  } else if (headTrial && trialFirst) {
+    action = 'trial';
+    trial = headTrial.slug;
+    source = 'requested';
+    reason = `requested — trial of ${headTrial.subject}`;
+  } else if (headSubject) {
     action = 'audit';
-    subject = forced[0];
-    reason = 'forced (manual trigger)';
+    subject = headSubject;
+    source = 'requested';
+    reason = 'requested — somebody asked for this app';
   } else if (input.lastFinishedAt && cooldownLeft > 0) {
     const ago = Math.round(minutesSince(input.lastFinishedAt, now));
     reason = `cooldown — last audit finished ${ago}m ago, ${cooldownLeft}m left`;
@@ -381,6 +474,7 @@ export function decide(input: PolicyInput): TickDecision {
   } else {
     action = 'audit';
     subject = eligible[0];
+    source = 'backlog';
     const stale = daysSince(input.lastDoneAt[subject!], now);
     reason = Number.isFinite(stale)
       ? `last run ${String(input.lastDoneAt[subject!]).slice(0, 10)}, ${Math.floor(stale)}d ago`
@@ -401,11 +495,15 @@ export function decide(input: PolicyInput): TickDecision {
   // Refusing to claim is the whole point: an assay dispatched at a bench we cannot log into
   // produces a verdict about the bench and files it against the app. Idling here consumes no
   // try and stamps no last-run, so the subject comes back untouched on the next tick.
-  if (action === 'audit' && !input.benchAvailable) {
+  if (action !== 'idle' && !input.benchAvailable) {
     return {
       ...base,
       action: 'idle',
       reason: `no usable demo bench${input.benchNote ? ` — ${input.benchNote}` : ''}`,
+      // The gate covers a trial as well as an audit, and deliberately: a trial that ran with
+      // a dead pool would answer the static half and record `functional` blocked, and a PR
+      // author reading that reasonably concludes the app is fine. One rule for both verbs.
+      ...(waitingOn ? { waiting_on: waitingOn } : {}),
     };
   }
 
@@ -413,7 +511,12 @@ export function decide(input: PolicyInput): TickDecision {
     ...base,
     action,
     subject,
+    trial,
+    source,
     reason,
+    // Only when nothing is moving. On a tick that dispatched, the head *is* the thing that
+    // started, and repeating it as "waiting" would be a lie a page would render.
+    ...(action === 'idle' && waitingOn ? { waiting_on: waitingOn } : {}),
     try_n: action === 'audit' && subject ? (schedule[subject]?.try_n ?? 0) + 1 : undefined,
   };
 }
@@ -481,6 +584,76 @@ export function queue(input: PolicyInput): QueueRow[] {
   });
 }
 
+/**
+ * What somebody asked for, oldest ask first — the request queue, composed.
+ *
+ * Pure, and derived from the same `plan()` the pick uses, so the row at position 1 is what
+ * the next unblocked tick takes rather than a second guess at it. The audit half is not
+ * stored anywhere: a subject is in this list exactly while its `flagged_at` is newer than its
+ * last attempt, which is the same predicate `decide` picks by and the same one the button
+ * reads back. The trial half is stored, because a trial has no attempt record to spend a
+ * timestamp against — see invariant 8.
+ *
+ * `label` carries the subject **key** for an audit. Stripping it to a bare name is the wire's
+ * job (`routes/schedule.ts`), for the same reason `queue()` leaves it alone: this file's
+ * output is compared and tested, not rendered.
+ */
+export function requests(input: PolicyInput): RequestRow[] {
+  const { schedule, reflagged } = plan(input);
+  const rows: RequestRow[] = [];
+
+  for (const subject of input.subjects) {
+    if (!reflagged.has(subject)) continue;
+    const row = schedule[subject];
+    rows.push({
+      kind: 'audit',
+      id: subject,
+      label: subject,
+      requested_at: row?.flagged_at ?? '',
+      position: 0,
+      state: row?.claim ? 'running' : 'waiting',
+    });
+  }
+  for (const t of input.queuedTrials ?? []) {
+    rows.push({
+      kind: 'trial',
+      id: t.slug,
+      label: t.subject,
+      requested_at: t.queued_at,
+      position: 0,
+      state: 'waiting',
+    });
+  }
+  if (input.runningTrial) {
+    rows.push({
+      kind: 'trial',
+      id: input.runningTrial.slug,
+      label: input.runningTrial.subject,
+      requested_at: input.runningTrial.queued_at,
+      position: 0,
+      state: 'running',
+    });
+  }
+
+  rows.sort((a, b) => {
+    // Whatever is running is the head, whatever it was asked for. It is not waiting on the
+    // queue; the queue is waiting on it.
+    const ra = a.state === 'running' ? 0 : 1;
+    const rb = b.state === 'running' ? 0 : 1;
+    if (ra !== rb) return ra - rb;
+    const ta = Date.parse(a.requested_at);
+    const tb = Date.parse(b.requested_at);
+    // An unparseable ask sorts last rather than first — it keeps its place in the queue
+    // without displacing a request that can prove when it was made.
+    if (Number.isNaN(ta) && Number.isNaN(tb)) return 0;
+    if (Number.isNaN(ta)) return 1;
+    if (Number.isNaN(tb)) return -1;
+    return ta - tb;
+  });
+
+  return rows.map((row, i) => ({ ...row, position: i + 1 }));
+}
+
 /** Minutes of cooldown left before another audit may start. 0 once it is clear. */
 export function cooldownLeftMin(input: {
   now: Date;
@@ -493,9 +666,13 @@ export function cooldownLeftMin(input: {
 
 /** The State line, worded as n8n words it, so the two can be compared by eye. */
 export function stateLine(decision: TickDecision): string {
-  return decision.action === 'audit'
-    ? `⏳ auditing ${decision.subject} — ${decision.reason}`
-    : `⏸️ idle — ${decision.reason}`;
+  if (decision.action === 'audit') return `⏳ auditing ${decision.subject} — ${decision.reason}`;
+  if (decision.action === 'trial') return `⏳ trialling ${decision.trial} — ${decision.reason}`;
+  // An idle tick that has somebody in the queue says so. "idle — no usable demo bench" and
+  // "idle — backlog empty" are the same seven characters of status word for two conditions an
+  // operator would act on differently, and only one of them has a person waiting on it.
+  const waiting = decision.waiting_on ? ` · ${decision.waiting_on} is waiting` : '';
+  return `⏸️ idle — ${decision.reason}${waiting}`;
 }
 
 export type { Leg };

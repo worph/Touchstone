@@ -86,7 +86,7 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 | --- | --- | --- | --- |
 | A1 | Hourly tick | `Schedule (hourly)` | ✅ `Scheduler.start`, `tick_min` — dry-run until armed |
 | A2 | Programmatic kick | webhook `POST /weekly-store-qa` | ✅ `POST /schedule/tick` |
-| A3 | Forced run of a named app list, bypassing freshness | form trigger, `apps` CSV | ✅ `POST /schedule/tick {forced:[…]}` |
+| A3 | Forced run of a named app list, bypassing freshness | form trigger, `apps` CSV | ◑ **superseded 2026-09-01.** `POST /schedule/tick {forced:[…]}` is gone; the **request queue** does this and more. A request bypasses freshness and the cooldown exactly as `forced` did, and additionally: it takes a place in a visible line, it releases a park (`forced` bypassed one without clearing it, so the park was still there afterwards), it resets `try_n`, and it can be withdrawn. `forced` had no UI caller and nothing that could see it once pressed |
 | A4 | Audit entry points (form, webhook, sub-workflow) | 3 triggers on the audit | ✅ `POST /assays` — the hand-run path, and the scheduler dispatch |
 
 #### B. Target selection and scheduling policy — `Pick next target`, 9,374 chars
@@ -101,7 +101,7 @@ Legend — ✅ covered · ◑ partial · ⬜ not started · ✂ deliberately dro
 | B6 | Try accounting | `MAX_TRIES=3` | ✅ in `schedule.json`, not `AssayMeta` — see §5.1 |
 | B7 | Parking | `stuck after 3 tries`, released after `STUCK_DAYS` | ✅ |
 | B8 | Single-flight | one in-progress app at a time | ✅ one claim, and it is what blocks the next tick |
-| B9 | Re-derive the backlog every tick — **no queue** | by construction | ✅ by construction, as n8n does |
+| B9 | Re-derive the backlog every tick — **no queue** | by construction | ✅ for the backlog, by construction. ➕ since 2026-09-01 there *is* a queue, of what an operator **asked for** — and its audit half is still derived, from `flagged_at` against the last attempt, so the property this row protects is intact. Its trial half is stored, deliberately: a trial has no attempt record to spend a timestamp against |
 | B10 | **Re-eligible when the standard moves** | — (n8n has no notion of a rubric revision) | ➕ a subject not *attempted* since the last recorded edit to a scoring rubric is eligible regardless of `FRESH_DAYS`. Like D7, a Touchstone-only rule, and the second place a shadow diff is expected to differ — the tick says `· standard revised <date>` when it fires |
 | B11 | **Re-eligible when the app changes** | — (n8n audits on a calendar alone) | ➕ a subject whose `docker-compose.yml` blob sha differs from the one its last attempt recorded is eligible regardless of `FRESH_DAYS`. The tick says `· app changed in the store` |
 | B12 | `FRESH_DAYS` | 7 | ⚠️ **14** since 2026-08-25. B10, B11 and B13 catch the changes that matter, so the calendar is the backstop rather than the trigger and does not need to run as hot. Also a runtime control now, so `config.yaml` is only the default |
@@ -299,11 +299,21 @@ assay can act on another assay's page and record the result as its own.
 
 ### 3.1 What the old design got right and must survive
 
-**There is no queue.** The backlog is re-derived from last-run on every tick, so it cannot drift
-out of sync with reality. A subject is either idle, in progress, or carrying a verdict. Moving the
-scheduler in-process makes this *cheaper*, because eligibility becomes a query over the index
-rather than a regex over a document — but the property must be preserved deliberately, not
-accidentally. Row B9.
+**There is no queue of work the loop invented for itself.** The backlog is re-derived from
+last-run on every tick, so it cannot drift out of sync with reality. A subject is either idle, in
+progress, or carrying a verdict. Moving the scheduler in-process makes this *cheaper*, because
+eligibility becomes a query over the index rather than a regex over a document — but the property
+must be preserved deliberately, not accidentally. Row B9.
+
+**What an operator asks for is a queue, and it obeys the same rule.** Added 2026-09-01, because
+one agent with four ways to ask for it meant three of the four answered `409` whenever the loop
+held it — which is not an answer, and taught the operator that the one control that always worked
+(the flag) was the one that did nothing. The audit half of that queue is *derived*: a subject is
+in the line exactly while `flagged_at` is newer than its last attempt, which is the same predicate
+the pick uses and the same one the button reads back. So nothing has to remember to remove
+anything, a request cannot outlive the audit it asked for, and a run killed mid-flight leaves it
+correctly still queued rather than stuck. Only trials carry a stored row, because a trial has no
+subject and no attempt record for a timestamp to be spent against. §21.
 
 **Last-run is stamped on completion, not on claim.** Deliberately, so a failing subject goes to the
 back of the backlog and every subject gets one attempt before any subject gets a second. Rows C2
@@ -777,7 +787,7 @@ n8n, which §9 explains.
 | `GET` | `/api/v1/subjects` | registry + current hallmark, both legs |
 | `GET` | `/api/v1/subjects/:name` | one subject, both legs, latest assay each |
 | `GET` | `/api/v1/reports/:subject/:file` | the markdown file, rendered and raw. `:subject` is the key `<origin>~<name>`; a bare name still resolves |
-| `POST` | `/api/v1/assays` | request an assay now (subject) — the `assay now` button. No depth: a run covers every section |
+| `POST` | `/api/v1/assays` | ask for an audit of one subject — the `Audit` button. **Enqueues**; the tick decides whether that means now. No depth: a run covers every section. `wait: true` was dropped 2026-09-01 with the direct-run path |
 | `GET` | `/api/v1/benches` | pool health, last probe |
 | `GET` | `/api/v1/events` | the log feed, filterable by level and category |
 | `GET` | `/api/v1/alerts` | open alerts for the Activity page |

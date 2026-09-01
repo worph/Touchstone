@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { zipSync } from 'fflate';
 
 import { readAppFromZip } from '../services/trialstore.js';
+import { startTrial } from '../services/trialrun.js';
 
 import { EventLog } from '../services/events.js';
 import { defaultCacheFile } from '../store/index.js';
@@ -114,7 +115,7 @@ afterEach(async () => {
 });
 
 describe('POST /trials', () => {
-  it('starts a trial and answers before it finishes', async () => {
+  it('queues a trial and answers before anything runs', async () => {
     const { runner, jobs } = runnerOf();
     app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events, fetchImpl: fetchOf() });
 
@@ -123,28 +124,48 @@ describe('POST /trials', () => {
     // 202, not 200: an audit takes minutes, and a socket held that long is at the mercy of
     // every proxy between here and the browser.
     expect(res.statusCode).toBe(202);
-    const body = res.json() as { trial: { slug: string; source_url: string } };
+    const body = res.json() as { queued: boolean; trial: { slug: string; source_url: string } };
+    expect(body.queued).toBe(true);
     expect(body.trial.source_url).toBe(STORE_URL);
 
-    // Poll rather than sleep. `POST /trials` answers 202 and dispatches the run without
-    // awaiting it, so a fixed wait is a race that only loses when the suite is busy — which is
-    // exactly when a flake is least welcome and hardest to read.
+    // The route starts nothing. It writes the request and the scheduler takes it off the
+    // queue — which is what lets a trial be asked for while an audit is running.
+    expect(jobs).toEqual([]);
+    expect(trials.queued().map((t) => t.slug)).toEqual([body.trial.slug]);
+    expect(trials.get(body.trial.slug)?.began_at).toBeUndefined();
+  });
+
+  /**
+   * The other half of the split: what the scheduler does with a row the route wrote.
+   *
+   * The app's files are read back out of the trial's **saved zip** rather than carried in
+   * memory from the request, which is what makes a queued trial survive a restart.
+   */
+  it('runs a queued trial from its saved store, in a second step', async () => {
+    const { runner, jobs } = runnerOf();
+    const trialsRoot = path.join(dir, 'trials');
+    app = await serve({ runner, trials, trialsRoot, events, fetchImpl: fetchOf() });
+
+    const res = await app.inject({ method: 'POST', url: '/trials', payload: BODY });
+    const { trial } = res.json() as { trial: { slug: string } };
+
+    await startTrial({ runner, trials, trialsRoot, events }, trial.slug);
+
     await waitFor(() => jobs.length === 1);
-    expect(jobs).toHaveLength(1);
-    // And wait for the dispatch chain to *finish* writing. `POST /trials` returns before the
-    // run does, so without this the outcome lands in `trials.json` while `afterEach` is
-    // deleting the temp directory — an ENOTEMPTY that reads as a trials bug and is a test one.
-    await waitFor(() => trials.get(body.trial.slug)?.outcome !== undefined);
+    await waitFor(() => trials.get(trial.slug)?.outcome !== undefined);
     const job = jobs[0] as {
       subject: string;
       trial: { repo: string; root: string; store_url?: string; source: { compose: string } };
     };
     // The slug is the synthetic origin, so the path machinery needs no special case.
-    expect(job.subject).toBe(`${body.trial.slug}~Widget`);
-    expect(job.trial.root).toContain(body.trial.slug);
+    expect(job.subject).toBe(`${trial.slug}~Widget`);
+    expect(job.trial.root).toContain(trial.slug);
     // The app was read out of the archive rather than fetched separately — which is what makes
     // the bytes judged and the bytes installed the same thing.
     expect(job.trial.source.compose).toContain('services:');
+    // And it is no longer in the line.
+    expect(trials.queued()).toEqual([]);
+    expect(trials.get(trial.slug)?.began_at).toBeTruthy();
   });
 
   it('refuses input that would choose what this process fetches', async () => {
@@ -167,15 +188,20 @@ describe('POST /trials', () => {
     expect(jobs).toEqual([]);
   });
 
-  it('shares one agent with audits rather than racing them', async () => {
-    // The Runner is single-flight process-wide and `RunLedger.live()` assumes one open run.
-    // Sharing the instance is what makes that safe; the honest cost is this 409.
+  /**
+   * The Runner is single-flight process-wide, so a trial and an audit cannot both have the
+   * agent. Until 2026-09-01 the honest cost of that was a 409 — which is not an answer, it is
+   * the caller being told to press the button again later. It queues now.
+   */
+  it('queues behind a running audit rather than refusing', async () => {
     const { runner, jobs } = runnerOf({ busy: true });
     app = await serve({ runner, trials, trialsRoot: path.join(dir, 'trials'), events, fetchImpl: fetchOf() });
 
     const res = await app.inject({ method: 'POST', url: '/trials', payload: BODY });
-    expect(res.statusCode).toBe(409);
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toMatchObject({ queued: true });
     expect(jobs).toEqual([]);
+    expect(trials.queued()).toHaveLength(1);
   });
 
   it('says the runner is off rather than failing obscurely', async () => {
@@ -413,7 +439,8 @@ describe('GET /trialstore/:token.zip', () => {
 
     const started = await app.inject({ method: 'POST', url: '/trials', payload: BODY });
     const { trial } = started.json() as { trial: { slug: string; store_token: string } };
-    await waitFor(() => trials.get(trial.slug)?.outcome !== undefined);
+    // No wait: the zip is saved before the row exists, so it is on disk the moment the route
+    // answers — which is also why a queued trial can be served to a bench before it runs.
 
     const res = await app.inject({ method: 'GET', url: `/trialstore/${trial.store_token}.zip` });
     expect(res.statusCode).toBe(200);
@@ -437,7 +464,6 @@ describe('GET /trialstore/:token.zip', () => {
 
     const started = await app.inject({ method: 'POST', url: '/trials', payload: BODY });
     const { trial } = started.json() as { trial: { slug: string; store_token: string } };
-    await waitFor(() => trials.get(trial.slug)?.outcome !== undefined);
 
     expect((await app.inject({ method: 'GET', url: '/trialstore/nope.zip' })).statusCode).toBe(404);
     expect(

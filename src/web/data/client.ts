@@ -417,8 +417,10 @@ export function getConfig(): Promise<ConfigResponse> {
  * minutes and a proxy closing the socket at minute four is indistinguishable from a failure.
  * Poll `getAssayStatus` and read `last` when `running` clears.
  */
-export function startAssay(subject: string): Promise<{ started: boolean }> {
-  return post<{ started: boolean }>('/assays', { subject });
+export function startAssay(
+  subject: string,
+): Promise<{ queued: boolean; started: boolean; already: boolean; position?: number }> {
+  return post('/assays', { subject });
 }
 
 /** The run in flight, its progress and the last one to finish. See `data/runStatus.ts`:
@@ -472,8 +474,10 @@ export function getTrial(slug: string): Promise<TrialResponse & { history: Assay
 /**
  * Start a trial. Returns as soon as it is accepted, like `startAssay` and for the same reason.
  */
-export function startTrial(body: TrialRequest): Promise<{ started: boolean; trial: TrialRecord }> {
-  return post<{ started: boolean; trial: TrialRecord }>('/trials', body);
+export function startTrial(
+  body: TrialRequest,
+): Promise<{ queued: boolean; trial: TrialRecord; position?: number }> {
+  return post('/trials', body);
 }
 
 /** Drops the row, its reports and its store zip — a trial and its evidence have one lifetime. */

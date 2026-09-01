@@ -77,6 +77,10 @@ export const EVENT_CODES = {
   SCHEDULER_ARMED: { category: 'scheduler', label: 'automated mode started' },
   SCHEDULER_DISARMED: { category: 'scheduler', label: 'automated mode stopped' },
   TICK_SELECTED: { category: 'scheduler', label: 'target picked' },
+  // Its own code rather than a `TICK_SELECTED` carrying a slug. A trial's identifier is not a
+  // subject, and `subject` on an event is what Activity builds a deep link out of — one
+  // pointing at `/s/<slug>` would 404 and read as a failing audit of a real app.
+  TICK_TRIAL_SELECTED: { category: 'scheduler', label: 'trial taken off the queue' },
   TICK_IDLE: { category: 'scheduler', label: 'tick idled' },
   TICK_BENCH_GATED: { category: 'scheduler', label: 'tick refused for want of a bench' },
   TICK_BENCH_UNGATED: { category: 'scheduler', label: 'a demo bench is claimable again' },
@@ -86,11 +90,16 @@ export const EVENT_CODES = {
   CLAIM_RECLAIMED: { category: 'scheduler', label: 'expired claim released' },
   CLAIM_PARKED: { category: 'scheduler', label: 'subject parked' },
   CLAIM_UNPARKED: { category: 'scheduler', label: 'subject released from parking' },
-  // Somebody asked for an app to be looked at again. `scheduler`, not `assay`: nothing was
-  // audited, the backlog simply gained a row — and the pair reads as one story on Activity
-  // when a flag is set and then thought better of.
-  SUBJECT_FLAGGED: { category: 'scheduler', label: 'app flagged for re-audit' },
-  SUBJECT_UNFLAGGED: { category: 'scheduler', label: 're-audit flag removed' },
+  // Somebody asked for an app to be audited, or thought better of it. `scheduler`, not
+  // `assay`: nothing was audited, the queue simply gained a row — and the pair reads as one
+  // story on Activity when a request is made and then withdrawn.
+  //
+  // The codes still say `FLAGGED` and the labels no longer do. That is deliberate: a code is
+  // a stable identifier and the log on disk is full of these, so renaming it would break
+  // every filter an operator has saved and orphan the history. The vocabulary moved to one
+  // verb on 2026-09-01; the identifier did not have to move with it.
+  SUBJECT_FLAGGED: { category: 'scheduler', label: 'audit requested' },
+  SUBJECT_UNFLAGGED: { category: 'scheduler', label: 'request withdrawn' },
   // The store stopped offering an app we have audited. `scheduler`, because what it changes
   // is what the loop may pick — the archive is untouched and no verdict moved.
   SUBJECT_DELISTED: { category: 'scheduler', label: 'app no longer in the store' },
@@ -108,6 +117,7 @@ export const EVENT_CODES = {
   // `ASSAY_FAILED` carrying it would push a deep link to `/s/<slug>` that 404s, and would
   // read on Activity as a failing audit of a real app. A failing trial is a fact about a
   // branch somebody is reviewing.
+  TRIAL_QUEUED: { category: 'assay', label: 'trial queued' },
   TRIAL_STARTED: { category: 'assay', label: 'trial started' },
   TRIAL_COMPLETED: { category: 'assay', label: 'trial finished' },
   TRIAL_FAILED: { category: 'assay', label: 'trial failed' },
@@ -210,6 +220,7 @@ interface EventDetails {
   SCHEDULER_DISARMED: { armed: boolean; by: string; config_default: boolean };
   TICK_SELECTED: { subject: string; reason: string; backlog: number; try_n: number; dry_run: boolean };
   TICK_IDLE: { reason: string; backlog: number };
+  TICK_TRIAL_SELECTED: { slug: string; reason: string; backlog: number; dry_run: boolean };
   TICK_BENCH_GATED: { reason: string; backlog: number };
   TICK_BENCH_UNGATED: { reason: string; backlog: number };
   TICK_FAILED: { error: string };
@@ -222,6 +233,7 @@ interface EventDetails {
   REGISTRY_VERSIONS_FAILED: { error: string; origin?: string };
   REGISTRY_RECOVERED: { count: number; origin?: string };
   REGISTRY_FAILED: { error: string; live: boolean; origin?: string };
+  TRIAL_QUEUED: { slug: string; source: string; subject: string };
   TRIAL_STARTED: { slug: string; source: string; subject: string };
   TRIAL_COMPLETED: {
     slug: string;

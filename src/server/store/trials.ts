@@ -171,6 +171,59 @@ export class TrialStore {
     return removed;
   }
 
+  /**
+   * Trials waiting for the agent, **oldest ask first** — the trial half of the request queue.
+   *
+   * The opposite order to `list()`, and both are right: a list is read newest-first because
+   * the trial you just ran is the one you care about, and a queue is worked oldest-first
+   * because that is what a queue is.
+   *
+   * This is the one part of the request queue that is genuinely stored rather than derived.
+   * A subject request is a timestamp spent by comparison against an attempt record; a trial
+   * has neither a subject row nor an attempt record to spend one against, so its place in the
+   * line has to be a fact on disk. Invariant 8 is reframed rather than broken — see CLAUDE.md.
+   */
+  queued(): TrialRecord[] {
+    return this.trials
+      .filter((t) => !t.began_at && !t.finished_at)
+      .sort((a, b) => a.started_at.localeCompare(b.started_at));
+  }
+
+  /**
+   * The trial the agent is working on, if any.
+   *
+   * At most one, because there is one agent. Returns the oldest if a bug ever produced two, so
+   * that the queue view names something real rather than picking arbitrarily.
+   */
+  running(): TrialRecord | undefined {
+    return this.trials
+      .filter((t) => t.began_at && !t.finished_at)
+      .sort((a, b) => a.started_at.localeCompare(b.started_at))[0];
+  }
+
+  /**
+   * Close out trials that were running when the process stopped. Called once at boot.
+   *
+   * Nothing re-attaches to an in-flight `runner.run()` across a restart — the promise went with
+   * the process — so before this existed such a row kept `started_at`, no `finished_at`, and
+   * `get_trial` answered "it has not finished; ask again shortly" for ever. Under the request
+   * queue that row would also have been indistinguishable from a *queued* one had `began_at`
+   * not been added, which is the other half of why it exists.
+   *
+   * A **queued** row is deliberately left alone: it was never started, so a restart costs it
+   * nothing and it should simply still be in the line when the scheduler looks.
+   */
+  async reconcile(at = new Date().toISOString()): Promise<string[]> {
+    const stranded = this.trials.filter((t) => t.began_at && !t.finished_at);
+    for (const t of stranded) {
+      t.finished_at = at;
+      t.outcome = 'error';
+      t.error = 'Touchstone restarted while this trial was running';
+    }
+    if (stranded.length > 0) await this.persist();
+    return stranded.map((t) => t.slug);
+  }
+
   /** Newest first — a trial is looked at immediately after it is run, or not at all. */
   list(): TrialRecord[] {
     return [...this.trials].sort((a, b) => b.started_at.localeCompare(a.started_at));

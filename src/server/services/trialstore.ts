@@ -243,3 +243,15 @@ export async function saveStoreZip(zipPath: string, zip: Buffer): Promise<void> 
   await fs.mkdir(path.dirname(zipPath), { recursive: true });
   await fs.writeFile(zipPath, zip);
 }
+
+/**
+ * Read a trial's saved store back.
+ *
+ * The counterpart of `saveStoreZip`, and the reason the queue survives a restart: a trial
+ * waiting its turn holds nothing in memory, so what runs it later reads the same bytes the
+ * bench will install. Throws if it is gone — a trial whose store has been swept has nothing
+ * left to audit, and inventing an empty one would produce a verdict about an empty app.
+ */
+export async function readStoreZip(zipPath: string): Promise<Buffer> {
+  return fs.readFile(zipPath);
+}

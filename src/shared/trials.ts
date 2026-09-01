@@ -91,7 +91,25 @@ export interface TrialRecord {
    * when the branch adds an app the store does not have yet, which is a normal PR.
    */
   compare_to?: string;
+  /**
+   * When the trial was **asked for** — the moment the row was written.
+   *
+   * Since 2026-09-01 a trial waits its turn in the request queue rather than being refused
+   * when the agent is busy, so this is an enqueue time and not a start time. The name did not
+   * change with it: it is the list's sort key, the slug embeds it, and every stored row
+   * already means this. What a person calls "started" is `began_at` below, and every elapsed
+   * clock reads that one — a queued trial rendered from this would claim to have been running
+   * since it was asked for.
+   */
   started_at: string;
+  /**
+   * When the agent actually picked it up. Absent while it is still in the queue.
+   *
+   * This is the whole of the trial half of the queue: `began_at` unset and `finished_at` unset
+   * is *waiting*; `began_at` set and `finished_at` unset is *running*. Both set is over. A row
+   * left in the middle state by a restart is reconciled at boot — see `TrialStore.reconcile`.
+   */
+  began_at?: string;
   finished_at?: string;
   outcome?: 'verdict' | 'error' | 'blocked' | 'agent_busy';
   verdict?: string | null;

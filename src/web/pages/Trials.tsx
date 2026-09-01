@@ -74,6 +74,10 @@ function sourceOf(t: TrialSummary): string {
  * come back to finish it.
  */
 function trialNote(t: TrialSummary, live: LiveRun | null): string | null {
+  // Queued is not unfinished. Since the request queue a trial waits its turn rather than being
+  // refused when the agent is busy, and `began_at` is what tells the two apart — without it a
+  // row waiting perfectly normally would read as one that died.
+  if (!t.began_at && !t.finished_at) return 'queued — waiting for the agent';
   if (!t.finished_at) return live?.subject === t.state.name ? null : 'started, and never finished';
   switch (t.outcome) {
     case 'agent_busy':

@@ -389,4 +389,13 @@ export interface RunStatus {
    * button then says nothing about the bench rather than guessing.
    */
   bench?: BenchWindow;
+  /**
+   * How many things are in the request queue right now, the running one included.
+   *
+   * Rides along here because every surface that says something about the run in flight is
+   * already subscribed to this one endpoint — the strip, the Store table's cells, the audit
+   * buttons. A second poller for the queue depth would be a second slightly different idea of
+   * what is happening, which is the problem `data/runStatus.ts` exists to have solved once.
+   */
+  queued?: number;
 }

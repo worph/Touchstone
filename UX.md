@@ -247,7 +247,7 @@ from the report prose is precisely the mistake the archive was cleaned of in P1.
 ### 2.2 Subject detail — one app
 
 ```
-┌ ‹ OpenClaw ─────────────────────── risk 232  [ fix report ]  [ ⚑ flag ]  [ assay now ]──┐
+┌ ‹ OpenClaw ────────────────────────────── risk 232  [ fix report ]  [ Audit ]──┐
 │ Yundera/AppStore@main:Apps/OpenClaw                                          │
 │ openclaw:2.1.0 · appshield:2.0.7 · commit 6b9af120                           │
 │                                                                              │
@@ -274,13 +274,17 @@ from the report prose is precisely the mistake the archive was cleaned of in P1.
 - **The blocked card names the reason and says `no try used`.** That sentence is the product.
 - **`try N · trigger`** on each card, because "why did this run" and "how many attempts has it had"
   are questions the wiki table could only answer in emoji.
-- `assay now` is **one button and no menu**, and calls `POST /api/v1/assays` with a subject and
-  nothing else. Its bench note reads the **shared run-status poller** rather than a fetch of its
-  own — it used to call `GET /benches` once on mount, so the note was a snapshot from page load,
-  and on 2026-08-23 an operator acted on one five minutes after it stopped being true. There is no depth to choose: a run audits every section of the protocol, and a
-  section whose prerequisites are missing is recorded blocked — which costs the app nothing and is
-  the honest record of what happened. When no bench is leasable the button says so beneath itself
-  rather than disabling anything: the audit is still worth running, it will simply be narrower.
+- `Audit` is **one button, one word, and no menu**, and calls `POST /api/v1/assays` with a subject
+  and nothing else. It has three states and they are the whole of what it says: `Audit`,
+  `queued · N` (press again to withdraw), and `auditing… mm:ss`. It does not forecast which it
+  will do, because it cannot — that is the queue's answer, not the button's — so the *row* has to
+  flip the instant the press lands. Its bench note reads the **shared run-status poller** rather
+  than a fetch of its own — it used to call `GET /benches` once on mount, so the note was a
+  snapshot from page load, and on 2026-08-23 an operator acted on one five minutes after it
+  stopped being true. There is no depth to choose: a run audits every section of the protocol.
+  When no bench is leasable the button says so beneath itself rather than disabling anything —
+  but since 2026-09-01 that means the *queue waits*, rather than the audit running narrower: half
+  a rubric read as a verdict is worse than a wait that names its own cause.
   It says **when** too — *"no bench — live sections will be recorded blocked · demostaging1 is 34
   min from its wipe at ~15:00 UTC and inside the 60 min guard — usable again shortly after it"* —
   because a note that names only the fault is the difference between a narrower audit and a dead
@@ -462,7 +466,7 @@ routine completions is a badge people stop reading.
 
 **`assay finished` began pushing on 2026-08-20**, where this table had said it should not. That
 row was written for a loop grinding through 69 subjects unattended; the case that decided it is
-an operator who *asks* for a review — from the administrator chat, or the `assay now` button — and
+an operator who *asks* for a review — from the administrator chat, or the `Audit` button — and
 walks away. For them the finished audit is the entire point of being notified, and an audit
 outlasts the page they asked from. The ceiling is one an hour even with the scheduler armed. If
 that ever becomes too many, the fix is to push only operator-initiated runs, which needs a
@@ -509,10 +513,14 @@ and what does that make the queue.
 │ │ Runner               runner.enabled            [ Off ] │   │
 │ └────────────────────────────────────────────────────────┘   │
 ├──────────────────────────────────────────────────────────────┤
-│ QUEUE  69                                                    │
-│  1  AIOStreams      never audited      no result …    [flag] │
-│  2  UptimeKuma      due   last 2026-08-27 · flagged [unflag] │
-│  ·  Caddy           recently audited   last 2026-…    [flag] │
+│ REQUESTED  2                                                 │
+│  1  UptimeKuma      audit    asked for 4 min ago         [×] │
+│  2  FileBrowser     trial    asked for 1 min ago             │
+├──────────────────────────────────────────────────────────────┤
+│ BACKLOG  69                                                  │
+│  1  AIOStreams      never audited      no result …   [Audit] │
+│  2  UptimeKuma      due   last 2026-08-27 · asked    [ ⏳ 1 ] │
+│  ·  Caddy           recently audited   last 2026-…   [Audit] │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -525,6 +533,13 @@ people to arm the loop to make the page stop shouting.
 page says so before the button is pressed, because the other reading is that Stop kills it. Tearing
 a run down mid-flight burns a try (principle 3 gives it back only for infra conditions), orphans
 the ledger token the agent is still writing against, and holds the claim until `lease_min` expires.
+
+**Stop also does not stop the queue, and the switch says so.** (2026-09-01.) It gates the backlog
+— the rotation the loop works out for itself — and never touched work an operator asked for;
+`POST /assays` has ignored it since it existed. What changed is that this is now *visible*, so the
+sub-line under "Stopped" reads *"the backlog is not being worked. 3 requested audits will still
+run"* rather than the flat "nothing is dispatched automatically" that was true of the loop and
+false of the page. To stop everything: press Stop and withdraw the requests.
 
 **`runner.enabled` is a second switch and stays one.** An armed scheduler with a disabled runner
 claims a subject and is told the runner is off — a real state, and the page names it rather than
@@ -539,20 +554,31 @@ with no position carries the reason it has none — recently audited, parked, or
 The order is the pick's own, derived from the same `plan()` the scheduler decides with, so position
 1 is the app the next unblocked tick claims rather than a second guess at it.
 
-**Flagging an app puts it back in the backlog — it does not start anything.** (2026-08-28.) The
-case it exists for is an app that looks fresh and is not: a section recorded `blocked` stamps
-nothing and costs the app nothing, but a *sibling* section that completed sets the last-run date,
-so the whole app drops out of the backlog for `fresh_days` on the strength of the half of the audit
-that ran. Nothing about the world changed, so neither `standard revised since` nor `app changed in
-the store` fires, and before this the only way to ask for another look was a hand-run that takes
-the single agent from whatever else wanted it. The flag is deliberately the *quiet* verb: the row
-joins the queue at its ordinary position, behind everything staler, under the same cooldown, park
-and bench gate as everything else. It is spent by the next attempt whatever that attempt concluded,
-so it is a request rather than a switch somebody has to remember to turn off — which also means one
-flag buys one look, never one look per cooldown until the bench comes back. The button is on the
-queue row, on the Store table (where it is the *only* per-row verb) and on the subject page beside
-`assay now`; the two verbs sit together there on purpose,
-one meaning *again* and the other meaning *now*. It is **always drawn** on the queue row, muted
+**Requested and Backlog are two lists because they are two things.** (2026-09-01.) Requested is
+work the loop was *told* to do: it drains in the order it was asked for, audits and trials in one
+line because they share one agent, it ignores the cooldown, and it runs whether or not the switch
+above is on. Backlog is the rotation the loop works out for itself, which that switch gates. They
+were one list until the queue landed, and merging them is how an operator comes to believe a
+request started something, or that stopping the loop stopped their audit.
+
+**The Requested list carries the one thing no row can say: why the head is not moving.** Without
+it, "waiting for a bench" and "nothing is happening" render identically, and there is no way to
+tell a queue that is working from one that is stuck. The line holds rather than skipping — so the
+note names the condition *and* says that everything behind it is waiting on the same thing.
+
+**Asking for an audit is one verb and the queue decides when.** (2026-09-01, replacing the
+2026-08-28 flag.) The case it exists for is unchanged: an app that looks fresh and is not, because
+a section recorded `blocked` stamps nothing while a *sibling* section that completed sets the
+last-run date, so the whole app drops out of the backlog for `fresh_days` on the strength of half
+an audit. What changed is that there is no longer a second, quieter verb for it. There were two —
+`assay now` took the agent immediately and failed with a 409 whenever anything else held it, and
+the flag queued — and the split asked the operator to decide something that was never theirs:
+whether an audit starts now or waits is a fact about the line. Worse, the verb that always worked
+looked like it did nothing. One `Audit` button now, on the queue row, on every live Store row
+(which it could not be before — a control that seizes the single agent makes 73 rows into 72
+disabled buttons and one footgun) and on the subject page. It is spent by the next attempt
+whatever that attempt concluded, so it is a request rather than a switch somebody has to remember
+to turn off. It is **always drawn** on the queue row, muted
 until the row is hovered and carrying the running token once set. It shipped hover-only — on the
 theory that seventy-two buttons down a page read as seventy-two calls to action — and the first
 person to use it could not find it. A control discovered by sweeping a mouse down a list is a
@@ -719,7 +745,7 @@ with the standard version that judged it, the requirements the audit settled (fa
 the **fix brief** — the audit's own findings, evidence and proposed remedies, fetched from
 `/public/subjects/:name/fix.md` rather than composed again in the browser.
 
-No history, no report source, no `assay now`. An author cannot ask for a re-run from here, and that is
+No history, no report source, no `Audit`. An author cannot ask for a re-run from here, and that is
 the intent: the loop decides what is audited and when. A hallmark is what the subject carries now,
 which is what a hallmark *is*.
 
@@ -832,7 +858,7 @@ These matter more than usual, because the system's normal condition includes "la
 | App removed from the store | The row stays, dimmed, with a `delisted` chip and a **delete** button in place of **audit**. It is out of the backlog, so nothing will re-audit it; its verdicts stand as a record. The board (`/public`) marks it too — an author whose app is gone should not be reading a live-looking verdict about it. |
 | Store unreachable *and* an app missing from the last list | Nothing is marked delisted, nothing leaves the backlog, nothing is deletable. "We could not ask" and "the store does not list it" are different claims and only the second may act. |
 | Agent busy | Log row and a `agent.unavailable` alert if it persists. The row is restored, not failed. |
-| Report file missing | The section card still renders from the index; the report pane says the file is gone and offers `assay now`. |
+| Report file missing | The section card still renders from the index; the report pane says the file is gone and offers `Audit`. |
 | Beacon or push down | Everything still renders. Undelivered notifications are marked in the log. |
 | No scheduler wired up | Automation says so and offers no button. `armed: null` is not `armed: false` — one has a Start button and the other has nothing to start. |
 | Automation not refreshing | A notice, and the page keeps its last state: this is the view, not the driver, and the loop carries on. |

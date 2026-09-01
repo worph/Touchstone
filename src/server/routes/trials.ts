@@ -15,10 +15,14 @@
  *
  * - **The same `Runner` instance as an audit.** It is single-flight process-wide, and
  *   `RunLedger.live()` assumes exactly one open run. Sharing it means a trial and an audit
- *   cannot collide, and a trial asked for during an audit gets the same honest 409 the re-assay
- *   button gets. A second instance would also break the browser lease, whose safety rests on
+ *   cannot collide, and a trial asked for during an audit takes its place in the same queue an
+ *   audit does. A second instance would also break the browser lease, whose safety rests on
  *   "there is one run at a time" being true (`runner/index.ts`).
- * - **Never `scheduler.record()`.** A trial says nothing about a subject's schedule.
+ * - **Never `scheduler.record()`.** A trial says nothing about a subject's schedule. Since
+ *   2026-09-01 the scheduler *starts* trials — it owns the agent, so it has to be the thing
+ *   that decides what takes it next — but it still records nothing about a subject for one.
+ *   The port it reaches this through carries `queued`, `running`, `dispatch` and `failed`,
+ *   and no way to touch a try count, a park or a hallmark.
  * - **Its own index.** A second `ReportIndex` rooted at the trials directory, which the
  *   scheduler and the registry are never handed. That is what makes the isolation structural
  *   rather than a rule to remember.
@@ -38,7 +42,7 @@ import type { ReportIndex } from '../store/index.js';
 import { isTrialSlug, TrialStore } from '../store/trials.js';
 import {
   buildSpec,
-  dispatchTrial,
+  enqueueTrial,
   trialIndex,
   trialsIndex,
   trialsReady,
@@ -122,15 +126,10 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
 
   app.post<{ Body?: Record<string, unknown> }>('/trials', async (req, reply) => {
     const deps = trialDeps();
+    // What is left to refuse is a feature that is unconfigured or a runner that is switched
+    // off. "The agent is busy" is no longer among them: that is what the queue is for.
     const blocked = trialsReady(deps);
-    if (blocked) {
-      // One agent, one run. Naming what is running is the difference between "wait" and
-      // "something is stuck", so the busy case carries it.
-      const running = options.runner?.status().running;
-      return blocked.code === 409 && running
-        ? reply.code(409).send({ error: blocked.error, running })
-        : fail(reply, blocked.code, blocked.error);
-    }
+    if (blocked) return fail(reply, blocked.code, blocked.error);
 
     const body = req.body ?? {};
     const startedAt = new Date().toISOString();
@@ -145,8 +144,14 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
     const built = await buildSpec(deps, body, startedAt);
     if (!built.ok) return fail(reply, built.code, built.error);
 
-    const record = await dispatchTrial(deps, built.spec, startedAt, built.compare_to);
-    return reply.code(202).send({ started: true, trial: record });
+    const record = await enqueueTrial(deps, built.spec, startedAt, built.compare_to);
+    // `queued`, not `started`. The scheduler decides when it runs, and on an idle box the kick
+    // inside `enqueueTrial` means that is a second from now — but saying "started" for
+    // something that may sit behind two audits is the lie the 409 used to tell backwards.
+    const position = options.trials?.queued().findIndex((t) => t.slug === record.slug) ?? -1;
+    return reply
+      .code(202)
+      .send({ queued: true, trial: record, ...(position >= 0 ? { position: position + 1 } : {}) });
   });
 
   /**

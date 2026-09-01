@@ -15,11 +15,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import type { ControlsResponse } from '@shared/controls';
-import type { QueueRow, QueueState, ScheduleResponse } from '@shared/schedule';
+import type { QueueRow, QueueState, RequestRow, ScheduleResponse } from '@shared/schedule';
 import ControlList from '../components/ControlList';
-import FlagControl from '../components/FlagControl';
+import AuditControl from '../components/AuditControl';
 import { ErrorState, Loading, Notice } from '../components/Ui';
 import {
+  flagSubject,
   getControls,
   getSchedule,
   resetControl,
@@ -27,7 +28,7 @@ import {
   setControl,
   tickNow,
 } from '../data/client';
-import { since, stamp, until } from '../lib/format';
+import { plural, since, stamp, until } from '../lib/format';
 
 const REFRESH_MS = 15_000;
 
@@ -134,6 +135,15 @@ export default function Automation() {
   const running = data.queue.find((r) => r.state === 'running');
   const backlog = data.queue.filter((r) => r.position !== undefined);
   const next = backlog.find((r) => r.state !== 'running');
+  const requested = data.requests;
+  /**
+   * The head of the request queue, when there is one and nothing is moving.
+   *
+   * Read off the last decision rather than recomputed here: `waiting_on` is set by the same
+   * function that made the pick, so the page cannot disagree with the loop about which item
+   * is being held up or why.
+   */
+  const waitingOn = data.last_tick?.decision.waiting_on ?? null;
 
   return (
     <div className="page page--wide">
@@ -162,8 +172,10 @@ export default function Automation() {
               <div className="auto-state-word">{armed ? 'Running' : 'Stopped'}</div>
               <div className="auto-state-sub">
                 {armed
-                  ? `Auditing every app in turn, one at a time, waiting ${data.constants.cooldown_min} minutes between them.`
-                  : 'Nothing is dispatched automatically. Audits still run when you start one by hand.'}
+                  ? `Working through the backlog, one app at a time, waiting ${data.constants.cooldown_min} minutes between them.`
+                  : requested.length > 0
+                    ? `The backlog is not being worked. ${plural(requested.length, 'requested audit')} will still run — this switch stops the loop helping itself, not audits somebody asked for.`
+                    : 'The backlog is not being worked. Audits you ask for still run.'}
               </div>
             </div>
           </div>
@@ -308,10 +320,49 @@ export default function Automation() {
         )}
       </section>
 
-      {/* ── the queue ─────────────────────────────────────────────────────── */}
+      {/* ── what somebody asked for ───────────────────────────────────────── */}
+      {/* Its own section, above the backlog and not merged into it, because they answer
+          different questions. This is work the loop was *told* to do: it drains in the order
+          it was asked for, it ignores the cooldown, and it runs whether or not the switch
+          above is on. The backlog is the rotation the loop works out for itself, which that
+          switch gates. Rendering them as one list is how an operator comes to believe a
+          request started something, or that stopping the loop stopped their audit. */}
       <section className="act-section">
         <h2 className="act-h">
-          Queue <span className="act-count">{data.queue.length}</span>
+          Requested <span className="act-count">{requested.length}</span>
+        </h2>
+
+        {requested.length === 0 ? (
+          <div className="act-quiet">
+            Nothing has been asked for. Press <strong>Audit</strong> on any app to put it here.
+          </div>
+        ) : (
+          <div className="env">
+            {requested.map((row) => (
+              <RequestLine key={`${row.kind}:${row.id}`} row={row} onChanged={flag} />
+            ))}
+          </div>
+        )}
+
+        {/* The one thing no row can say: why the head is not moving. Without it "waiting" and
+            "nothing is happening" render identically, and the operator has no way to tell a
+            queue that is working from one that is stuck. */}
+        {waitingOn ? (
+          <div className="backlog-note">
+            <span aria-hidden="true">▨</span>
+            <span>
+              Nothing is starting — {data.last_tick?.decision.reason ?? 'the loop is waiting'}.
+              The queue holds rather than skipping, so {waitingOn} and everything behind it wait
+              for this to clear.
+            </span>
+          </div>
+        ) : null}
+      </section>
+
+      {/* ── the backlog the loop works out for itself ─────────────────────── */}
+      <section className="act-section">
+        <h2 className="act-h">
+          Backlog <span className="act-count">{data.queue.length}</span>
         </h2>
 
         {data.queue.length === 0 ? (
@@ -385,8 +436,8 @@ function QueueLine({
  * subject is still exempt: it is being looked at right now, and the flag would be spent by the
  * attempt already in flight.
  *
- * `FlagControl` rather than a button of its own — it is the same verb as the Store table's and
- * the subject page's, and three spellings of one action is what this replaced.
+ * `AuditControl` rather than a button of its own — it is the same verb as the Store table's
+ * and the subject page's, and five spellings of one action is what this replaced.
  */
 function FlagCell({ row, onChanged }: { row: QueueRow; onChanged: (s: ScheduleResponse) => void }) {
   if (row.state === 'running') {
@@ -394,14 +445,84 @@ function FlagCell({ row, onChanged }: { row: QueueRow; onChanged: (s: ScheduleRe
   }
   return (
     <span className="auto-flag">
-      <FlagControl
+      <AuditControl
         variant="row"
         subject={row.subject}
         label={subjectName(row.subject)}
-        flagged={Boolean(row.flagged)}
-        onChanged={onChanged}
+        queued={Boolean(row.flagged)}
+        onChanged={(next) => next && onChanged(next)}
       />
     </span>
+  );
+}
+
+/**
+ * One thing somebody asked for.
+ *
+ * Deliberately a different row from `QueueLine`: a request has a place in a line and a kind,
+ * and a backlog row has a staleness and a try count. Rendering both through one component
+ * meant one of the two sets of columns was always empty and the other always needed a caveat.
+ */
+function RequestLine({
+  row,
+  onChanged,
+}: {
+  row: RequestRow;
+  onChanged: (s: ScheduleResponse) => void;
+}) {
+  return (
+    <div className="env-row auto-row" data-state={row.state}>
+      <span className="auto-pos num">{row.position}</span>
+      <span className="env-name">
+        {row.kind === 'trial' ? (
+          <Link to={`/trials/${encodeURIComponent(row.id)}`}>{row.label}</Link>
+        ) : (
+          <Link to={`/s/${encodeURIComponent(row.id)}`}>{row.label}</Link>
+        )}
+      </span>
+      <span className="env-status">
+        {row.state === 'running' ? 'being audited now' : row.kind === 'trial' ? 'trial' : 'audit'}
+      </span>
+      <span className="env-note">asked for {since(row.requested_at)}</span>
+      {/* Only an audit can be withdrawn from here. A trial is a whole record with its own
+          files — dropping it is a delete, and it lives on the trial's own page where the
+          consequence is visible. */}
+      <span className="auto-flag">
+        {row.kind === 'audit' && row.state !== 'running' ? (
+          <WithdrawButton subject={row.id} label={row.label} onChanged={onChanged} />
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
+/** Take one request back out of the line. The same write the row control makes. */
+function WithdrawButton({
+  subject,
+  label,
+  onChanged,
+}: {
+  subject: string;
+  label: string;
+  onChanged: (s: ScheduleResponse) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      className="btn btn--sm"
+      type="button"
+      disabled={busy}
+      title={`Withdraw the audit request for ${label}`}
+      aria-label={`Withdraw the audit request for ${label}`}
+      onClick={() => {
+        setBusy(true);
+        void flagSubject(subject, false)
+          .then(onChanged)
+          .finally(() => setBusy(false));
+      }}
+    >
+      ×
+    </button>
   );
 }
 

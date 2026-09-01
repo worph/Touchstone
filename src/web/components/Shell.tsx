@@ -4,6 +4,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { getAlerts, getEvents } from '../data/client';
 import Mark from './Mark';
 import { seenSeq } from '../lib/badge';
+import { useRunStatus } from '../data/runStatus';
 import RunningStrip, { RunTitle } from './RunningStrip';
 
 const BADGE_MS = 30_000;
@@ -39,8 +40,11 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Operations',
     items: [
-      // The loop that drives everything under it, above the log of what it did.
-      { to: '/automation', label: 'Automation' },
+      // The loop that drives everything under it, above the log of what it did. Its badge is
+      // the *request* queue rather than the backlog: the backlog is seventy-three rows on a
+      // good day and a permanent number beside a nav row is furniture, while a request is
+      // work somebody is waiting on and worth being told about from any page.
+      { to: '/automation', label: 'Automation', queue: true },
       { to: '/activity', label: 'Activity', badge: true },
     ],
   },
@@ -56,12 +60,22 @@ const NAV: { group: string; items: NavItem[] }[] = [
   },
 ];
 
-type NavItem = { to: string; label: string; end?: boolean; badge?: boolean; tab?: boolean };
+type NavItem = {
+  to: string;
+  label: string;
+  end?: boolean;
+  badge?: boolean;
+  /** Count the request queue rather than the alert badge. */
+  queue?: boolean;
+  tab?: boolean;
+};
 
 const TABS = NAV.flatMap((section) => section.items).filter((item) => item.tab !== false);
 
 export default function Shell({ children }: { children: ReactNode }) {
   const badge = useBadge();
+  // Off the one poller every other run-aware surface reads, rather than a fetch of its own.
+  const queued = useRunStatus()?.queued ?? 0;
   const location = useLocation();
 
   return (
@@ -94,6 +108,7 @@ export default function Shell({ children }: { children: ReactNode }) {
                 <NavLink key={item.to} to={item.to} end={item.end} className="nav-link">
                   {item.label}
                   {item.badge ? <Badge count={badge} /> : null}
+                  {item.queue ? <Badge count={queued} /> : null}
                 </NavLink>
               ))}
             </div>
@@ -121,6 +136,7 @@ export default function Shell({ children }: { children: ReactNode }) {
             <span className="tab-glyph">
               <TabIcon to={item.to} />
               {item.badge ? <TabBadge count={badge} /> : null}
+              {item.queue ? <TabBadge count={queued} /> : null}
             </span>
             {item.label}
           </NavLink>

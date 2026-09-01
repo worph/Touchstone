@@ -182,14 +182,17 @@
  * single agent immediately were seventy-two disabled buttons and one footgun — the row-level
  * question is "look at this one again", which is what the flag asks.
  */
-.row-flag { display: inline-flex; align-items: center; gap: 4px; }
-.row-flag__btn { color: var(--fg-3); padding-inline: 7px; transition: color 90ms ease, border-color 90ms ease; }
-.tbl tr:hover .row-flag__btn,
-.row-flag__btn:focus-visible { color: var(--fg); }
+.row-audit { display: inline-flex; align-items: center; gap: 4px; }
+/* Wide enough for the word, because it is a word now and not a glyph. The old control was a
+   flag `⚑` and could be 7px of padding; `Audit` needs room, and a column that reflows between
+   `Audit` and `⏳ 3` as rows change state would make the whole table jump. */
+.row-audit__btn { color: var(--fg-3); min-width: 52px; justify-content: center; padding-inline: 7px; transition: color 90ms ease, border-color 90ms ease; }
+.tbl tr:hover .row-audit__btn,
+.row-audit__btn:focus-visible { color: var(--fg); }
 /* A flag that is *set* is a fact about the row rather than an offer, so it carries the token
    the running state does and reads as set without being hovered or compared. */
-.row-flag__btn--on,
-.tbl tr:hover .row-flag__btn--on { color: var(--running); border-color: var(--running); }
+.row-audit__btn--on,
+.tbl tr:hover .row-audit__btn--on { color: var(--running); border-color: var(--running); }
 /* Shared by every row-level control's failure marker — the flag's and the delete's. */
 .row-action__err { color: var(--crit); font-weight: 600; }
 
@@ -1073,6 +1076,9 @@
   font-size: 13px;
 }
 .run-strip__clock { color: var(--running); font-variant-numeric: tabular-nums; }
+/* How many are behind this one. Muted rather than coloured: the clock is the live thing and a
+   second bright number beside it would compete with it for the same glance. */
+.run-strip__queued { color: var(--fg-3); font-variant-numeric: tabular-nums; font-size: 11.5px; }
 .run-strip__meta { color: var(--fg-1); }
 .run-strip__doing {
   overflow: hidden;
@@ -1466,8 +1472,8 @@
 /* The flag on the subject page: a normal button that reads as *set* rather than as an
    offer once it is on. Same token as the running state, because both mean "something is
    already happening about this app". */
-.flagbtn { display: inline-flex; align-items: center; gap: 8px; }
-.flagbtn--on { border-color: var(--running); color: var(--running); }
+.auditbtn { display: inline-flex; align-items: center; gap: 8px; }
+.auditbtn--on { border-color: var(--running); color: var(--running); }
 
 /* The flag sits at the end of the queue row and keeps its column whether or not the row has
    a button in it, so the list does not ripple as states change.

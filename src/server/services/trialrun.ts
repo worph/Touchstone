@@ -39,6 +39,7 @@ import {
   extractApp,
   fetchStoreZip,
   packAppStore,
+  readStoreZip,
   saveStoreZip,
   sourceOf,
   TrialStoreError,
@@ -98,19 +99,36 @@ export interface TrialRunDeps {
   /** Injected in tests so a trial can be started without reaching GitHub. */
   fetchImpl?: typeof fetch;
   onError?: (err: unknown, slug: string) => void;
+  /**
+   * Ask the scheduler to look again now that something is in the queue.
+   *
+   * Without it a trial queued on a completely idle box waits out `tick_min` — an hour — for a
+   * loop that had nothing else to do. The tick still decides; this only shortens the wait
+   * before it is asked.
+   */
+  kick?: () => void;
 }
 
 export type Refusal = { ok: false; code: number; error: string };
 
-/** Everything that must be true before any trial can start, in the order worth saying. */
+/**
+ * Everything that must be true before a trial can be **queued**, in the order worth saying.
+ *
+ * It no longer refuses because the agent is busy, and that is the point of the request queue:
+ * a trial asked for while an audit is running used to come back `409 a run is already in
+ * progress`, which is not an answer, it is the caller being told to press the button again
+ * later. It takes its place in the line instead.
+ *
+ * What is left are the two conditions a queue cannot fix, and both name what to change: the
+ * feature is unconfigured, or the runner is switched off. Those are configuration answers
+ * rather than admission decisions — admission is the tick's job — so they are refused here at
+ * the door instead of being enqueued into work that could never run.
+ */
 export function trialsReady(deps: TrialRunDeps): Refusal | null {
   if (!deps.trials || !deps.trialsRoot) return { ok: false, code: 503, error: 'trials are not configured' };
   if (!deps.runner) return { ok: false, code: 503, error: 'no runner configured' };
   if (!deps.runner.enabled) {
     return { ok: false, code: 409, error: 'the runner is disabled — set runner.enabled in config.yaml' };
-  }
-  if (deps.runner.busy) {
-    return { ok: false, code: 409, error: 'a run is already in progress' };
   }
   return null;
 }
@@ -234,13 +252,17 @@ export async function buildSpec(
 }
 
 /**
- * Save the store, write the row, log it, and fire the run without waiting for it.
+ * Save the store, write the row, log it, and put it in the queue.
  *
- * Fire-and-report, exactly as `POST /assays` does: a real audit takes minutes and a socket held
- * open that long is at the mercy of every proxy in between. The caller gets the record back
- * immediately and reads the outcome from the row afterwards.
+ * Enqueue only — it starts nothing. Splitting this from `startTrial` is what lets a trial be
+ * asked for while the agent is busy: the row is the request, the scheduler takes it off the
+ * queue when the agent is free, and the caller gets the record back immediately either way.
+ *
+ * The zip is saved *before* the row exists, because a row whose store is missing would
+ * advertise a URL that 404s at the bench — and now also because the saved zip is what
+ * `startTrial` reads the app back out of, possibly in a different process.
  */
-export async function dispatchTrial(
+export async function enqueueTrial(
   deps: TrialRunDeps,
   spec: TrialSpec,
   startedAt: string,
@@ -285,22 +307,70 @@ export async function dispatchTrial(
 
   deps.events?.log({
     level: 'info',
-    code: 'TRIAL_STARTED',
-    message: `Trialling ${spec.subject} from ${spec.source_url}`,
+    code: 'TRIAL_QUEUED',
+    message: `Queued a trial of ${spec.subject} from ${spec.source_url}`,
     detail: { slug: spec.slug, source: spec.source_url, subject: spec.subject },
   });
   if (spec.upload_id) await deps.uploads?.setTrial(spec.upload_id, spec.slug);
 
+  // Nothing here starts a run. Ask the loop to look now rather than at the top of the hour.
+  deps.kick?.();
+
+  return record;
+}
+
+/**
+ * Take one queued trial off the queue and run it. Called by the scheduler, and only by it.
+ *
+ * The app's own files are read back out of **the trial's saved zip** rather than carried in
+ * memory from `buildSpec`, and that is what makes the queue survive a restart: a trial queued
+ * before the process stopped is still queued after it, with everything it needs on disk. It is
+ * also the same bytes the bench installs, which is the property `enqueueTrial` was already
+ * built around — there is one copy of this app anywhere in the system.
+ */
+export async function startTrial(deps: TrialRunDeps, slug: string): Promise<void> {
+  const { trials, runner, trialsRoot } = deps;
+  if (!trials || !runner || !trialsRoot) {
+    throw new Error('startTrial called without trials, a runner or a trials root');
+  }
+  const record = trials.get(slug);
+  if (!record) throw new Error(`no such trial: ${slug}`);
+  // Already taken. The scheduler's own `agentBusy` read should have prevented this, so it is a
+  // bug rather than a race worth tolerating quietly — but throwing would mark the row failed,
+  // which is a worse answer than leaving the run that is genuinely in flight alone.
+  if (record.began_at) return;
+
+  const root = path.join(trialsRoot, slug);
+  const zip = await readStoreZip(trials.storeZipPath(slug));
+  // `packAppStore` writes `<root>/Apps/<subject>/`, unconditionally and regardless of where the
+  // app sat in the archive it came from. So this is a fact about how we built the file, not a
+  // claim about the original store — which is why it does not read `record.apps_path`.
+  const source = sourceOf(extractApp(zip, 'Apps', record.subject), 'Apps', record.subject);
+
+  const benchStoreUrl =
+    deps.publicBaseUrl && record.store_token
+      ? `${deps.publicBaseUrl.replace(/\/+$/, '')}/api/v1/trialstore/${record.store_token}.zip`
+      : undefined;
+
+  await trials.update(slug, { began_at: new Date().toISOString() });
+  deps.events?.log({
+    level: 'info',
+    code: 'TRIAL_STARTED',
+    message: `Trialling ${record.subject} from ${record.source_url}`,
+    detail: { slug, source: record.source_url, subject: record.subject },
+  });
+
+  const spec = { slug, subject: record.subject };
   void runner
     .run({
       // The slug is the synthetic origin, so the report path machinery is untouched.
-      subject: subjectKey(spec.slug, spec.subject),
+      subject: subjectKey(slug, record.subject),
       try_n: 1,
       trial: {
-        repo: spec.repo,
-        apps_path: spec.apps_path,
+        repo: record.repo,
+        apps_path: record.apps_path,
         root,
-        source: spec.source,
+        source,
         ...(benchStoreUrl ? { store_url: benchStoreUrl } : {}),
       },
     })
@@ -345,9 +415,20 @@ export async function dispatchTrial(
         detail: { slug: spec.slug, subject: spec.subject, reason },
       });
     })
-    .catch((err) => deps.onError?.(err, spec.slug));
-
-  return record;
+    .catch(async (err) => {
+      // A throw past `runner.run` used to reach `onError` and stop there, which logged and
+      // left the row for ever with no `finished_at` — `get_trial` answering "ask again
+      // shortly" to a trial nothing was doing. Close the row first, then tell the caller.
+      const reason = err instanceof Error ? err.message : String(err);
+      await trials
+        .update(spec.slug, {
+          finished_at: new Date().toISOString(),
+          outcome: 'error',
+          error: reason,
+        })
+        .catch(() => undefined);
+      deps.onError?.(err, spec.slug);
+    });
 }
 
 /**
