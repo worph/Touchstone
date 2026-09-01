@@ -10,6 +10,7 @@ import { buildIndex } from './store/index.js';
 import { logArchiveMigration, migrateArchiveLayout } from './store/migrate.js';
 import { splitSubjectKey } from '../shared/subject.js';
 import { TrialStore } from './store/trials.js';
+import { startTrial, type TrialRunDeps } from './services/trialrun.js';
 import { UploadStore } from './store/uploads.js';
 import { ensureConfigFile, loadConfig, resolveDataDir } from './store/config.js';
 import { AlertStore } from './services/alerts.js';
@@ -27,7 +28,7 @@ import { RevisionStore } from './store/revisions.js';
 import { StoreDocReader } from './services/storedoc.js';
 import { RunLedger } from './services/ledger.js';
 import { outcomeClause, type RunOutcome } from '../shared/activity.js';
-import { subjectName } from '../shared/subject.js';
+import { subjectName, type SubjectKey } from '../shared/subject.js';
 import { ChatThreads } from './chat/thread.js';
 import { ContextStore } from './store/context.js';
 import { ControlStore } from './store/controls.js';
@@ -300,6 +301,23 @@ const trials = new TrialStore(cfg.stateDir, cfg.trialsRoot);
 await trials.load();
 // Report directories with no row — the orphans a crash between the two writes can strand,
 // and the ones the old row-only eviction left behind before trials owned their own files.
+/**
+ * Trials that were running when the process last stopped.
+ *
+ * Nothing re-attaches to an in-flight run across a restart, so before this such a row kept its
+ * start time, no finish, and answered "it has not finished; ask again shortly" for ever. A
+ * *queued* trial is deliberately untouched — it was never started, so it is simply still in
+ * the line when the scheduler looks.
+ */
+const strandedTrials = await trials.reconcile();
+for (const slug of strandedTrials) {
+  events.log({
+    level: 'warn',
+    code: 'TRIAL_FAILED',
+    message: 'A trial was still running when Touchstone last stopped, and has been closed',
+    detail: { slug, subject: trials.get(slug)?.subject ?? slug, reason: 'the process restarted' },
+  });
+}
 const sweptTrials = await trials.sweepOrphans();
 if (sweptTrials.length > 0) {
   events.log({
@@ -332,6 +350,30 @@ const chatThreads = new ChatThreads(cfg.stateDir);
 await chatThreads.load();
 
 /**
+ * Everything a trial needs, in one place, because there are now three callers.
+ *
+ * `POST /trials` and the chat's `run_trial` **queue** one; the scheduler **starts** one. A
+ * second copy of this bundle would be a second chance for the three to disagree about where a
+ * trial's reports go or which store it is judged against.
+ *
+ * Built lazily rather than held, because `kick` closes over the scheduler and the scheduler is
+ * constructed below — a trial queued anywhere asks the loop to look now rather than at the top
+ * of the hour.
+ */
+const trialDeps = (): TrialRunDeps => ({
+  runner,
+  trials,
+  uploads,
+  trialsRoot: cfg.trialsRoot,
+  events,
+  known: () => registry.list(),
+  origins: cfg.origins,
+  publicBaseUrl: cfg.trials.public_base_url,
+  onError: (err: unknown, slug: string) => app.log.error({ err, slug }, 'trial failed'),
+  kick: () => void scheduler.tick().catch((err) => app.log.error({ err }, 'trial kick failed')),
+});
+
+/**
  * The operator's standing instructions for the administrator chat — `data/context.md`.
  *
  * Not loaded here: the store reads per call, so an edit on the Settings page governs the
@@ -344,6 +386,41 @@ const chatPrompt = await fs
   .catch(() => null);
 if (!chatPrompt) {
   app.log.warn('the chat prompt could not be read; the administrator chat will refuse to run');
+}
+
+/**
+ * Threads waiting to hear what became of an audit they asked for.
+ *
+ * The chat's `run_assay` no longer dispatches — it queues, and the run may start minutes later
+ * from a tick, so the promise the turn used to hang a note off does not exist any more. This
+ * carries the thread across that gap.
+ *
+ * **In memory, deliberately.** Persisting it would mean a second record of "who is waiting"
+ * living beside the request itself, and the only thing it buys is a note delivered after a
+ * restart — which cannot happen, because a restart kills the run the note would be about.
+ * `Set`, because two turns in two threads may ask for the same app before either runs.
+ */
+const pendingThreads = new Map<string, Set<string>>();
+
+/**
+ * Tell every conversation that asked for this audit what became of it.
+ *
+ * Best-effort on purpose: a thread file that cannot be appended to must not turn a completed
+ * audit into a logged failure.
+ */
+async function noteFinished(subject: SubjectKey, outcome: RunOutcome): Promise<void> {
+  const threads = pendingThreads.get(subject);
+  if (!threads) return;
+  pendingThreads.delete(subject);
+  for (const threadId of threads) {
+    await chatThreads
+      .append({
+        threadId,
+        role: 'note',
+        content: `The audit of ${subjectName(subject)} you asked for has finished: ${outcomeClause(outcome)}.`,
+      })
+      .catch((err) => app.log.warn({ err }, 'could not note a finished audit in its thread'));
+  }
 }
 
 const scheduler = new Scheduler({
@@ -369,18 +446,51 @@ const scheduler = new Scheduler({
   // is actually applied.
   dispatch: async (job) => {
     const outcome = await runner.run(job);
-    await scheduler.record(
-      job.subject,
-      outcome.kind === 'verdict'
-        ? { kind: 'verdict' }
-        : outcome.kind === 'agent_busy'
-          ? { kind: 'agent_busy' }
-          : outcome.kind === 'agent_auth'
-            ? { kind: 'agent_auth' }
-            : outcome.kind === 'blocked'
-              ? { kind: 'blocked', reason: outcome.reason }
-              : { kind: 'error', reason: outcome.reason },
-    );
+    try {
+      await scheduler.record(
+        job.subject,
+        outcome.kind === 'verdict'
+          ? { kind: 'verdict' }
+          : outcome.kind === 'agent_busy'
+            ? { kind: 'agent_busy' }
+            : outcome.kind === 'agent_auth'
+              ? { kind: 'agent_auth' }
+              : outcome.kind === 'blocked'
+                ? { kind: 'blocked', reason: outcome.reason }
+                : { kind: 'error', reason: outcome.reason },
+      );
+    } finally {
+      // `finally`, so a schedule that could not be written does not also cost the operator
+      // the answer. The two are independent: one is bookkeeping, the other is the reply to a
+      // question somebody actually asked.
+      await noteFinished(job.subject, outcome);
+    }
+  },
+  // The runner's own flag, which is the only thing that sees a **trial** holding the agent —
+  // a trial owns no claim by design, so without this the tick is blind to half of what the
+  // agent does and a kick would spin against a running trial for its whole duration.
+  agentBusy: () => runner.busy,
+  // Charging a try implies writing an attempt record (invariant 14). `dispatchFailed` charges
+  // one; this is what makes it record one, and therefore what lets a failed dispatch spend the
+  // request that asked for it instead of leaving it at the head of the queue for ever.
+  recordFailedDispatch: (subject, reason) => runner.recordFailedDispatch(subject, reason),
+  // The trial half of the request queue. Narrow on purpose: the scheduler learns that a trial
+  // exists, when it was asked for, and how to start one — never how to record anything about a
+  // subject, which is what keeps "a trial says nothing about a subject's schedule" true.
+  trials: {
+    queued: () =>
+      trials.queued().map((t) => ({ slug: t.slug, subject: t.subject, queued_at: t.started_at })),
+    running: () => {
+      const t = trials.running();
+      return t ? { slug: t.slug, subject: t.subject, queued_at: t.started_at } : undefined;
+    },
+    dispatch: (slug) => startTrial(trialDeps(), slug),
+    failed: (slug, reason) =>
+      trials.update(slug, {
+        finished_at: new Date().toISOString(),
+        outcome: 'error',
+        error: reason,
+      }) as unknown as Promise<void>,
   },
 });
 await scheduler.load();
@@ -517,70 +627,36 @@ await app.register(registerRoutes, {
        * difference, and only because there is no request to attribute the failure to.
        */
       trials: {
-        runner,
-        trials,
-        uploads,
-        trialsRoot: cfg.trialsRoot,
-        events,
-        known: () => registry.list(),
-        origins: cfg.origins,
-        publicBaseUrl: cfg.trials.public_base_url,
-        onError: (err: unknown, slug: string) => app.log.error({ err, slug }, 'trial failed'),
+        ...trialDeps(),
       },
       /**
        * Which repo an origin's apps belong to, so `open_trial` can inherit it. Nothing is
        * fetched from it — it is what the asset rule and CONTRIBUTING.md resolve against.
        */
       originRepo: (origin: string) => cfg.origins.find((o) => o.id === origin)?.repo,
-      // The same path `POST /assays` takes, so a run started by conversation is recorded,
-      // notified and charged to the schedule exactly as a hand-run one is.
-      startAssay: (job, opts) => {
-        void runner
-          .run({ ...job, try_n: 1 })
-          .then(async (outcome) => {
-            try {
-              await scheduler.record(
-                job.subject,
-                outcome.kind === 'verdict'
-                  ? { kind: 'verdict' }
-                  : outcome.kind === 'agent_busy'
-                    ? { kind: 'agent_busy' }
-                    : outcome.kind === 'agent_auth'
-                      ? { kind: 'agent_auth' }
-                      : outcome.kind === 'blocked'
-                        ? { kind: 'blocked', reason: outcome.reason }
-                        : { kind: 'error', reason: outcome.reason },
-              );
-            } finally {
-              // `finally`, so a schedule that could not be written does not also cost the
-              // operator the answer. The two are independent: one is bookkeeping, the other
-              // is the reply to a question somebody actually asked.
-              await noteFinished(outcome, opts?.threadId);
-            }
-          })
-          .catch((err) => app.log.error({ err, subject: job.subject }, 'chat-started assay failed'));
-
-        /**
-         * Tell the conversation that asked for it.
-         *
-         * The turn that started this ended minutes ago, so there is nobody to return to; the
-         * row is written into the thread instead, and the next turn reads it in its history
-         * like any other. Without it the assistant is asked "what came of it?" and has to go
-         * looking for work it did itself.
-         *
-         * Best-effort on purpose: a thread file that cannot be appended to must not turn a
-         * completed audit into a logged failure.
-         */
-        async function noteFinished(outcome: RunOutcome, threadId?: string): Promise<void> {
-          if (!threadId) return;
-          await chatThreads
-            .append({
-              threadId,
-              role: 'note',
-              content: `The audit of ${subjectName(job.subject)} you started has finished: ${outcomeClause(outcome)}.`,
-            })
-            .catch((err) => app.log.warn({ err }, 'could not note a finished audit in its thread'));
+      /**
+       * Exactly what the Audit button does — the same two calls in the same order, because
+       * this used to be a third independent copy of "run it and record it" and three copies
+       * of one seam is how they come to disagree. There is now one place a run is dispatched
+       * from, the scheduler's own `dispatch`, and every way of asking reaches it by writing a
+       * request and asking the loop to look.
+       *
+       * The thread is remembered here rather than carried through the queue: the run may start
+       * minutes from now, from a tick, and the request itself is one timestamp with nowhere to
+       * put a conversation id. See `pendingThreads`.
+       */
+      startAssay: async (job, opts) => {
+        if (opts?.threadId) {
+          const waiting = pendingThreads.get(job.subject) ?? new Set<string>();
+          waiting.add(opts.threadId);
+          pendingThreads.set(job.subject, waiting);
         }
+        await scheduler.setFlagged(job.subject, true, 'chat');
+        await scheduler.tick();
+        const started = Boolean(scheduler.snapshot().subjects[job.subject]?.claim);
+        const queue = await scheduler.previewRequests();
+        const at = queue.findIndex((r) => r.kind === 'audit' && r.id === job.subject);
+        return { started, ...(at >= 0 ? { position: at + 1 } : {}) };
       },
     },
     status: async () => {

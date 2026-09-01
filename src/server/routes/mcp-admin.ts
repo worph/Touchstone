@@ -6,12 +6,11 @@
  * agent may ask Touchstone" would be a second thing to keep in step with invariant 6, and the
  * first time the two disagreed the weaker one would be the one somebody had connected.
  *
- * So the scope here is exactly the scope of the chat: eighteen tools, twelve of which read
+ * So the scope here is exactly the scope of the chat: seventeen tools, twelve of which read
  * what is *written down* — the board, the archive, a report file, the fix brief, a trial, the
  * log, the backlog, the schedule, the rubric, the store's own files, and this instance's own
- * settings — and six which act: `run_assay`, the pair that trials files nobody has committed
- * (`open_trial`, `run_trial`), `edit_protocol`, `set_control`, and `flag_reaudit`, which only
- * puts an app back in the backlog. None of them writes a
+ * settings — and five which act: `run_assay`, the pair that trials files nobody has committed
+ * (`open_trial`, `run_trial`), `edit_protocol` and `set_control`. None of them writes a
  * verdict, mints a section, or names a repo and ref; `registry.ts` explains at length why not.
  *
  * Two are worth reading twice before enabling this surface wide open. `edit_protocol` rewrites

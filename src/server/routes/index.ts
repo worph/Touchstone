@@ -185,7 +185,6 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     runner: options.runner,
     scheduler: options.scheduler,
     ledger: options.ledger,
-    store: options.store as never,
     prober: options.prober,
   });
 
@@ -251,15 +250,25 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     }));
 
   /**
-   * Whether the scheduler is holding a re-audit flag for this subject.
+   * Whether an audit of this subject has been asked for and not yet answered, and where it
+   * sits in the line.
    *
    * `undefined` when there is no scheduler at all, and the page reads that as "no control to
-   * offer" rather than as "not flagged". Kept beside the hallmark rather than inside it: the
-   * flag is the scheduler's opinion about a subject, not a property of any assay, which is
-   * the same line `try_n` and the park sit on.
+   * offer" rather than as "not queued". Kept beside the hallmark rather than inside it: a
+   * request is the scheduler's opinion about a subject, not a property of any assay, which is
+   * the same line `try_n` and the park sit on — and `SubjectState` is what `/public` serves.
    */
-  const flagOf = (subject: string): boolean | undefined =>
-    options.scheduler ? options.scheduler.isFlagged(subject) : undefined;
+  const queueOf = async (
+    subject: string,
+  ): Promise<{ queued?: boolean; queue_position?: number }> => {
+    if (!options.scheduler) return {};
+    const queued = options.scheduler.isFlagged(subject);
+    if (!queued) return { queued };
+    const at = (await options.scheduler.previewRequests()).findIndex(
+      (r) => r.kind === 'audit' && r.id === subject,
+    );
+    return { queued, ...(at >= 0 ? { queue_position: at + 1 } : {}) };
+  };
 
   // GET /subjects/:name — the subject detail page: the composed row plus full history.
   app.get<{ Params: { name: string } }>('/subjects/:name', async (request, reply) => {
@@ -275,7 +284,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
           ...(options.registry ? { delisted: options.registry.delisted() } : {}),
         }).state,
         history: sortNewestFirst(resolved.records), // newest first, both legs interleaved
-        ...(flagOf(resolved.name) === undefined ? {} : { flagged: flagOf(resolved.name) }),
+        ...(await queueOf(resolved.name)),
       };
     }
 
@@ -300,7 +309,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     return {
       subject: subjectHallmark(fromRegistry.key, []).state,
       history: [],
-      ...(flagOf(fromRegistry.key) === undefined ? {} : { flagged: flagOf(fromRegistry.key) }),
+      ...(await queueOf(fromRegistry.key)),
     };
   });
 

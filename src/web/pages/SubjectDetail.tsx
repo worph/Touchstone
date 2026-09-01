@@ -14,8 +14,7 @@ import MarkdownView, { MissingReport } from '../components/MarkdownView';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getReport, getSubject } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
-import FlagControl from '../components/FlagControl';
-import AssayButton from '../components/AssayButton';
+import AuditControl from '../components/AuditControl';
 import FixReportPanel, { FixReportButton } from '../components/FixReport';
 import LegCard, { StandardTag, verdictSections } from '../components/LegCard';
 import { RequirementsPanel } from '../components/RequirementList';
@@ -128,10 +127,15 @@ export default function SubjectDetail() {
             {/* Only when there is something to brief anyone on. A "fix report" button on a
                 compliant app is a button that produces a document saying nothing. */}
             {fixable ? <FixReportButton open={fixOpen} onToggle={() => setFixOpen((v) => !v)} /> : null}
-            {/* The queue's verb beside the agent's. One asks for the app to be looked at
-                again in the ordinary rotation; the other takes the agent now. */}
-            <FlagControl subject={subject.name} flagged={data.flagged} onChanged={() => reload()} />
-            <AssayButton subject={subject.name} onFinished={reload} />
+            {/* One verb. There were two here — the queue's and the agent's — and the split
+                asked the operator to decide something that was never theirs to decide: whether
+                an audit starts now or waits is a fact about the line. */}
+            <AuditControl
+              subject={subject.name}
+              queued={data.queued}
+              {...(data.queue_position ? { position: data.queue_position } : {})}
+              onChanged={() => reload()}
+            />
           </div>
 
           {refs ? (
@@ -209,7 +213,14 @@ export default function SubjectDetail() {
                 ? 'There is nothing to read yet. The report is written when the run finishes, and this page picks it up without a reload.'
                 : 'It is in the registry and nothing more. There is no verdict to disagree with, and no report to read.'
             }
-            action={<AssayButton subject={subject.name} onFinished={reload} label="first assay" />}
+            action={
+              <AuditControl
+                subject={subject.name}
+                queued={data.queued}
+                {...(data.queue_position ? { position: data.queue_position } : {})}
+                onChanged={() => reload()}
+              />
+            }
           />
         </div>
       ) : (

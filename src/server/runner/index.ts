@@ -983,6 +983,54 @@ export class Runner {
    * A failure to write one must not turn a classified failure into a thrown one; the scheduler
    * has already been told what happened by the return value.
    */
+  /**
+   * Write the attempt record for a run that never got as far as running — invariant 14.
+   *
+   * `Scheduler.dispatchFailed` charges the subject a try when a dispatcher throws, and it is
+   * right to: a run that died did consume an attempt, and E7 needs a reliably failing app to
+   * park rather than stay the stalest row for ever. But it charged **without recording**, and
+   * that half is the violation. Everything that asks "have we looked since X" reads the
+   * archive — the re-audit request, `standardMoved`, `subjectChanged` — so a charged failure
+   * walked the subject toward a park while its request stayed outstanding for ever. Once that
+   * request is the head of a queue, the queue stops moving.
+   *
+   * Assembles the little context `recordAttempt` needs and writes one `blocked` assay per
+   * section the run would have covered. Never throws: the caller is already handling a
+   * failure, and a second one must not replace the first.
+   */
+  async recordFailedDispatch(subject: SubjectKey, reason: string): Promise<void> {
+    const startedAt = this.now().toISOString();
+    try {
+      const { origin, name: appName } = splitSubjectKey(subject);
+      const store = this.originOf(origin);
+      const plan = await this.plan();
+      // No protocol means no sections to record against, and nothing sensible to write. The
+      // charge stands — something did fail — but there is no record to make.
+      if (!plan || plan.sections.length === 0) return;
+      await this.recordAttempt({ subject, try_n: 0 }, reason, {
+        sections: plan.sections,
+        skipped: [],
+        reportsRoot: this.opts.reportsRoot,
+        appName,
+        origin,
+        subjectRef: subjectRefOf(store, appName),
+        startedAt,
+      });
+    } catch (err) {
+      this.opts.events.log({
+        level: 'warn',
+        code: 'ASSAY_FAILED',
+        message: 'An attempt record could not be written for a failed dispatch',
+        subject,
+        detail: {
+          subject,
+          error: err instanceof Error ? err.message : String(err),
+          raw: reason,
+        },
+      });
+    }
+  }
+
   private async recordAttempt(
     job: RunnerJob,
     reason: string,

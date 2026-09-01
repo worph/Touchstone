@@ -9,7 +9,7 @@
  * Every one is a thin wrapper over something the API already does; the chat is a way of
  * reaching the app by conversation, not a second implementation of it.
  *
- * **Twelve of the eighteen read, and six act.** The chat began with three tools, two of which
+ * **Twelve of the seventeen read, and five act.** The chat began with three tools, two of which
  * described the *live process* — `runner.status()`, the ledger — and that was the wrong half
  * of the app to know about. An audit takes minutes, a turn takes seconds, and `tsx watch`
  * restarts the process on any edit; so by the time the operator asked what came of a run,
@@ -49,11 +49,14 @@
  * question it answers used to have no answer at all — asked to make the re-audit window a
  * fortnight, the chat could read the window and then send the operator to a page.
  *
- * **`flag_reaudit` is the sixth, and it is the one that writes nothing about anything.** It
- * sets a timestamp the scheduler reads, and the app joins the backlog in its ordinary place.
- * It is separate from `run_assay` on purpose: an operator whose app looks fresh because one
- * section blocked wants it looked at *again*, not looked at *now* — and "now" is the single
- * agent, taken from whatever else was going to use it.
+ * **`flag_reaudit` used to be the sixth, and it is gone.** It set a timestamp the scheduler
+ * read, and it was separate from `run_assay` on the reasoning that "audit this again" and
+ * "audit this now" are different asks: the second took the single agent from whatever else
+ * wanted it, so the first had to exist for the operator who merely wanted the app looked at.
+ * The request queue made that distinction disappear. `run_assay` writes the same timestamp,
+ * and whether it starts now or waits is a fact about the line rather than a choice the caller
+ * makes — so two tools would have been two spellings of one request, which is exactly the
+ * confusion the queue was built to end. One verb.
  */
 
 import { standardLabel } from '../../shared/standard.js';
@@ -81,7 +84,7 @@ import type { EventLog } from '../services/events.js';
 import type { PortProber } from '../services/ports.js';
 import type { BenchProber } from '../services/bench.js';
 import {
-  dispatchTrial,
+  enqueueTrial,
   buildSpec,
   trialIndex,
   trialsReady,
@@ -109,7 +112,16 @@ export interface ChatToolContext {
    */
   threadId?: string;
   /** How a started run is actually dispatched — the same path `POST /assays` takes. */
-  startAssay?: (job: { subject: SubjectKey }, opts?: { threadId?: string }) => void;
+  /**
+   * Put one app in the request queue, and say where it landed.
+   *
+   * Returns rather than fires, since the queue: "started" and "third in line" are different
+   * answers and a tool that could not tell them apart would report a run that had not begun.
+   */
+  startAssay?: (
+    job: { subject: SubjectKey },
+    opts?: { threadId?: string },
+  ) => Promise<{ started: boolean; position?: number }> | { started: boolean; position?: number };
   /**
    * Everything a trial needs — the same bundle `routes/trials.ts` assembles for `POST /trials`.
    *
@@ -570,7 +582,7 @@ export const CHAT_TOOLS: ChatTool[] = [
     name: 'run_assay',
     writes: true,
     description:
-      'Start an audit of one app. It returns as soon as the audit has STARTED — a real audit takes minutes, far longer than this conversation will wait, so do not expect a verdict here and do not call this twice hoping for one. The operator is notified when it finishes. An audit covers every section of the protocol; a section that needs something unavailable — a demo instance, a browser — is not attempted and is recorded as blocked, which never counts against the app. The reply also forecasts which sections would run on the world as it stands, and when a missing one is expected back: that is a prediction made at dispatch, not the result, and the run may settle differently. Report it as a forecast; get_status says what it settled on.',
+      'Ask for one app to be audited. It joins the request queue and runs as soon as the single agent is free — immediately if nothing else is waiting, otherwise behind whatever was asked for first. It returns as soon as the request is QUEUED, never with a verdict: an audit takes minutes, far longer than this conversation will wait, so do not call it twice hoping for one — a second call on the same app changes nothing and does not move it up. Use it for both "audit this now" and "audit this again", which are the same request; the reply says whether it started or where it is in the line. An audit covers every section of the protocol; a section that needs something unavailable — a demo instance, a browser — is not attempted and is recorded as blocked, which never counts against the app. The operator is notified when it finishes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -585,14 +597,11 @@ export const CHAT_TOOLS: ChatTool[] = [
       const runner = ctx.runner;
       if (!runner) return failed('No runner is wired, so nothing can be audited.');
       if (!runner.enabled) {
-        return failed('The runner is switched off — set runner.enabled in config.yaml. Nothing was started.');
+        return failed('The runner is switched off — set runner.enabled in config.yaml. Nothing was queued.');
       }
-      if (runner.busy) {
-        const running = runner.status().running;
-        return failed(
-          `An audit of ${running?.subject ?? 'another app'} is already running, and there is one agent. Nothing was started; try again when it finishes.`,
-        );
-      }
+      // A busy agent is no longer a refusal. That was the whole complaint: the tool that meant
+      // "now" failed whenever anything else was running, and the tool that always worked
+      // looked like it did nothing. There is one verb, and it queues.
 
       // Resolve against the registry so a near-miss becomes a correction rather than an
       // audit of a name that does not exist. The same matcher the HTTP routes use — one
@@ -628,19 +637,28 @@ export const CHAT_TOOLS: ChatTool[] = [
       // after this conversation has moved on, it reports back into the conversation that
       // asked for it. Without that the chat has no memory of work it started, and the
       // operator has to ask a second time to find out what it did.
-      ctx.startAssay?.({ subject: key }, ctx.threadId ? { threadId: ctx.threadId } : undefined);
+      const placed = await ctx.startAssay?.(
+        { subject: key },
+        ctx.threadId ? { threadId: ctx.threadId } : undefined,
+      );
+      const started = placed?.started ?? false;
+      const verb = started ? 'Started an audit of' : 'Queued an audit of';
+      const place = started
+        ? ''
+        : placed?.position && placed.position > 1
+          ? ` It is number ${placed.position} in the queue.`
+          : ' It runs as soon as the agent is free.';
 
-      // Forecast *after* dispatching, deliberately.
+      // Forecast *after* the request, deliberately: `execute()` resolves capabilities after
+      // its own sweep and protocol read, so a forecast taken here is nearer that moment.
       //
-      // Between the busy check above and this line there is no `await`, and that is what makes
-      // "not busy, therefore mine" true. An await inserted before the dispatch would widen a
-      // zero-length window into a real one, during which `POST /assays` or a scheduler tick
-      // could take the runner — and the operator would be told an audit started that did not.
-      // Dispatching first is also the more honest order: `execute()` resolves capabilities
-      // after its own sweep and protocol read, so a forecast taken here is nearer that moment.
+      // There is no longer a busy-check window to protect. The old comment here explained why
+      // no `await` could be inserted before the dispatch — "not busy, therefore mine" was true
+      // only for a zero-length window — and the queue removed the claim that depended on it:
+      // this call no longer asserts that a run began, it reports what the scheduler decided.
       //
       // Guarded twice over: a rig may hand the chat a runner without this method, and a
-      // forecast that cannot be made must never cost the operator the fact that the run began.
+      // forecast that cannot be made must never cost the operator the fact that it was queued.
       let forecast: Forecast | null = null;
       try {
         forecast = (await runner.forecast?.()) ?? null;
@@ -648,11 +666,11 @@ export const CHAT_TOOLS: ChatTool[] = [
         forecast = null;
       }
 
-      const started = `Started an audit of ${subjectName(key)}. It runs in the background; the operator gets a notification when it finishes.`;
-      if (!forecast) return ok(started);
+      const headline = `${verb} ${subjectName(key)}.${place} The operator gets a notification when it finishes.`;
+      if (!forecast) return ok(headline);
       if (forecast.noProtocol) {
         return ok(
-          `Started an audit of ${subjectName(key)}, but there is no protocol on disk to audit against, so the run will stop without writing anything.`,
+          `${verb} ${subjectName(key)}, but there is no protocol on disk to audit against, so the run will stop without writing anything.`,
         );
       }
 
@@ -664,16 +682,17 @@ export const CHAT_TOOLS: ChatTool[] = [
 
       if (forecast.run.length === 0) {
         return ok(
-          `Started an audit of ${subjectName(key)}, but on the world as it stands no section could run — ${because} — so the run will most likely record nothing at all. ` +
-            'That costs the app neither a try nor its place in the backlog. Fix that and start it again.',
+          `${verb} ${subjectName(key)}, but on the world as it stands no section could run — ${because}. ` +
+            'The request stays in the queue and holds it: nothing behind it starts either, and nothing dispatches until that is fixed. ' +
+            'It costs the app neither a try nor its place in the backlog.',
         );
       }
       if (forecast.blocked.length === 0) {
-        return ok(`${started} On the world as it stands, every section would run — ${list(forecast.run)}.`);
+        return ok(`${headline} On the world as it stands, every section would run — ${list(forecast.run)}.`);
       }
       return ok(
-        `${started} On the world as it stands, ${list(forecast.run)} would run and ${list(forecast.blocked.map((b) => b.section))} would be recorded blocked — ${because}. ` +
-          `That costs ${subjectName(key)} nothing and is not a statement about the app, but a blocked section is NOT retried automatically: once that is fixed, either run this again or call flag_reaudit to let the loop pick it up in its own order. ` +
+        `${headline} On the world as it stands, ${list(forecast.run)} would run and ${list(forecast.blocked.map((b) => b.section))} would be recorded blocked — ${because}. ` +
+          `That costs ${subjectName(key)} nothing and is not a statement about the app, but a blocked section is NOT retried automatically: once that is fixed, ask for it again. ` +
           'The runner re-checks at dispatch, so this is a forecast rather than a promise — get_status reports what it settled on.',
       );
     },
@@ -922,25 +941,26 @@ export const CHAT_TOOLS: ChatTool[] = [
       if (!deps) return failed('This installation has no trials configured.');
 
       const blocked = trialsReady(deps);
-      if (blocked) {
-        // One agent, one run — invariant 8 says there is no queue, so this is a fact to act
-        // on rather than a request to hold. Naming what is running is what makes it
-        // actionable: "wait" and "something is stuck" are different answers.
-        const running = deps.runner?.status().running;
-        return failed(
-          blocked.code === 409 && running
-            ? `${blocked.error} — ${running.subject} has been running since ${running.started_at}. Trials wait for it; try again when it finishes.`
-            : blocked.error,
-        );
-      }
+      // A busy agent is no longer a refusal — the trial joins the queue. What is left is a
+      // feature that is unconfigured or a runner that is switched off, neither of which
+      // waiting fixes.
+      if (blocked) return failed(blocked.error);
 
       const at = new Date().toISOString();
       const built = await buildSpec(deps, input, at);
       if (!built.ok) return failed(built.error);
 
-      const record = await dispatchTrial(deps, built.spec, at, built.compare_to);
+      const record = await enqueueTrial(deps, built.spec, at, built.compare_to);
+      const ahead = (deps.trials?.queued() ?? []).findIndex((t) => t.slug === record.slug);
+      const running = deps.runner?.status().running;
+      const place =
+        ahead > 0
+          ? ` There ${ahead === 1 ? 'is 1 request' : `are ${ahead} requests`} ahead of it.`
+          : running
+            ? ` ${running.subject} has the agent until it finishes; this is next.`
+            : '';
       return ok(
-        `Trial ${record.slug} has started — ${record.subject} from ${record.source_url}, judged as ${record.repo}@main. It takes minutes. Call get_trial with that id for the result.`,
+        `Trial ${record.slug} is queued — ${record.subject} from ${record.source_url}, judged as ${record.repo}@main.${place} It takes minutes once it starts. Call get_trial with that id for the result.`,
       );
     },
   },
@@ -1101,66 +1121,6 @@ export const CHAT_TOOLS: ChatTool[] = [
     },
   },
 
-  {
-    name: 'flag_reaudit',
-    writes: true,
-    description:
-      'Flag one app so the automatic loop audits it again, or take that flag off. This does NOT start a run: it puts the app back in the backlog and the loop reaches it in its own order, under the same cooldown and the same one-audit-at-a-time rule as everything else — use run_assay when the operator wants it audited now. It is the answer to an app that is stuck looking fresh when it is not: a section that was recorded blocked stamps nothing, but a sibling section that completed keeps the whole app out of the backlog until the re-audit window runs out. It also releases a park, so it is the right verb for an app that has been left alone after repeated failures — an automatic park does not outrank an operator asking. The flag is spent by the next attempt whatever that attempt concludes, so it never has to be cleared by hand.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        subject: { type: 'string', description: 'The app name, exactly as list_subjects gives it.' },
-        flagged: {
-          type: 'boolean',
-          description: 'True to flag it for re-audit, false to drop a flag it already has. Defaults to true.',
-        },
-      },
-      required: ['subject'],
-    },
-    handler: async (input, ctx) => {
-      const scheduler = ctx.scheduler;
-      if (!scheduler) return failed('No scheduler is wired, so there is no backlog to add anything to.');
-      const subject = String(input.subject ?? '').trim();
-      if (!subject) return failed('flag_reaudit needs a subject.');
-      const flagged = input.flagged === undefined ? true : Boolean(input.flagged);
-
-      // The registry, exactly as `run_assay` resolves it: what a model may say is *which*
-      // subject, and only ever one the store already lists.
-      const known = scheduler.knownSubjects();
-      const resolved = resolveSubjectKey(subject, known);
-      if (resolved.kind === 'ambiguous') {
-        return failed(
-          `${ambiguousMessage(subject, resolved.candidates)}. Call list_subjects to see the ids.`,
-        );
-      }
-      if (resolved.kind !== 'ok') {
-        return failed(`There is no subject called "${subject}". Call list_subjects to see the names.`);
-      }
-
-      // `'chat'`, the same label `set_control` writes, so the log reads the same way whichever
-      // of the two surfaces made the change.
-      const changed = await scheduler.setFlagged(resolved.key, flagged, 'chat');
-      const name = subjectName(resolved.key);
-      if (!changed) {
-        return ok(
-          flagged
-            ? `${name} was already flagged for re-audit; nothing changed.`
-            : `${name} was not flagged, so there was nothing to take off.`,
-        );
-      }
-      if (!flagged) return ok(`Dropped the re-audit flag on ${name}. It is scheduled by the calendar again.`);
-
-      const rows = await scheduler.previewQueue();
-      const row = rows.find((r) => r.subject === resolved.key);
-      const where = row?.position
-        ? `It is number ${row.position} of ${rows.filter((r) => r.position !== undefined).length} in the backlog.`
-        : 'It is in the backlog.';
-      const armed = scheduler.snapshot().armed
-        ? ''
-        : ' Automatic mode is off, though, so nothing will be picked up until it is switched on.';
-      return ok(`Flagged ${name} for re-audit. ${where} This started no run.${armed}`);
-    },
-  },
 
   {
     name: 'get_protocol',

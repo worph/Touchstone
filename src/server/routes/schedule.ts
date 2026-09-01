@@ -74,6 +74,12 @@ const routes: FastifyPluginAsync<ScheduleRoutesOptions> = async (app, options) =
         cooldown_min: 0,
         max_tries: 0,
       },
+      // Bare names on the way out, for the same reason the State line gets them: `label` is
+      // what a person reads and `id` is the address, and `policy.ts` deals only in addresses
+      // because its output is diffed and tested rather than rendered.
+      requests: ((await options.scheduler?.previewRequests()) ?? []).map((r) =>
+        r.kind === 'audit' ? { ...r, label: subjectName(r.label) } : r,
+      ),
       queue: (await options.scheduler?.previewQueue()) ?? [],
       subjects: snap?.subjects ?? {},
       registry: {
@@ -145,22 +151,18 @@ const routes: FastifyPluginAsync<ScheduleRoutesOptions> = async (app, options) =
     },
   );
 
-  app.post<{ Body?: { forced?: string[] } }>('/schedule/tick', async (req) => {
+  /**
+   * Think again, now. Takes no body.
+   *
+   * It used to accept `{ forced: [...] }` — one app name that bypassed freshness and the
+   * cooldown, n8n's form trigger ported across. The request queue replaced it on 2026-09-01:
+   * `POST /assays` is the same intention arrived at honestly, from a button, with a place in
+   * a line and a row an operator can see and cancel. `forced` had no UI caller and no way to
+   * be seen once pressed, and two spellings of "run this one now" is how they drift.
+   */
+  app.post('/schedule/tick', async () => {
     if (!options.scheduler) return { ...(await answer()), ran: false };
-    // A wire boundary: `forced` is app names a person typed, so resolve each to a key against
-    // what the loop actually knows. An unresolvable one is passed through rather than dropped —
-    // the tick's own reason then says it is not in the backlog, which is a better answer than
-    // silently forcing nothing.
-    const known = options.scheduler.knownSubjects();
-    const forced = Array.isArray(req.body?.forced)
-      ? req.body.forced
-          .filter((s): s is string => typeof s === 'string')
-          .map((s) => {
-            const hit = resolveSubjectKey(s, known);
-            return hit.kind === 'ok' ? hit.key : asSubjectKey(s);
-          })
-      : undefined;
-    const decision = await options.scheduler.tick({ forced });
+    const decision = await options.scheduler.tick();
     return { ...(await answer()), ran: true, decision };
   });
 };

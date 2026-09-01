@@ -42,6 +42,7 @@ surprise.
 | — | The rubric cleanup: one id space, severity defined, the static leaf's mechanics to the KB | ✅ done 2026-08-28 — §18 |
 | — | The rubric is seeded from `seed/`, not committed as if it were the live standard | ✅ done 2026-08-28 — §19 |
 | — | An app the store has stopped offering is marked, unscheduled, and deletable — *delisted* | ✅ done 2026-08-31 — §20 |
+| **R16** | Every way of asking for the single agent is one queue, drained in order — and one verb | ✅ built 2026-09-01 — §21 |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -1440,3 +1441,131 @@ believed it.
 - **No dispatch gate while `agent.auth` is open**, the way the bench gate works. The cooldown stamp
   already prevents hammering; if that proves insufficient the gate is the next step, not the first.
 - **No rewrite of `policy.ts`.** It was never the problem, and §20.2 is the evidence.
+
+## 21. R16 — One agent, one queue, one verb — 2026-09-01
+
+### 21.1 What was true before
+
+Touchstone has **one** Claude Code endpoint and **four** ways to ask for it: `assay now`
+(`POST /assays`), the re-audit flag (`POST /schedule/flag`), a trial (`POST /trials`), and the
+scheduler's own backlog pick. Three of the four **refused** when the loop held the agent:
+
+```
+routes/assays.ts    if (runner.busy) 409 'an audit is already running'
+trialrun.ts         if (runner.busy) 409 'a run is already in progress'
+chat/registry.ts    run_assay / run_trial — the same refusal, as a sentence
+```
+
+A 409 is not an answer. It is the caller being told to press the button again later, with no
+indication of when later is, and nothing recorded to say they ever asked. The flag was the only
+one that degraded — because it never took the agent at all — so **the one control that always
+worked was the one that appeared to do nothing**, and the two that read as decisive were the two
+that broke. The operator's question was whether the flag and `assay now` were the same thing.
+Nearly: they were the same *request* at two urgencies, and the urgency was not theirs to choose.
+
+### 21.2 The requirement
+
+Serialize the asks instead of refusing them. Every operator request joins one queue, drained
+ahead of the backlog in **strict order of arrival**, whatever kind of thing it is. When the line
+is empty a request still starts within seconds, so nothing gets slower. One button, `Audit`.
+
+Five decisions, taken before any code:
+
+| Question | Decision |
+| --- | --- |
+| Agent free, requests already waiting — does `Audit` jump? | **No.** It always enqueues; the tick decides. "Starts immediately" is the empty-line case, not a special path. |
+| Trial vs subject request | **Strict order of arrival.** One line, one ordering key, because there is one agent. |
+| `POST /assays { wait: true }` | **Dropped.** Honouring it meant keeping the direct-run path this change exists to delete. |
+| Infra (no bench) at the head | **Blocks the line**, for trials as well as audits. |
+| An audit that ran and failed | **Spent.** It leaves the queue and rejoins the ordinary backlog rotation with its try burned. No queue-level retry. |
+
+### 21.3 The mechanism, and why invariant 8 survives
+
+**One ordering key: when it was asked for.** A subject request is `SubjectSchedule.flagged_at`; a
+trial request is its row's creation time. The head is whichever is older, and `decide()`'s branch
+order becomes:
+
+```
+agent busy → request (trial or audit, oldest ask first) → cooldown → backlog empty → stalest
+```
+
+The audit half of the queue is **derived, not stored** — a subject is in the line exactly while
+`flagged_at` is newer than its last attempt — which is what keeps invariant 8's actual property:
+nothing has to remember to remove anything, and a run killed by a `tsx watch` restart leaves the
+request correctly still queued rather than a row stuck at `running` for ever. `shared/trials.ts`
+had cited invariant 8 by name as the reason a queue could not exist; it can, for the half that
+can be derived. Trials are the stated exception, because a trial has no attempt record for a
+timestamp to be spent against.
+
+`armed` now gates **the backlog and nothing else**. That is not new behaviour dressed up —
+`POST /assays` never consulted the switch — but it is newly visible, so the Automation page says
+*"the backlog is not being worked; N requested audits will still run"* on the switch itself.
+
+**The bench gate holds the line rather than skipping it**, and applies to trials too. A trial that
+ran with a dead pool would answer the static half and record `functional` blocked, and a PR author
+reading that reasonably concludes the app is fine. One rule for both verbs; the queue head names
+what it is waiting for.
+
+### 21.4 The rule that stops the kick being a spin loop
+
+A queue is useless if it waits out `tick_min` after each item, so `Scheduler.record()` looks again
+as soon as something finishes. Naïvely that is a livelock. Four `blocked` reasons return in
+**milliseconds** without touching the agent (`runner_disabled`, `runner_busy`, `store_unreachable`,
+`no_protocol`), and `agent_busy` and `agent_auth` cost no try and write no attempt record — so the
+request is never spent and the next tick decides exactly what this one decided. An armed box with
+`runner.enabled: false`, the shipped default, would rewrite `events.jsonl` past its 50 000-line
+trim in seconds. `agent_auth` is the sharpest case: it *stamps the finish*, so a rule keyed on
+that would re-dispatch a 26-minute failure back to back — defeating the exact guard E5b exists for.
+
+**The kick fires only when the run wrote an attempt record** — `verdict` or `error`. This is
+invariant 14 read forwards: the head of the queue has moved iff an attempt was recorded.
+
+### 21.5 Four bugs it had to fix first
+
+The design rides on `flagged_at` being a reliable request record. It was not.
+
+- **`setFlagged` guarded on the stored field, not the derived state.** `flagged_at` is never
+  cleared — `record.ts` carries it through every branch on purpose — so after one request and one
+  audit the field is still set while `isFlagged()` correctly reads false. The guard therefore
+  refused to write a *new* request for any subject that had ever carried one. Harmless while it
+  only moved a glyph; fatal once it is the queue, because `Audit` would silently do nothing on
+  exactly the apps an operator returns to.
+- **`dispatchFailed` charged a try and wrote no attempt record** — a live violation of
+  invariant 14 that CLAUDE.md believed closed. `Runner.recordFailedDispatch` closes it.
+- **A park released only on the flag's transition**, so park-while-flagged was a dead control: no
+  unpark, and `plan()` skips parked rows before any eligibility clause while still reporting the
+  row as flagged. A row that says it is queued and can never be picked is the one thing a queue
+  must not contain.
+- **A crashed trial was stuck for ever.** `dispatchTrial`'s `.catch()` only logged, so the row
+  kept its start time with no finish and `get_trial` answered "ask again shortly" indefinitely.
+  `TrialRecord.began_at` distinguishes queued from running, and `TrialStore.reconcile()` closes
+  the stranded rows at boot.
+
+### 21.6 The vocabulary, third and last
+
+One verb, one word: **`Audit`**. `AuditControl` replaces `AssayButton` and `FlagControl`; every
+live row on the Store table carries it, which it could not before — a control that seizes the
+single agent makes 73 rows into 72 disabled buttons and one footgun, and a control that queues is
+safe on all of them. `flag_reaudit` leaves `CHAT_TOOLS` (18 → 17) and, by construction, the admin
+MCP: it was a second spelling of `run_assay`. `POST /schedule/tick {forced}` is deleted — parity
+row A3 — because a request is the same intention arrived at honestly, with a place in a line and
+a row that can be withdrawn.
+
+The Automation page splits its one list into **Requested** and **Backlog**. They answer different
+questions: one is work the loop was told to do, drains in arrival order, ignores the cooldown and
+runs whether or not the switch is on; the other is the rotation the loop works out for itself,
+which the switch gates. Rendering them as one list is how an operator comes to believe a request
+started something, or that stopping the loop stopped their audit.
+
+### 21.7 Not done, deliberately
+
+- **No queue page.** Automation already rendered a queue; a second page called Queue is the
+  vocabulary problem one level up. It gets a count badge instead.
+- **No rate limit on the cooldown bypass.** Twenty requests drain back to back on an agent shared
+  with n8n's `AppStore PR Review`. That is what "in order, without delay" means; if it hurts, the
+  answer is a `requests_spacing_min` control, not a re-litigation of the bypass.
+- **No queue-level retry.** A failed audit is spent and rejoins the backlog, where `max_tries` and
+  `parked_at` already handle repeated failure.
+- **The thread a chat-started run reports back into is held in memory**, not persisted. The only
+  thing persistence would buy is a note delivered after a restart, which cannot happen — a restart
+  kills the run the note would be about.

@@ -32,13 +32,14 @@ import {
   decide,
   isFlaggedForReaudit,
   queue,
+  requests,
   stateLine,
   type PolicyInput,
   type SchedulerConstants,
   type SubjectSchedule,
   type TickDecision,
 } from './policy.js';
-import type { QueueRow, ScheduleConstants } from '../../shared/schedule.js';
+import type { QueueRow, RequestRow, ScheduleConstants } from '../../shared/schedule.js';
 import { openClaim, recordResult, type Outcome } from './record.js';
 
 /**
@@ -76,7 +77,7 @@ function benchGated(decision: TickDecision | undefined): boolean {
   return decision?.action === 'idle' && decision.reason.startsWith('no usable demo bench');
 }
 
-export { decide, stateLine, queue, cooldownLeftMin } from './policy.js';
+export { decide, stateLine, queue, requests, cooldownLeftMin } from './policy.js';
 export type { PolicyInput, SchedulerConstants, SubjectSchedule, TickDecision } from './policy.js';
 export { recordResult, openClaim } from './record.js';
 export type { Outcome, RecordResult } from './record.js';
@@ -139,6 +140,47 @@ export interface SchedulerOptions {
    * (P4), which is why an armed scheduler with no dispatcher still only claims.
    */
   dispatch?: (job: { subject: SubjectKey; try_n: number }) => void | Promise<void>;
+  /**
+   * Whether the single agent is in somebody's hands — `() => runner.busy`.
+   *
+   * The scheduler's own single-flight is the claim, and a **trial** holds the agent while
+   * holding no claim by design (`routes/trials.ts`: a trial says nothing about a subject's
+   * schedule). So without this the tick is blind to half of what the agent does, and the
+   * kick below would spin against a running trial for its whole duration.
+   */
+  agentBusy?: () => boolean;
+  /**
+   * Write the attempt record for a dispatch that threw — `Runner.recordFailedDispatch`.
+   *
+   * Absent, `dispatchFailed` charges a try and records nothing, which is invariant 14's
+   * violation and, since the request queue, a queue head that can never be spent.
+   */
+  recordFailedDispatch?: (subject: SubjectKey, reason: string) => Promise<void>;
+  /**
+   * The trial half of the request queue: what is waiting, what is running, and how to start
+   * one.
+   *
+   * A narrow port rather than the `TrialStore` itself, and the narrowness is the point. The
+   * scheduler learns that a trial exists, was asked for at a time, and can be started — and
+   * learns nothing else. In particular it never calls `record()` for one, which is what
+   * preserves the actual content of the rule that a trial must not touch a subject's
+   * schedule: a trial can take the agent, because there is only one; it cannot move a
+   * hallmark, a try count or a park.
+   */
+  trials?: {
+    queued: () => { slug: string; subject: string; queued_at: string }[];
+    running: () => { slug: string; subject: string; queued_at: string } | undefined;
+    dispatch: (slug: string) => void | Promise<void>;
+    /** Mark a row failed when its dispatch threw, so it leaves the queue instead of haunting it. */
+    failed?: (slug: string, reason: string) => void | Promise<void>;
+  };
+  /**
+   * How long after a completed run to look again, in ms. 0 disables the kick entirely.
+   *
+   * Injectable so the tests that call `record()` directly do not start dispatching real runs
+   * and leaking timers. See `kick()`.
+   */
+  kickMs?: number;
 }
 
 export class Scheduler {
@@ -160,6 +202,8 @@ export class Scheduler {
   private constantsOverride: Partial<SchedulerConstants> = {};
   private tickMs?: number;
   private timer?: ReturnType<typeof setInterval>;
+  /** The one-shot look-again after a completed run. At most one is ever outstanding. */
+  private kickTimer?: ReturnType<typeof setTimeout>;
   private running = false;
 
   constructor(opts: SchedulerOptions) {
@@ -245,23 +289,28 @@ export class Scheduler {
   /**
    * Flag a subject for re-audit, or take the flag off again.
    *
-   * The one manual way into the backlog that is not a dispatch. `POST /assays` and
-   * `/schedule/tick {forced}` both start an audit *now* — they contend with whatever else is
-   * on the agent and they ignore the queue — and neither is what an operator wants when a
-   * section blocked and the app simply needs looking at again some time this week.
+   * Since 2026-09-01 this **is** the request queue for audits — `POST /assays` writes it and
+   * `decide()` picks from it ahead of the backlog. All it writes is still a timestamp:
+   * eligibility is derived from it on every tick (`flaggedForReaudit` in `policy.ts`) and the
+   * request is spent by the next *attempt*, whatever that attempt concluded. There is no
+   * second write to lose, a request cannot outlive the audit it asked for, and a run killed
+   * mid-flight leaves it correctly still queued rather than stuck.
    *
-   * All this writes is a timestamp. Eligibility is derived from it on every tick
-   * (`flaggedForReaudit` in `policy.ts`) and the flag is spent by the next *attempt*,
-   * whatever that attempt concluded — so there is no second write to lose, and a flag cannot
-   * outlive the audit it asked for. Invariant 8 holds: there is still no queue, only rules
-   * re-read from state.
+   * **The guard is the derived state, not the stored field**, and that is a fix rather than a
+   * detail. `flagged_at` is never cleared — `record.ts` carries it through every branch on
+   * purpose — so after one request and one audit the field is still set while `isFlagged()`
+   * correctly reads false. Guarding on `Boolean(row.flagged_at)` therefore refused to write a
+   * *new* request for any subject that had ever carried one: harmless while this only moved a
+   * glyph, fatal once it is the queue, because Audit would silently do nothing on exactly the
+   * apps an operator returns to. Re-requesting overwrites the timestamp, which is also what
+   * gives the queue its ordering key.
    *
    * Returns whether anything moved, so the route can answer honestly rather than reporting a
    * change it did not make.
    */
   async setFlagged(subject: string, flagged: boolean, by = 'operator'): Promise<boolean> {
     const row = this.subjects[subject] ?? { try_n: 0 };
-    if (Boolean(row.flagged_at) === flagged) return false;
+    if (this.isFlagged(subject) === flagged) return false;
     const at = new Date().toISOString();
     // Flagging releases a park, and that is the point rather than a side effect.
     //
@@ -272,6 +321,12 @@ export class Scheduler {
     // failing app starving the backlog *automatically*; a person asking for a look is not that,
     // and outranks it. The try count goes back to zero with it, or the next single failure
     // would re-park the app immediately and the flag would have bought one attempt.
+    //
+    // Read off `flagged` rather than off the false→true edge: with the guard above now
+    // testing the *derived* state, a subject that was parked while carrying a spent flag is a
+    // reachable state, and an unpark that only fired on the edge would skip it — leaving a row
+    // that reports itself queued and can never be picked, which is the one thing a queue must
+    // not contain.
     const unparked = flagged && Boolean(row.parked_at);
     this.subjects[subject] = {
       ...row,
@@ -441,6 +496,14 @@ export class Scheduler {
     return queue(await this.buildInput({ now }));
   }
 
+  /**
+   * What somebody asked for, oldest ask first. Same world-read as the pick, so position 1 is
+   * genuinely what the next unblocked tick takes.
+   */
+  async previewRequests(now = new Date()): Promise<RequestRow[]> {
+    return requests(await this.buildInput({ now }));
+  }
+
 
 
   private async standardMovedAt(): Promise<string | undefined> {
@@ -552,9 +615,20 @@ export class Scheduler {
         raw: err instanceof Error ? (err.stack ?? reason) : reason,
       },
     });
-    // Nothing above this can be allowed to leave the claim held, so the record is a promise
-    // whose own failure is logged rather than thrown into a place with no handler.
-    void this.record(subject, { kind: 'error', reason: `dispatch failed: ${reason}` }).catch(
+    // Charging a try implies writing an attempt record — invariant 14 — and this path charges
+    // one below. Without the record `lastAttemptAt` never moves, so the subject's re-audit
+    // request is never spent: it walks toward a park while sitting at the head of the queue,
+    // and everything behind it waits on a run that already failed.
+    //
+    // Ordered before the charge and awaited inside the chain, so a subject cannot be charged
+    // by a `record()` that landed while the record it implies was still being written.
+    void Promise.resolve(this.opts.recordFailedDispatch?.(subject, 'dispatch_failed'))
+      .catch((e) => console.error('could not record a failed dispatch attempt', e))
+      .then(() =>
+        // Nothing above this can be allowed to leave the claim held, so the record is a promise
+        // whose own failure is logged rather than thrown into a place with no handler.
+        this.record(subject, { kind: 'error', reason: `dispatch failed: ${reason}` }),
+      ).catch(
       (e) => {
         console.error('could not record a failed dispatch', e);
       },
@@ -600,8 +674,18 @@ export class Scheduler {
    * One tick. Safe to call by hand — the timer and a hand-run tick coalesce, because two
    * ticks racing could both claim under single-flight.
    */
-  async tick(opts: { forced?: string[]; now?: Date } = {}): Promise<TickDecision> {
-    if (this.running) return this.lastTick?.decision ?? { action: 'idle', reason: 'a tick is already running', backlog: 0, reclaimed: [], unparked: [] };
+  async tick(opts: { now?: Date } = {}): Promise<TickDecision> {
+    // A coalesced call gets a decision it must not read as its own. `lastTick` is written at
+    // the *end* of `runTick`, so what comes back here is the decision *before* the one in
+    // flight — and a caller that treated it as an answer about its own request would report a
+    // run that was never considered. Hence `coalesced`, and hence `POST /assays` answering
+    // from the claim it can see rather than from what a tick returned.
+    if (this.running) {
+      return {
+        ...(this.lastTick?.decision ?? { action: 'idle', reason: 'a tick is already running', backlog: 0, reclaimed: [], unparked: [] }),
+        coalesced: true,
+      };
+    }
     this.running = true;
     try {
       return await this.runTick(opts);
@@ -622,7 +706,7 @@ export class Scheduler {
    * The world, as the policy wants it. One reader, so a tick and the queue the page renders
    * cannot disagree about who is stale.
    */
-  private async buildInput(opts: { forced?: string[]; now: Date }): Promise<PolicyInput> {
+  private async buildInput(opts: { now: Date }): Promise<PolicyInput> {
     const subjects = this.opts.registry.list();
     const leasable = this.opts.prober?.leasable() ?? [];
     const benchAvailable = this.opts.prober ? leasable.length > 0 : true;
@@ -640,15 +724,21 @@ export class Scheduler {
         : {}),
       schedule: this.subjects,
       lastFinishedAt: this.lastFinishedAt(),
-      forced: opts.forced,
+      agentBusy: this.opts.agentBusy?.() ?? false,
+      ...(this.opts.trials
+        ? {
+            queuedTrials: this.opts.trials.queued(),
+            ...(this.opts.trials.running() ? { runningTrial: this.opts.trials.running()! } : {}),
+          }
+        : {}),
       benchAvailable,
       benchNote: benchAvailable ? undefined : this.benchNote(),
     };
   }
 
-  private async runTick(opts: { forced?: string[]; now?: Date }): Promise<TickDecision> {
+  private async runTick(opts: { now?: Date }): Promise<TickDecision> {
     const now = opts.now ?? new Date();
-    const decision = decide(await this.buildInput({ now, forced: opts.forced }));
+    const decision = decide(await this.buildInput({ now }));
 
     // Reclaims and unparks are state changes the decision already made; apply them whether
     // or not we are armed, because they are bookkeeping about *our own* claims. In dry-run
@@ -719,11 +809,38 @@ export class Scheduler {
       });
     }
 
-    if (decision.action === 'audit' && decision.subject) {
+    // Requested work runs whether or not the loop is armed, and that is what `armed` has
+    // meant in practice since long before there was a queue: `POST /assays` never consulted
+    // it. The switch stops the loop helping itself — it is not a lock on the agent, and an
+    // operator who disarms mid-incident and then presses Audit is asking for that one audit.
+    // The Automation page has to say so out loud, because "stopped" over a draining queue is
+    // the kind of half-truth that sends somebody looking for a bug in the scheduler.
+    const mayDispatch = this.armed || decision.source === 'requested';
+
+    if (decision.action === 'trial' && decision.trial) {
+      const slug = decision.trial;
+      const queued = this.opts.trials?.queued().find((t) => t.slug === slug);
+      this.opts.events.log({
+        level: 'info',
+        code: 'TICK_TRIAL_SELECTED',
+        message: mayDispatch
+          ? 'The scheduler took the next trial off the queue'
+          : 'The scheduler would have started a trial, but it is not armed',
+        detail: { slug, reason: decision.reason, backlog: decision.backlog, dry_run: !mayDispatch },
+      });
+      if (mayDispatch) {
+        // No claim, and none is wanted: a trial has no schedule row and must not acquire one.
+        // What stops a second dispatch is `agentBusy` — the runner's own flag, which the next
+        // tick reads — rather than anything written here.
+        void Promise.resolve(this.opts.trials?.dispatch(slug)).catch((err) =>
+          this.trialDispatchFailed(slug, queued?.subject ?? slug, err),
+        );
+      }
+    } else if (decision.action === 'audit' && decision.subject) {
       this.opts.events.log({
         level: 'info',
         code: 'TICK_SELECTED',
-        message: this.armed
+        message: mayDispatch
           ? 'The scheduler picked the next app to audit'
           : 'The scheduler would have picked an app, but it is not armed',
         subject: decision.subject,
@@ -732,11 +849,11 @@ export class Scheduler {
           reason: decision.reason,
           backlog: decision.backlog,
           try_n: decision.try_n ?? 1,
-          dry_run: !this.armed,
+          dry_run: !mayDispatch,
         },
       });
 
-      if (this.armed) {
+      if (mayDispatch) {
         this.subjects[decision.subject] = openClaim({ now, schedule: this.subjects[decision.subject] });
         const claim = this.subjects[decision.subject]!.claim!;
         this.opts.events.log({
@@ -793,6 +910,55 @@ export class Scheduler {
       .join(', ');
   }
 
+  /**
+   * A trial dispatcher that threw.
+   *
+   * The subject equivalent above has a claim to release and a try to charge; this one has
+   * neither, by design — a trial owns no schedule row. What it does have is a row of its own
+   * that will otherwise sit in the queue for ever advertising work nobody is doing, so the
+   * whole job here is to make sure the trial store hears about it. The port marks the row
+   * failed; if it cannot, the log is the last word.
+   */
+  private trialDispatchFailed(slug: string, subject: string, err: unknown): void {
+    const reason = err instanceof Error ? err.message : String(err);
+    this.opts.events.log({
+      level: 'error',
+      code: 'TRIAL_FAILED',
+      message: 'A trial failed to start',
+      detail: { slug, subject, reason },
+    });
+    void Promise.resolve(this.opts.trials?.failed?.(slug, reason)).catch((e) =>
+      console.error('could not mark a trial failed', e),
+    );
+  }
+
+  /**
+   * Look again, soon, because the queue may have moved.
+   *
+   * Without this a request that arrives while something is running waits out `tick_min` —
+   * an hour, by default — after the thing in front of it finished. With it the queue drains
+   * at the speed of the work rather than the speed of the timer.
+   *
+   * **Only when an attempt was recorded**, which is the rule that keeps it from becoming a
+   * spin loop. Four `blocked` reasons return in milliseconds without touching the agent
+   * (`runner_disabled`, `runner_busy`, `store_unreachable`, `no_protocol`), and `agent_busy`
+   * and `agent_auth` cost no try and write no record at all — so for every one of them the
+   * *next* tick would decide exactly what this one decided, immediately, for ever. An armed
+   * box with the runner switched off would rewrite `events.jsonl` past its trim in seconds.
+   * An attempt record is the only proof the queue actually moved, which is invariant 14 read
+   * forwards.
+   */
+  private kick(): void {
+    const ms = this.opts.kickMs ?? 1_000;
+    if (!ms) return;
+    if (this.kickTimer) return;
+    this.kickTimer = setTimeout(() => {
+      this.kickTimer = undefined;
+      void this.tick().catch((err) => console.error('scheduler kick failed', err));
+    }, ms);
+    this.kickTimer.unref?.();
+  }
+
   /** Apply a finished attempt — rows E1, E5–E7. */
   async record(subject: string, outcome: Outcome, now = new Date()): Promise<void> {
     const result = recordResult({
@@ -818,6 +984,9 @@ export class Scheduler {
       });
     }
     await this.persist();
+    // `verdict` and `error` are exactly the two outcomes that wrote an attempt record, and so
+    // exactly the two that can have moved the queue on. See `kick()`.
+    if (outcome.kind === 'verdict' || outcome.kind === 'error') this.kick();
   }
 
   /** Arm the timer. With no argument it runs at whatever cadence the object already holds. */
@@ -835,6 +1004,8 @@ export class Scheduler {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    if (this.kickTimer) clearTimeout(this.kickTimer);
+    this.kickTimer = undefined;
   }
 
   private async persist(): Promise<void> {

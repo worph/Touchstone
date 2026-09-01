@@ -514,7 +514,10 @@ describe('a run started here reports back into the conversation', () => {
       ctx: {
         registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}), delisted: () => [], isDelisted: () => false } as never,
         runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }) } as never,
-        startAssay: (job, opts) => started.push({ subject: job.subject, threadId: opts?.threadId }),
+        startAssay: (job, opts) => {
+          started.push({ subject: job.subject, threadId: opts?.threadId });
+          return { started: true };
+        },
       },
       events,
       ask: {
@@ -545,7 +548,7 @@ describe('a run started here reports back into the conversation', () => {
         registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}), delisted: () => [], isDelisted: () => false } as never,
         runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }), ...runner } as never,
         prober: { window: () => 'demostaging1 is mid-cleanup — usually back within minutes' } as never,
-        startAssay: () => {},
+        startAssay: () => ({ started: true }),
       },
       events,
       ask: {
@@ -614,14 +617,14 @@ describe('a run started here reports back into the conversation', () => {
     expect(text).not.toContain('http://');
   });
 
-  /** A forecast that cannot be made must not cost the operator the fact that the run started. */
-  it('still reports the run as started when the forecast throws', async () => {
+  /** A forecast that cannot be made must not cost the operator the fact that it was queued. */
+  it('still reports the request when the forecast throws', async () => {
     const text = await replyTo({
       forecast: async () => {
         throw new Error('protocol directory is unreadable');
       },
     });
-    expect(text).toContain('Started an audit of OpenClaw');
+    expect(text).toContain('audit of OpenClaw');
     expect(text).not.toContain('unreadable');
   });
 
@@ -809,17 +812,20 @@ describe('trialling supplied files', () => {
     expect(record?.slug.startsWith('OpenClaw@')).toBe(true);
   });
 
-  it('reports the run in progress instead of queueing behind it', async () => {
+  /**
+   * The reverse of what this asserted until 2026-09-01. It used to refuse and name the app
+   * holding the agent, because there was no queue to join; now there is, and the answer is
+   * where in it this landed. Naming what is running is still what makes the reply actionable.
+   */
+  it('queues behind the run in progress instead of refusing', async () => {
     const { ctx, uploads } = await wiring({ busy: true });
     const session = await uploads.create({ subject: 'OpenClaw', repo: 'Yundera/AppStore' });
     await uploads.put(session, 'docker-compose.yml', Buffer.from('name: openclaw\n'));
 
     const res = await dispatch({ tool: 'run_trial', input: { upload: session.id } }, ctx);
-    expect(res.ok).toBe(false);
-    // Invariant 8: no queue. So the answer has to be actionable, which means naming what is
-    // running rather than saying "busy".
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain('queued');
     expect(res.text).toContain('Radarr');
-    expect(res.text).toContain('try again');
   });
 
   it('reads back a trial, and keeps it separate from what the app carries', async () => {

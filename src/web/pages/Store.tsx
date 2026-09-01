@@ -24,9 +24,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { subjectName } from '@shared/subject';
 import type { ScheduleResponse } from '@shared/schedule';
 import type { Leg, SubjectState } from '@shared/types';
-import AssayButton from '../components/AssayButton';
 import DeleteSubjectButton from '../components/DeleteSubjectButton';
-import FlagControl from '../components/FlagControl';
+import AuditControl from '../components/AuditControl';
 import { StatusLegend } from '../components/StatusCell';
 import SubjectTable, { SubjectSummary } from '../components/SubjectTable';
 import { EmptyState, Loading, Notice } from '../components/Ui';
@@ -79,14 +78,23 @@ export default function Store() {
   const [flags, setFlags] = useState<ScheduleResponse | null>(null);
   const live_schedule = flags ?? schedule.data;
   /**
+   * Whether this app is in the request queue, and where.
+   *
    * `undefined` — not `false` — when there is no scheduler, no row for this app, or the
-   * schedule request failed. `FlagControl` renders nothing for that, so the column degrades to
-   * empty rather than to a button that cannot work.
+   * schedule request failed. `AuditControl` renders nothing for that, so the column degrades
+   * to empty rather than to a button that cannot work.
+   *
+   * The position comes from `requests`, the arrival-ordered list, rather than from the
+   * backlog's own `position`: they are different orderings answering different questions, and
+   * the number beside a queued row has to be the one the operator can count down.
    */
-  const flagOf = useCallback(
-    (name: string): boolean | undefined => {
-      const row = live_schedule?.queue.find((r) => r.subject === name);
-      return row ? Boolean(row.flagged) : undefined;
+  const requestOf = useCallback(
+    (name: string): { queued: boolean | undefined; position?: number } => {
+      if (!live_schedule) return { queued: undefined };
+      const row = live_schedule.queue.find((r) => r.subject === name);
+      if (!row) return { queued: undefined };
+      const at = live_schedule.requests.findIndex((r) => r.kind === 'audit' && r.id === name);
+      return { queued: Boolean(row.flagged), ...(at >= 0 ? { position: at + 1 } : {}) };
     },
     [live_schedule],
   );
@@ -215,7 +223,12 @@ export default function Store() {
           </Notice>
         </div>
       ) : backlog ? (
-        <BacklogNote backlog={backlog} onShow={() => toggleShow('blocked', 'any')} onFinished={reload} />
+        <BacklogNote
+          backlog={backlog}
+          onShow={() => toggleShow('blocked', 'any')}
+          onFinished={reload}
+          request={requestOf}
+        />
       ) : null}
 
       <div className="toolbar">
@@ -290,21 +303,24 @@ export default function Store() {
                run that errors — and an app it does offer must not be deletable at all. One
                column, one control, chosen by the same fact the chip draws.
 
-               The live app's control is the *flag*, not `assay now`. Seventy-three rows
-               offering to take the single agent immediately are seventy-two disabled buttons
-               and one footgun; the row-level question is almost always "look at this one
-               again", which is what the flag asks. `assay now` lives on the subject page,
-               where there is room to say what it costs. */
+               Every live row now carries `Audit`, which it could not before. The old argument
+               against it was sound and no longer applies: a control that seized the single
+               agent made seventy-three rows into seventy-two disabled buttons and one footgun,
+               so the table carried the flag instead and the two verbs had to be told apart.
+               A control that *queues* is safe on every row, so there is one. */
             action={(s) =>
               s.delisted ? (
                 <DeleteSubjectButton subject={s.name} label={s.label} onDone={reload} />
               ) : (
-                <FlagControl
+                <AuditControl
                   variant="row"
                   subject={s.name}
                   label={s.label}
-                  flagged={flagOf(s.name)}
-                  onChanged={setFlags}
+                  {...requestOf(s.name)}
+                  /* A schedule when the queue moved, nothing when a run finished — and the
+                     second case is the one that needs the rows refetched, because a finished
+                     run is a new verdict. */
+                  onChanged={(next) => (next ? setFlags(next) : reload())}
                 />
               )
             }
@@ -328,10 +344,12 @@ function BacklogNote({
   backlog,
   onShow,
   onFinished,
+  request,
 }: {
   backlog: BlockedBacklog;
   onShow: () => void;
   onFinished: () => void;
+  request: (name: string) => { queued: boolean | undefined; position?: number };
 }) {
   const named = backlog.items.slice(0, 3);
   const rest = backlog.count - named.length;
@@ -353,7 +371,7 @@ function BacklogNote({
         {', '}
         {reasonPhrase(backlog.reason)} <span className="num">{duration(backlog.since)}</span> ago.
         {' '}Nothing was concluded about {backlog.count === 1 ? 'it' : 'them'} and no retry was
-        spent; a re-assay clears it.
+        spent; another audit clears it.
       </span>
       <span className="spacer" />
       {backlog.count > 1 ? (
@@ -361,7 +379,9 @@ function BacklogNote({
           show {backlog.count === 1 ? 'it' : 'them'}
         </button>
       ) : null}
-      {only ? <AssayButton subject={only.subject} onFinished={onFinished} /> : null}
+      {only ? (
+        <AuditControl subject={only.subject} {...request(only.subject)} onChanged={onFinished} />
+      ) : null}
     </div>
   );
 }

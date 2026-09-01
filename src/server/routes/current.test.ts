@@ -2,7 +2,7 @@
  * `GET /assays/current` — the one endpoint the whole UI reads to say what is happening.
  *
  * Four surfaces are wired to it (the strip in the shell, the Overview's running cells, the
- * Activity card and the re-assay button), so a field that quietly stops being sent stops four
+ * Activity card and the audit buttons), so a field that quietly stops being sent stops four
  * things at once. These tests hold the shape.
  */
 

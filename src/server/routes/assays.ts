@@ -1,37 +1,42 @@
 /**
- * `POST /assays` and `GET /assays/current` — audit one app, now.
+ * `POST /assays` and `GET /assays/current` — ask for one app to be audited.
  *
- * This is n8n's `Audit an app` form trigger, and it is also the validation path: until the
- * scheduler is armed it is the *only* way an audit happens, because two systems auditing the
- * same app contend for one Claude Code endpoint.
+ * **It enqueues; it does not run.** Until 2026-09-01 this took the single agent directly and
+ * answered `409 an audit is already running` when it could not, which is not an answer — it is
+ * the caller being told to press the button again later, and it is why the operator learned
+ * that the control which always worked (the flag) was the one that appeared to do nothing.
  *
- * **It does not wait by default, and that is not a convenience.** A real audit takes five to
- * ten minutes. A browser request held open that long is at the mercy of every proxy between
- * it and here — the Vite dev proxy, AppShield, Caddy — and a socket closed at minute four
- * looks exactly like a failed audit while the agent is still working. So the button starts a
- * run and polls, and `wait: true` stays available for a shell that would rather block.
+ * What it does now is write the request and ask the scheduler to look. **Every admission
+ * decision lives in the tick** — is the agent free, is there a bench, who asked first, is the
+ * loop armed — so this route duplicates none of it and cannot drift from it. "Starts
+ * immediately" is not a special case here: it is what the tick does when the line is empty,
+ * and a request bypasses the cooldown so an idle box really does start within the second.
+ *
+ * Two refusals survive, and they are configuration answers rather than admission ones: there
+ * is no runner, or the runner is switched off. Neither is fixed by waiting, and enqueuing into
+ * work that can never run would leave a request at the head of a queue for ever.
+ *
+ * `wait: true` is gone with the direct-run path it depended on. A socket held open for a
+ * ten-minute audit was at the mercy of every proxy in between anyway; `GET /assays/current` is
+ * how a run is followed.
  */
 
 import type { FastifyPluginAsync } from 'fastify';
 
 import { PHASE_LABEL, type RunStatus } from '../../shared/activity.js';
-import { asSubjectKey, type SubjectKey } from '../../shared/subject.js';
-import type { ReportResponse } from '../../shared/types.js';
+import type { SubjectKey } from '../../shared/subject.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
-import { renderMarkdown } from '../domain/markdown.js';
 import { coverageOf } from '../services/ledger.js';
 import type { BenchProber } from '../services/bench.js';
 import type { RunLedger } from '../services/ledger.js';
-import type { Runner, RunOutcome } from '../runner/index.js';
+import type { Runner } from '../runner/index.js';
 import type { Scheduler } from '../scheduler/index.js';
-import type { ReportIndex } from '../store/index.js';
 
 export interface AssayRoutesOptions {
   runner?: Runner;
   /** The in-flight run, so a six-minute wait can show what it has established so far. */
   ledger?: RunLedger;
   scheduler?: Scheduler;
-  store?: ReportIndex;
   /** The demo pool, reported on `/assays/current` — see the `bench` field there. */
   prober?: BenchProber;
 }
@@ -47,15 +52,13 @@ function planOf(section: { phases: string[] }): { id: string; label: string }[] 
 
 interface Body {
   subject?: string;
-  /** Block until the audit finishes and return the report with it. Default false. */
-  wait?: boolean;
 }
 
 const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
   /**
    * What is running, and what the last run produced. Polled by every part of the UI that
    * says something about the run in flight — the strip in the shell, the Overview's running
-   * cells, the Activity card and the re-assay button all read this one endpoint.
+   * cells, the Activity card and the audit buttons all read this one endpoint.
    */
   app.get('/assays/current', async (): Promise<RunStatus> => {
     const live = options.ledger?.live() ?? null;
@@ -110,6 +113,9 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
        * poller, one answer, and the button can no longer disagree with the strip above it.
        */
       ...(options.prober ? { bench: { leasable: options.prober.leasable().length, window: options.prober.window() } } : {}),
+      // The depth of the request queue, so the strip on every page can say what is after this
+      // one. Absent rather than 0 when no scheduler is wired, which is not the same answer.
+      ...(options.scheduler ? { queued: (await options.scheduler.previewRequests()).length } : {}),
     };
   });
 
@@ -117,99 +123,63 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
     const asked = String(req.body?.subject ?? '').trim();
     if (!asked) return reply.code(400).send({ error: 'subject is required' });
 
-    // The button sends a key; a shell or an old bookmark may send a bare app name. Both
-    // resolve, and a bare name that exists in two stores is a 400 naming them rather than a
-    // silent pick — auditing the wrong store's app would attribute its verdict to the other.
-    const known = options.scheduler?.knownSubjects() ?? [];
+    const scheduler = options.scheduler;
+    if (!scheduler) return reply.code(503).send({ error: 'no scheduler is wired up' });
+
+    /**
+     * Resolved **strictly**, which is a change and a deliberate one.
+     *
+     * This route used to run an unknown name anyway, on the reasoning that the registry may be
+     * mid-refresh and refusing would make a first-ever audit impossible. That reasoning does
+     * not survive the queue: the tick's candidate set is `registry.list()`, so a request
+     * written against a key outside it is never read, never drains, and leaves a row in
+     * `state/schedule.json` that only a delete removes. A 404 naming the app is a better
+     * answer than a request that silently goes nowhere, and the mid-refresh window is seconds.
+     */
+    const known = scheduler.knownSubjects();
     const resolved = resolveSubjectKey(asked, known);
     if (resolved.kind === 'ambiguous') {
       return reply.code(400).send({ error: ambiguousMessage(asked, resolved.candidates) });
     }
-    // An unknown name still runs: the registry may be mid-refresh, and refusing here would
-    // make a first-ever audit impossible. `asSubjectKey` puts a bare name in the default store.
-    const subject = resolved.kind === 'ok' ? resolved.key : asSubjectKey(asked);
+    if (resolved.kind !== 'ok') {
+      return reply.code(404).send({ error: `No app called ${asked} is in the store list.` });
+    }
+    const subject: SubjectKey = resolved.key;
 
     const runner = options.runner;
     if (!runner) return reply.code(503).send({ error: 'no runner configured' });
     if (!runner.enabled) {
-      // Not something a retry fixes, and not a 500 either: it is off on purpose, and the
-      // message says where to turn it on.
+      // Not something a retry fixes, and not something a queue fixes either: it is off on
+      // purpose, and the message says where to turn it on. Refused rather than enqueued, or
+      // the request would sit at the head of a queue nothing could ever drain.
       return reply.code(409).send({ error: 'the runner is disabled — set runner.enabled in config.yaml' });
     }
-    if (runner.busy) {
-      const running = runner.status().running;
-      return reply.code(409).send({
-        error: 'an audit is already running',
-        running,
-      });
-    }
 
-    // No depth: a run audits every section of the protocol, and the ones whose prerequisites
-    // are missing are recorded as blocked rather than narrowing the job.
-    const job = { subject, try_n: 1 } as const;
+    // The request itself. Already-requested is not an error and not a second request: the
+    // timestamp is left where it is, so pressing Audit twice does not send the app to the
+    // back of its own queue.
+    const changed = await scheduler.setFlagged(subject, true, 'operator');
 
-    if (req.body?.wait !== true) {
-      // Fire and report. Errors are already classified inside `run`, and anything thrown
-      // past it belongs in the log rather than in a response nobody is waiting for.
-      void runAndRecord(runner, options.scheduler, job).catch((err) =>
-        app.log.error({ err, subject }, 'hand-run assay failed'),
-      );
-      return reply.code(202).send({ started: true, subject });
-    }
+    // Ask the loop to look now rather than at the top of the hour. Its decision is not read
+    // back: `tick()` coalesces with one already running and then hands out the *previous*
+    // decision, which describes work this request had no part in.
+    await scheduler.tick();
 
-    const outcome = await runAndRecord(runner, options.scheduler, job);
-    return { subject, outcome, report: await readReport(options.store, outcome) };
+    // Answered from state, which is the only honest source. A claim on this subject means the
+    // tick took it; anything else means it is in the line, and `previewRequests` says where.
+    const started = Boolean(scheduler.snapshot().subjects[subject]?.claim);
+    const queue = await scheduler.previewRequests();
+    const at = queue.findIndex((r) => r.kind === 'audit' && r.id === subject);
+
+    return reply.code(202).send({
+      queued: true,
+      started,
+      already: !changed,
+      subject,
+      ...(at >= 0 ? { position: at + 1 } : {}),
+      ...(started ? {} : { running: runner.status().running }),
+    });
   });
-
-  /**
-   * The report a run produced, ready to render.
-   *
-   * The point of a manual trigger is to *read the thing*, so the blocking form hands it back
-   * rather than a path the caller has to go and fetch.
-   */
-  async function readReport(
-    store: ReportIndex | undefined,
-    outcome: RunOutcome,
-  ): Promise<ReportResponse | null> {
-    if (!store || outcome.kind !== 'verdict') return null;
-    const first = outcome.files[0];
-    if (!first) return null;
-    const file = await store.read(first);
-    if (!file) return null;
-    return { meta: file.meta, html: renderMarkdown(file.body), raw: file.raw };
-  }
 };
-
-/**
- * Run, then tell the scheduler what it cost.
- *
- * A hand-run assay counts for scheduling exactly as a scheduled one does — it stamps the
- * finish, and clears or burns the try. Otherwise running one by hand would leave the subject
- * looking untouched and the next tick would pick it straight back up.
- */
-async function runAndRecord(
-  runner: Runner,
-  scheduler: Scheduler | undefined,
-  job: { subject: SubjectKey; try_n: number },
-): Promise<RunOutcome> {
-  const outcome = await runner.run(job);
-  await scheduler?.record(job.subject, toSchedulerOutcome(outcome));
-  return outcome;
-}
-
-function toSchedulerOutcome(outcome: RunOutcome) {
-  switch (outcome.kind) {
-    case 'verdict':
-      return { kind: 'verdict' as const };
-    case 'agent_busy':
-      return { kind: 'agent_busy' as const };
-    case 'agent_auth':
-      return { kind: 'agent_auth' as const };
-    case 'blocked':
-      return { kind: 'blocked' as const, reason: outcome.reason };
-    default:
-      return { kind: 'error' as const, reason: outcome.reason };
-  }
-}
 
 export default routes;

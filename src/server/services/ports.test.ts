@@ -77,18 +77,48 @@ describe('whether a browser is actually drivable', () => {
     }) as unknown as typeof fetch;
 
   /**
-   * The exact contradiction on the box: the manager holds a live process handle while
-   * nothing can be driven through it, because the CDP port is held by an orphan it lost
-   * track of. Neither endpoint alone says so — `/api/health` says `running`, and
-   * `/api/status` says `false`, which is also what a healthy idle browser says.
+   * The exact contradiction on the box, on the image that could not see it itself: the
+   * manager holds a live process handle while nothing can be driven through it, because the
+   * CDP port is held by an orphan it lost track of. Neither endpoint alone says so —
+   * `/api/health` says `running`, and `/api/status` says `false`, which is also what a
+   * healthy idle browser says. No `cdp` field, so the inference is all there is.
    */
-  it('calls it wedged when health claims Chrome is running and nothing answers CDP', async () => {
+  it('calls it wedged when a sidecar that cannot check CDP claims Chrome is running', async () => {
     const live = await browserLiveness(
       'http://browser.example/mcp',
       4000,
       sidecar({ running: false }, { ok: true, chrome: 'running' }),
     );
     expect(live.wedged).toBe(true);
+  });
+
+  /**
+   * …and the regression that inference became once the sidecar could answer for itself.
+   * `chrome: "running"` beside `running: false` is a browser that is up with no page open —
+   * launching, or waiting out the idle reaper after a run released its tab. It is the state a
+   * working box spends half its time in, and reading it as a wedge flapped `browser-1` down
+   * for ~30 minutes of every hour and blocked fifteen functional sections on 2026-08-31.
+   */
+  it('leaves a self-diagnosing sidecar alone when Chrome is up with no page open', async () => {
+    const live = await browserLiveness(
+      'http://browser.example/mcp',
+      4000,
+      sidecar({ running: false }, { ok: true, chrome: 'running', cdp: true }),
+    );
+    expect(live.wedged).toBe(false);
+  });
+
+  /**
+   * Presence, not truth: a sidecar that checks CDP reports `cdp: null` for a Chrome that is
+   * off, and that must still count as one we stop second-guessing.
+   */
+  it('reads the cdp field as a marker, not as a verdict', async () => {
+    const live = await browserLiveness(
+      'http://browser.example/mcp',
+      4000,
+      sidecar({ running: false }, { ok: true, chrome: 'idle', cdp: null }),
+    );
+    expect(live.wedged).toBe(false);
   });
 
   /**
@@ -109,7 +139,7 @@ describe('whether a browser is actually drivable', () => {
     const live = await browserLiveness(
       'http://browser.example/mcp',
       4000,
-      sidecar({ running: false }, { ok: false, chrome: 'wedged' }),
+      sidecar({ running: false }, { ok: false, chrome: 'wedged', cdp: false }),
     );
     expect(live.wedged).toBe(true);
   });

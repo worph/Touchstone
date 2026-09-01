@@ -41,32 +41,52 @@ function input(over: Partial<PolicyInput> = {}): PolicyInput {
 }
 
 describe('the order of the branches', () => {
-  /**
-   * n8n checks `busyApp` before it looks at the forced list, so a manual run during an audit
-   * waits rather than starting a second one. Single-flight, row B8.
-   */
-  it('an audit already in progress beats a forced run', () => {
+  /** Single-flight beats everything, including somebody asking. Row B8. */
+  it('an audit already in progress beats a request', () => {
     const d = decide(
       input({
-        forced: ['Gamma'],
-        schedule: { Alpha: { try_n: 0, claim: { since: minutesAgo(10), try_n: 1 } } },
+        subjects: ['Alpha', 'Gamma'],
+        schedule: {
+          Alpha: { try_n: 0, claim: { since: minutesAgo(10), try_n: 1 } },
+          Gamma: { try_n: 0, flagged_at: minutesAgo(1) },
+        },
       }),
     );
     expect(d.action).toBe('idle');
     expect(d.reason).toContain('already in progress (Alpha');
   });
 
-  it('a forced run beats the cooldown and the freshness window', () => {
+  /**
+   * The agent held by something with no claim — a trial. The claim-derived `busy` above
+   * cannot see it, and before `agentBusy` existed a tick kicked the moment an audit finished
+   * would dispatch straight into the running trial and learn nothing, over and over.
+   */
+  it('a trial holding the agent beats a request, though it holds no claim', () => {
     const d = decide(
       input({
-        forced: ['Gamma'],
+        subjects: ['Gamma'],
+        agentBusy: true,
+        schedule: { Gamma: { try_n: 0, flagged_at: minutesAgo(1) } },
+      }),
+    );
+    expect(d.action).toBe('idle');
+    expect(d.reason).toContain('busy');
+  });
+
+  it('a request beats the cooldown and the freshness window', () => {
+    const d = decide(
+      input({
+        subjects: ['Gamma'],
         lastFinishedAt: minutesAgo(5),
-        lastDoneAt: { Gamma: daysAgo(0) },
+        // Audited an hour ago — well inside `fresh_days` — and asked for since.
+        lastDoneAt: { Gamma: minutesAgo(60) },
+        lastAttemptAt: { Gamma: minutesAgo(60) },
+        schedule: { Gamma: { try_n: 0, flagged_at: minutesAgo(1) } },
       }),
     );
     expect(d.action).toBe('audit');
     expect(d.subject).toBe('Gamma');
-    expect(d.reason).toBe('forced (manual trigger)');
+    expect(d.source).toBe('requested');
   });
 
   it('the cooldown blocks a pick that is otherwise due', () => {
@@ -487,8 +507,10 @@ describe('when a subject is flagged for re-audit', () => {
     expect(d.backlog).toBe(1);
   });
 
-  it('says so in the reason, because n8n has no such rule to diff against', () => {
-    expect(decide(flagged()).reason).toContain('flagged for re-audit');
+  it('says so in the reason, and says it was asked for rather than merely due', () => {
+    const d = decide(flagged());
+    expect(d.reason).toContain('requested');
+    expect(d.source).toBe('requested');
   });
 
   it('does nothing to a subject nobody flagged', () => {
@@ -532,13 +554,38 @@ describe('when a subject is flagged for re-audit', () => {
       }),
     );
     expect(d.action).toBe('audit');
-    expect(d.reason).toContain('flagged for re-audit');
+    expect(d.reason).toContain('requested');
   });
 
-  it('does not jump the queue — a never-audited app still goes first', () => {
+  /**
+   * **The one asymmetry in the three clauses**, and the reason the comment in `plan()` works
+   * so hard at it. A rubric edit and a compose change are facts about the world, and the world
+   * can wait for the rotation — both go on proving they do not jump, two describes above.
+   * A request is a person waiting for an answer, and on 2026-09-01 it started going first.
+   */
+  it('jumps the queue — a request outranks even a never-audited app', () => {
     const rows = queue(flagged({ subjects: ['Alpha', 'Beta'] }));
-    expect(rows.map((r) => r.subject)).toEqual(['Beta', 'Alpha']);
-    expect(rows[0]?.state).toBe('never');
+    expect(rows.map((r) => r.subject)).toEqual(['Alpha', 'Beta']);
+    expect(rows[0]?.state).toBe('due');
+    expect(rows[0]?.flagged).toBe(true);
+    expect(rows[1]?.state).toBe('never');
+  });
+
+  /** Two requests are one line, and the line is in the order they were asked for. */
+  it('orders requests by when they were asked for, not by staleness', () => {
+    const rows = queue(
+      flagged({
+        subjects: ['Alpha', 'Beta'],
+        lastDoneAt: { Alpha: daysAgo(2), Beta: daysAgo(9) },
+        lastAttemptAt: { Alpha: daysAgo(2), Beta: daysAgo(9) },
+        schedule: {
+          Alpha: { try_n: 0, flagged_at: minutesAgo(30) },
+          Beta: { try_n: 0, flagged_at: minutesAgo(5) },
+        },
+      }),
+    );
+    // Beta is seven days staler and was asked for second, so it goes second.
+    expect(rows.map((r) => r.subject)).toEqual(['Alpha', 'Beta']);
   });
 
   /** It is due, and the note is where the reason lives — not in a seventh state word. */
@@ -597,13 +644,53 @@ describe('when a subject is flagged for re-audit', () => {
     expect(row?.position).toBe(1);
   });
 
-  it('is still subject to the cooldown, the bench gate and the park', () => {
-    expect(decide(flagged({ lastFinishedAt: minutesAgo(5) })).action).toBe('idle');
-    expect(decide(flagged({ benchAvailable: false })).reason).toContain('no usable demo bench');
+  /**
+   * **The cooldown no longer applies**, and the other two still do.
+   *
+   * A request that waited out fifty-five minutes behind a run that had just finished would
+   * make pressing Audit on an idle box mean "in about an hour", which is the answer the queue
+   * exists to stop giving. The bench gate is a different thing: it is not a pace, it is a
+   * missing prerequisite, and a request that cannot run holds the line and says why.
+   */
+  it('is no longer subject to the cooldown', () => {
+    expect(decide(flagged({ lastFinishedAt: minutesAgo(5) })).action).toBe('audit');
+  });
+
+  it('is still subject to the bench gate and the park', () => {
+    const gated = decide(flagged({ benchAvailable: false }));
+    expect(gated.action).toBe('idle');
+    expect(gated.reason).toContain('no usable demo bench');
+    // And it names what is being held up, or "waiting" and "empty" render identically.
+    expect(gated.waiting_on).toBe('Alpha');
     expect(
       decide(flagged({ schedule: { Alpha: { try_n: 3, parked_at: daysAgo(1), flagged_at: FLAGGED } } }))
         .action,
     ).toBe('idle');
+  });
+
+  /**
+   * Trials and audits share one line and one ordering key, because they share one agent.
+   * Ordering them separately would be two queues wearing one heading.
+   */
+  it('takes a trial first when the trial was asked for first', () => {
+    const d = decide(
+      flagged({
+        queuedTrials: [{ slug: 'FileBrowser@abcd1234-x', subject: 'FileBrowser', queued_at: daysAgo(2) }],
+      }),
+    );
+    expect(d.action).toBe('trial');
+    expect(d.trial).toBe('FileBrowser@abcd1234-x');
+    expect(d.source).toBe('requested');
+  });
+
+  it('takes the audit first when the audit was asked for first', () => {
+    const d = decide(
+      flagged({
+        queuedTrials: [{ slug: 'FileBrowser@abcd1234-x', subject: 'FileBrowser', queued_at: minutesAgo(1) }],
+      }),
+    );
+    expect(d.action).toBe('audit');
+    expect(d.subject).toBe('Alpha');
   });
 
   /** Garbage in the file must not throw a tick; it reads as "not flagged". */
