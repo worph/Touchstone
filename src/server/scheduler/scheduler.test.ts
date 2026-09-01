@@ -901,12 +901,18 @@ describe('the request queue', () => {
     // Requested, so the cooldown a completion stamps cannot be what keeps it still.
     await s.setFlagged(ALPHA, true);
 
+    // The negative half has to wait on the clock — there is no event for "nothing happened" —
+    // but generously, because a saturated suite is exactly when a 30 ms window lies.
     await s.record(ALPHA, { kind: 'agent_busy' });
-    await new Promise((r) => setTimeout(r, 30));
+    await new Promise((r) => setTimeout(r, 120));
     expect(ticks).toEqual([]);
 
+    // The positive half waits on the condition, not the clock, so it is fast when the machine
+    // is idle and patient when it is not.
     await s.record(ALPHA, { kind: 'verdict' });
-    await new Promise((r) => setTimeout(r, 30));
+    for (let i = 0; i < 100 && ticks.length === 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(ticks).toEqual([ALPHA]);
     s.stop();
   });
