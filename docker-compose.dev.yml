@@ -17,7 +17,20 @@ name: touchstone-dev
 
 services:
   dev:
-    image: node:22
+    # `node:22` plus `jq`, which is not a preference — `data/protocols/currency.sh` shells out
+    # to it thirty times and refuses to run without it, so on the stock image the `currency`
+    # reading was recorded `blocked` on every single run. That costs nothing (invariant 12: a
+    # `scores: false` section is invisible to the hallmark) which is exactly why it went
+    # unnoticed: nothing in the verdicts changes, the reading simply never happens.
+    #
+    # Baked into a layer rather than installed in `command:`, so a restart stays instant and an
+    # `up` with no network works once it is cached.
+    build:
+      dockerfile_inline: |
+        FROM node:22
+        RUN apt-get update \
+         && apt-get install -y --no-install-recommends jq \
+         && rm -rf /var/lib/apt/lists/*
     container_name: touchstone-dev
     working_dir: /app
     volumes:
