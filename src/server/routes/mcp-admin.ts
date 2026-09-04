@@ -47,6 +47,31 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 
+/**
+ * What a client is told before it reads a single tool description.
+ *
+ * It says one thing the per-tool text structurally cannot: **which** tool a question belongs
+ * to. A description argues for its own tool and is read alone, so a caller that reached for
+ * the wrong one is refused by the wrong one and never sees the right one — which is exactly
+ * how "audit these files for an app nobody has committed" ended at `run_assay`'s "there is no
+ * subject called that", read as a misspelling, and stopped. Two sentences here would have
+ * turned that into a trial.
+ *
+ * Kept to the fork in the road. Everything else a caller needs is on the tool it picked, and
+ * an instructions block that restates seventeen descriptions is one more thing to keep in
+ * step with them.
+ */
+const INSTRUCTIONS = [
+  'Touchstone audits apps against a versioned standard and issues the verdict each one carries.',
+  '',
+  'Two things can be judged, and picking the wrong one is the common mistake:',
+  '',
+  '- **An app a configured store offers** — `run_assay`. The audit fetches the app from its store, the result becomes the hallmark that app carries, and the subject must therefore be one `list_subjects` gives.',
+  '- **Bytes that are not in a store, or not yet** — `open_trial` (upload the files, no commit and no push) or `run_trial` with a GitHub archive URL. A trial names any app directory, including one no store has ever offered, and writes where the report index never looks: it can never move what an app carries.',
+  '',
+  'So a new app, an uncommitted fix, or a branch is always a trial — never a failed audit. Reading is separate from both: `get_board` for every verdict at once, then `get_subject`, `get_fix_brief` and `get_report` for one app in increasing detail.',
+].join('\n');
+
 import { CHAT_TOOLS, type ChatTool, type ChatToolContext } from '../chat/registry.js';
 import type { EventLog } from '../services/events.js';
 import { dispatchRpc, toolError, type JsonRpcRequest, type McpToolDef } from './rpc.js';
@@ -92,6 +117,7 @@ const routes: FastifyPluginAsync<AdminMcpOptions> = async (app, options) => {
 
     const out = await dispatchRpc(req.body ?? {}, {
       server: { name: 'touchstone-admin', version: '1' },
+      instructions: INSTRUCTIONS,
       tools: defs,
       call: async (name, args) => {
         const tool = visible().find((candidate) => candidate.name === name);

@@ -25,7 +25,12 @@ declares), **alert** (a deduplicated environment condition), **origin** (an app 
 which is the filesystem layer, and **not** `AssayStore`, which is the read interface the routes
 take), **trial** (a one-shot audit of **one store zip and one app inside it** — a GitHub branch
 archive, or files uploaded straight into a session — written under `data/trials/` and never read
-by the report index, so it cannot move a hallmark), **board** (the read-only public view of
+by the report index, so it cannot move a hallmark. **Its subject need not be a subject**: any app
+directory name in the archive is auditable, including one no store has ever offered, which is
+what makes a new app checkable before anybody commits it. That is the line between the two verbs
+— `run_assay` audits an app *a store offers*, a trial audits *bytes* — and it is the one a
+caller gets wrong, so it is said in the admin MCP's `instructions`, in `run_assay`'s refusal and
+in the chat prompt as well as here), **board** (the read-only public view of
 every subject's hallmark, at `/public`, addressed to app authors rather than to the operator),
 **executor** (who performs a section — `agent`, or a `*.sh` beside the protocol that declared it),
 **reading** (what a section that *measures* produces rather than judging: `scores: false` in its
@@ -227,7 +232,13 @@ because its data access was smeared through two 200-line n8n Code nodes.
   half the rubric. `POST /assays` is now the only thing that writes it, so there is one verb.
 - **`routes/mcp-admin.ts`** — the *same* seventeen tools, served as an MCP server at
   `POST /api/v1/mcp/admin` so an agent can ask them: it renders `CHAT_TOOLS` into `tools/list`
-  and hands `tools/call` to the same handlers with the chat's own `ChatToolContext`. There is
+  and hands `tools/call` to the same handlers with the chat's own `ChatToolContext`. It also
+  carries the surface's `instructions` — what `initialize` returns, read once before any tool
+  description. That block exists for the one thing a description cannot say: **which** tool a
+  question belongs to. Each description argues for its own tool and is read alone, so a caller
+  that reached for the wrong one is refused by the wrong one and never sees the right one's
+  text; keep it to that fork (audit an app a store offers, versus trial bytes) rather than
+  letting it grow into a summary of seventeen tools that then has to be kept in step with them. There is
   no second definition of what an agent may ask this app, which is the point — a second one
   would be a second thing to keep in step with invariant 6. **Off unless `admin_mcp.enabled`**,
   and disabled it registers no route at all: it is meant to be beaconified into an aggregator

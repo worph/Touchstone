@@ -45,6 +45,20 @@ export interface McpToolOutcome {
 
 export interface McpSurface {
   server: { name: string; version: string };
+  /**
+   * What this surface is *for*, returned by `initialize` as MCP's `instructions`.
+   *
+   * A client reads it once, before any tool description, which makes it the only place a
+   * caller learns something the per-tool text cannot teach: which of two tools its question
+   * belongs to. Tool descriptions are read one at a time and by definition argue for
+   * themselves, so a caller that picked the wrong one never sees the right one's text — the
+   * failure this exists to prevent, where "audit these files" reached `run_assay`, was refused
+   * for naming an app no store offers, and read as a spelling mistake.
+   *
+   * Optional: the assay ledger surface serves one caller that is already inside a run and has
+   * nothing to choose between.
+   */
+  instructions?: string;
   /** Called per request, not captured: a surface may narrow its list at runtime. */
   tools: () => McpToolDef[];
   call: (name: string, args: Record<string, unknown>) => Promise<McpToolOutcome>;
@@ -79,6 +93,7 @@ export async function dispatchRpc(body: JsonRpcRequest, surface: McpSurface): Pr
         protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: { tools: {} },
         serverInfo: surface.server,
+        ...(surface.instructions ? { instructions: surface.instructions } : {}),
       });
 
     case 'notifications/initialized':

@@ -92,6 +92,23 @@ describe('the envelope', () => {
     expect(body.result.serverInfo.name).toBe('touchstone-admin');
   });
 
+  /**
+   * The handshake carries the fork in the road, because a tool description cannot: it is read
+   * alone, and a caller that picked the wrong tool is refused by the wrong tool. This is the
+   * one place both routes are named at once.
+   */
+  it('tells a client which questions are audits and which are trials, before any tool', async () => {
+    const instance = await serve({ enabled: true });
+    const res = await rpc(instance, { jsonrpc: '2.0', id: 1, method: 'initialize' });
+    const body = res.json() as { result: { instructions?: string } };
+    const text = body.result.instructions ?? '';
+
+    expect(text).toContain('run_assay');
+    expect(text).toContain('open_trial');
+    // The sentence that would have saved the trip: a new app is a trial, not a failed audit.
+    expect(text).toMatch(/no store has ever offered|not in a store/);
+  });
+
   it('answers the initialized notification 202 with no body, which is what a client waits for', async () => {
     const instance = await serve({ enabled: true });
     const res = await rpc(instance, { jsonrpc: '2.0', method: 'notifications/initialized' });

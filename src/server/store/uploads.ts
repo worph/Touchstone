@@ -29,6 +29,7 @@ import path from 'node:path';
 import { zipSync } from 'fflate';
 
 import { readJson, writeJsonAtomic } from './state.js';
+import { isAppDirName } from './trials.js';
 
 /**
  * One or more safe path segments — the same charset `store/trials.ts` allows in `apps_path`,
@@ -151,7 +152,20 @@ export class UploadStore {
     return Date.parse(session.expires_at) <= this.now().getTime();
   }
 
+  /**
+   * Open a session for one app.
+   *
+   * The subject is checked here rather than trusted from the caller because it is not only a
+   * label: `zipStore` writes `Apps/<subject>/` into the archive and the trial's reports nest
+   * under `<slug>/<subject>/`, so a name with a separator in it would be a traversal wearing a
+   * subject's clothes. It used to arrive only from the registry, which made it safe by
+   * accident; a session may now name an app no store offers, so the guarantee has to be
+   * stated. Same predicate as a `store_url` trial's subject — see `store/trials.ts`.
+   */
   async create(input: { subject: string; repo: string }): Promise<UploadSession> {
+    if (!isAppDirName(input.subject)) {
+      throw new UploadError('subject must be an app directory name');
+    }
     const at = this.now();
     const session: UploadSession = {
       id: randomBytes(6).toString('hex'),

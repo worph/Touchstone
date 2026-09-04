@@ -549,6 +549,24 @@ Three decisions worth keeping:
   so that one prefix is outside the SSO gate). Because the URL is minted per trial, Maison's store
   cache cannot be serving an older copy of it — the 2026-08-20 failure mode is removed rather than
   mitigated.
+- **An app no store offers yet is a subject here — 2026-09-04.** `open_trial` resolved its
+  `subject` against the archive and the registry and refused anything neither knew, which made
+  the new-app case impossible: a store's registry is its `Apps/` listing on GitHub, so an app
+  that has never been committed is in no registry by definition, and the only way to trial one
+  was to push it first — the commit this whole section exists to remove. It was also a
+  contradiction inside one tool: `repo` was documented as the argument to "supply only for an
+  app no store has yet", and `buildSpec` had always handled the app with no counterpart ("a
+  branch adding a new app has no counterpart, which is a normal PR and not an error", where it
+  resolves `compare_to`). So an unknown name now opens a session; an **ambiguous** one still
+  refuses, because two stores answering to it means the caller has not said which app this is.
+  Nothing about the result changes: a trial writes under `data/trials/`, so there is still no
+  hallmark to move, no backlog to enter and no registry row to invent. Two things had to
+  become explicit, both because the name reaches the filesystem as `Apps/<subject>/` in the zip
+  and `<slug>/<subject>/` in the report tree: the name is held to the same shape a `store_url`
+  trial's subject is (`isAppDirName`, one predicate in `store/trials.ts`, checked again in
+  `UploadStore.create`), and a new app's nominal repo falls back to this installation's first
+  origin — the same anchor `rubricRepo` picks when the trial runs, so the session cannot
+  promise one repo and be judged against another.
 - **What this opens was decided rather than assumed.** An upload trial makes "an arbitrary compose
   a bench will install and run" reachable from an aggregator that authenticates nobody. The
   operator's judgement (2026-08-22) is that this grants nothing an anonymous visitor lacked: the
