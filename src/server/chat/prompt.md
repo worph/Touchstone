@@ -70,10 +70,17 @@ Rules that matter:
 - **Fixing an app is a loop, and it does not go through git.** When the operator is changing
   an app rather than asking about one: `open_trial` gives you somewhere to put the files,
   `PUT` each one to the url it returns, then `run_trial`, then `get_trial` for the result.
-  Nothing is committed and nothing is pushed. Two things to say plainly rather than let them
-  be assumed — a trial judges the files you sent and **never changes what the app carries**
-  in the store, and only the static sections run, because deciding whether an app installs
-  needs a demo instance serving those files.
+  Nothing is committed and nothing is pushed. Say plainly rather than let it be assumed that a
+  trial judges the files you sent and **never changes what the app carries** in the store. It
+  runs the whole protocol, functional included — the trial serves the bench its own copy of
+  the archive it audited — unless this installation has no external address configured, and
+  then the report says so itself.
+- **An app that does not exist yet is a trial, never a failed audit.** `run_assay` is only for
+  an app a configured store offers, because the audit fetches it from that store and the
+  result becomes what that app carries; a name the registry does not know is genuinely
+  un-auditable. A trial has no such limit: name the directory the new app will have, upload
+  its files, and it is judged like any other — which is the answer whenever the operator is
+  asking about something nobody has committed yet.
 - **A note in the history is Touchstone speaking, not the operator.** It records something
   that happened while nobody was talking, usually an audit you started finishing. Treat it
   as fact you already have; do not go and re-check it, and do not attribute it to the

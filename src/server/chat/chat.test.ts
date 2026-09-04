@@ -465,6 +465,22 @@ describe('reading what was written down', () => {
       expect(res.text).not.toContain('There is no subject');
     });
 
+    /**
+     * The other half of the same lesson. A name no store offers is un-auditable *and* the
+     * question behind it usually has an answer — the trial route — so the refusal carries it.
+     * Without that this reads as a misspelling, which is how an app that had never been
+     * committed was reported as impossible to check rather than as something to trial.
+     */
+    it('points an unknown name at the trial route instead of leaving it at a spelling hunt', async () => {
+      const res = await dispatch(
+        { tool: 'run_assay', input: { subject: 'Radicle' } },
+        { ...withGone, runner: { enabled: true, busy: false } } as never,
+      );
+      expect(res.ok).toBe(false);
+      expect(res.text).toContain('There is no subject');
+      expect(res.text).toContain('open_trial');
+    });
+
     it('still lists it, marked, so a name the operator says can be resolved', async () => {
       const res = await dispatch({ tool: 'list_subjects', input: {} }, withGone as never);
       expect(res.ok).toBe(true);
@@ -774,6 +790,72 @@ describe('trialling supplied files', () => {
     const [session] = uploads.list();
     expect(session?.subject).toBe('OpenClaw');
     expect(session?.repo).toBe('Yundera/AppStore');
+  });
+
+  /**
+   * The case the tool's own `repo` argument was written for, and the one it used to refuse.
+   *
+   * A trial is a fact about files, never about a subject — it writes under `data/trials/`,
+   * moves no hallmark and enters no backlog — so there is nothing for an unknown name to
+   * corrupt, and `buildSpec` has always handled the app with no counterpart. Refusing here
+   * meant a new app could only be checked after somebody pushed it, which is exactly the
+   * commit-first loop uploads exist to remove.
+   */
+  it('opens a session for an app no store offers yet', async () => {
+    const { ctx, uploads } = await wiring();
+    const res = await dispatch({ tool: 'open_trial', input: { subject: 'Radicle' } }, ctx);
+
+    expect(res.ok).toBe(true);
+    expect(res.text).toContain('no store offers yet');
+    // The anchor a new app is judged against is the installation's own store, so the session
+    // cannot promise one repo while `rubricRepo` picks another when the trial runs.
+    expect(res.text).toContain('Yundera/AppStore@main');
+
+    const [session] = uploads.list();
+    expect(session?.subject).toBe('Radicle');
+    expect(session?.repo).toBe('Yundera/AppStore');
+  });
+
+  it('takes the name as given for a new app, since no store can correct its spelling', async () => {
+    const { ctx, uploads } = await wiring();
+    await dispatch({ tool: 'open_trial', input: { subject: 'radicle' } }, ctx);
+    expect(uploads.list()[0]?.subject).toBe('radicle');
+  });
+
+  /**
+   * The name is not only a label: it becomes `Apps/<name>/` in the zip and `<slug>/<name>/` in
+   * the trial's report tree. A store name was safe by construction; one the caller invents has
+   * to be checked, and the refusal says what a good one looks like.
+   */
+  it('refuses a new name that is not an app directory name', async () => {
+    const { ctx, uploads } = await wiring();
+    const res = await dispatch({ tool: 'open_trial', input: { subject: '../../etc' } }, ctx);
+
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('not an app directory name');
+    expect(uploads.list()).toHaveLength(0);
+  });
+
+  /**
+   * Unknown and ambiguous are different answers, which is why the resolution is split from the
+   * refusal: several stores offering that name means the caller has not said which app it is,
+   * and opening a session for a *new* app called that would answer a question nobody asked.
+   */
+  it('still refuses a name several stores answer to', async () => {
+    const { ctx } = await wiring();
+    const many = {
+      ...(ctx as Record<string, unknown>),
+      registry: {
+        list: () => ['yundera~Radicle', 'lab~Radicle'],
+        versions: () => ({}),
+        delisted: () => [],
+        isDelisted: () => false,
+      },
+    } as never;
+
+    const res = await dispatch({ tool: 'open_trial', input: { subject: 'Radicle' } }, many);
+    expect(res.ok).toBe(false);
+    expect(res.text).toContain('list_subjects');
   });
 
   it('refuses an app it cannot name a store for, rather than guessing one', async () => {

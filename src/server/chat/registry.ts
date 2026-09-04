@@ -63,7 +63,13 @@ import { standardLabel } from '../../shared/standard.js';
 import { blockedReasonClause, outcomeClause, type EventLevel, type EventRecord } from '../../shared/activity.js';
 import { lineDiff, type Diff } from '../../shared/linediff.js';
 import type { Revision } from '../../shared/standard.js';
-import { asSubjectKey, subjectName, subjectOrigin, type SubjectKey } from '../../shared/subject.js';
+import {
+  asSubjectKey,
+  DEFAULT_ORIGIN,
+  subjectName,
+  subjectOrigin,
+  type SubjectKey,
+} from '../../shared/subject.js';
 import type { AssayRecord, Section, SubjectState } from '../../shared/types.js';
 import { listControls, resetControl, setControl, type ControlPorts } from '../domain/controls.js';
 import { buildFixReport } from '../domain/fixreport.js';
@@ -77,6 +83,7 @@ import type { Scheduler } from '../scheduler/index.js';
 import type { Protocol, ProtocolStore } from '../store/protocols.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import type { RevisionStore } from '../store/revisions.js';
+import { isAppDirName } from '../store/trials.js';
 import { StoreDocError, type StoreDocReader } from '../services/storedoc.js';
 import type { RunLedger } from '../services/ledger.js';
 import type { AlertStore } from '../services/alerts.js';
@@ -208,12 +215,43 @@ const ACTIVITY_MAX = 200;
 const EVENT_LEVELS: EventLevel[] = ['debug', 'info', 'warn', 'error'];
 
 /**
- * Which subject somebody means, resolved the way every other entry point resolves it.
+ * Which subject somebody means — the resolution, with no opinion about what a miss means.
  *
  * The archive first, then the registry — because "not in the archive" is not "not a subject":
  * an app that has never been assayed is in the registry and in no report, and it is exactly
  * the one an operator asks about. `routes/index.ts` does the same two passes for the same
  * reason; both call `resolveSubjectKey`, so there is still one matcher.
+ *
+ * Split from `locate` so the one caller that can *act* on a miss is able to tell the two kinds
+ * apart. `unknown` and `ambiguous` are different answers: nothing here knows that name, versus
+ * several things do. Every read tool wants a refusal for both, and `open_trial` wants a refusal
+ * for the second only — see its handler.
+ */
+type Resolution =
+  | { kind: 'ok'; key: SubjectKey; records: readonly AssayRecord[] }
+  | { kind: 'ambiguous'; candidates: readonly string[] }
+  | { kind: 'unknown' }
+  | { kind: 'no-archive' };
+
+function resolveSubject(ctx: ChatToolContext, raw: string): Resolution {
+  const subject = raw.trim();
+  const store = ctx.store;
+
+  const inArchive = resolveSubjectKey(subject, store ? subjectNames(store.all()) : []);
+  if (inArchive.kind === 'ambiguous') return { kind: 'ambiguous', candidates: inArchive.candidates };
+  if (inArchive.kind === 'ok' && store) {
+    return { kind: 'ok', key: inArchive.key, records: recordsForSubject(store, inArchive.key) };
+  }
+
+  const inRegistry = resolveSubjectKey(subject, ctx.registry?.list() ?? []);
+  if (inRegistry.kind === 'ambiguous') return { kind: 'ambiguous', candidates: inRegistry.candidates };
+  if (inRegistry.kind === 'ok') return { kind: 'ok', key: inRegistry.key, records: [] };
+
+  return store ? { kind: 'unknown' } : { kind: 'no-archive' };
+}
+
+/**
+ * The same resolution, for the tools that can only answer *about* a subject that exists.
  *
  * Returns a `ChatToolResult` on failure so a caller can hand it straight back — a refusal the
  * model can act on ("call list_subjects"), not an exception.
@@ -225,23 +263,13 @@ function locate(
   const subject = raw.trim();
   if (!subject) return failed('That needs an app name.');
 
-  const store = ctx.store;
-  const inArchive = resolveSubjectKey(subject, store ? subjectNames(store.all()) : []);
-  if (inArchive.kind === 'ambiguous') {
-    return failed(`${ambiguousMessage(subject, inArchive.candidates)}. Call list_subjects to see the ids.`);
+  const found = resolveSubject(ctx, subject);
+  if (found.kind === 'ok') return { key: found.key, records: found.records };
+  if (found.kind === 'ambiguous') {
+    return failed(`${ambiguousMessage(subject, found.candidates)}. Call list_subjects to see the ids.`);
   }
-  if (inArchive.kind === 'ok' && store) {
-    return { key: inArchive.key, records: recordsForSubject(store, inArchive.key) };
-  }
-
-  const inRegistry = resolveSubjectKey(subject, ctx.registry?.list() ?? []);
-  if (inRegistry.kind === 'ambiguous') {
-    return failed(`${ambiguousMessage(subject, inRegistry.candidates)}. Call list_subjects to see the ids.`);
-  }
-  if (inRegistry.kind === 'ok') return { key: inRegistry.key, records: [] };
-
   return failed(
-    store
+    found.kind === 'unknown'
       ? `There is no subject called "${subject}". Call list_subjects to see the names.`
       : `There is no archive wired up, so nothing can be read about "${subject}".`,
   );
@@ -438,7 +466,7 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: 'list_subjects',
     description:
-      'The apps Touchstone knows about, from the AppStore registry. Call this when the operator names an app so you use its exact name — "filebrowser" is FileBrowser, and an audit started under the wrong spelling audits nothing.',
+      'The apps Touchstone knows about, from the AppStore registry. Call this when the operator names an app so you use its exact name — "filebrowser" is FileBrowser, and an audit started under the wrong spelling audits nothing. It is the set that can be **audited** (run_assay) and the set that carries hallmarks; it does not bound what can be **trialled**, since open_trial and run_trial audit bytes and will happily name an app no store offers yet.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -582,7 +610,7 @@ export const CHAT_TOOLS: ChatTool[] = [
     name: 'run_assay',
     writes: true,
     description:
-      'Ask for one app to be audited. It joins the request queue and runs as soon as the single agent is free — immediately if nothing else is waiting, otherwise behind whatever was asked for first. It returns as soon as the request is QUEUED, never with a verdict: an audit takes minutes, far longer than this conversation will wait, so do not call it twice hoping for one — a second call on the same app changes nothing and does not move it up. Use it for both "audit this now" and "audit this again", which are the same request; the reply says whether it started or where it is in the line. An audit covers every section of the protocol; a section that needs something unavailable — a demo instance, a browser — is not attempted and is recorded as blocked, which never counts against the app. The operator is notified when it finishes.',
+      'Ask for one app to be audited. It joins the request queue and runs as soon as the single agent is free — immediately if nothing else is waiting, otherwise behind whatever was asked for first. It returns as soon as the request is QUEUED, never with a verdict: an audit takes minutes, far longer than this conversation will wait, so do not call it twice hoping for one — a second call on the same app changes nothing and does not move it up. Use it for both "audit this now" and "audit this again", which are the same request; the reply says whether it started or where it is in the line. An audit covers every section of the protocol; a section that needs something unavailable — a demo instance, a browser — is not attempted and is recorded as blocked, which never counts against the app. The operator is notified when it finishes. It audits an app **a configured store offers**, and only that: the subject must be one list_subjects gives, because the audit fetches the app from its store. Files that are not in a store — a new app, or a fix nobody has pushed — are a trial, not an audit: see open_trial.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -629,7 +657,15 @@ export const CHAT_TOOLS: ChatTool[] = [
             `${subjectName(gone.key)} is delisted — the store no longer offers it, so there is nothing to fetch and audit. Its existing reports are still readable with get_subject and get_report. Nothing was started.`,
           );
         }
-        return failed(`There is no subject called "${subject}". Call list_subjects to see the names.`);
+        // Naming the trial route here is the whole point of the sentence. An audit is about
+        // an app **the store offers** — that is what makes it a hallmark — so a name the
+        // registry does not know is genuinely un-auditable, and a refusal that stopped at
+        // "call list_subjects" read as "you misspelled it" and sent the caller looking for a
+        // spelling that does not exist. The question behind it is usually the other one:
+        // files that are not in a store yet, which is what a trial is for.
+        return failed(
+          `There is no subject called "${subject}". Call list_subjects to see the names. An audit is only ever of an app a configured store offers; to check files that are not in a store yet — a new app, or a fix you have not pushed — use open_trial and run_trial instead.`,
+        );
       }
 
       const key = resolved.kind === 'ok' ? resolved.key : asSubjectKey(subject);
@@ -872,15 +908,19 @@ export const CHAT_TOOLS: ChatTool[] = [
     name: 'open_trial',
     writes: true,
     description:
-      'Open a place to put an app\'s files so they can be audited **without committing anything**. Returns an upload url and a token; PUT each file to `<upload_url>/<name>` (at minimum `docker-compose.yml`), then call `run_trial`. This is the loop to use when you are fixing an app: change the file, trial it, read the result, change it again — no branch, no push, and nothing that could be served from a stale cache. The session expires on its own. It audits the bytes you send and nothing else, but it still judges them as the named app in its store, so asset URLs and the store\'s CONTRIBUTING.md are read the way a real audit reads them.',
+      'Open a place to put an app\'s files so they can be audited **without committing anything**. Returns an upload url and a token; PUT each file to `<upload_url>/<name>` (at minimum `docker-compose.yml`), then call `run_trial`. This is the loop to use when you are fixing an app: change the file, trial it, read the result, change it again — no branch, no push, and nothing that could be served from a stale cache. **An app no store has yet is a normal subject here** — name it and the session opens, which is how a new app is checked before anybody commits it; the name becomes its directory, so it must look like one. The session expires on its own. It audits the bytes you send and nothing else, but it still judges them as an app of the store named below, so asset URLs and that store\'s CONTRIBUTING.md are read the way a real audit reads them.',
     inputSchema: {
       type: 'object',
       properties: {
-        subject: { type: 'string', description: 'The app these files are, exactly as list_subjects gives it.' },
+        subject: {
+          type: 'string',
+          description:
+            'The app these files are — as list_subjects gives it for an app that exists, or the directory name a new one will have.',
+        },
         repo: {
           type: 'string',
           description:
-            'The store repo to judge them as, owner/name. Defaults to the one the app already belongs to; supply it only for an app no store has yet.',
+            'The store repo to judge them as, owner/name. Defaults to the one the app belongs to, or to this installation\'s first store for an app no store has yet.',
         },
       },
       required: ['subject'],
@@ -889,14 +929,41 @@ export const CHAT_TOOLS: ChatTool[] = [
       const uploads = ctx.trials?.uploads;
       if (!uploads) return failed('This installation has no upload sessions configured.');
 
-      const found = locate(ctx, String(input.subject ?? ''));
-      if ('text' in found) return found;
-      const name = subjectName(found.key);
+      const raw = String(input.subject ?? '').trim();
+      if (!raw) return failed('That needs an app name.');
+
+      // An unknown name is an answer here, not a refusal. A trial exists to audit files that
+      // are not in a store — `buildSpec` already says so where it resolves `compare_to`: "a
+      // branch adding a new app has no counterpart, which is a normal PR and not an error" —
+      // and refusing to open a session for one made the new-app case, the one this tool's own
+      // `repo` argument was written for, the single thing it could not do. Ambiguity is still
+      // a refusal: several apps answering to that name means the caller has not said which.
+      const found = resolveSubject(ctx, raw);
+      if (found.kind === 'ambiguous') {
+        return failed(`${ambiguousMessage(raw, found.candidates)}. Call list_subjects to see the ids.`);
+      }
+      const known = found.kind === 'ok' ? found.key : undefined;
+      const name = known ? subjectName(known) : raw;
+      // The name reaches the filesystem — `Apps/<name>/` in the zip, `<slug>/<name>/` in the
+      // trial's report tree — so a new one is held to the same shape `validateTrial` holds a
+      // `store_url` trial's subject to. `UploadStore.create` checks it again at the boundary.
+      if (!known && !isAppDirName(name)) {
+        return failed(
+          `"${raw}" is not an app directory name, and no store offers an app called that. Use the directory name the app has in Apps/ — letters, digits, dot, dash and underscore.`,
+        );
+      }
 
       // Nominal, and the rubric leans on it: `static.md` requires asset URLs point at
       // `<repo>@main` and reads that repo's CONTRIBUTING.md as the definition of every item.
-      // Nothing is fetched from it for the app's own content.
-      const repo = String(input.repo ?? '').trim() || ctx.originRepo?.(subjectOrigin(found.key)) || '';
+      // Nothing is fetched from it for the app's own content. The fallback for an app no store
+      // has is this installation's first store — the same anchor `rubricRepo` will pick when
+      // the trial runs, so the session cannot promise one repo and be judged against another.
+      const repo =
+        String(input.repo ?? '').trim() ||
+        (known ? ctx.originRepo?.(subjectOrigin(known)) : undefined) ||
+        ctx.trials?.origins?.[0]?.repo ||
+        ctx.originRepo?.(DEFAULT_ORIGIN) ||
+        '';
       if (!repo) {
         return failed(
           `No store repo is configured for ${name}, so there is nothing to judge its assets and checklist against. Pass repo as owner/name.`,
@@ -906,7 +973,7 @@ export const CHAT_TOOLS: ChatTool[] = [
       const session = await uploads.create({ subject: name, repo });
       return ok(
         [
-          `Upload session ${session.id} is open for ${name}, judged as ${repo}@main.`,
+          `Upload session ${session.id} is open for ${name}${known ? '' : ' (an app no store offers yet)'}, judged as ${repo}@main.`,
           `PUT each file to /api/v1/uploads/${session.token}/<path> — docker-compose.yml at least, plus rationale.md and any assets the app ships.`,
           `GET /api/v1/uploads/${session.token} lists what has arrived.`,
           `Then call run_trial with upload ${session.id}. The session lapses at ${session.expires_at}.`,
@@ -919,7 +986,7 @@ export const CHAT_TOOLS: ChatTool[] = [
     name: 'run_trial',
     writes: true,
     description:
-      'Audit a candidate store — either the files in an upload session, or a store zip at a URL (a GitHub branch or tag archive). Returns as soon as the audit has STARTED — it takes minutes, far longer than this conversation will wait, so do not expect a verdict here and do not call it twice hoping for one; call `get_trial` afterwards. The result is written where the report index never looks, so **a trial can never move what an app currently carries** and never enters the backlog. It runs the FULL protocol, static and functional both: Touchstone serves the exact archive it audited and the demo instance installs that, so the bytes judged and the bytes running are the same. The functional half is skipped only when this installation has no external address configured, and the blocked report says so.',
+      'Audit a candidate store — either the files in an upload session, or a store zip at a URL (a GitHub branch or tag archive). Returns as soon as the audit has STARTED — it takes minutes, far longer than this conversation will wait, so do not expect a verdict here and do not call it twice hoping for one; call `get_trial` afterwards. The result is written where the report index never looks, so **a trial can never move what an app currently carries** and never enters the backlog. It runs the FULL protocol, static and functional both: Touchstone serves the exact archive it audited and the demo instance installs that, so the bytes judged and the bytes running are the same. The functional half is skipped only when this installation has no external address configured, and the blocked report says so. **The app does not have to exist in any store**: name a directory inside the archive you point at and it is audited, which is how a branch adding a new app is checked. The archive may come from any GitHub repository — a fork, a scratch repo, a branch — because the rubric is anchored to this installation\'s configured store either way, never to whoever owns the URL.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -219,6 +219,19 @@ describe('the parser swap stays inside this plugin', () => {
  * directory, so reproducing it is correct whether Maison strips a level or globs for `Apps/`.
  */
 describe('the store zip', () => {
+  /**
+   * The subject is a path segment in two trees — `Apps/<subject>/` here and
+   * `<slug>/<subject>/` in the trial's reports — and since a session may name an app no store
+   * offers, nothing upstream guarantees its shape any more. So the store checks it itself.
+   */
+  it('refuses to open a session for a name that is not an app directory', async () => {
+    const { uploads } = await serve();
+    await expect(uploads.create({ subject: '../escape', repo: 'Yundera/AppStore' })).rejects.toThrow(
+      /app directory name/,
+    );
+    expect(uploads.list()).toHaveLength(0);
+  });
+
   it('wraps the files the way a GitHub archive does', async () => {
     const { instance, uploads } = await serve();
     const session = await uploads.create({ subject: 'ClaudeCode', repo: 'Yundera/AppStore' });

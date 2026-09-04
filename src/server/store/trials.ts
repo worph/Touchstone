@@ -30,6 +30,19 @@ const PATH_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
 /** An app directory name. */
 const SUBJECT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/**
+ * Whether a string may name an app directory.
+ *
+ * Exported because a subject reaches the filesystem by two doors, and both have to hold it to
+ * the same shape: a `store_url` trial names one in the request body (`validateTrial` below),
+ * and an upload session names one that becomes `Apps/<subject>/` in the zip it builds and
+ * `<slug>/<subject>/` in the trial's report tree. One predicate, so widening it is one edit
+ * rather than one edit and one oversight.
+ */
+export function isAppDirName(value: string): boolean {
+  return SUBJECT_RE.test(value) && !value.includes('..');
+}
+
 export class TrialInputError extends Error {}
 
 export interface ValidatedTrial {
@@ -71,7 +84,7 @@ export function validateTrial(input: {
   if (!PATH_RE.test(appsPath) || appsPath.includes('..')) {
     throw new TrialInputError('apps_path must be a plain path inside the store');
   }
-  if (!SUBJECT_RE.test(subject)) throw new TrialInputError('subject must be an app directory name');
+  if (!isAppDirName(subject)) throw new TrialInputError('subject must be an app directory name');
 
   return { store_url: parsed.toString(), apps_path: appsPath, subject };
 }
