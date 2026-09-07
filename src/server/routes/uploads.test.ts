@@ -256,6 +256,53 @@ describe('the store zip', () => {
     expect([...icon!]).toEqual([0x89, 0x50, 0x4e, 0x47]);
   });
 
+  /**
+   * The overlay, from the store's side.
+   *
+   * A session is a working copy, not a whole app: what it holds replaces its counterpart and
+   * everything else is inherited. Until 2026-09-07 there was no base at all, and a trial of a
+   * one-line compose change filed a Major against the icon it had not bothered to re-upload —
+   * `OpenClaw@fcb4e4c9`, three files sent, `assets` failed, and the two real findings the trial
+   * was run to check were buried under the verdict that caused.
+   */
+  it('lays the session over the base rather than replacing the app directory', async () => {
+    const { instance, uploads } = await serve();
+    const session = await uploads.create({ subject: 'ClaudeCode', repo: 'Yundera/AppStore' });
+    await put(instance, session.token, 'docker-compose.yml', 'name: changed\n');
+
+    const base = new Map<string, Uint8Array>([
+      ['docker-compose.yml', new TextEncoder().encode('name: original\n')],
+      ['icon.png', new Uint8Array([0x89, 0x50, 0x4e, 0x47])],
+      ['screenshot-1.png', new Uint8Array([0x01])],
+    ]);
+    const entries = unzipSync(new Uint8Array(await uploads.zipStore(session, base)));
+    const at = (rel: string) => entries[`AppStore-trial-${session.id}/Apps/ClaudeCode/${rel}`];
+
+    // The one file uploaded wins; the two nobody touched arrive untouched.
+    expect(Buffer.from(at('docker-compose.yml')!).toString('utf8')).toBe('name: changed\n');
+    expect([...at('icon.png')!]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    expect([...at('screenshot-1.png')!]).toEqual([0x01]);
+    expect(Object.keys(entries).sort()).toEqual([
+      `AppStore-trial-${session.id}/Apps/ClaudeCode/docker-compose.yml`,
+      `AppStore-trial-${session.id}/Apps/ClaudeCode/icon.png`,
+      `AppStore-trial-${session.id}/Apps/ClaudeCode/screenshot-1.png`,
+    ]);
+  });
+
+  /**
+   * An app no store has yet inherits nothing, and that is the right answer rather than a
+   * degraded one: there is no counterpart to lay it over, so a missing icon really is missing
+   * and the `assets` item should say so.
+   */
+  it('sends only the session when there is no base to inherit', async () => {
+    const { instance, uploads } = await serve();
+    const session = await uploads.create({ subject: 'Newcomer', repo: 'Yundera/AppStore' });
+    await put(instance, session.token, 'docker-compose.yml', 'name: newcomer\n');
+
+    const names = Object.keys(unzipSync(new Uint8Array(await uploads.zipStore(session))));
+    expect(names).toEqual([`AppStore-trial-${session.id}/Apps/Newcomer/docker-compose.yml`]);
+  });
+
   it('no longer answers on the uploads plugin, so there is one place a store is served', async () => {
     const { instance, uploads } = await serve();
     const session = await uploads.create({ subject: 'ClaudeCode', repo: 'Yundera/AppStore' });

@@ -36,6 +36,7 @@ import { buildIndex, type ReportIndex } from '../store/index.js';
 import type { UploadStore } from '../store/uploads.js';
 import type { OriginEntry } from '../store/config.js';
 import {
+  archiveUrlFor,
   extractApp,
   fetchStoreZip,
   packAppStore,
@@ -149,9 +150,44 @@ function rubricRepo(deps: TrialRunDeps, compareTo: string | undefined): string {
 }
 
 /**
+ * The app directory an upload session is a working copy *of*, or nothing.
+ *
+ * An upload trial audits the session laid over this. Fetching it is what stops a compose-only
+ * trial from filing a Major against an icon that is sitting in the repo untouched — the
+ * `OpenClaw@fcb4e4c9` failure of 2026-09-07, and the reason `UploadStore.zipStore` takes a base
+ * at all. The origin is resolved from the subject, so the bytes come from the same store whose
+ * `CONTRIBUTING.md` will judge them and whose `apps_path`/`ref` say where they live — never the
+ * hardcoded `Apps` that is correct only for our own repack.
+ *
+ * **Returns undefined rather than throwing, on every failure.** Three of them are ordinary and
+ * indistinguishable from here: an app no store has yet (the documented new-app case), an origin
+ * that is unreachable, and a rate limit. None is a reason to refuse a trial the caller can
+ * otherwise have — the session's own bytes are still a complete answer, and inheriting nothing
+ * is exactly the behaviour that shipped before this existed.
+ */
+async function baseAppFor(
+  deps: TrialRunDeps,
+  subject: string,
+): Promise<Map<string, Uint8Array> | undefined> {
+  const match = resolveSubjectKey(subject, deps.known?.() ?? []);
+  if (match.kind !== 'ok') return undefined;
+  const origin = (deps.origins ?? []).find((o) => o.id === match.key.split('~')[0]);
+  if (!origin) return undefined;
+  try {
+    const zip = await fetchStoreZip(archiveUrlFor(origin.repo, origin.ref), {
+      ...(deps.publicBaseUrl ? { publicBaseUrl: deps.publicBaseUrl } : {}),
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    });
+    return extractApp(zip, origin.apps_path, subject);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Turn whatever the caller said into one auditable store.
  *
- * `{ upload }` zips the bytes in a session — nothing fetched, nothing that could be stale.
+ * `{ upload }` lays the bytes in a session over the app as its store has it — see `baseAppFor`.
  * `{ store_url }` fetches an archive, through the allowlist in `services/trialstore.ts`. Past
  * this function the two are indistinguishable, which is the entire point.
  */
@@ -185,7 +221,7 @@ export async function buildSpec(
         error: 'that session has no docker-compose.yml — upload one before running the trial',
       };
     }
-    zip = await deps.uploads.zipStore(session);
+    zip = await deps.uploads.zipStore(session, await baseAppFor(deps, session.subject));
     sourceUrl = `upload:${session.id}`;
     subject = session.subject;
     // An upload session builds its zip in `Apps/<subject>/` unconditionally, so this is not a

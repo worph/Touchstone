@@ -288,14 +288,31 @@ export class UploadStore {
    * or a restart, and that this cost a day on 2026-08-20 — two audits installed a pre-fix
    * compose from cache and blamed an app whose source was already fixed. A URL nothing has
    * ever fetched cannot be served from a cache.
+   *
+   * **`base` is the app as its store already has it, and the session is laid over it.** Until
+   * 2026-09-07 there was no `base`: a session *was* the whole app directory, so trialling a
+   * one-line compose change meant re-uploading every icon and screenshot, or watching the
+   * `assets` item fail Major on files sitting untouched in the repo. `OpenClaw@fcb4e4c9` did
+   * exactly that — three files uploaded, a Major filed against an icon that was never missing,
+   * and the two real findings the trial was run to check buried under the verdict it caused.
+   * Uploads are written last so they win per path; a caller who uploads nothing but a compose
+   * gets its own compose and the store's own assets, which is what "trial this change" means.
+   *
+   * Absent `base` the behaviour is exactly what it always was, which is the right answer for an
+   * app no store has yet: there is nothing to inherit, and a missing icon really is missing.
+   * Note what an overlay cannot say — that a file was **removed**. Expressing that would need a
+   * delete marker living inside a file's own path, and an app to be audited with something taken
+   * away is a `store_url` trial of a branch instead.
    */
-  async zipStore(session: UploadSession): Promise<Buffer> {
-    const files = await this.manifest(session);
+  async zipStore(session: UploadSession, base?: Map<string, Uint8Array>): Promise<Buffer> {
     const root = `AppStore-trial-${session.id}`;
     const entries: Record<string, Uint8Array> = {};
-    for (const file of files) {
-      const bytes = await fs.readFile(this.resolve(session, file.path));
-      entries[`${root}/Apps/${session.subject}/${file.path}`] = new Uint8Array(bytes);
+    const put = (rel: string, bytes: Uint8Array): void => {
+      entries[`${root}/Apps/${session.subject}/${rel}`] = bytes;
+    };
+    if (base) for (const [rel, bytes] of base) put(rel, bytes);
+    for (const file of await this.manifest(session)) {
+      put(file.path, new Uint8Array(await fs.readFile(this.resolve(session, file.path))));
     }
     return Buffer.from(zipSync(entries));
   }
