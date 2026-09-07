@@ -238,6 +238,22 @@ export function readAppFromZip(zip: Buffer, appsPath: string, subject: string): 
   return sourceOf(extractApp(zip, appsPath, subject), appsPath, subject);
 }
 
+/**
+ * A configured origin's archive, in the one shape `fetchStoreZip` will accept.
+ *
+ * `github.com` is already on the allowlist and answers this path with a 302 to `codeload`,
+ * which is on it too — so this opens no new host and builds no new capability. It exists
+ * because an *upload* trial now needs the app it overlays, and nothing here fetched a
+ * configured origin as an archive before: `store/registry.ts` speaks the contents and tree
+ * APIs, and `services/storedoc.ts` refuses binary, which rules it out for an icon.
+ *
+ * The repo and ref come from `config.yaml`, never from a caller, so this is not a second
+ * dereference primitive — it is the same one, pointed at a value the operator chose.
+ */
+export function archiveUrlFor(repo: string, ref: string): string {
+  return `https://github.com/${repo}/archive/refs/heads/${ref}.zip`;
+}
+
 /** Write the trial's own copy of the archive, creating its directory. */
 export async function saveStoreZip(zipPath: string, zip: Buffer): Promise<void> {
   await fs.mkdir(path.dirname(zipPath), { recursive: true });

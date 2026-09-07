@@ -908,7 +908,7 @@ export const CHAT_TOOLS: ChatTool[] = [
     name: 'open_trial',
     writes: true,
     description:
-      'Open a place to put an app\'s files so they can be audited **without committing anything**. Returns an upload url and a token; PUT each file to `<upload_url>/<name>` (at minimum `docker-compose.yml`), then call `run_trial`. This is the loop to use when you are fixing an app: change the file, trial it, read the result, change it again — no branch, no push, and nothing that could be served from a stale cache. **An app no store has yet is a normal subject here** — name it and the session opens, which is how a new app is checked before anybody commits it; the name becomes its directory, so it must look like one. The session expires on its own. It audits the bytes you send and nothing else, but it still judges them as an app of the store named below, so asset URLs and that store\'s CONTRIBUTING.md are read the way a real audit reads them.',
+      'Open a place to put an app\'s files so they can be audited **without committing anything**. Returns an upload url and a token; PUT each file to `<upload_url>/<name>`, then call `run_trial`. This is the loop to use when you are fixing an app: change the file, trial it, read the result, change it again — no branch, no push, and nothing that could be served from a stale cache. **Send only what you changed.** The session is laid over the app as its store already has it, so a one-line compose fix is a one-file upload: what you send replaces its counterpart, and every file you leave out — icons, screenshots, `rationale.md`, a `seed/` tree — is inherited unchanged. The one thing an overlay cannot say is that a file was *removed*; audit that as a `store_url` trial of a branch. **An app no store has yet is a normal subject here** — name it and the session opens, which is how a new app is checked before anybody commits it; the name becomes its directory, so it must look like one. There is nothing to inherit in that case, so send the whole directory, assets included, or the missing ones are judged missing. The session expires on its own. Either way it is judged as an app of the store named below, so asset URLs and that store\'s CONTRIBUTING.md are read the way a real audit reads them.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -974,7 +974,9 @@ export const CHAT_TOOLS: ChatTool[] = [
       return ok(
         [
           `Upload session ${session.id} is open for ${name}${known ? '' : ' (an app no store offers yet)'}, judged as ${repo}@main.`,
-          `PUT each file to /api/v1/uploads/${session.token}/<path> — docker-compose.yml at least, plus rationale.md and any assets the app ships.`,
+          known
+            ? `PUT the files you changed to /api/v1/uploads/${session.token}/<path> — they are laid over the app as ${repo} already has it, so anything you leave out (icons, screenshots, rationale.md, a seed/ tree) is inherited unchanged.`
+            : `PUT each file to /api/v1/uploads/${session.token}/<path> — the whole directory, assets included: no store has this app yet, so there is nothing to inherit and a file you leave out is judged missing.`,
           `GET /api/v1/uploads/${session.token} lists what has arrived.`,
           `Then call run_trial with upload ${session.id}. The session lapses at ${session.expires_at}.`,
         ].join('\n'),

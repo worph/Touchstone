@@ -574,6 +574,27 @@ Three decisions worth keeping:
   *not* cover is handled as engineering — per-file and per-session byte caps, sessions that expire
   on their own, and a zip served `attachment` so uploaded bytes can never render on the origin
   that also serves the operator UI.
+- **A session is a working copy, not the whole app — 2026-09-07.** The session *was* the entire
+  app directory, so a trial of a one-line compose change had to re-upload every icon and
+  screenshot or be judged without them. It was judged without them: `OpenClaw@fcb4e4c9` sent a
+  compose, a `rationale.md` and a seed template, and the audit correctly filed a Major against an
+  `icon.png` and a `screenshot-1.png` that were sitting in `main` untouched — a non-compliant
+  verdict that buried the two real Majors the trial was run to check. This is the same false
+  positive the first bullet above already guards against for asset **URLs**, arriving through
+  asset **presence** instead, so the fix is the one that bullet implies: `buildSpec` fetches
+  `Apps/<Subject>/` from the subject's own origin and the session is laid over it. What the
+  caller sends replaces its counterpart; what they leave out is inherited. Three things were
+  decided rather than fallen into. **It is one `Map`**: the file list the prompt shows and the
+  zip the bench installs are built from the same merge, because inheriting into one and not the
+  other would have the auditor reading an icon the running app does not have. **Inheriting is
+  best-effort** — an app no origin offers, an unreachable origin and a rate limit all fall back
+  to the session's own bytes, which is precisely the behaviour that shipped before this, and for
+  a new app it is also the correct one: there is no counterpart, so a missing icon really is
+  missing. **An overlay cannot express a deletion**, and no sentinel was invented for one; an app
+  to be audited with a file taken away is a `store_url` trial of a branch. The tool description
+  changed with the behaviour — it had promised that "asset URLs … are read the way a real audit
+  reads them" while the implementation audited the uploaded bytes and nothing else, which is what
+  made a compose-only upload look correct.
 
 ---
 

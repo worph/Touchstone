@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { unzipSync as unzipSyncFor, zipSync } from 'fflate';
 
 import {
+  archiveUrlFor,
   extractApp,
   fetchStoreZip,
   MAX_APP_BYTES,
@@ -115,6 +116,23 @@ describe('fetchStoreZip', () => {
       respond(big, { headers: new Headers({ 'content-length': '1' }) })) as unknown as typeof fetch;
 
     await expect(fetchStoreZip(GH, { fetchImpl, maxBytes: 8 })).rejects.toThrow(/limit is 8/);
+  });
+
+  /**
+   * An upload trial needs the app it is overlaying, and this is how it asks for it.
+   *
+   * The point worth pinning is that it opens no new host: an origin's archive goes through the
+   * same allowlist, the same per-hop redirect re-check and the same byte cap as a caller's
+   * `store_url`. If this URL ever stopped being allowed, every upload trial would silently
+   * inherit nothing and the `assets` Major of 2026-09-07 would come back.
+   */
+  it('builds an origin archive url the allowlist already accepts', () => {
+    expect(archiveUrlFor('Yundera/AppStore', 'main')).toBe(
+      'https://github.com/Yundera/AppStore/archive/refs/heads/main.zip',
+    );
+    expect(storeUrlAllowed(archiveUrlFor('Yundera/AppStore', 'main'))).toBe(true);
+    // Not only the default store, and not only the default branch.
+    expect(storeUrlAllowed(archiveUrlFor('Acme/Other', 'trunk'))).toBe(true);
   });
 
   it('caps the source archive generously enough for a real store', () => {

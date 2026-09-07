@@ -156,7 +156,7 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | `reports/<origin>/<Subject>/<ISO>-<section>.md` | **the assay record IS the frontmatter of the report file**. The origin level is a namespace, not a uniqueness rule: two stores may both ship a `FileBrowser` |
 | `trials/<slug>/<Subject>/<ISO>-<section>.md` | a **trial** — the same run against a store zip, written where the report index never looks, so it cannot move a hallmark or enter the backlog. The slug doubles as a synthetic origin, so the path machinery is unchanged |
 | `trials/<slug>/store.zip` | that trial's own copy of the archive it audited, re-served at `/api/v1/trialstore/<store_token>.zip` for the bench to install. Inside the trial's directory because the index only ever picks up `*.md`, so it is invisible to it and dies with the trial |
-| `uploads/<id>/` | a session's files, which a trial zips into a store. A sibling of `trials/`, never inside it: a trial's own directory is scanned as a report tree |
+| `uploads/<id>/` | a session's files — a **working copy**, not a whole app: a trial lays them over `Apps/<Subject>/` as the subject's origin has it and zips the result, so a file here replaces its counterpart and one that is absent is inherited. A sibling of `trials/`, never inside it: a trial's own directory is scanned as a report tree |
 | `state/*.json`, `events.jsonl` | small mutable runtime state and the append-only log |
 | `state/controls.json` | **what somebody changed while it was running** — the override for each *control*, re-applied at boot. `config.yaml` stays what a fresh install boots into, so deleting this one file puts every setting back. `scheduler.armed` is deliberately **not** here: the scheduler has kept that switch in `state/schedule.json` since the Automation page had a button, and two files claiming one switch is how they come to disagree |
 | `state/index.json` | cache only — deleting it must always be safe |
@@ -307,7 +307,14 @@ because its data access was smeared through two 200-line n8n Code nodes.
   the static section reads and the bytes the bench installs — which is why the collapse also
   removed a correctness problem: a ref trial used to read its bytes from a place the bench never
   installed from. Every trial saves the archive it fetched and serves *that*, so Maison's
-  in-process store cache can never hold an older copy (the URL is minted per trial). The index
+  in-process store cache can never hold an older copy (the URL is minted per trial).
+  **An upload session is an overlay, not the app** (2026-09-07): `buildSpec` fetches
+  `Apps/<Subject>/` from the subject's own origin and `zipStore` lays the session over it, so the
+  files the prompt lists and the files the bench installs both inherit whatever the caller did not
+  send. That is one `Map`, deliberately — inheriting into the prompt but not the served zip would
+  have the auditor reading an icon the running app does not have. Inheritance is best-effort and
+  never a precondition: an app no origin offers, an unreachable origin and a rate limit all fall
+  back to the session's own bytes, which is what shipped before it existed. The index
   over trials is built per request with `cacheFile: null`, because `defaultCacheFile()` resolves
   to the *same* path for `data/reports` and `data/trials`.
   `services/trialstore.ts` is **the only place Touchstone dereferences a caller-chosen URL**, so
