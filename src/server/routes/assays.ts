@@ -27,7 +27,7 @@ import { PHASE_LABEL, type RunStatus } from '../../shared/activity.js';
 import type { SubjectKey } from '../../shared/subject.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import { coverageOf } from '../services/ledger.js';
-import type { BenchPools } from '../services/bench.js';
+import type { Targets } from '../services/bench.js';
 import type { RunLedger } from '../services/ledger.js';
 import type { Runner } from '../runner/index.js';
 import type { Scheduler } from '../scheduler/index.js';
@@ -38,7 +38,7 @@ export interface AssayRoutesOptions {
   ledger?: RunLedger;
   scheduler?: Scheduler;
   /** Every bench pool, reported on `/assays/current` — see the `benches` field there. */
-  pools?: BenchPools;
+  targets?: Targets;
 }
 
 /** How many settled requirements ride along. Enough to see movement, not a second report. */
@@ -113,7 +113,7 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
        * an operator came to act on a bench verdict that had been false for five minutes. One
        * poller, one answer, and the button can no longer disagree with the strip above it.
        */
-      ...(options.pools ? { benches: options.pools.windows() } : {}),
+      ...(options.targets ? { benches: options.targets.windows() } : {}),
       // The depth of the request queue, so the strip on every page can say what is after this
       // one. Absent rather than 0 when no scheduler is wired, which is not the same answer.
       ...(options.scheduler ? { queued: (await options.scheduler.previewRequests()).length } : {}),

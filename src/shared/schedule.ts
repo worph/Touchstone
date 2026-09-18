@@ -36,7 +36,7 @@
  * With one pool configured there is exactly one line, every map below has one key, and the
  * behaviour is what it has always been.
  */
-import { DEFAULT_BENCH_CAPABILITY, isBenchCapability } from './capability.js';
+import { DEFAULT_TARGET } from './target.js';
 
 export type LineKey = string;
 
@@ -371,18 +371,17 @@ export interface ScheduleResponse {
 }
 
 /**
- * Which line a section belongs to: the bench capability it leases from.
+ * Which line a section belongs to: **its target**.
  *
- * A section that needs no bench — `static`, and every scripted reading — belongs to the
- * default line, so it rides the run that platform's sections are already making rather than
- * anchoring one of its own. See `LineSchedule` for why that grouping is load-bearing rather
- * than a convenience.
+ * A line *is* a platform. This used to sniff the section's capabilities for a `bench.` prefix
+ * and take the first in sorted order — an arbitrary tie-break, which is what you write when
+ * one string is a capability, a platform and a pool at once.
  *
- * A section that somehow names two bench capabilities takes the first in sorted order, which
- * is arbitrary but stable; the runner refuses to lease two anyway, so such a section would be
- * recorded blocked rather than audited against the wrong platform.
+ * A section with no target — `static`, and every scripted reading — belongs to the **default**
+ * line, so it rides the run that platform's sections are already making rather than anchoring
+ * one of its own. Its verdict does not depend on the platform, so it is audited once; auditing
+ * it per target would write the same finding twice and double-count its risk.
  */
-export function lineOf(requires: readonly string[]): LineKey {
-  const bench = [...requires].filter(isBenchCapability).sort();
-  return bench[0] ?? DEFAULT_BENCH_CAPABILITY;
+export function lineOf(section: { target?: string }): LineKey {
+  return section.target ?? DEFAULT_TARGET;
 }

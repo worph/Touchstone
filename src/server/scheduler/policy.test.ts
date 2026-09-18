@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_BENCH_CAPABILITY } from '../../shared/capability.js';
+import { DEFAULT_TARGET } from '../../shared/target.js';
 import type { LegacySubjectSchedule } from '../../shared/schedule.js';
 import { migrateLines } from './index.js';
 import {
@@ -58,7 +58,7 @@ type FlatInput = Omit<
   benchNote?: string;
 };
 
-const LINE = DEFAULT_BENCH_CAPABILITY;
+const LINE = DEFAULT_TARGET;
 
 /** `{Alpha: '2026-01-01'}` → `{Alpha: {bench: '2026-01-01'}}`. */
 function byLine(
@@ -765,7 +765,7 @@ describe('when a subject is flagged for re-audit', () => {
  * quietly dropped by the other.
  */
 describe('more than one platform', () => {
-  const FOSS = 'bench.foss';
+  const FOSS = 'foss';
 
   function twoLines(over: Partial<PolicyInput> = {}): PolicyInput {
     return {

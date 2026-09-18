@@ -51,7 +51,8 @@
  */
 
 /** One section of the protocol, as the prompt needs it. */
-import { isBenchCapability } from '../../shared/capability.js';
+/** The capability that means "a demo instance of this run's target". */
+const CAPABILITY_BENCH = 'bench';
 
 export interface PromptSection {
   id: string;
@@ -177,11 +178,10 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
   // A section that needs a live instance is what makes this run a live one. Nothing here
   // knows the word "functional": it reads the capability the protocol declared.
   //
-  // `isBenchCapability` rather than the literal `'bench'`, because there is more than one pool
-  // now and a FOSS section declares `bench.foss`. Read literally this said "no section here
-  // needs a host", and the prompt then went out with no live instructions and no demo host at
-  // all — for a run whose whole purpose was to install the app somewhere.
-  const live = sections.some((s) => (s.requires ?? []).some(isBenchCapability));
+  // One named constant rather than the prefix-sniffing this briefly had: a capability says what
+  // kind of resource is needed, and *which* platform supplies it is the run's target, decided
+  // elsewhere. A section wanting a demo instance is what makes this run a live one.
+  const live = sections.some((s) => (s.requires ?? []).includes(CAPABILITY_BENCH));
   const phasePlan = sections.flatMap((s) => (s.phases ?? []).map((p) => p.id));
   // Whether there is a rubric to reproduce. A run that reaches here without one is a bug the
   // runner catches first (`PROTOCOL_MISSING`), so this only guards the fence, not a fallback.

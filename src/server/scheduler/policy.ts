@@ -30,7 +30,7 @@
  */
 
 import type { Leg } from '../../shared/types.js';
-import { DEFAULT_BENCH_CAPABILITY } from '../../shared/capability.js';
+import { DEFAULT_TARGET } from '../../shared/target.js';
 import type {
   LineKey,
   LineSchedule,
@@ -409,7 +409,7 @@ function plan(input: PolicyInput): {
   }
   // A rig whose protocol directory could not be read still has to schedule: fall back to the
   // one line every installation has had, rather than deciding the backlog is empty.
-  if (lines.length === 0) lines.push(DEFAULT_BENCH_CAPABILITY);
+  if (lines.length === 0) lines.push(DEFAULT_TARGET);
 
   // Parks that have served their time. Done before eligibility so a cell released this tick
   // can be picked this tick, which is what n8n's `daysSince(lr) >= STUCK_DAYS` does.
@@ -638,7 +638,7 @@ export function decide(input: PolicyInput): TickDecision {
       // One pool, and it is the default one: the sentence an operator has always read, and
       // the prefix `gatedLines()` falls back to parsing. Naming the line here would be
       // "no usable bench for bench", which is worse English about the same fact.
-      gatedLines.length === 1 && gatedLines[0] === DEFAULT_BENCH_CAPABILITY
+      gatedLines.length === 1 && gatedLines[0] === DEFAULT_TARGET
         ? 'no usable demo bench'
         : `no usable bench for ${gatedLines.join(', ')}`;
     reason = which + (notes.length > 0 ? ` — ${notes.join('; ')}` : '');
@@ -670,8 +670,8 @@ export function decide(input: PolicyInput): TickDecision {
   // one it most needs a bench for is the default platform's. A trial that ran with a dead pool
   // would answer the static half and record `functional` blocked, and a PR author reading that
   // reasonably concludes the app is fine.
-  if (action === 'trial' && !available(DEFAULT_BENCH_CAPABILITY)) {
-    const note = input.capabilities[DEFAULT_BENCH_CAPABILITY]?.note;
+  if (action === 'trial' && !available(DEFAULT_TARGET)) {
+    const note = input.capabilities[DEFAULT_TARGET]?.note;
     return {
       ...base,
       action: 'idle',

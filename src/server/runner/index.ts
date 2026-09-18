@@ -36,7 +36,7 @@ import type { ReportIndex } from '../store/index.js';
 import { recordFor, writeReport } from '../store/reports.js';
 import { subjectRefOf, type OriginEntry } from '../store/config.js';
 import type { AlertStore } from '../services/alerts.js';
-import type { BenchPools } from '../services/bench.js';
+import type { Targets } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 import { sectionsOf, type ExecutorRef, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
 import type { KbStore } from '../store/kb.js';
@@ -196,14 +196,14 @@ export interface RunnerOptions {
   alerts?: AlertStore;
   index?: ReportIndex;
   /**
-   * Every bench pool, keyed by capability — `services/bench.ts`'s `BenchPools`.
+   * Every platform this installation audits on — `services/bench.ts`'s `Targets`.
    *
    * Was a single `prober` until two platforms existed. The name change is deliberate rather
    * than cosmetic: `liveWorld` spreads these options, so a field left called `prober` would
    * have gone on compiling while supplying no pools at all, and every live section would have
    * been recorded blocked with nothing to say why.
    */
-  pools?: BenchPools;
+  targets?: Targets;
   /** The agent and browser endpoints, so a section that needs a browser can lease one. */
   ports?: PortProber;
   /** The rubric, read fresh per run so an edit takes effect on the next audit, not the next boot. */

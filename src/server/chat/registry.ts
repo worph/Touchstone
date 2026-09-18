@@ -89,7 +89,7 @@ import type { RunLedger } from '../services/ledger.js';
 import type { AlertStore } from '../services/alerts.js';
 import type { EventLog } from '../services/events.js';
 import type { PortProber } from '../services/ports.js';
-import type { BenchPools } from '../services/bench.js';
+import type { Targets } from '../services/bench.js';
 import {
   enqueueTrial,
   buildSpec,
@@ -105,7 +105,7 @@ export interface ChatToolContext {
   ledger?: RunLedger;
   alerts?: AlertStore;
   ports?: PortProber;
-  pools?: BenchPools;
+  targets?: Targets;
   /** The archive. Absent means the read tools say so rather than answering emptily. */
   store?: AssayStore;
   events?: EventLog;
@@ -593,9 +593,9 @@ export const CHAT_TOOLS: ChatTool[] = [
       for (const p of ctx.ports?.list() ?? []) lines.push(`Port ${p.name} (${p.kind}): ${p.status}.`);
       // One line per pool. Reported off the demo pool alone, a second platform's outage was
       // invisible to every question the chat can be asked about whether auditing is working.
-      for (const pool of ctx.pools?.health() ?? []) {
+      for (const pool of ctx.targets?.health() ?? []) {
         if (pool.total === 0) continue;
-        const rows = (ctx.pools?.list() ?? []).filter((b) => b.pool === pool.id);
+        const rows = (ctx.targets?.list() ?? []).filter((b) => b.target === pool.id);
         lines.push(
           `${pool.label} pool: ${pool.leasable} of ${pool.total} usable — ` +
             rows.map((b) => `${b.name} ${b.status}`).join(', ') +
@@ -718,7 +718,7 @@ export const CHAT_TOOLS: ChatTool[] = [
       const why = [...new Set(forecast.blocked.map((b) => blockedReasonClause(b.reason)))].join(' and ');
       // The window of whichever pools are empty — naming the demo pool's countdown while the
       // FOSS line is the one that is held tells the operator to wait for the wrong thing.
-      const window = (ctx.pools?.windows() ?? [])
+      const window = (ctx.targets?.windows() ?? [])
         .filter((p) => p.leasable === 0)
         .map((p) => p.window)
         .join('; ');

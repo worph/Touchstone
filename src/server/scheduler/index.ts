@@ -25,7 +25,7 @@ import { asSubjectKey, isSubjectKey, type SubjectKey } from '../../shared/subjec
 import { readJson, writeJsonAtomic } from '../store/state.js';
 import type { ReportIndex } from '../store/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
-import type { BenchPools } from '../services/bench.js';
+import type { Targets } from '../services/bench.js';
 import type { EventLog } from '../services/events.js';
 import {
   cooldownLeftMin,
@@ -39,7 +39,7 @@ import {
   type SubjectSchedule,
   type TickDecision,
 } from './policy.js';
-import { DEFAULT_BENCH_CAPABILITY } from '../../shared/capability.js';
+import { DEFAULT_TARGET } from '../../shared/target.js';
 import {
   lineOf,
   type LegacySubjectSchedule,
@@ -159,7 +159,7 @@ function gatedLines(decision: TickDecision | undefined): LineKey[] {
   if (!decision) return [];
   if (decision.gated?.length) return decision.gated;
   return decision.action === 'idle' && decision.reason.startsWith('no usable demo bench')
-    ? [DEFAULT_BENCH_CAPABILITY]
+    ? [DEFAULT_TARGET]
     : [];
 }
 
@@ -205,13 +205,13 @@ export interface SchedulerOptions {
   registry: SubjectRegistry;
   events: EventLog;
   /**
-   * Every bench pool, keyed by capability — what the per-line gate reads.
+   * Every platform this installation audits on — what the per-line gate reads.
    *
    * Was a single `prober` collapsed into one `benchAvailable` boolean, which had exactly one
    * right answer while there was one pool and none once there were two: a FOSS outage would
    * have stopped either all auditing or none of it, depending which way the boolean fell.
    */
-  pools?: BenchPools;
+  targets?: Targets;
   /**
    * When the standard last moved — `readStandards().moved_at`, read fresh each tick.
    *
@@ -403,7 +403,7 @@ export class Scheduler {
     // answer would offer to make it again.
     const flaggedAt = this.subjects[subject]?.flagged_at;
     if (!flaggedAt) return false;
-    const attempts = this.lastAttemptAt([subject], () => DEFAULT_BENCH_CAPABILITY)[subject] ?? {};
+    const attempts = this.lastAttemptAt([subject], () => DEFAULT_TARGET)[subject] ?? {};
     const lines = Object.keys(attempts);
     if (lines.length === 0) return isFlaggedForReaudit(flaggedAt, undefined);
     return lines.some((line) => isFlaggedForReaudit(flaggedAt, attempts[line]));
@@ -903,7 +903,7 @@ export class Scheduler {
     // on counting somewhere instead of silently making every subject look never-audited.
     const lineOfSection = new Map(sections.map((s) => [s.id, s.line]));
     const lineFor = (section: string): LineKey =>
-      lineOfSection.get(section) ?? DEFAULT_BENCH_CAPABILITY;
+      lineOfSection.get(section) ?? DEFAULT_TARGET;
     return {
       now: opts.now,
       constants: this.constants,
@@ -941,14 +941,14 @@ export class Scheduler {
    * conventions would start disagreeing inside one process, so each says which it is and why.
    */
   private capabilities(): Record<string, { available: boolean; note?: string }> {
-    const pools = this.opts.pools;
+    const pools = this.opts.targets;
     if (!pools) return {};
     const out: Record<string, { available: boolean; note?: string }> = {};
-    for (const capability of pools.capabilities) {
-      const available = pools.leasable(capability).length > 0;
-      out[capability] = {
+    for (const id of pools.ids) {
+      const available = pools.leasable(id).length > 0;
+      out[id] = {
         available,
-        ...(available ? {} : { note: this.benchNote(capability) }),
+        ...(available ? {} : { note: this.benchNote(id) }),
       };
     }
     return out;
@@ -1079,7 +1079,7 @@ export class Scheduler {
       if (mayDispatch) {
         // The line the decision picked. A claim belongs to a platform, not to an app: the
         // FOSS line auditing FileBrowser must not stop the Yundera line auditing it too.
-        const line = decision.line ?? DEFAULT_BENCH_CAPABILITY;
+        const line = decision.line ?? DEFAULT_TARGET;
         this.subjects[decision.subject] = openClaim({
           now,
           line,
@@ -1172,16 +1172,14 @@ export class Scheduler {
   }
 
   private benchNote(capability?: string): string {
-    const all = this.opts.pools?.list() ?? [];
+    const all = this.opts.targets?.list() ?? [];
     // One pool's rows, so a held FOSS line is not explained by the demo pool's countdowns.
-    const poolId = capability
-      ? this.opts.pools?.health().find((p) => p.capability === capability)?.id
-      : undefined;
+    const poolId = capability;
     // A row with no `pool` belongs to whoever is asking: that is a roster written before
     // pools existed, which `load()` backfills, and it is every row on a single-pool box.
     // Filtering it out would leave the note saying "the pool has not been read" about a pool
     // we had just read.
-    const rows = poolId ? all.filter((b) => !b.pool || b.pool === poolId) : all;
+    const rows = poolId ? all.filter((b) => !b.target || b.target === poolId) : all;
     if (rows.length === 0) return 'the pool has not been read';
     return rows
       .map((b) => {
@@ -1249,7 +1247,7 @@ export class Scheduler {
     // caller: the runner reports an outcome for a subject, and which platform it was on is
     // something this file already knows — asking the caller would be a second place for the
     // answer to be wrong.
-    const forLine = line ?? this.claimedLine(subject) ?? DEFAULT_BENCH_CAPABILITY;
+    const forLine = line ?? this.claimedLine(subject) ?? DEFAULT_TARGET;
     const result = recordResult({
       now,
       constants: this.constants,

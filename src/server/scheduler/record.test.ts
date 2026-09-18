@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_BENCH_CAPABILITY } from '../../shared/capability.js';
+import { DEFAULT_TARGET } from '../../shared/target.js';
 import type { LineSchedule } from '../../shared/schedule.js';
 import type { SchedulerConstants, SubjectSchedule } from './policy.js';
 import { openClaim, recordResult } from './record.js';
@@ -10,7 +10,7 @@ import { openClaim, recordResult } from './record.js';
  * so the fixtures name one and the assertions read it back. With one pool configured that is
  * the row these tests have always described.
  */
-const LINE = DEFAULT_BENCH_CAPABILITY;
+const LINE = DEFAULT_TARGET;
 
 /** A one-line schedule from the flat body these fixtures have always written. */
 function on(cell: LineSchedule): SubjectSchedule {

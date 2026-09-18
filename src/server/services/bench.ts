@@ -37,7 +37,7 @@
 import path from 'node:path';
 
 import { readJson, writeJsonAtomic } from '../store/state.js';
-import { DEFAULT_BENCH_CAPABILITY, DEFAULT_BENCH_POOL } from '../store/config.js';
+import { DEFAULT_TARGET } from '../store/config.js';
 import type {
   AlertKey,
   BenchHealth,
@@ -402,15 +402,15 @@ export interface BenchProberOptions {
   minRemainingMin?: number;
   probeTimeoutMs?: number;
   /**
-   * Which pool this is — the id from `bench.pools`, stamped onto every row.
+   * Which **target** this prober serves — the id from `config.targets`, stamped onto every row.
    *
-   * One prober per pool rather than one prober that knows about pools: every option above was
-   * already per-pool in all but name, and two instances cannot accidentally lease each other's
-   * boxes. Absent means the single default pool, which is every installation before the FOSS
-   * stack existed.
+   * One prober per target rather than one prober that knows about targets: every option above
+   * was already per-target in all but name, and two instances cannot accidentally lease each
+   * other's boxes. Absent means the single default target, which is every installation before
+   * the FOSS stack existed.
    */
-  pool?: string;
-  /** The pool's display name. Defaults to the id. */
+  target?: string;
+  /** The target's display name. Defaults to the id. */
   label?: string;
   /**
    * The roster file under `stateDir`. Defaults to `benches.json` — the path the default pool
@@ -445,18 +445,19 @@ export class BenchProber {
   }
 
   /**
-   * Which pool this prober is. `DEFAULT_BENCH_POOL` when nobody said.
+   * Which target this prober serves. `DEFAULT_TARGET` when nobody said.
    *
-   * `poolId`, not `pool`, because `pool()` is already the private roster reader below — and a
-   * getter shadowing it would be a compile error in the lucky case and a silent one otherwise.
+   * `targetId`, not `target`, so it cannot be confused with the private roster reader `pool()`
+   * below — a getter shadowing a method is a compile error in the lucky case and a silent one
+   * otherwise.
    */
-  get poolId(): string {
-    return this.opts.pool ?? DEFAULT_BENCH_POOL;
+  get targetId(): string {
+    return this.opts.target ?? DEFAULT_TARGET;
   }
 
   /** Its display name. */
   get label(): string {
-    return this.opts.label ?? this.poolId;
+    return this.opts.label ?? this.targetId;
   }
 
   /**
@@ -488,13 +489,13 @@ export class BenchProber {
     if (!Array.isArray(rows)) return;
     // A roster written before pools existed carries no `pool`; it is this one's by
     // definition, since each pool now reads its own file.
-    for (const row of rows) if (row?.name) this.health.set(row.name, { ...row, pool: this.poolId });
+    for (const row of rows) if (row?.name) this.health.set(row.name, { ...row, target: this.targetId });
     // A configured bench never probed yet is `unknown`, not missing: the environment
     // block should list what we are supposed to have, not only what has answered.
     for (const bench of this.opts.benches.filter((b) => b.enabled !== false)) {
       if (!this.health.has(bench.name)) {
         this.health.set(bench.name, {
-          name: bench.name, pool: this.poolId, url: bench.url, status: 'unknown',
+          name: bench.name, target: this.targetId, url: bench.url, status: 'unknown',
         });
       }
     }
@@ -597,7 +598,7 @@ export class BenchProber {
               : Math.round(bench.claim.remaining_h * 60);
         const next: BenchHealth = {
           name: bench.name,
-          pool: this.poolId,
+          target: this.targetId,
           url: bench.url,
           status: probe.status,
           detail: probe.detail,
@@ -745,9 +746,9 @@ export class BenchProber {
     // Per pool, so one pool recovering cannot resolve the card about another. The default
     // pool keeps the bare keys it has always had, or every open alert on an upgraded box
     // would be orphaned by a rename and a duplicate opened beside it.
-    const isDefault = this.poolId === DEFAULT_BENCH_POOL;
-    const authKey: AlertKey = isDefault ? 'bench.auth' : `bench.${this.poolId}.auth`;
-    const downKey: AlertKey = isDefault ? 'bench.unreachable' : `bench.${this.poolId}.unreachable`;
+    const isDefault = this.targetId === DEFAULT_TARGET;
+    const authKey: AlertKey = isDefault ? 'bench.auth' : `bench.${this.targetId}.auth`;
+    const downKey: AlertKey = isDefault ? 'bench.unreachable' : `bench.${this.targetId}.unreachable`;
     // Named in every title, because "We cannot log in to any demo bench" read across two
     // pools is a claim about the wrong one half the time.
     const whose = isDefault ? 'demo' : this.label;
@@ -799,92 +800,91 @@ export class BenchProber {
 }
 
 /**
- * Every pool, keyed by the capability its benches answer to.
+ * Every **target**, keyed by its id — the platforms this installation audits on.
  *
- * One prober per pool rather than one prober that understands pools — `BenchProberOptions`
- * was already per-pool in all but name, and two instances cannot accidentally lease each
- * other's boxes, which is the failure this whole arrangement exists to prevent: a FOSS verdict
+ * One prober per target rather than one prober that understands targets: `BenchProberOptions`
+ * was already per-target in all but name, and two instances cannot accidentally lease each
+ * other's boxes, which is the failure this whole arrangement exists to prevent — a FOSS verdict
  * reached on a Yundera box looks exactly like a correct one.
  *
- * **`leasable` and `window` take a capability and have no default.** That is deliberate and it
- * is the difference between this and a convenience wrapper: a lease is a decision about which
- * platform an audit runs on, and a caller that forgot to say which one must not quietly get the
- * demo pool. The display readers — `list`, `windows` — aggregate instead, because a page
- * showing "the benches" means all of them.
+ * **`leasable` and `window` take a target id and have no default.** That is deliberate and it is
+ * the difference between this and a convenience wrapper: a lease is a decision about which
+ * platform an audit runs on, and a caller that forgot to say which must not quietly get the
+ * default one. The display readers — `list`, `health`, `windows` — aggregate instead, because a
+ * page showing "the benches" means all of them.
  */
-export class BenchPools {
-  private readonly byCapability = new Map<string, BenchProber>();
+export class Targets {
+  private readonly byId = new Map<string, BenchProber>();
 
   constructor(
-    private readonly pools: readonly {
-      capability: string;
+    private readonly targets: readonly {
+      id: string;
       prober: BenchProber;
       /** Only the demo pool has one; a fixed box has no board to disagree with. */
       boardUrl?: string;
     }[],
   ) {
-    for (const { capability, prober } of pools) {
-      // First wins, and the duplicate is dropped rather than silently shadowing: two pools
-      // claiming one capability is a config error whose symptom would otherwise be audits
-      // landing on whichever pool happened to be listed last.
-      if (!this.byCapability.has(capability)) this.byCapability.set(capability, prober);
+    for (const { id, prober } of targets) {
+      // First wins, and the duplicate is dropped rather than silently shadowing: two targets
+      // claiming one id is a config error whose symptom would otherwise be audits landing on
+      // whichever happened to be listed last.
+      if (!this.byId.has(id)) this.byId.set(id, prober);
     }
   }
 
-  /** The capabilities a protocol may ask for. What makes `bench_unconfigured` decidable. */
-  get capabilities(): string[] {
-    return [...this.byCapability.keys()];
+  /** Every target id, in config order. The first is the default. */
+  get ids(): string[] {
+    return [...this.byId.keys()];
   }
 
-  /** Whether any pool answers this capability — not whether it currently has a free bench. */
-  has(capability: string): boolean {
-    return this.byCapability.has(capability);
+  /** Whether this installation has such a target — not whether it currently has a free bench. */
+  has(id: string): boolean {
+    return this.byId.has(id);
   }
 
-  prober(capability: string): BenchProber | undefined {
-    return this.byCapability.get(capability);
+  prober(id: string): BenchProber | undefined {
+    return this.byId.get(id);
   }
 
-  /** The default pool, for the readers that are about the demo pool specifically. */
+  /** The default target, for the readers whose question is about the demo platform specifically. */
   get primary(): BenchProber | undefined {
-    return this.byCapability.get(DEFAULT_BENCH_CAPABILITY) ?? this.pools[0]?.prober;
+    return this.byId.get(DEFAULT_TARGET) ?? this.targets[0]?.prober;
   }
 
   /**
-   * What may be claimed for this capability right now.
+   * What may be claimed for this target right now.
    *
-   * An **unknown** capability answers `[]` rather than throwing, and the caller decides what
-   * that means: `resolveCapabilities` records `bench_unconfigured` for a capability no pool
-   * answers, which is different from a pool that exists and is empty (`bench_unavailable`).
-   * Both block; only one is something an operator can fix by waiting.
+   * An **unknown** target answers `[]` rather than throwing, and the caller decides what that
+   * means: `resolveCapabilities` records `bench_unconfigured` for a target this installation has
+   * no pool for, which is different from a target that exists and is empty (`bench_unavailable`).
+   * Both block; only one is something waiting can fix.
    */
-  leasable(capability: string): BenchHealth[] {
-    return this.byCapability.get(capability)?.leasable() ?? [];
+  leasable(id: string): BenchHealth[] {
+    return this.byId.get(id)?.leasable() ?? [];
   }
 
-  window(capability: string, now: Date = new Date()): string {
-    const prober = this.byCapability.get(capability);
-    return prober ? prober.window(now) : 'no bench pool answers that capability';
+  window(id: string, now: Date = new Date()): string {
+    const prober = this.byId.get(id);
+    return prober ? prober.window(now) : 'no bench pool is configured for that platform';
   }
 
-  /** Every bench of every pool, for the roster the Activity page draws. */
+  /** Every bench of every target, for the roster the Activity page draws. */
   list(): BenchHealth[] {
-    return this.pools.flatMap(({ prober }) => prober.list());
+    return this.targets.flatMap(({ prober }) => prober.list());
   }
 
   /**
-   * Each pool's own health, in config order — what `GET /benches` reports.
+   * Each target's own health, in config order — what `GET /benches` reports.
    *
-   * `total` counts the rows this pool knows about, including `unknown` ones: the environment
+   * `total` counts the rows this target knows about, including `unknown` ones: the environment
    * block should say what we are supposed to have, not only what has answered.
    */
   health(now: Date = new Date()): BenchPoolHealth[] {
-    return this.pools.map(({ capability, prober, boardUrl }) => {
+    return this.targets.map(({ id, prober, boardUrl }) => {
       const rows = prober.list();
       return {
-        id: prober.poolId,
+        id,
         label: prober.label,
-        capability,
         leasable: prober.leasable().length,
         total: rows.length,
         window: prober.window(now),
@@ -894,38 +894,38 @@ export class BenchPools {
     });
   }
 
-  /** One window per capability, for the surfaces that must say which pool they mean. */
+  /** One window per target, for the surfaces that must say which platform they mean. */
   windows(now: Date = new Date()): BenchWindow[] {
-    return [...this.byCapability].map(([capability, prober]) => ({
-      capability,
+    return [...this.byId].map(([id, prober]) => ({
+      target: id,
       label: prober.label,
       leasable: prober.leasable().length,
       window: prober.window(now),
     }));
   }
 
-  /** True when *some* pool has a usable bench. Per-pool answers come from `windows()`. */
+  /** True when *some* target has a usable bench. Per-target answers come from `windows()`. */
   get poolUp(): boolean {
-    return this.pools.some(({ prober }) => prober.poolUp);
+    return this.targets.some(({ prober }) => prober.poolUp);
   }
 
   async load(): Promise<void> {
-    await Promise.all(this.pools.map(({ prober }) => prober.load()));
+    await Promise.all(this.targets.map(({ prober }) => prober.load()));
   }
 
   async probeAll(): Promise<void> {
-    await Promise.all(this.pools.map(({ prober }) => prober.probeAll()));
+    await Promise.all(this.targets.map(({ prober }) => prober.probeAll()));
   }
 
   start(intervalMs: number): void {
-    for (const { prober } of this.pools) prober.start(intervalMs);
+    for (const { prober } of this.targets) prober.start(intervalMs);
   }
 
   stop(): void {
-    for (const { prober } of this.pools) prober.stop();
+    for (const { prober } of this.targets) prober.stop();
   }
 
   async flush(): Promise<void> {
-    await Promise.all(this.pools.map(({ prober }) => prober.flush()));
+    await Promise.all(this.targets.map(({ prober }) => prober.flush()));
   }
 }

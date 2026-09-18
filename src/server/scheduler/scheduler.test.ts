@@ -5,13 +5,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ReportIndex } from '../store/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
-import type { BenchPools } from '../services/bench.js';
+import type { Targets } from '../services/bench.js';
 import { EventLog } from '../services/events.js';
-import { DEFAULT_BENCH_CAPABILITY } from '../../shared/capability.js';
+import { DEFAULT_TARGET } from '../../shared/target.js';
 import { migrateLines, Scheduler, type SchedulerOptions } from './index.js';
 
-/** One pool, so one line — the shape every installation had before there were two. */
-const LINE = DEFAULT_BENCH_CAPABILITY;
+/** One target, so one line — the shape every installation had before there were two. */
+const LINE = DEFAULT_TARGET;
 
 /**
  * That line's state on a subject, which is where the try counter and the claim now live.
@@ -72,27 +72,29 @@ function registryOf(names: string[]): SubjectRegistry {
  * every row belongs to it, so the id is fixed and the filter is a no-op — exactly the shape a
  * single-pool box has.
  */
-function proberOf(leasable: number, rows: unknown[] = []): BenchPools {
+function proberOf(leasable: number, rows: unknown[] = []): Targets {
   return {
-    capabilities: [LINE],
+    ids: [LINE],
+    has: (id: string) => id === LINE,
     leasable: () => new Array(leasable).fill({ name: 'demostaging1' }),
     list: () => rows,
-    health: () => [{ id: 'demo', capability: LINE }],
-  } as unknown as BenchPools;
+    health: () => [{ id: LINE }],
+  } as unknown as Targets;
 }
 
 /** A pool that changes between ticks — an outage starting, or lifting, under a live scheduler. */
-function changingPool(leasable: number, rows: unknown[] = []): BenchPools & { set: (n: number, r?: unknown[]) => void } {
+function changingPool(leasable: number, rows: unknown[] = []): Targets & { set: (n: number, r?: unknown[]) => void } {
   let now = { leasable, rows };
   return {
-    capabilities: [LINE],
+    ids: [LINE],
+    has: (id: string) => id === LINE,
     leasable: () => new Array(now.leasable).fill({ name: 'demostaging1' }),
     list: () => now.rows,
-    health: () => [{ id: 'demo', capability: LINE }],
+    health: () => [{ id: LINE }],
     set: (n: number, r: unknown[] = now.rows) => {
       now = { leasable: n, rows: r };
     },
-  } as unknown as BenchPools & { set: (n: number, r?: unknown[]) => void };
+  } as unknown as Targets & { set: (n: number, r?: unknown[]) => void };
 }
 
 function make(over: Partial<SchedulerOptions> = {}): Scheduler {
@@ -103,7 +105,7 @@ function make(over: Partial<SchedulerOptions> = {}): Scheduler {
     index: indexOf({}),
     registry: registryOf(['Alpha', 'Beta']),
     events,
-    pools: proberOf(1),
+    targets: proberOf(1),
     // Off by default. `record()` schedules a look-again, and a test that calls it directly
     // would otherwise dispatch a real run a second later — into a temp directory `afterEach`
     // has already deleted. The kick's own tests turn it back on.
@@ -197,7 +199,7 @@ describe('armed', () => {
 describe('the bench gate', () => {
   it('idles and names the hosts when nothing is leasable', async () => {
     const s = make({
-      pools: proberOf(0, [
+      targets: proberOf(0, [
         { name: 'demostaging1', status: 'healthy', remaining_min: 30 },
         { name: 'demostaging2', status: 'unreachable' },
       ]),
@@ -213,7 +215,7 @@ describe('the bench gate', () => {
 
   /** No prober at all is not the same as a dead pool — a test rig has neither. */
   it('does not gate when there is no prober wired', async () => {
-    const s = make({ pools: undefined });
+    const s = make({ targets: undefined });
     expect((await s.tick()).action).toBe('audit');
   });
 
@@ -225,7 +227,7 @@ describe('the bench gate', () => {
    * standing condition lives in the `bench.unreachable` alert; the log says when it began.
    */
   it('logs a gated tick once, not on every tick it stays gated', async () => {
-    const s = make({ pools: proberOf(0, [{ name: 'demostaging1', status: 'unreachable' }]) });
+    const s = make({ targets: proberOf(0, [{ name: 'demostaging1', status: 'unreachable' }]) });
     await s.tick();
     await s.tick();
     await s.tick();
@@ -241,7 +243,7 @@ describe('the bench gate', () => {
    */
   it('stays quiet even though the reason text changes as the countdown runs', async () => {
     const pool = changingPool(0, [{ name: 'demostaging1', status: 'healthy', remaining_min: 30 }]);
-    const s = make({ pools: pool });
+    const s = make({ targets: pool });
     const first = await s.tick();
     pool.set(0, [{ name: 'demostaging1', status: 'healthy', remaining_min: 20 }]);
     const second = await s.tick();
@@ -258,7 +260,7 @@ describe('the bench gate', () => {
    */
   it('says so once when a bench becomes claimable again', async () => {
     const pool = changingPool(0, [{ name: 'demostaging1', status: 'unreachable' }]);
-    const s = make({ pools: pool });
+    const s = make({ targets: pool });
     await s.tick();
     pool.set(1, [{ name: 'demostaging1', status: 'healthy' }]);
     await s.tick();
@@ -967,7 +969,7 @@ describe('the request queue', () => {
  * second one on the same subject.
  */
 describe('a schedule file written before platforms existed', () => {
-  const FOSS = 'bench.foss';
+  const FOSS = 'foss';
 
   it('fans a v1 row onto every platform, so a parked app stays parked', () => {
     const out = migrateLines(
