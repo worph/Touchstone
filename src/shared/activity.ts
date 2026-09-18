@@ -377,6 +377,16 @@ export interface RunLive {
   /** The demo instance this run leased, and the browser sidecar leased with it. */
   bench?: string | null;
   browser?: string | null;
+  /**
+   * **Which platform this run is about** — the target it leased its bench from.
+   *
+   * A hostname is not a platform: once both lines run, two cards carrying `demostaging1` and
+   * `demofoss1` are told apart only by somebody knowing which box is which. This is the fact
+   * the card should lead with, and the runner already resolves it as `lease.benchTarget`.
+   */
+  target?: string | null;
+  /** That target's display name, so the card need not look one up. */
+  target_label?: string | null;
 }
 
 export interface LastRun {

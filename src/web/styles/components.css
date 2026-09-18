@@ -124,6 +124,20 @@
   /* overflow-x also makes overflow-y a scroll container, and a sticky header
      inside one that never scrolls vertically parks itself over the rows. */
   .tbl-wrap .tbl th { position: static; }
+
+  /* **Say that it scrolls.** The table is wider than a phone by design — the columns are the
+     product — but clipped mid-word at the right edge it reads as a rendering fault rather than
+     as a region you can swipe. These are the classic `background-attachment` shadows: the two
+     `local` layers scroll with the content and cover the fixed `scroll` layers when you are at
+     an edge, so each shadow appears only while there is something in that direction. No
+     JavaScript, and no shadow shown when the table happens to fit. */
+  .tbl-wrap {
+    background:
+      linear-gradient(to right, var(--bg-1) 30%, transparent) left / 28px 100% no-repeat local,
+      linear-gradient(to left, var(--bg-1) 30%, transparent) right / 28px 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, var(--border), transparent) left / 10px 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, var(--border), transparent) right / 10px 100% no-repeat scroll;
+  }
 }
 
 .tbl {
@@ -278,6 +292,36 @@
 }
 .summary-risk .n { font: 600 24px/1 var(--mono); font-variant-numeric: tabular-nums; }
 
+/* The header block: a count, the per-section tallies, and the total risk.
+
+   Side by side these are three cells of one bar, divided by vertical rules. Below about 720px
+   they cannot be: `.summary-legs` alone asks for 340px, so it wraps — and the total kept its
+   `border-right`, leaving a rule running down into empty space and the risk figure stranded
+   and centred underneath. That is the "broken" a phone actually shows.
+
+   Stacked, each is a full-width row and the rules become horizontal, which is what a divided
+   bar turns into when it runs out of width. */
+@media (max-width: 720px) {
+  .summary-total,
+  .summary-risk {
+    flex: 1 1 100%;
+    min-width: 0;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+    padding: 10px 14px;
+    text-align: left;
+    border-left: 0;
+    border-right: 0;
+  }
+  .summary-legs { flex: 1 1 100%; min-width: 0; }
+  .summary-legs,
+  .summary-risk { border-top: 1px solid var(--border); }
+  .summary-leg { padding: 9px 14px; gap: 10px; }
+  /* A fixed 82px label column wastes a third of the row at this width. */
+  .summary-leg .leg-name { width: auto; }
+}
+
 /* ============================================================== toolbar */
 .toolbar {
   display: flex;
@@ -371,6 +415,18 @@
 /* The store a subject came from, beside its name. Only rendered when more than one store is
    configured — see Overview's `showOrigin`. Quiet on purpose: it disambiguates a row, it is
    not a status. */
+/* A word qualifying a whole column — `measuring` on a platform that does not judge yet.
+   Same shape as the row chips, dimmed: it qualifies a heading rather than flagging a fault. */
+.col-note {
+  margin-left: 6px;
+  font: 500 9px/1.5 var(--sans);
+  letter-spacing: 0.03em;
+  text-transform: none;
+  color: var(--fg-2);
+  background: var(--bg-2);
+  border-color: var(--border);
+}
+
 .store-tag {
   margin-left: 7px;
   font: 500 10px/1.5 var(--sans);
@@ -433,6 +489,14 @@
 
 .act-h-action { margin-left: auto; }
 .act-h-filters { margin-left: auto; display: flex; gap: 6px; }
+
+@media (max-width: 720px) {
+  /* A heading and two selects do not fit across a phone, and a heading that scrolls
+     sideways takes the page with it. Wrap: the filters drop to their own line and share it. */
+  .act-h { flex-wrap: wrap; }
+  .act-h-filters { margin-left: 0; width: 100%; }
+  .act-h-filters .control { flex: 1; min-width: 0; }
+}
 
 .act-quiet {
   padding: 12px 14px;
@@ -538,6 +602,18 @@
   overflow: hidden;
 }
 
+/* A platform's name above its benches. Drawn only when there is more than one, so a
+   single-target box renders the roster exactly as it always did. */
+.env-group {
+  grid-column: 1 / -1;
+  margin: 6px 0 2px;
+  font: 500 11px/1.5 var(--sans);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+}
+.env-group:first-child { margin-top: 0; }
+
 .env-row {
   display: grid;
   grid-template-columns: 190px 150px 1fr;
@@ -570,6 +646,14 @@
   word-break: break-word;
 }
 .env-board { color: var(--minor); }
+
+@media (max-width: 720px) {
+  /* Two fixed tracks are 340px before the note has started, so the roster pushed the whole
+     page sideways on a phone — the one block on Activity you read *because* something is
+     wrong. Stack it: the instance, then its state, then what the board claims. */
+  .env-row { grid-template-columns: 1fr; gap: 3px; }
+  .env-group { margin-top: 12px; }
+}
 
 /* -- the log ------------------------------------------------------------- */
 
@@ -674,34 +758,12 @@
   gap: 8px;
 }
 
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  min-width: 232px;
-  padding: 4px;
-  background: var(--bg-2);
-  border: 1px solid var(--border-2);
-  border-radius: 8px;
-  box-shadow: var(--shadow);
-}
-
-  padding: 8px 10px;
-  font: inherit;
-  color: var(--fg);
-  text-align: left;
-  cursor: pointer;
-  background: none;
-  border: 0;
-  border-radius: 6px;
-}
-
-
-  color: var(--fg-3);
-  cursor: not-allowed;
-}
+/* The dropdown's three rules used to sit here. When it was removed on 2026-08-20 the
+   *selectors* went and the declaration bodies stayed, which is not inert: a block with no
+   selector makes the parser read everything up to the next `{` as one long selector, so the
+   rule that followed — `.reassay-note`, the wrapping note on every audit control — was
+   consumed with it and never applied. It rendered at the inherited 14px with no capped
+   measure, which is what pushed the control sideways on a phone. */
 
 /* Wraps, with a capped measure.
    It was `white-space: nowrap` while the only thing it ever said was four words. It now also
@@ -714,6 +776,66 @@
 }
 
 .reassay-note--bad { color: var(--crit); }
+
+/* What one rubric expands into when it is audited on several platforms.
+
+   Quiet register on purpose: this is a fact about the document, not a warning, and it sits
+   directly under the file name in the same `subject-refs` block as the chip row. Rows wrap at
+   phone width rather than scrolling — three short strings, none of which may be truncated,
+   since the middle one is the whole point. */
+.proto-targets {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+  background: var(--bg-1);
+}
+
+.proto-targets__head {
+  grid-column: 1 / -1;
+  font: 500 11px/1.5 var(--sans);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  margin-bottom: 4px;
+}
+
+.proto-targets {
+  display: grid;
+  grid-template-columns: max-content max-content 1fr;
+  column-gap: 12px;
+  row-gap: 2px;
+  align-items: baseline;
+}
+
+/* `display: contents` so each row's three spans become children of the grid above and the
+   columns line up across rows — which is the whole reason for listing them like this. Without
+   it the ids differ in width and nothing beneath them aligns. */
+.proto-target {
+  display: contents;
+  font-size: 12px;
+}
+.proto-target > span { font-size: 12px; padding: 1px 0; }
+
+.proto-target__id { color: var(--fg); }
+.proto-target__where { color: var(--fg-1); }
+
+/* The sentence that says why a configured platform is not in the backlog. Dimmed because it is
+   an aside, never coloured as a warning: a platform measured before it judges is the intended
+   state, not a fault. */
+.proto-target__note { color: var(--fg-2); }
+
+/* Three columns of prose do not fit a phone. Stack them, and let the row be a row again. */
+@media (max-width: 720px) {
+  .proto-targets { display: block; }
+  .proto-target {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 8px;
+    padding: 3px 0;
+  }
+}
 
 /* ── the protocol screen ────────────────────────────────────────────────────
    A tab strip and a plain textarea. Deliberately not a rich editor: the file is

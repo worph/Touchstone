@@ -305,6 +305,14 @@ export interface ProtocolSummary {
   modified_at: string;
   /** Its newest row in the history, or null if the log has not recorded it. */
   revision: Revision | null;
+  /**
+   * What this rubric expands into, when it is audited on more than one platform.
+   *
+   * Absent for an ordinary rubric — one section, its own id, nothing to say. Composed by the
+   * server from `sectionsOf`, which is the only place frontmatter is interpreted, so the page
+   * never reads `targets:` itself.
+   */
+  sections?: { id: string; target: string; target_label: string; scores: boolean }[];
 }
 
 export interface ProtocolDoc {

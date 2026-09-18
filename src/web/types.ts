@@ -2,7 +2,7 @@
  * View-model types local to the web stream. The wire contract lives in
  * `@shared/types` and is not modified here.
  */
-import type { AssayRecord, Leg, Severity, SubjectState } from '@shared/types';
+import type { AssayRecord, Section, Severity, SubjectState } from '@shared/types';
 
 /** `GET /api/v1/subjects/:name` */
 export interface SubjectDetail {
@@ -41,11 +41,21 @@ export interface DisplayState {
   hint?: string;
 }
 
+/**
+ * Which column a status filter is asking about — a section id, or every section this subject
+ * has. Named `leg` on the wire and in the URL because that is what the query parameter has
+ * always been called; identifiers are stable, vocabulary moved (CLAUDE.md).
+ *
+ * It was `'static' | 'functional'` until 2026-09-18, which made a platform's own column
+ * unfilterable: the summary could offer the tally and the URL could not carry the answer.
+ */
+export type LegFilter = 'any' | Section;
+
 /** Overview filter state, mirrored into the URL. */
 export interface OverviewFilters {
   q: string;
   show: ShowFilter;
-  leg: 'any' | Leg;
+  leg: LegFilter;
   sort: SortKey;
   dir: 'asc' | 'desc';
 }

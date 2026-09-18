@@ -79,3 +79,25 @@ export function fileLabel(file: string): string {
   if (!m) return file;
   return `${m[1]} ${m[2]}:${m[3]} · ${m[5]}`;
 }
+
+/**
+ * A section id as a person reads it — `currency` → `Currency`,
+ * `functional@foss` → `Functional · foss`.
+ *
+ * The id is the only name a derived column has. Protocol names and target labels are not on the
+ * wire for the table, and adding a lookup for them would be a second place for a column's name
+ * to be wrong — the Protocol page is where the full label and the explanation live.
+ *
+ * Here rather than inline in `SubjectTable` because this repo has **no web component tests and
+ * no renderer**: the only web suites are pure functions over `src/web/lib`, so anything that
+ * should be covered has to live here to be coverable at all. Three callers now — the Store
+ * table's headers, the run card's section list and the running strip's — and a fourth spelling
+ * of it would be how they start disagreeing.
+ */
+export function sectionLabel(id: string): string {
+  const at = id.indexOf('@');
+  const rubric = at === -1 ? id : id.slice(0, at);
+  const target = at === -1 ? '' : id.slice(at + 1);
+  const head = rubric.charAt(0).toUpperCase() + rubric.slice(1).replace(/[-_]/g, ' ');
+  return target ? `${head} · ${target}` : head;
+}

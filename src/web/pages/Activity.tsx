@@ -10,9 +10,16 @@
  * never do is fail to tell you why it is failing.
  */
 import { subjectName } from '@shared/subject';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 
-import type { AlertsResponse, BenchesResponse, BenchHealth, EventsResponse, PushStatus } from '@shared/activity';
+import type {
+  AlertsResponse,
+  BenchesResponse,
+  BenchHealth,
+  BenchPoolHealth,
+  EventsResponse,
+  PushStatus,
+} from '@shared/activity';
 import AlertCard from '../components/AlertCard';
 import EventRow from '../components/EventRow';
 import RunCard from '../components/RunCard';
@@ -71,6 +78,36 @@ const BENCH_LABEL: Record<string, string> = {
  * forty-minute assay on, because the daily cleanup is about to wipe it — so the row says how
  * long it has, and says plainly when that is not enough.
  */
+/**
+ * The roster, grouped under the platform each bench serves.
+ *
+ * Config order, from the pool list, so the default platform leads — the same order the summary
+ * lines above are drawn in, because a roster that disagreed with the summary about which
+ * platform comes first would be worse than no grouping at all.
+ *
+ * A heading only when there is more than one platform: on a single-target box this returns one
+ * unlabelled group and the block renders exactly as it always has. Rows whose target matches no
+ * configured pool — a roster written before targets existed, or a pool just removed from the
+ * config — are kept in a trailing unlabelled group rather than dropped: the whole purpose of
+ * this block is to show what is there.
+ */
+function groupByTarget(
+  rows: readonly BenchHealth[],
+  pools: readonly BenchPoolHealth[],
+): { label: string | null; rows: BenchHealth[] }[] {
+  if (pools.length <= 1) return [{ label: null, rows: [...rows] }];
+  const out: { label: string | null; rows: BenchHealth[] }[] = [];
+  const claimed = new Set<BenchHealth>();
+  for (const pool of pools) {
+    const mine = rows.filter((b) => b.target === pool.id);
+    mine.forEach((b) => claimed.add(b));
+    if (mine.length > 0) out.push({ label: pool.label, rows: mine });
+  }
+  const orphans = rows.filter((b) => !claimed.has(b));
+  if (orphans.length > 0) out.push({ label: null, rows: orphans });
+  return out;
+}
+
 function claimNote(bench: BenchHealth): string {
   if (bench.processing === true) return ' · mid-cleanup, not claimable';
   if (bench.remaining_min === undefined) return '';
@@ -227,6 +264,16 @@ export default function Activity() {
             {benches.pools.length > 1 ? ' — ' : null}
             <strong className="num">{pool.leasable}</strong> of {pool.total} usable
             {pool.window ? ` — ${pool.window}` : ''}.
+            {/* Next to the pool whose board it is. Only the discovered pool has one; a fixed
+                box has no board to disagree with, which is half the point of showing it. */}
+            {pool.board_url ? (
+              <>
+                {' '}
+                <a className="tag tag--link" href={pool.board_url} target="_blank" rel="noreferrer">
+                  board ↗
+                </a>
+              </>
+            ) : null}
           </div>
         ))}
 
@@ -240,8 +287,17 @@ export default function Activity() {
           </div>
         ) : (
           <div className="env">
-            {benches?.benches.map((b) => (
-              <div className="env-row" key={b.name} data-status={b.status}>
+            {/* Grouped by platform, and keyed on `<target>/<name>`.
+
+                The key is not tidiness: `shared/activity.ts` already warns that a bench name
+                stopped identifying a row once there was more than one target, because two
+                platforms may legitimately hold same-named instances. Keyed on the name alone,
+                two such boxes collide into one row and React renders whichever it saw last. */}
+            {groupByTarget(benches?.benches ?? [], benches?.pools ?? []).map(({ label, rows }) => (
+              <Fragment key={label ?? '—'}>
+                {label ? <div className="env-group">{label}</div> : null}
+                {rows.map((b) => (
+              <div className="env-row" key={`${b.target ?? '—'}/${b.name}`} data-status={b.status}>
                 <span className="env-name">{b.name}</span>
                 <span className="env-status">
                   <span className="env-dot" aria-hidden="true" />
@@ -272,6 +328,8 @@ export default function Activity() {
                   ) : null}
                 </span>
               </div>
+                ))}
+              </Fragment>
             ))}
           </div>
         )}

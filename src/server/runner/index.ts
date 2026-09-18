@@ -531,7 +531,7 @@ export class Runner {
     const {
       run: runSections,
       blocked: skipped,
-      lease: { benchHost, benchBuild, browserEndpoint },
+      lease: { benchHost, benchBuild, benchTarget, browserEndpoint },
     } = resolveCapabilities(
       sections,
       liveWorld({
@@ -547,6 +547,8 @@ export class Runner {
       degraded_reason: skipped[0]?.reason ?? null,
       bench: benchHost ?? null,
       browser: browserEndpoint ?? null,
+      // The platform, not just the host it happened to land on.
+      target: benchTarget ?? null,
     });
 
     for (const { section, reason } of skipped) {

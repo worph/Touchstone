@@ -603,6 +603,8 @@ await app.register(registerRoutes, {
   boardUrls: Object.fromEntries(
     targetList.filter((t) => t.board_url).map((t) => [t.id, t.board_url]),
   ),
+  // Only the ids and labels: the Protocol page names a platform, it does not probe one.
+  targetLabels: targetList.map((t) => ({ id: t.id, label: t.label })),
   // This instance about itself: the context prompt the chat is handed, and the config this
   // process booted with — redacted on the way out, `routes/settings.ts`.
   settings: { context: chatContext, config: cfg },

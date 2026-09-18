@@ -22,15 +22,14 @@
 import { useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
-import type { Leg } from '@shared/types';
 import { StatusLegend } from '../components/StatusCell';
 import SubjectTable, { SubjectSummary } from '../components/SubjectTable';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getPublicSubjects } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
-import { num, plural } from '../lib/format';
+import { num, plural, sectionLabel } from '../lib/format';
 import { applyShow, FRESH_DAYS, search, sortSubjects, tally } from '../lib/overview';
-import type { ShowFilter, SortKey } from '../types';
+import type { LegFilter, ShowFilter, SortKey } from '../types';
 
 /** No `running`: this page carries no live overlay, so the filter could only ever match none. */
 const SHOW_OPTIONS: { value: ShowFilter; label: string }[] = [
@@ -52,7 +51,7 @@ export default function PublicBoard() {
 
   const q = params.get('q') ?? '';
   const show = (params.get('show') as ShowFilter) ?? 'all';
-  const leg = (params.get('leg') as 'any' | Leg) ?? 'any';
+  const leg = (params.get('leg') as LegFilter) ?? 'any';
   const sort = (params.get('sort') as SortKey) ?? 'risk';
   const dir = (params.get('dir') as 'asc' | 'desc') ?? 'desc';
 
@@ -97,7 +96,7 @@ export default function PublicBoard() {
     );
   }
 
-  const toggleShow = (value: ShowFilter, forLeg: 'any' | Leg) => {
+  const toggleShow = (value: ShowFilter, forLeg: LegFilter) => {
     const active = show === value && leg === forLeg;
     set({ show: active ? null : value, leg: active ? null : forLeg });
   };
@@ -118,10 +117,14 @@ export default function PublicBoard() {
 
         <label>
           in
+          {/* One option per column the table draws, from the same derived list the tallies
+              use — a platform with a column and no way to filter on it is a column you
+              cannot ask a question about. */}
           <select className="control" value={leg} onChange={(e) => set({ leg: e.target.value })}>
-            <option value="any">either section</option>
-            <option value="static">static only</option>
-            <option value="functional">functional only</option>
+            <option value="any">{t.sections.length > 2 ? 'any section' : 'either section'}</option>
+            {t.sections.map((s) => (
+              <option key={s.id} value={s.id}>{`${sectionLabel(s.id).toLowerCase()} only`}</option>
+            ))}
           </select>
         </label>
 
