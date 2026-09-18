@@ -76,6 +76,24 @@ export function verdictSectionsOf(rows: readonly SubjectState[]): string[] {
   return [...ids].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
+/**
+ * Which verdict sections are **provisional** — the platform is being measured before it is
+ * allowed to judge.
+ *
+ * A non-scoring *agent* section still reaches a verdict; what it does not do is move the
+ * hallmark or enter a backlog. That is a fact about the column, not about any row, so the
+ * header says it once rather than each of seventy-nine cells repeating it.
+ */
+export function provisionalSections(rows: readonly SubjectState[]): Set<string> {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    for (const [id, rec] of Object.entries(row.sections ?? {})) {
+      if (rec && !isReading(rec) && rec.meta.scores === false) ids.add(id);
+    }
+  }
+  return ids;
+}
+
 function rank(id: string): number {
   return id === 'static' ? 0 : id === 'functional' ? 1 : 2;
 }

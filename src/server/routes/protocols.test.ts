@@ -34,9 +34,34 @@ executor: currency.sh
 Rule one.
 `;
 
+/** A rubric audited on two platforms — what `sectionsOf` expands and the page has to show. */
+const FUNCTIONAL = `---
+id: functional
+name: Functional Review Protocol
+kind: leaf
+order: 2
+requires: [bench, browser]
+targets:
+  - yundera
+  - id: foss
+    scores: false
+---
+
+# Functional Review Protocol
+
+Drive it.
+`;
+
 async function serve(): Promise<FastifyInstance> {
   const instance = Fastify();
-  await instance.register(routes, { protocols: new ProtocolStore(dir), revisions });
+  await instance.register(routes, {
+    protocols: new ProtocolStore(dir),
+    revisions,
+    targets: [
+      { id: 'yundera', label: 'Yundera PCS' },
+      { id: 'foss', label: 'FOSS stack' },
+    ],
+  });
   await instance.ready();
   return instance;
 }
@@ -45,6 +70,7 @@ beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'touchstone-protocol-routes-'));
   await fs.writeFile(path.join(dir, 'static.md'), STATIC, 'utf8');
   await fs.writeFile(path.join(dir, 'currency.sh'), '#!/bin/sh\nexit 0\n', 'utf8');
+  await fs.writeFile(path.join(dir, 'functional.md'), FUNCTIONAL, 'utf8');
   revisions = new RevisionStore(dir);
   // What `index.ts` does at boot, and the reason the pre-cutover text of a rubric survives
   // its first edit: the history is recording before anything reads or writes a protocol.
@@ -66,6 +92,43 @@ describe('listing', () => {
     const [p] = res.json().protocols;
     expect(p.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(p.version).toBeUndefined();
+  });
+});
+
+/**
+ * What a rubric expands into — the fact the Protocol page could not previously state.
+ *
+ * The page lists *files*; `sectionsOf` was reached by no route it touches, so a rubric declaring
+ * two platforms rendered as one tab, one hash, and a `section functional` chip that named only
+ * the default target.
+ */
+describe('the platforms a rubric is audited on', () => {
+  const listed = async (id: string) =>
+    (await app.inject({ method: 'GET', url: '/protocols' })).json().protocols.find(
+      (p: { id: string }) => p.id === id,
+    );
+
+  it('names every section a target-scoped rubric expands into, with its platform', async () => {
+    const p = await listed('functional');
+    expect(p.sections).toEqual([
+      { id: 'functional', target: 'yundera', target_label: 'Yundera PCS', scores: true },
+      { id: 'functional@foss', target: 'foss', target_label: 'FOSS stack', scores: false },
+    ]);
+  });
+
+  /** One section, its own id, nothing to say — a block reading "1 platform" is noise. */
+  it('says nothing at all about a rubric that is not target-scoped', async () => {
+    expect((await listed('static')).sections).toBeUndefined();
+  });
+
+  /**
+   * **The payload must not become a way to address a composite id.** `isSafeId` rejects `@`,
+   * which is the whole reason a target can never mint a protocol file — invariant 11 — and
+   * naming these ids in a listing must not quietly widen that.
+   */
+  it('still refuses a composite id as a protocol', async () => {
+    const res = await app.inject({ method: 'GET', url: '/protocols/functional@foss' });
+    expect(res.statusCode).toBe(400);
   });
 });
 
@@ -118,7 +181,11 @@ describe('the history', () => {
   });
 
   it('hands back the exact bytes a hash names, long after the file moved on', async () => {
-    const first = (await app.inject({ method: 'GET', url: '/protocols' })).json().protocols[0];
+    // Named, not positional: the listing holds several protocols and the one this test is
+    // about is the one it then saves over.
+    const first = (await app.inject({ method: 'GET', url: '/protocols' }))
+      .json()
+      .protocols.find((p: { id: string }) => p.id === 'static');
     await save('# Changed', 'moved on');
 
     const res = await app.inject({

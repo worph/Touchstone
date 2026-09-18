@@ -65,7 +65,20 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
     const status = options.runner?.status() ?? { running: null, last: null };
     return {
       enabled: options.runner?.enabled ?? false,
-      running: status.running,
+      // The target's *label* is resolved here rather than in the runner: the runner knows
+      // which platform it leased, and only the config knows what that platform is called.
+      running: status.running
+        ? {
+            ...status.running,
+            ...(status.running.target
+              ? {
+                  target_label:
+                    options.targets?.health().find((t) => t.id === status.running!.target)?.label ??
+                    status.running.target,
+                }
+              : {}),
+          }
+        : null,
       last: status.last,
       /**
        * What the running audit has settled so far. This is the reason the agent reports

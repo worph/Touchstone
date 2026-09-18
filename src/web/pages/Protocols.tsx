@@ -210,6 +210,49 @@ export default function Protocols() {
   );
 }
 
+/**
+ * What one rubric expands into, when it is audited on more than one platform.
+ *
+ * The question this answers is "what does this instance audit, and on what?" — which the page
+ * could not answer at all: it lists *files*, and a rubric declaring two platforms rendered as
+ * one tab with one hash. The section id is shown because it is the id an assay carries and the
+ * name you will see in a report filename.
+ *
+ * Deliberately not a `Notice`: nothing is wrong. It is a fact about the document, in the same
+ * quiet register as the chip row above it — the rule `BacklogNote` states, that warning chrome
+ * for something that is merely true is how a page teaches people to ignore its warnings.
+ */
+function Expansions({ sections }: { sections?: ProtocolSummary['sections'] }) {
+  if (!sections?.length) return null;
+  return (
+    <div className="proto-targets">
+      <div className="proto-targets__head">
+        Audited on {sections.length} platforms
+      </div>
+      {sections.map((s) => (
+        <div className="proto-target" key={s.id}>
+          <span className="mono proto-target__id">{s.id}</span>
+          <span className="proto-target__where">{s.target_label}</span>
+          {/* The sentence that answers "I configured this bench, why is nothing auditing on
+              it?". A non-scoring section mints no scheduler line, so it enters no backlog.
+
+              Worded without the internal vocabulary, deliberately. This first read "measured,
+              not judging — not scheduled", which is the rule as `scores: false` states it and
+              assumes the reader already knows a section can reach a verdict that does not
+              count. The first person to see it asked what it meant. "trials only" says how it
+              runs; "don't count yet" says what the results do, and implies a stage rather than
+              a fault. */}
+          <span className="proto-target__note">
+            {s.scores
+              ? 'audited automatically · counts toward the verdict'
+              : "trials only · results don't count yet"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ProtocolMeta({
   meta,
   file,
@@ -226,6 +269,7 @@ function ProtocolMeta({
   return (
     <div className="subject-refs">
       <div className="ref-line">{file}</div>
+      <Expansions sections={meta.sections} />
       <div className="ref-line">
         <span className="tag mono" title={sha256}>@{shortSha(sha256)}</span>
         {/* The ordinal is the log's, not the file's — it says where this sits in this box's

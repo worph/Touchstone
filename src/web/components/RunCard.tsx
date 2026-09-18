@@ -32,7 +32,7 @@ import {
   type PhaseStep,
   type SectionRow,
 } from '../lib/run';
-import { since, stamp } from '../lib/format';
+import { sectionLabel, since, stamp } from '../lib/format';
 
 export interface RunCardProps {
   /**
@@ -108,7 +108,7 @@ export default function RunCard({
             </Link>
           ) : null}
           <span className="run-card__depth">
-            {sections.length > 0 ? sections.join(' + ') : 'choosing sections…'}
+            {sections.length > 0 ? sections.map(sectionLabel).join(' + ') : 'choosing sections…'}
           </span>
           <span className="spacer" />
           <span className="run-card__counted">

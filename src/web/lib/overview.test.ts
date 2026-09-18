@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_ORIGIN, subjectKey } from '@shared/subject';
 
 import type { AssayRecord, SubjectState } from '@shared/types';
-import { deriveBacklog } from './overview';
+import { deriveBacklog, tally } from './overview';
 
 function rec(subject: string, section: string, over: Record<string, unknown> = {}): AssayRecord {
   return {
@@ -141,5 +141,42 @@ describe('deriveBacklog', () => {
     ]);
     expect(out).toMatchObject({ reason: 'scanner_unavailable', count: 1 });
     expect(out?.items[0]?.section).toBe('security');
+  });
+});
+
+/**
+ * The block above the table counts what the table draws.
+ *
+ * It counted a hard-coded pair until 2026-09-18, while the table had already learned to derive
+ * its columns from the archive — so a rubric audited on a second platform got a column with no
+ * tally above it, and the filter that tally offers could not be reached at all.
+ */
+describe('tally', () => {
+  it('counts every verdict section the archive has, not a fixed pair', () => {
+    const t = tally([
+      subject('A', {
+        static: rec('A', 'static'),
+        functional: rec('A', 'functional'),
+        'functional@foss': rec('A', 'functional@foss', { verdict: 'non-compliant', top_severity: 'major', target: 'foss', scores: false }),
+      }),
+    ]);
+    expect(t.sections.map((s) => s.id)).toEqual(['static', 'functional', 'functional@foss']);
+    expect(t.sections[2]?.tally).toMatchObject({ failing: 1, compliant: 0 });
+  });
+
+  /** The two named columns are always offered, so a never-audited archive still filters. */
+  it('keeps static and functional even when nothing has been audited', () => {
+    const t = tally([subject('A', {})]);
+    expect(t.sections.map((s) => s.id)).toEqual(['static', 'functional']);
+    expect(t.sections[0]?.tally.notRun).toBe(1);
+    expect(t.subjects).toBe(1);
+  });
+
+  /** A reading measures; it has no verdict to tally, and a column of its own already. */
+  it('leaves a reading out', () => {
+    const t = tally([
+      subject('A', { currency: rec('A', 'currency', { scores: false, executor: 'currency.sh', verdict: null }) }),
+    ]);
+    expect(t.sections.map((s) => s.id)).toEqual(['static', 'functional']);
   });
 });

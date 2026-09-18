@@ -90,6 +90,13 @@ export interface RoutesOptions {
   /** Each pool's management board, by pool id. Only the demo pool has one. */
   boardUrls?: Record<string, string>;
   /**
+   * The platforms audited on, by id and label — so the Protocol page can *name* an expansion.
+   *
+   * Distinct from `targets` above, which is the live pool registry: this is the config's own
+   * list and carries no health, no prober and no way to lease anything.
+   */
+  targetLabels?: { id: string; label: string }[];
+  /**
    * This instance's own two settings surfaces: the administrator's context prompt, and the
    * config it booted with. Absent, both answer rather than 404 — see `routes/settings.ts`.
    */
@@ -151,6 +158,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     protocols: options.protocols,
     revisions: options.revisions,
     events: options.events,
+    targets: options.targetLabels,
   });
   await app.register(controlsRoutes, {
     ...(options.controls ?? {}),

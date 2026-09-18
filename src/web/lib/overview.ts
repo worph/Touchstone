@@ -1,14 +1,14 @@
 /** Tallies, filtering and sorting for the Overview table. Pure functions. */
-import type { AssayRecord, Leg, Section, SubjectState } from '@shared/types';
+import type { AssayRecord, Section, SubjectState } from '@shared/types';
 import { SEVERITY_RANK } from '@shared/types';
 import type { Coverage } from '@shared/types';
-import type { DisplayState, ShowFilter, SortKey, StateKind } from '../types';
+import type { DisplayState, LegFilter, ShowFilter, SortKey, StateKind } from '../types';
 import { displayState, runningState } from './status';
 import { readingRank } from './reading';
 
 /** A verdict older than FRESH_DAYS makes a subject eligible again (ARCHITECTURE §2). */
 import { DEFAULT_TARGET } from '@shared/target';
-import { isReading } from './reading';
+import { isReading, verdictSectionsOf } from './reading';
 
 export const FRESH_DAYS = 7;
 
@@ -53,8 +53,16 @@ export interface LegTally {
 
 export interface Tallies {
   subjects: number;
-  static: LegTally;
-  functional: LegTally;
+  /**
+   * One tally per verdict section the archive holds, in the table's column order.
+   *
+   * **Derived, not enumerated** — the same list the table draws its columns from. It was a
+   * hard-coded `{static, functional}` pair until 2026-09-18, which meant the block above the
+   * table counted two of however many columns the table had learned to derive: a rubric
+   * audited on a second platform got a column and no tally, and the filters that block offers
+   * could not reach it.
+   */
+  sections: { id: Section; tally: LegTally }[];
   /** What the assays actually scored. */
   risk: number;
 }
@@ -77,13 +85,11 @@ function tallyLeg(into: LegTally, s: DisplayState): void {
 export function tally(subjects: SubjectState[], live?: LiveRun | null): Tallies {
   const t: Tallies = {
     subjects: subjects.length,
-    static: emptyLeg(),
-    functional: emptyLeg(),
+    sections: verdictSectionsOf(subjects).map((id) => ({ id, tally: emptyLeg() })),
     risk: 0,
   };
   for (const s of subjects) {
-    tallyLeg(t.static, legState(s, 'static', live));
-    tallyLeg(t.functional, legState(s, 'functional', live));
+    for (const section of t.sections) tallyLeg(section.tally, legState(s, section.id, live));
     t.risk += s.risk;
   }
   return t;
@@ -117,7 +123,7 @@ export function isStale(s: SubjectState): boolean {
  *
  * Readings are excluded: they carry no verdict, so no `kind` of theirs is a thing to filter on.
  */
-function legsOf(s: SubjectState, leg: 'any' | Leg): string[] {
+function legsOf(s: SubjectState, leg: LegFilter): string[] {
   if (leg !== 'any') return [leg];
   const ids = Object.entries(s.sections ?? {})
     .filter(([, rec]) => rec && !isReading(rec))
@@ -129,7 +135,7 @@ function legsOf(s: SubjectState, leg: 'any' | Leg): string[] {
 
 function matchesKind(
   s: SubjectState,
-  leg: 'any' | Leg,
+  leg: LegFilter,
   kinds: StateKind[],
   live?: LiveRun | null,
 ): boolean {
@@ -139,7 +145,7 @@ function matchesKind(
 export function applyShow(
   s: SubjectState,
   show: ShowFilter,
-  leg: 'any' | Leg,
+  leg: LegFilter,
   live?: LiveRun | null,
 ): boolean {
   switch (show) {

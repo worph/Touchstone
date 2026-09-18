@@ -10,18 +10,19 @@
  * leads, and whether there is a run in flight to overlay. Everything about how a state is
  * drawn stays here, once.
  */
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
-import type { Leg, SubjectState } from '@shared/types';
+import type { Section, SubjectState } from '@shared/types';
 import CoverageCell from './CoverageCell';
 import StandardChip, { DelistedChip, VersionChip } from './StandardChip';
 import StatusCell from './StatusCell';
 import { ReadingBadge } from './Reading';
-import { readingOf, readingSections, verdictSectionsOf } from '../lib/reading';
+import { sectionLabel } from '../lib/format';
+import { provisionalSections, readingOf, readingSections, verdictSectionsOf } from '../lib/reading';
 import { coverageOf, legState, type LegTally, type LiveRun, type Tallies } from '../lib/overview';
 import { ageLabel, num } from '../lib/format';
-import type { ShowFilter, SortKey } from '../types';
+import type { LegFilter, ShowFilter, SortKey } from '../types';
 
 export interface SubjectTableProps {
   rows: SubjectState[];
@@ -57,6 +58,9 @@ export default function SubjectTable({
   // hard-coded headers until 2026-09-18; `hallmark.ts`'s `LEGS` says in as many words that it
   // "goes when the table learns to draw N".
   const verdicts = verdictSectionsOf(rows);
+  // Said once on the header rather than on every cell: a platform measured before it judges is
+  // a fact about the column, and seventy-nine repetitions of it would be wallpaper.
+  const provisional = provisionalSections(rows);
   return (
     <div className="tbl-wrap">
       <table className="tbl">
@@ -64,10 +68,18 @@ export default function SubjectTable({
           <tr>
             <Th label="Subject" k="name" sort={sort} dir={dir} onSort={onSort} />
             {verdicts.map((id) => (
-              <Th key={id} label={label(id)} k={`section:${id}`} sort={sort} dir={dir} onSort={onSort} />
+              <Th
+                key={id}
+                label={sectionLabel(id)}
+                note={provisional.has(id) ? 'measuring' : undefined}
+                k={`section:${id}`}
+                sort={sort}
+                dir={dir}
+                onSort={onSort}
+              />
             ))}
             {notices.map((id) => (
-              <Th key={id} label={label(id)} k={`notice:${id}`} sort={sort} dir={dir} onSort={onSort} />
+              <Th key={id} label={sectionLabel(id)} k={`notice:${id}`} sort={sort} dir={dir} onSort={onSort} />
             ))}
             <Th label="Verified" k="coverage" sort={sort} dir={dir} onSort={onSort} align="right" />
             <Th label="Risk" k="risk" sort={sort} dir={dir} onSort={onSort} align="right" />
@@ -93,19 +105,6 @@ export default function SubjectTable({
       </table>
     </div>
   );
-}
-
-/**
- * `currency` → `Currency`, `functional@foss` → `Functional · foss`.
- *
- * The section id is the only name a derived column has: protocol names and target labels are
- * not on the wire, and inventing a lookup for them would be a second place for a column's name
- * to be wrong.
- */
-function label(id: string): string {
-  const [rubric, target] = id.split('@');
-  const head = (rubric ?? id).charAt(0).toUpperCase() + (rubric ?? id).slice(1).replace(/[-_]/g, ' ');
-  return target ? `${head} · ${target}` : head;
 }
 
 function Row({
@@ -168,9 +167,16 @@ function Row({
 }
 
 function Th({
-  label, k, sort, dir, onSort, align,
+  label, note, k, sort, dir, onSort, align,
 }: {
   label: string;
+  /**
+   * A word qualifying the whole column — `measuring` for a platform that does not yet judge.
+   *
+   * A word, not a colour: the three-channel rule this file's stylesheet states at the top means
+   * a status is fill **and** glyph **and** word, never colour alone.
+   */
+  note?: string;
   k: SortKey;
   sort: SortKey;
   dir: 'asc' | 'desc';
@@ -186,6 +192,7 @@ function Th({
     >
       <button type="button" onClick={() => onSort(k, nextDir)}>
         {label}
+        {note ? <span className="tag col-note">{note}</span> : null}
         <span aria-hidden="true" style={{ opacity: active ? 1 : 0.25 }}>
           {active && dir === 'asc' ? '▲' : '▼'}
         </span>
@@ -197,13 +204,16 @@ function Th({
 export interface SubjectSummaryProps {
   t: Tallies;
   show: ShowFilter;
-  leg: 'any' | Leg;
-  onPick: (v: ShowFilter, l: 'any' | Leg) => void;
+  leg: LegFilter;
+  onPick: (v: ShowFilter, l: LegFilter) => void;
 }
 
-/** The counts, each one a filter. Two sections because the table draws two columns. */
+/**
+ * The counts, each one a filter. One row per column the table draws — derived from the same
+ * list, so a rubric audited on a second platform is counted here the moment it is drawn there.
+ */
 export function SubjectSummary({ t, show, leg, onPick }: SubjectSummaryProps) {
-  const legRow = (name: string, key: Leg, v: LegTally) => (
+  const legRow = (name: string, key: Section, v: LegTally) => (
     <div className="summary-leg">
       <span className="leg-name">{name}</span>
       <Tally label="compliant" n={v.compliant} kind="ok" on={() => onPick('compliant', key)} active={show === 'compliant' && leg === key} />
@@ -228,8 +238,9 @@ export function SubjectSummary({ t, show, leg, onPick }: SubjectSummaryProps) {
         <span className="section-title">subjects</span>
       </div>
       <div className="summary-legs">
-        {legRow('Static', 'static', t.static)}
-        {legRow('Functional', 'functional', t.functional)}
+        {t.sections.map((s) => (
+          <Fragment key={s.id}>{legRow(sectionLabel(s.id), s.id, s.tally)}</Fragment>
+        ))}
       </div>
       <div className="summary-risk">
         <span className="n">{num(t.risk)}</span>

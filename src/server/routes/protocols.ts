@@ -24,13 +24,21 @@ import { lineDiff } from '../../shared/linediff.js';
 import { renderMarkdown } from '../domain/markdown.js';
 import { saveProtocol } from '../domain/protocoledit.js';
 import type { EventLog } from '../services/events.js';
-import { isSafeId, parseExecutor, type ProtocolStore } from '../store/protocols.js';
+import { isSafeId, parseExecutor, sectionsOf, type ProtocolStore } from '../store/protocols.js';
 import type { RevisionStore } from '../store/revisions.js';
 
 export interface ProtocolRoutesOptions {
   protocols?: ProtocolStore;
   revisions?: RevisionStore;
   events?: EventLog;
+  /**
+   * The platforms this instance audits on — `config.targets`, already resolved.
+   *
+   * Only to put a **label** on an expansion: the rubric knows it is audited on `foss`, and only
+   * the config knows that is called "FOSS stack". Passed in rather than fetched by the page,
+   * which would be a second request for one string.
+   */
+  targets?: { id: string; label: string }[];
 }
 
 const routes: FastifyPluginAsync<ProtocolRoutesOptions> = async (app, options) => {
@@ -48,9 +56,42 @@ const routes: FastifyPluginAsync<ProtocolRoutesOptions> = async (app, options) =
     return [found.file, ...(executor.kind === 'script' ? [executor.file] : [])];
   };
 
+  /**
+   * What one rubric expands into, or nothing when it is not target-scoped.
+   *
+   * Shared by the listing and the single-protocol route, because the menu and the document are
+   * two views of the same file and a second composer is how they start disagreeing about how
+   * many platforms a rubric covers.
+   */
+  const expansionsOf = async (id: string) => {
+    const labelOf = new Map((options.targets ?? []).map((t) => [t.id, t.label]));
+    const mine = sectionsOf((await options.protocols?.list()) ?? []).filter(
+      (s) => s.rubric === id && s.target,
+    );
+    return mine.length > 0
+      ? mine.map((s) => ({
+          id: s.id,
+          target: s.target!,
+          target_label: labelOf.get(s.target!) ?? s.target!,
+          scores: s.scores,
+        }))
+      : undefined;
+  };
+
   app.get('/protocols', async () => {
     const all = (await options.protocols?.list()) ?? [];
     const log = (await options.revisions?.all()) ?? [];
+    // **What each rubric expands into.** A rubric audited on several platforms is several
+    // sections — one assay each, one verdict each — and until this the page had no way to say
+    // so: it listed files, and `sectionsOf` was reached by no route it touches.
+    //
+    // Composed here from `sectionsOf` rather than read off the frontmatter client-side, because
+    // that function is the only place frontmatter is interpreted and a second reader is a
+    // second answer. The response still lists *files*: an expansion is a fact **about** a
+    // document, not a replacement for it, and `isSafeId` still refuses a composite id, so none
+    // of this makes `functional@foss` addressable.
+    const labelOf = new Map((options.targets ?? []).map((t) => [t.id, t.label]));
+    const sections = sectionsOf(all);
     return {
       directory: options.protocols?.directory ?? null,
       history_failed: options.revisions?.failed ?? null,
@@ -63,6 +104,21 @@ const routes: FastifyPluginAsync<ProtocolRoutesOptions> = async (app, options) =
         modified_at: p.modified_at,
         // The head row, so the tab strip can label a protocol without a second request.
         revision: log.find((r) => r.file === p.file) ?? null,
+        // Absent for a rubric that is not target-scoped: one section, its own id, nothing to
+        // say. A block reading "audited on 1 platform" is noise on every ordinary rubric.
+        ...(() => {
+          const mine = sections.filter((s) => s.rubric === p.meta.id && s.target);
+          return mine.length > 0
+            ? {
+                sections: mine.map((s) => ({
+                  id: s.id,
+                  target: s.target!,
+                  target_label: labelOf.get(s.target!) ?? s.target!,
+                  scores: s.scores,
+                })),
+              }
+            : {};
+        })(),
       })),
     };
   });
@@ -72,7 +128,15 @@ const routes: FastifyPluginAsync<ProtocolRoutesOptions> = async (app, options) =
     const found = await options.protocols?.get(req.params.id);
     if (!found) return reply.code(404).send({ error: 'no such protocol' });
     const log = (await options.revisions?.forFiles([found.file])) ?? [];
-    return { ...found, revision: log[0] ?? null, html: renderMarkdown(found.body) };
+    const sections = await expansionsOf(req.params.id);
+    return {
+      ...found,
+      // On `meta`, because that is what the page hands to the block that draws it, and a
+      // rubric's platforms are a property of the rubric rather than of this response.
+      ...(sections ? { meta: { ...found.meta, sections } } : {}),
+      revision: log[0] ?? null,
+      html: renderMarkdown(found.body),
+    };
   });
 
   /** One section's history: its rubric and its script, interleaved, newest first. */

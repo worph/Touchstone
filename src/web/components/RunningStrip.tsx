@@ -14,6 +14,7 @@
 import { subjectName } from '@shared/subject';
 import { Link } from 'react-router-dom';
 
+import { sectionLabel } from '../lib/format';
 import { useRunStatus } from '../data/runStatus';
 import { useElapsed } from '../hooks/useElapsed';
 import { documentTitle, mmss, nowDoing, progressLabel, progressRatio } from '../lib/run';
@@ -65,7 +66,7 @@ export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 
       </span>
 
       <span className="run-strip__meta">
-        {sections.length > 0 ? sections.join(' + ') : '…'}
+        {sections.length > 0 ? sections.map(sectionLabel).join(' + ') : '…'}
         {counted ? <> · <span className="num">{counted}</span> settled</> : null}
       </span>
 
