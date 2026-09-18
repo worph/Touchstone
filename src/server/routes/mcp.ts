@@ -65,7 +65,7 @@ const TOOLS: McpToolDef[] = [
         section: {
           type: 'string',
           description:
-            'Only for an item list_requirements does not name: which section of this audit it belongs to, as listed there. A canonical id already knows its section and this is ignored for one; a section that is not in the list is ignored too.',
+            'Which section of this audit the item belongs to, as list_requirements names it. Needed in two cases: an item list_requirements does not name at all, and an id that more than one section lists — where this is what decides which one you are answering for. An id only one section lists already knows its section and this is ignored for it; a section that is not in the list is ignored too.',
         },
         requirement: { type: 'string', description: 'The requirement in your own words, as evidence.' },
         verdict: { type: 'string', enum: ['pass', 'fail', 'n-a', 'unverified'] },

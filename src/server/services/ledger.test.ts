@@ -287,6 +287,115 @@ describe('which section a record belongs to', () => {
     expect(out.ok && out.recorded.section).toBe('functional');
   });
 
+  /**
+   * Two platforms, one checklist. A second functional rubric audits the same app on a
+   * different stack and deliberately reuses the ids, because `install` passing on one and
+   * failing on the other is the comparison the second platform exists to make — and it is
+   * only a comparison if both spell it the same way.
+   *
+   * Until the lookup keyed on the pair, the first-ordered section took both records: the
+   * second arrived as a *revision* of the first, one section's progress bar was permanently
+   * short of its denominator, and a section left with nothing recorded could be written
+   * `blocked` — which invariant 4 says is a statement about infrastructure, never the app.
+   */
+  describe('the same id declared by two sections', () => {
+    const TWO_PLATFORMS = [
+      ...SECTIONS,
+      { id: 'functional-foss', name: 'Functional Review Protocol (FOSS)', phases: ['A', 'C', 'D'] },
+    ];
+    const SHARED: CanonicalRequirement[] = [
+      ...CANONICAL,
+      { id: 'phase-g-persistence', text: 'G — data survives a reinstall', section: 'functional-foss', requires: 'bench.foss' },
+    ];
+    const openBoth = () =>
+      ledger.open({ subject: 'Ntfy', sections: TWO_PLATFORMS, canonical: SHARED });
+
+    it('files each section\'s answer against that section', () => {
+      const t = openBoth();
+      ledger.recordRequirement(t.token, {
+        id: 'phase-g-persistence', verdict: 'pass', section: 'functional',
+      });
+      ledger.recordRequirement(t.token, {
+        id: 'phase-g-persistence', verdict: 'fail', severity: 'Critical', section: 'functional-foss',
+      });
+
+      const closed = ledger.close(t.token);
+      const mine = closed?.requirements.filter((r) => r.id === 'phase-g-persistence') ?? [];
+      expect(mine).toHaveLength(2);
+      expect(mine.map((r) => [r.section, r.verdict])).toEqual([
+        ['functional', 'pass'],
+        ['functional-foss', 'fail'],
+      ]);
+      // Neither is a revision of the other: they are two answers, not one changed mind.
+      expect(mine.every((r) => r.revisions === undefined)).toBe(true);
+    });
+
+    /**
+     * The agent is believed only within the set of sections that declare the id, so this
+     * cannot mint a partition the gate does not read — invariant 6 at the section level,
+     * unchanged by the ambiguity above.
+     */
+    it('still refuses a section that does not declare the id', () => {
+      const t = openBoth();
+      const out = ledger.recordRequirement(t.token, {
+        id: 'phase-g-persistence', verdict: 'pass', section: 'static',
+      });
+      expect(out.ok && out.recorded.section).toBe('functional');
+    });
+
+    /** Silence from the agent is not an error: the first-ordered owner still takes it. */
+    it('falls back to the first owner when the agent names no section', () => {
+      const t = openBoth();
+      const out = ledger.recordRequirement(t.token, { id: 'phase-g-persistence', verdict: 'pass' });
+      expect(out.ok && out.recorded.section).toBe('functional');
+    });
+
+    /** A revision of one platform's answer must not touch the other's. */
+    it('revises within one section only', () => {
+      const t = openBoth();
+      ledger.recordRequirement(t.token, {
+        id: 'phase-g-persistence', verdict: 'pass', section: 'functional-foss',
+      });
+      ledger.recordRequirement(t.token, {
+        id: 'phase-g-persistence', verdict: 'fail', severity: 'Major', section: 'functional-foss',
+      });
+      ledger.recordRequirement(t.token, {
+        id: 'phase-g-persistence', verdict: 'pass', section: 'functional',
+      });
+
+      const closed = ledger.close(t.token);
+      const mine = closed?.requirements.filter((r) => r.id === 'phase-g-persistence') ?? [];
+      expect(mine).toHaveLength(2);
+      expect(mine.find((r) => r.section === 'functional-foss')?.revisions).toBe(1);
+      expect(mine.find((r) => r.section === 'functional')?.revisions).toBeUndefined();
+    });
+
+    /** Phases collide the same way, and are settled the same way. */
+    it('keeps one phase record per section that plans it', () => {
+      const t = openBoth();
+      ledger.recordPhase(t.token, { phase: 'C', result: 'pass', section: 'functional' });
+      ledger.recordPhase(t.token, { phase: 'C', result: 'fail', section: 'functional-foss' });
+
+      const closed = ledger.close(t.token);
+      const mine = closed?.phases.filter((p) => p.phase === 'C') ?? [];
+      expect(mine.map((p) => [p.section, p.result])).toEqual([
+        ['functional', 'pass'],
+        ['functional-foss', 'fail'],
+      ]);
+    });
+
+    /** Both owners are handed out, so the agent can tell which one it is answering for. */
+    it('names both owners in the plan it hands the agent', () => {
+      const t = openBoth();
+      const plan = ledger.planFor(t.token);
+      if ('error' in plan) throw new Error(plan.error);
+      const owners = plan.requirements
+        .filter((r) => r.id === 'phase-g-persistence')
+        .map((r) => r.section);
+      expect(owners).toEqual(['functional', 'functional-foss']);
+    });
+  });
+
   it('tells the agent what the run is made of, not only what to check', () => {
     const t = open();
     const plan = ledger.planFor(t.token);

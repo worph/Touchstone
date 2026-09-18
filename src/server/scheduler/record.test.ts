@@ -1,7 +1,26 @@
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_BENCH_CAPABILITY } from '../../shared/capability.js';
+import type { LineSchedule } from '../../shared/schedule.js';
 import type { SchedulerConstants, SubjectSchedule } from './policy.js';
 import { openClaim, recordResult } from './record.js';
+
+/**
+ * Every rule in this file is about **one attempt on one platform**, which is what a line is,
+ * so the fixtures name one and the assertions read it back. With one pool configured that is
+ * the row these tests have always described.
+ */
+const LINE = DEFAULT_BENCH_CAPABILITY;
+
+/** A one-line schedule from the flat body these fixtures have always written. */
+function on(cell: LineSchedule): SubjectSchedule {
+  return { lines: { [LINE]: cell } };
+}
+
+/** The line's own state, which is where everything this file asserts on now lives. */
+function cell(schedule: SubjectSchedule): LineSchedule {
+  return schedule.lines?.[LINE] ?? { try_n: 0 };
+}
 
 const CONSTANTS: SchedulerConstants = {
   fresh_days: 7,
@@ -14,11 +33,13 @@ const CONSTANTS: SchedulerConstants = {
 const NOW = new Date('2026-08-19T12:00:00Z');
 
 function claimed(try_n: number, previousTries = try_n - 1): SubjectSchedule {
-  return { try_n: previousTries, claim: { since: '2026-08-19T11:00:00Z', try_n } };
+  return {
+    lines: { [LINE]: { try_n: previousTries, claim: { since: '2026-08-19T11:00:00Z', try_n } } },
+  };
 }
 
 function record(outcome: Parameters<typeof recordResult>[0]['outcome'], schedule?: SubjectSchedule) {
-  return recordResult({ now: NOW, constants: CONSTANTS, subject: 'Alpha', outcome, schedule });
+  return recordResult({ now: NOW, constants: CONSTANTS, subject: 'Alpha', line: LINE, outcome, schedule });
 }
 
 /**
@@ -29,8 +50,8 @@ function record(outcome: Parameters<typeof recordResult>[0]['outcome'], schedule
 describe('the two outcomes that cost nothing', () => {
   it('an agent that was busy leaves the try count exactly where it was', () => {
     const r = record({ kind: 'agent_busy' }, claimed(2));
-    expect(r.schedule.try_n).toBe(1);
-    expect(r.schedule.claim).toBeUndefined();
+    expect(cell(r.schedule).try_n).toBe(1);
+    expect(cell(r.schedule).claim).toBeUndefined();
     expect(r.parked).toBe(false);
   });
 
@@ -46,8 +67,8 @@ describe('the two outcomes that cost nothing', () => {
    */
   it('an agent that is not logged in leaves the try count exactly where it was', () => {
     const r = record({ kind: 'agent_auth' }, claimed(2));
-    expect(r.schedule.try_n).toBe(1);
-    expect(r.schedule.claim).toBeUndefined();
+    expect(cell(r.schedule).try_n).toBe(1);
+    expect(cell(r.schedule).claim).toBeUndefined();
     expect(r.parked).toBe(false);
   });
 
@@ -64,7 +85,7 @@ describe('the two outcomes that cost nothing', () => {
 
   it('a bench we could not claim behaves the same way', () => {
     const r = record({ kind: 'blocked', reason: 'bench_unavailable' }, claimed(3));
-    expect(r.schedule.try_n).toBe(2);
+    expect(cell(r.schedule).try_n).toBe(2);
     expect(r.stampsFinish).toBe(false);
     expect(r.parked).toBe(false);
   });
@@ -73,14 +94,14 @@ describe('the two outcomes that cost nothing', () => {
   it('never parks a subject on a free outcome', () => {
     const r = record({ kind: 'blocked', reason: 'bench_unavailable' }, claimed(3, 2));
     expect(r.parked).toBe(false);
-    expect(r.schedule.parked_at).toBeUndefined();
+    expect(cell(r.schedule).parked_at).toBeUndefined();
   });
 });
 
 describe('an attempt that failed', () => {
   it('burns the try', () => {
     const r = record({ kind: 'error', reason: 'agent-error' }, claimed(1, 0));
-    expect(r.schedule.try_n).toBe(1);
+    expect(cell(r.schedule).try_n).toBe(1);
     expect(r.parked).toBe(false);
   });
 
@@ -95,7 +116,7 @@ describe('an attempt that failed', () => {
   it('parks the subject on the third consecutive failure — row E6', () => {
     const r = record({ kind: 'error', reason: 'agent-error' }, claimed(3, 2));
     expect(r.parked).toBe(true);
-    expect(r.schedule.parked_at).toBe(NOW.toISOString());
+    expect(cell(r.schedule).parked_at).toBe(NOW.toISOString());
     expect(r.note).toContain('parked after 3');
   });
 
@@ -108,8 +129,8 @@ describe('an attempt that failed', () => {
    * would reset the parking clock and let a broken subject retry forever.
    */
   it('counts an attempt whose claim has already been reclaimed', () => {
-    const r = record({ kind: 'error', reason: 'agent-error' }, { try_n: 2 });
-    expect(r.schedule.try_n).toBe(3);
+    const r = record({ kind: 'error', reason: 'agent-error' }, on({ try_n: 2 }));
+    expect(cell(r.schedule).try_n).toBe(3);
     expect(r.parked).toBe(true);
   });
 });
@@ -117,27 +138,27 @@ describe('an attempt that failed', () => {
 describe('an attempt that produced a verdict', () => {
   it('clears the error streak', () => {
     const r = record({ kind: 'verdict' }, claimed(3, 2));
-    expect(r.schedule.try_n).toBe(0);
+    expect(cell(r.schedule).try_n).toBe(0);
     expect(r.stampsFinish).toBe(true);
   });
 
   it('releases a park', () => {
-    const r = record({ kind: 'verdict' }, { try_n: 3, parked_at: '2026-08-01T00:00:00Z' });
-    expect(r.schedule.parked_at).toBeUndefined();
-    expect(r.schedule.try_n).toBe(0);
+    const r = record({ kind: 'verdict' }, on({ try_n: 3, parked_at: '2026-08-01T00:00:00Z' }));
+    expect(cell(r.schedule).parked_at).toBeUndefined();
+    expect(cell(r.schedule).try_n).toBe(0);
   });
 });
 
 describe('the claim — rows C1 and C2', () => {
   it('numbers the attempt one higher than the streak', () => {
-    expect(openClaim({ now: NOW, schedule: { try_n: 1 } }).claim).toEqual({
+    expect(cell(openClaim({ now: NOW, line: LINE, schedule: on({ try_n: 1 }) })).claim).toEqual({
       since: NOW.toISOString(),
       try_n: 2,
     });
   });
 
   it('starts at one for a subject that has never errored', () => {
-    expect(openClaim({ now: NOW, schedule: undefined }).claim?.try_n).toBe(1);
+    expect(cell(openClaim({ now: NOW, line: LINE, schedule: undefined })).claim?.try_n).toBe(1);
   });
 
   /**
@@ -146,9 +167,9 @@ describe('the claim — rows C1 and C2', () => {
    * produced nothing at all.
    */
   it('does not touch the streak or the park', () => {
-    const opened = openClaim({ now: NOW, schedule: { try_n: 2, parked_at: '2026-08-01T00:00:00Z' } });
-    expect(opened.try_n).toBe(2);
-    expect(opened.parked_at).toBe('2026-08-01T00:00:00Z');
+    const opened = openClaim({ now: NOW, line: LINE, schedule: on({ try_n: 2, parked_at: '2026-08-01T00:00:00Z' }) });
+    expect(cell(opened).try_n).toBe(2);
+    expect(cell(opened).parked_at).toBe('2026-08-01T00:00:00Z');
   });
 });
 
@@ -162,12 +183,15 @@ describe('the claim — rows C1 and C2', () => {
  */
 describe('the re-audit flag', () => {
   const FLAGGED = '2026-08-19T09:00:00.000Z';
-  const flagged = { try_n: 0, flagged_at: FLAGGED };
+  // The flag sits on the **subject**, not on a line: one press asks for every platform, and
+  // each line spends it against its own last attempt. That is the whole of the fan-out and it
+  // stores nothing per line.
+  const flagged: SubjectSchedule = { flagged_at: FLAGGED, lines: { [LINE]: { try_n: 0 } } };
 
   it('survives a verdict', () => {
     const r = record({ kind: 'verdict' }, flagged);
     expect(r.schedule.flagged_at).toBe(FLAGGED);
-    expect(r.schedule.try_n).toBe(0);
+    expect(cell(r.schedule).try_n).toBe(0);
   });
 
   it('survives an error, including a dispatch that wrote no assay at all', () => {

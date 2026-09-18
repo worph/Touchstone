@@ -30,7 +30,7 @@ import type { TrialRoutesOptions } from './trials.js';
 import type { UploadRoutesOptions } from './uploads.js';
 import type { BrowserRoutesOptions } from './browser.js';
 import type { AlertStore } from '../services/alerts.js';
-import type { BenchProber } from '../services/bench.js';
+import type { BenchPools } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 import type { ProtocolStore } from '../store/protocols.js';
 import type { RevisionStore } from '../store/revisions.js';
@@ -65,7 +65,8 @@ export interface RoutesOptions {
   store?: AssayStore;
   events?: EventLog;
   alerts?: AlertStore;
-  prober?: BenchProber;
+  /** Every bench pool, keyed by capability. Was a single `prober` before there were two. */
+  pools?: BenchPools;
   ports?: PortProber;
   protocols?: ProtocolStore;
   revisions?: RevisionStore;
@@ -86,7 +87,8 @@ export interface RoutesOptions {
   uploads?: UploadRoutesOptions;
   /** The browser sidecar, so a running audit can be watched. See `routes/browser.ts`. */
   browser?: BrowserRoutesOptions;
-  boardUrl?: string;
+  /** Each pool's management board, by pool id. Only the demo pool has one. */
+  boardUrls?: Record<string, string>;
   /**
    * This instance's own two settings surfaces: the administrator's context prompt, and the
    * config it booted with. Absent, both answer rather than 404 — see `routes/settings.ts`.
@@ -124,9 +126,9 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
   await app.register(eventRoutes, { events: options.events });
   await app.register(alertRoutes, { alerts: options.alerts });
   await app.register(benchRoutes, {
-    prober: options.prober,
+    pools: options.pools,
     ports: options.ports,
-    boardUrl: options.boardUrl,
+    boardUrls: options.boardUrls,
   });
   await app.register(pushRoutes, { push: options.push });
   await app.register(scheduleRoutes, {
@@ -185,7 +187,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     runner: options.runner,
     scheduler: options.scheduler,
     ledger: options.ledger,
-    prober: options.prober,
+    pools: options.pools,
   });
 
   /**

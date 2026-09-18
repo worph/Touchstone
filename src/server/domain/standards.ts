@@ -46,6 +46,7 @@
  * reports no movement at all — the feature goes inert rather than guessing.
  */
 
+import { lineOf, type LineKey } from '../../shared/schedule.js';
 import type { Revision } from '../../shared/standard.js';
 import type { Section } from '../../shared/types.js';
 import { sectionsOf, type Protocol, type ProtocolStore } from '../store/protocols.js';
@@ -62,8 +63,20 @@ export type Standards = Record<Section, SectionStandard>;
 
 export interface StandardSnapshot {
   sections: Standards;
-  /** When the judging set last changed. Absent when the history cannot say. */
+  /** When the judging set last changed, anywhere. Absent when the history cannot say. */
   moved_at?: string;
+  /**
+   * When each **line**'s judging set last changed — the per-platform answer.
+   *
+   * The scheduler reads this one, because re-eligibility is per line: editing
+   * `functional-foss.md` must put the FOSS line back in the backlog and leave the Yundera
+   * rotation alone, or one platform's rubric edit spends days of agent time re-auditing the
+   * other. `moved_at` above stays the max, for readers whose question is about the standard
+   * as a whole.
+   *
+   * The orchestrator counts toward **every** line, since its prose goes into every prompt.
+   */
+  moved_at_by_line: Record<LineKey, string | undefined>;
 }
 
 /** One file of the standard and the bytes it holds now. */
@@ -83,8 +96,12 @@ export async function readStandards(
   revisions?: RevisionStore,
 ): Promise<StandardSnapshot> {
   const list = await protocols.list();
-  const { sections, judging } = await resolve(protocols, list);
-  return { sections, ...(await movedAt(judging, revisions)) };
+  const { sections, judging, byLine } = await resolve(protocols, list);
+  const moved_at_by_line: Record<LineKey, string | undefined> = {};
+  for (const [line, files] of byLine) {
+    moved_at_by_line[line] = (await movedAt(files, revisions)).moved_at;
+  }
+  return { sections, moved_at_by_line, ...(await movedAt(judging, revisions)) };
 }
 
 /**
@@ -94,13 +111,20 @@ export async function readStandards(
 async function resolve(
   protocols: ProtocolStore,
   list: readonly Protocol[],
-): Promise<{ sections: Standards; judging: StandardFile[] }> {
+): Promise<{ sections: Standards; judging: StandardFile[]; byLine: Map<LineKey, StandardFile[]> }> {
   const fileOf = new Map(list.map((p) => [p.meta.id, p.file]));
   const sections: Standards = {};
   // The orchestrator's body is in the prompt, so its bytes judge every agent section.
-  const judging: StandardFile[] = list
+  const orchestrators: StandardFile[] = list
     .filter((p) => p.meta.kind === 'orchestrator')
     .map((p) => ({ file: p.file, sha256: p.sha256 }));
+  const judging: StandardFile[] = [...orchestrators];
+  const byLine = new Map<LineKey, StandardFile[]>();
+  const into = (line: LineKey): StandardFile[] => {
+    // Seeded with the orchestrators, because they judge every line.
+    if (!byLine.has(line)) byLine.set(line, [...orchestrators]);
+    return byLine.get(line)!;
+  };
 
   for (const section of sectionsOf(list)) {
     // A missing or unsafely-named script is not resolved here: `runner/exec.ts` records that
@@ -112,12 +136,19 @@ async function resolve(
       ...(executor ? { executor_sha256: executor.sha256 } : {}),
     };
     if (!section.scores) continue;
+    const line = into(lineOf(section.requires));
     const file = fileOf.get(section.id);
-    if (file) judging.push({ file, sha256: section.sha256 });
-    if (executor) judging.push({ file: executor.file, sha256: executor.sha256 });
+    if (file) {
+      judging.push({ file, sha256: section.sha256 });
+      line.push({ file, sha256: section.sha256 });
+    }
+    if (executor) {
+      judging.push({ file: executor.file, sha256: executor.sha256 });
+      line.push({ file: executor.file, sha256: executor.sha256 });
+    }
   }
 
-  return { sections, judging };
+  return { sections, judging, byLine };
 }
 
 /**

@@ -28,15 +28,39 @@
  *    That is invariant 2 — nothing here enumerates sections or capabilities, so adding
  *    `data/protocols/security.md` costs no code change — and it is exactly the kind of thing
  *    that gets "fixed" into a throw by somebody who reads the `if`s and not this comment.
+ *    **The one exception is a capability that names a bench pool** (`bench`, `bench.foss`):
+ *    those are blocked when no pool answers them, because the thing they would "satisfy" is a
+ *    runtime audit with no host to perform it on, and its output would be a verdict about the
+ *    app. `isBenchCapability` is the whole of that rule and it is a naming convention on
+ *    purpose — a pool answers whatever string `config.yaml` gave it.
  */
 
-import type { BenchHealth, BenchProber } from '../services/bench.js';
+import type { BenchHealth, BenchPools } from '../services/bench.js';
+import { DEFAULT_BENCH_CAPABILITY, isBenchCapability } from '../../shared/capability.js';
 import type { PortHealth, PortProber } from '../services/ports.js';
 import type { ProtocolSection } from '../store/protocols.js';
 
 export interface CapabilityWorld {
-  /** `BenchProber.leasable()`. Empty — including from an absent prober — means no bench. */
-  benches: readonly BenchHealth[];
+  /**
+   * What each bench capability can currently claim — `BenchPools.leasable(capability)`.
+   *
+   * Keyed rather than a single list, because a lease is a decision about *which platform* an
+   * audit runs on. A missing key and an empty list are different facts and produce different
+   * reasons: see `configured` below.
+   */
+  benches: Readonly<Record<string, readonly BenchHealth[]>>;
+  /**
+   * The capabilities some pool answers — `BenchPools.capabilities`.
+   *
+   * This is what closes the trap that made a second platform impossible to add by
+   * configuration alone. Property 4 below says a capability nothing supplies is *satisfied*,
+   * which is right for `gpu` and catastrophic for `bench.foss`: the section would run with no
+   * bench leased, the prompt would carry no host, and the agent would be asked for a runtime
+   * audit with nowhere to perform it — recorded as a verdict about the app. So a capability
+   * that looks like a bench and that no pool answers is `bench_unconfigured`, and anything
+   * else unknown still runs.
+   */
+  configured?: readonly string[];
   /** `PortProber.healthy('browser')`. */
   browsers: readonly PortHealth[];
   /**
@@ -46,9 +70,13 @@ export interface CapabilityWorld {
   benchUnservable?: string;
 }
 
+export { isBenchCapability };
+
 /** The endpoints this run would use. Internal addresses — see `Runner.forecast()`. */
 export interface CapabilityLease {
   benchHost?: string;
+  /** Which pool the host came from, so the prompt can name that pool's login. */
+  benchCapability?: string;
   benchBuild?: string;
   browserEndpoint?: string;
 }
@@ -76,7 +104,7 @@ export interface CapabilityPlan {
  * disagreeing inside one process.
  */
 export function liveWorld(opts: {
-  prober?: BenchProber;
+  pools?: BenchPools;
   ports?: PortProber;
   trial?: { store_url?: string };
 }): CapabilityWorld {
@@ -89,8 +117,13 @@ export function liveWorld(opts: {
   // this box rather than about trials: `trials.public_base_url` is unset, so Touchstone does
   // not know the address a bench on the public internet would fetch its store from.
   const unservable = opts.trial && !opts.trial.store_url ? 'store_url_unconfigured' : undefined;
+  const benches: Record<string, readonly BenchHealth[]> = {};
+  for (const capability of opts.pools?.capabilities ?? []) {
+    benches[capability] = opts.pools!.leasable(capability);
+  }
   return {
-    benches: opts.prober?.leasable() ?? [],
+    benches,
+    configured: opts.pools?.capabilities ?? [],
     browsers: opts.ports?.healthy('browser') ?? [],
     ...(unservable ? { benchUnservable: unservable } : {}),
   };
@@ -104,17 +137,37 @@ export function resolveCapabilities(
   const missing = new Map<string, string>();
   const lease: CapabilityLease = {};
 
-  // Seeded before the probe below, and the `!missing.has('bench')` guard there depends on it.
-  if (world.benchUnservable) missing.set('bench', world.benchUnservable);
+  // Every bench capability this run asks for. Normally one — the scheduler scopes a run to a
+  // single line — but resolved as a set so that a run which somehow named two is blocked on
+  // the one it cannot have rather than silently leased the first.
+  const benchWanted = [...wanted].filter(isBenchCapability);
 
-  if (wanted.has('bench') && !missing.has('bench')) {
-    if (world.benches.length === 0) missing.set('bench', 'bench_unavailable');
+  // Seeded before the probe below, and the `missing.has` guard there depends on it. Applied to
+  // every bench capability rather than to the literal `bench`: an unservable trial has nothing
+  // for *any* pool to install, and leaving one pool unseeded would lease it a host.
+  if (world.benchUnservable) {
+    for (const capability of benchWanted) missing.set(capability, world.benchUnservable);
+  }
+
+  for (const capability of benchWanted) {
+    if (missing.has(capability)) continue;
+    const configured = world.configured ?? [DEFAULT_BENCH_CAPABILITY];
+    if (!configured.includes(capability)) {
+      // No pool answers this. Distinct from an empty pool on purpose: one is an outage that
+      // waiting fixes, the other is a rubric naming a platform this installation does not
+      // have, and an operator reading `bench_unavailable` would wait for ever.
+      missing.set(capability, 'bench_unconfigured');
+      continue;
+    }
+    const free = world.benches[capability] ?? [];
+    if (free.length === 0) missing.set(capability, 'bench_unavailable');
     else {
       // Read off the lease, not probed again here: the fingerprint has to describe the box
       // this run is about to use, and the prober already took one on the cycle that declared
       // it leasable. A second fetch would be a second answer.
-      lease.benchHost = world.benches[0]!.url;
-      const build = world.benches[0]!.build;
+      lease.benchHost = free[0]!.url;
+      lease.benchCapability = capability;
+      const build = free[0]!.build;
       if (build) lease.benchBuild = build;
     }
   }

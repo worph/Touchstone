@@ -224,14 +224,14 @@ export const CONTROLS: ControlDef[] = [
   },
   {
     key: 'bench.min_remaining_min',
-    label: 'Bench needs runway of',
+    label: 'Demo bench needs runway of',
     group: BENCH,
     kind: 'number',
     unit: 'minutes',
     min: 0,
     max: 1440,
     description:
-      'How much time a demo instance must have left before a functional audit may claim it. Benches are wiped on a schedule, and an audit that loses its box mid-install records the loss against the app.',
+      'How much time a demo instance must have left before a functional audit may claim it. Benches are wiped on a schedule, and an audit that loses its box mid-install records the loss against the app. This is the **demo** pool\'s guard: a pool of fixed boxes has no countdown to read, so its own figure is set in `bench.pools` and this does not move it.',
     effect:
       'Applied on the next decision and to the bench gate the Automation page reports right away.',
     read: (p) => p.prober?.minRemainingMin,

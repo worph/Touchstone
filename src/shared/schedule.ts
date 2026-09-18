@@ -17,13 +17,64 @@
  * note on row B6: a try counter is not a property of an assay, it is a property of the
  * scheduler's opinion about a subject.
  */
-export interface SubjectSchedule {
+/**
+ * **A line** — one platform's worth of work, and the unit the scheduler actually dispatches.
+ *
+ * A line is named by the bench capability its sections lease from (`bench`, `bench.foss`);
+ * a section that needs no bench belongs to the default line. That grouping is not arbitrary
+ * and it is not "one line per section":
+ *
+ * - **A run is one line's scope**, so `try_n`, `parked_at` and `claim` — which are all facts
+ *   about *an attempt that was dispatched* — are per line by construction.
+ * - **A section belongs to exactly one line**, because the run's combined `risk_score` lands
+ *   on its primary section and the hallmark sums across sections. A section appearing in two
+ *   lines' runs would have the second run's score overwrite the first's, and the store's risk
+ *   column would quietly lose a platform's findings.
+ * - `static` therefore stays on the default line with `functional`, which is also what keeps
+ *   today's run shape: one agent call for both, no throughput regression.
+ *
+ * With one pool configured there is exactly one line, every map below has one key, and the
+ * behaviour is what it has always been.
+ */
+import { DEFAULT_BENCH_CAPABILITY, isBenchCapability } from './capability.js';
+
+export type LineKey = string;
+
+/** One line's policy state — the half of a v1 `SubjectSchedule` that was about attempts. */
+export interface LineSchedule {
   /** Consecutive errored attempts. Reset to 0 by any completion that is not an error. */
   try_n: number;
   /** Set when `try_n` reached `max_tries`. Released after `stuck_days`. */
   parked_at?: string;
-  /** The open claim, if this subject holds one. */
+  /** The open claim, if this line holds one. */
   claim?: { since: string; try_n: number };
+  /**
+   * This row was read off n8n's roll-up rather than recorded by us — see `adopt.ts`.
+   *
+   * It is what lets a later import correct an earlier one. Without the marker, the first
+   * adoption counts as "state we hold" and blocks every subsequent adoption, so a subject
+   * adopted as `try 2` from a stale page could never be updated to `stuck`. Found by
+   * running it: one park adopted where the roll-up listed a dozen.
+   */
+  from_rollup?: true;
+}
+
+export interface SubjectSchedule {
+  /** Per line. Absent for a line means nothing has been attempted on that platform yet. */
+  lines?: Record<LineKey, LineSchedule>;
+  /**
+   * A row written before lines existed, not yet fanned out.
+   *
+   * It is the belt to the migration's braces. `Scheduler.load()` fans a v1 row onto every
+   * line it knows about — but it can only know them by reading `data/protocols/`, and the
+   * scheduler has always had to boot with that directory unreadable. When it cannot, the v1
+   * body is kept here and every missing line falls back to it, so a parked subject stays
+   * parked. Absence must never be the thing that unparks an app: on disk "no state" and
+   * "state that predates lines" are identical, and they mean opposite things.
+   *
+   * Dropped on the first write in which every known line has its own entry.
+   */
+  legacy?: LineSchedule;
   /**
    * When somebody asked for this subject to be looked at again — the re-audit flag.
    *
@@ -40,20 +91,30 @@ export interface SubjectSchedule {
    * the escape hatch is a person saying so.
    */
   flagged_at?: string;
-  /**
-   * This row was read off n8n's roll-up rather than recorded by us — see `adopt.ts`.
-   *
-   * It is what lets a later import correct an earlier one. Without the marker, the first
-   * adoption counts as "state we hold" and blocks every subsequent adoption, so a subject
-   * adopted as `try 2` from a stale page could never be updated to `stuck`. Found by
-   * running it: one park adopted where the roll-up listed a dozen.
-   */
+}
+
+/**
+ * A `state/schedule.json` row as it was written before lines existed.
+ *
+ * Read by the migration and by nothing else. Kept as a type rather than as `unknown` so the
+ * fan-out is checked by the compiler: this is the one place where mistaking "absent" for "no
+ * state" silently unparks every parked app.
+ */
+export interface LegacySubjectSchedule {
+  try_n?: number;
+  parked_at?: string;
+  claim?: { since: string; try_n: number };
+  flagged_at?: string;
   from_rollup?: true;
+  lines?: Record<LineKey, LineSchedule>;
+  legacy?: LineSchedule;
 }
 
 
 export interface Reclaim {
   subject: string;
+  /** Which line's claim was released. One subject may hold one per platform. */
+  line: LineKey;
   /** `parked` when the reclaim exhausted the last try, `retry` when tries remain. */
   outcome: 'retry' | 'parked';
   try_n: number;
@@ -90,10 +151,27 @@ export interface TickDecision {
   reason: string;
   /** How many subjects are stale or never run — the roll-up's Backlog figure. */
   backlog: number;
+  /**
+   * Which line this tick's audit is on, and the sections that makes its scope.
+   *
+   * The scope is the scheduler's answer, never a caller's — see `scopeOf`. Absent when the
+   * tick did not dispatch an audit.
+   */
+  line?: LineKey;
+  sections?: string[];
+  /**
+   * Lines held by the bench gate right now, whatever this tick did.
+   *
+   * Present even on a tick that dispatched, and that is the point: with two pools the FOSS
+   * line can be down while the Yundera line audits happily, and `action` would then be
+   * `audit`. Reading the gate off `action === 'idle'` — which is what `benchGated()` did —
+   * would make a dead second pool completely silent.
+   */
+  gated?: LineKey[];
   /** Leases that had expired and were released this tick. */
   reclaimed: Reclaim[];
-  /** Subjects whose park expired this tick and are eligible again. */
-  unparked: string[];
+  /** Cells whose park expired this tick and are eligible again. */
+  unparked: { subject: string; line: LineKey }[];
   /**
    * How many subjects are being held out of the backlog by a park right now.
    *
@@ -133,9 +211,23 @@ export interface TickDecision {
  */
 export type QueueState = 'running' | 'retry' | 'never' | 'due' | 'fresh' | 'parked';
 
+/** One subject's state on one platform. The row above summarises these. */
+export interface QueueLineRow extends Omit<QueueRow, 'subject' | 'lines'> {
+  line: LineKey;
+}
+
 export interface QueueRow {
   subject: string;
   state: QueueState;
+  /**
+   * Per platform, when there is more than one.
+   *
+   * The row itself stays the summary — one line per app, because 73 apps on two platforms is
+   * 146 rows and a page that lists each app twice answers "when does mine run" worse than one
+   * that does not. The fields above are the most actionable cell's, except `flagged`,
+   * `position` and `last_done_at`, where "any" and "newest" are the honest answers.
+   */
+  lines?: QueueLineRow[];
   /** Where in the backlog this sits, 1-based. Absent when the subject is not eligible. */
   position?: number;
   /** Newest completed assay, any section. */
@@ -195,6 +287,14 @@ export interface RequestRow {
   /** 1-based, arrival order. Position 1 is what the next unblocked tick takes. */
   position: number;
   state: 'waiting' | 'running';
+  /**
+   * The platforms this request has still to be served on, when there is more than one.
+   *
+   * One press asks for every line, and each line spends it on its own run — so a request
+   * whose Yundera audit has completed while the FOSS line waits for its bench is still a
+   * request, and a row that vanished at the first answer would be lying about that.
+   */
+  lines?: LineKey[];
   /**
    * Why this is not moving. Only ever set on the head, because only the head is blocked —
    * everything behind it is merely behind it, and saying "waiting for a bench" on all five
@@ -268,4 +368,21 @@ export interface ScheduleResponse {
       error?: string;
     }[];
   };
+}
+
+/**
+ * Which line a section belongs to: the bench capability it leases from.
+ *
+ * A section that needs no bench — `static`, and every scripted reading — belongs to the
+ * default line, so it rides the run that platform's sections are already making rather than
+ * anchoring one of its own. See `LineSchedule` for why that grouping is load-bearing rather
+ * than a convenience.
+ *
+ * A section that somehow names two bench capabilities takes the first in sorted order, which
+ * is arbitrary but stable; the runner refuses to lease two anyway, so such a section would be
+ * recorded blocked rather than audited against the wrong platform.
+ */
+export function lineOf(requires: readonly string[]): LineKey {
+  const bench = [...requires].filter(isBenchCapability).sort();
+  return bench[0] ?? DEFAULT_BENCH_CAPABILITY;
 }

@@ -36,7 +36,7 @@ import type { ReportIndex } from '../store/index.js';
 import { recordFor, writeReport } from '../store/reports.js';
 import { subjectRefOf, type OriginEntry } from '../store/config.js';
 import type { AlertStore } from '../services/alerts.js';
-import type { BenchProber } from '../services/bench.js';
+import type { BenchPools } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 import { sectionsOf, type ExecutorRef, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
 import type { KbStore } from '../store/kb.js';
@@ -52,6 +52,19 @@ export { buildPrompt } from './prompt.js';
 export { callAgent, classify, extractText, type AgentReport } from './agent.js';
 export { runScript, parseOutput, type ScriptOutput, type ScriptRun } from './exec.js';
 
+/**
+ * The sections a run covers: its scope, or all of them.
+ *
+ * Order is the protocol's throughout — `sectionsOf()` sorted it, and `capabilities.ts` reads
+ * `blocked[0]` as "the earliest-ordered blocked section". Filtering preserves that; picking
+ * them out in the scope's own order would not.
+ */
+function scopedTo<T extends { id: string }>(sections: readonly T[], scope: string[] | undefined): T[] {
+  if (!scope) return [...sections];
+  const want = new Set(scope);
+  return sections.filter((s) => want.has(s.id));
+}
+
 export interface RunnerJob {
   /**
    * Identity, `<origin>~<name>`. The runner splits it: the origin decides which store the
@@ -63,6 +76,16 @@ export interface RunnerJob {
    */
   subject: SubjectKey;
   try_n: number;
+  /**
+   * The sections this run covers, when the scheduler scoped it to one line.
+   *
+   * Absent means every section the protocol declares — a trial, a hand-run audit, and any
+   * installation whose protocol directory could not be read. A section **in** scope that
+   * cannot run is still written `blocked` (invariants 2 and 14); a section **outside** it is
+   * not written at all, and that is the difference from `depth`: the other line has its own
+   * record on its own cadence rather than a hole where an answer should be.
+   */
+  scope?: string[];
   /**
    * Present, this is a **trial**: the same run written where the report index does not look.
    *
@@ -172,7 +195,15 @@ export interface RunnerOptions {
    */
   alerts?: AlertStore;
   index?: ReportIndex;
-  prober?: BenchProber;
+  /**
+   * Every bench pool, keyed by capability — `services/bench.ts`'s `BenchPools`.
+   *
+   * Was a single `prober` until two platforms existed. The name change is deliberate rather
+   * than cosmetic: `liveWorld` spreads these options, so a field left called `prober` would
+   * have gone on compiling while supplying no pools at all, and every live section would have
+   * been recorded blocked with nothing to say why.
+   */
+  pools?: BenchPools;
   /** The agent and browser endpoints, so a section that needs a browser can lease one. */
   ports?: PortProber;
   /** The rubric, read fresh per run so an edit takes effect on the next audit, not the next boot. */
@@ -329,11 +360,11 @@ export class Runner {
    * - **No events, no `note()`.** It is a read.
    * - **Section ids only** — no rubric bodies crossing into a chat turn.
    */
-  async forecast(job?: Pick<RunnerJob, 'trial'>): Promise<Forecast> {
+  async forecast(job?: Pick<RunnerJob, 'trial' | 'scope'>): Promise<Forecast> {
     const plan = await this.plan();
     if (!plan || plan.sections.length === 0) return { run: [], blocked: [], noProtocol: true };
     const { run, blocked } = resolveCapabilities(
-      plan.sections,
+      scopedTo(plan.sections, job?.scope),
       liveWorld({ ...this.opts, ...(job?.trial ? { trial: job.trial } : {}) }),
     );
     return {
@@ -440,6 +471,22 @@ export class Runner {
       return { kind: 'blocked', reason: 'no_protocol' };
     }
 
+    // The line's scope, applied **before** capabilities are resolved so that
+    // `capabilities.ts`'s property 1 stays true of this run: `blocked[0]` has to be the
+    // earliest-ordered blocked section *of the run*, and that is what the strip says.
+    const sections = scopedTo(plan.sections, job.scope);
+    if (sections.length === 0) {
+      // A scope naming nothing the protocol declares. Not an audit of zero sections — that
+      // would stamp a finish and read as a completed run — but nothing to do, said out loud.
+      events.log({
+        level: 'error',
+        code: 'PROTOCOL_MISSING',
+        message: 'The scheduler asked for sections this protocol does not declare',
+        detail: { dir: this.opts.protocols?.directory ?? '<unset>', scope: job.scope ?? [] },
+      });
+      return { kind: 'blocked', reason: 'no_protocol' };
+    }
+
     // ── what each section needs, and whether we have it ──────────────────────────────────
     // The bench is chosen here, not by the agent: the management board reports an instance
     // Ready while its login gate is broken, so the host handed to the prompt is one whose
@@ -459,7 +506,7 @@ export class Runner {
       blocked: skipped,
       lease: { benchHost, benchBuild, browserEndpoint },
     } = resolveCapabilities(
-      plan.sections,
+      sections,
       liveWorld({ ...this.opts, ...(job.trial ? { trial: job.trial } : {}) }),
     );
 
@@ -998,7 +1045,7 @@ export class Runner {
    * section the run would have covered. Never throws: the caller is already handling a
    * failure, and a second one must not replace the first.
    */
-  async recordFailedDispatch(subject: SubjectKey, reason: string): Promise<void> {
+  async recordFailedDispatch(subject: SubjectKey, reason: string, scope?: string[]): Promise<void> {
     const startedAt = this.now().toISOString();
     try {
       const { origin, name: appName } = splitSubjectKey(subject);
@@ -1007,8 +1054,14 @@ export class Runner {
       // No protocol means no sections to record against, and nothing sensible to write. The
       // charge stands — something did fail — but there is no record to make.
       if (!plan || plan.sections.length === 0) return;
+      // **Scoped**, and that is invariant 14's converse rather than tidiness. Unscoped this
+      // writes one blocked assay per section of the *whole* protocol, so a Yundera run that
+      // failed to dispatch would stamp a `functional-foss` attempt — silently spending the
+      // FOSS line's request and resetting its due-ness, for a run that never touched it.
+      const sections = scopedTo(plan.sections, scope);
+      if (sections.length === 0) return;
       await this.recordAttempt({ subject, try_n: 0 }, reason, {
-        sections: plan.sections,
+        sections,
         skipped: [],
         reportsRoot: this.opts.reportsRoot,
         appName,

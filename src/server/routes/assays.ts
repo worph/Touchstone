@@ -27,7 +27,7 @@ import { PHASE_LABEL, type RunStatus } from '../../shared/activity.js';
 import type { SubjectKey } from '../../shared/subject.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import { coverageOf } from '../services/ledger.js';
-import type { BenchProber } from '../services/bench.js';
+import type { BenchPools } from '../services/bench.js';
 import type { RunLedger } from '../services/ledger.js';
 import type { Runner } from '../runner/index.js';
 import type { Scheduler } from '../scheduler/index.js';
@@ -37,8 +37,8 @@ export interface AssayRoutesOptions {
   /** The in-flight run, so a six-minute wait can show what it has established so far. */
   ledger?: RunLedger;
   scheduler?: Scheduler;
-  /** The demo pool, reported on `/assays/current` — see the `bench` field there. */
-  prober?: BenchProber;
+  /** Every bench pool, reported on `/assays/current` — see the `benches` field there. */
+  pools?: BenchPools;
 }
 
 /** How many settled requirements ride along. Enough to see movement, not a second report. */
@@ -104,15 +104,16 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
           }
         : null,
       /**
-       * The demo pool rides along, because every surface that offers to *start* a run is
-       * already subscribed here.
+       * Every pool rides along, because every surface that offers to *start* a run is
+       * already subscribed here — and one press now asks for an audit on each platform, so a
+       * note about "the pool" would be a note about whichever one it happened to mean.
        *
        * The re-assay button used to fetch `GET /benches` once on mount and keep a single
        * boolean from it, so its "no bench" note was a snapshot from page load — which is how
        * an operator came to act on a bench verdict that had been false for five minutes. One
        * poller, one answer, and the button can no longer disagree with the strip above it.
        */
-      ...(options.prober ? { bench: { leasable: options.prober.leasable().length, window: options.prober.window() } } : {}),
+      ...(options.pools ? { benches: options.pools.windows() } : {}),
       // The depth of the request queue, so the strip on every page can say what is after this
       // one. Absent rather than 0 when no scheduler is wired, which is not the same answer.
       ...(options.scheduler ? { queued: (await options.scheduler.previewRequests()).length } : {}),
@@ -167,7 +168,11 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
 
     // Answered from state, which is the only honest source. A claim on this subject means the
     // tick took it; anything else means it is in the line, and `previewRequests` says where.
-    const started = Boolean(scheduler.snapshot().subjects[subject]?.claim);
+    // Any line's claim: one press asks for every platform, and the tick having taken one of
+    // them is what "started" means to the caller.
+    const started = Object.values(scheduler.snapshot().subjects[subject]?.lines ?? {}).some(
+      (cell) => cell.claim,
+    );
     const queue = await scheduler.previewRequests();
     const at = queue.findIndex((r) => r.kind === 'audit' && r.id === subject);
 

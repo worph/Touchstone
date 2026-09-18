@@ -231,7 +231,10 @@ export class RunLedger {
     const unlisted = !run.canonical.some((c) => c.id === id);
     const section = sectionFor(run, id, input.section);
     const at = this.now().toISOString();
-    const existing = run.requirements.find((r) => r.id === id);
+    // Keyed on the pair, not the id: two sections auditing the same app against the same
+    // checklist each own their own answer, and an id-only lookup would file the second as a
+    // revision of the first and leave one section with nothing.
+    const existing = run.requirements.find((r) => r.id === id && r.section === section);
     const recorded: RecordedRequirement = {
       id,
       ...(section ? { section } : {}),
@@ -253,7 +256,7 @@ export class RunLedger {
         code: 'ASSAY_REQUIREMENT_REVISED',
         message: 'The audit changed its mind about one requirement',
         subject: run.subject,
-        detail: { subject: run.subject, id, from: existing.verdict, to: verdict },
+        detail: { subject: run.subject, id, section, from: existing.verdict, to: verdict },
       });
     } else {
       run.requirements.push(recorded);
@@ -298,7 +301,9 @@ export class RunLedger {
       at: this.now().toISOString(),
     };
     const run = found.run;
-    const existing = run.phases.findIndex((p) => p.phase === phase);
+    // The pair again, for the reason `recordRequirement` gives: two sections may plan the
+    // same phase, and each owns its own answer.
+    const existing = run.phases.findIndex((p) => p.phase === phase && p.section === section);
     if (existing >= 0) run.phases[existing] = recorded;
     else run.phases.push(recorded);
     return { ok: true, recorded };
@@ -327,11 +332,23 @@ export function normaliseSeverity(value: unknown): Severity | undefined {
  * only when it names a section this run is actually running — an invented section id would
  * be a partition Touchstone's gate does not know to read, which is the hole invariant 6
  * exists to close. Anything else falls back to the run's primary section.
+ *
+ * **One id may be declared by several sections**, and then the agent's own answer settles it.
+ * Two platforms audited by two rubrics want the *same* ids — `install` passing on one stack and
+ * failing on the other is the comparison the second platform exists to make, and it is only a
+ * comparison if both spell it the same way. A `find` on the id alone gave the first-ordered
+ * section both records: the second overwrote the first as a revision, the losing section's
+ * progress bar was permanently short, and a section left with nothing recorded could be written
+ * `blocked` — a statement about the app, from a bookkeeping collision.
+ *
+ * The agent is trusted here and nowhere else, and only within the set of sections that actually
+ * declare the id, so this cannot mint a partition the gate does not read.
  */
 function sectionFor(run: RunState, id: string, declared: string | undefined): string | undefined {
-  const canonical = run.canonical.find((c) => c.id === id);
-  if (canonical?.section) return canonical.section;
+  const owners = run.canonical.filter((c) => c.id === id);
   const asked = String(declared ?? '').trim();
+  if (owners.length > 1 && asked && owners.some((c) => c.section === asked)) return asked;
+  if (owners[0]?.section) return owners[0].section;
   if (asked && run.sections.some((s) => s.id === asked)) return asked;
   return run.sections[0]?.id;
 }
@@ -340,10 +357,15 @@ function sectionFor(run: RunState, id: string, declared: string | undefined): st
  * Which section owns a phase: the one whose plan names it. A phase nobody planned is
  * attributed to the only section that has phases at all, and to nothing when several do —
  * an unattributed phase is recorded, never dropped.
+ *
+ * Several sections may plan the same phase, for the same reason they may declare the same
+ * requirement id, and the agent's answer settles it within that set — see `sectionFor`.
  */
 function phaseSectionFor(run: RunState, phase: string, declared: string | undefined): string | undefined {
-  const owner = run.sections.find((s) => s.phases.includes(phase));
-  if (owner) return owner.id;
+  const owners = run.sections.filter((s) => s.phases.includes(phase));
+  const askedOwner = String(declared ?? '').trim();
+  if (owners.length > 1 && askedOwner && owners.some((s) => s.id === askedOwner)) return askedOwner;
+  if (owners[0]) return owners[0].id;
   const asked = String(declared ?? '').trim();
   if (asked && run.sections.some((s) => s.id === asked)) return asked;
   const withPhases = run.sections.filter((s) => s.phases.length > 0);

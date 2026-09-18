@@ -173,6 +173,11 @@ export function blockedSectionAssay(input: {
       ? 'no browser sidecar was answering, so there was nothing to drive the install with'
       : reason === 'bench_unavailable'
         ? 'no demo instance was usable — the pool was unreachable, mid-cleanup, or too close to its daily wipe'
+        : reason === 'bench_unconfigured'
+          ? // Not an outage, and the distinction matters to whoever reads this: waiting will
+            // not fix it. The rubric asks to be run on a platform this installation has no
+            // pool for, which is a configuration answer, not an environment one.
+            'this section is audited on a platform this Touchstone has no bench pool configured for, so it could not be attempted'
         : reason === 'store_unreachable'
           ? 'the store this app comes from could not be read, so there was nothing to audit against'
           : reason === 'store_url_unconfigured'

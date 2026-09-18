@@ -221,14 +221,15 @@ interface EventDetails {
   TICK_SELECTED: { subject: string; reason: string; backlog: number; try_n: number; dry_run: boolean };
   TICK_IDLE: { reason: string; backlog: number };
   TICK_TRIAL_SELECTED: { slug: string; reason: string; backlog: number; dry_run: boolean };
-  TICK_BENCH_GATED: { reason: string; backlog: number };
-  TICK_BENCH_UNGATED: { reason: string; backlog: number };
+  TICK_BENCH_GATED: { line?: string; reason: string; backlog: number };
+  TICK_BENCH_UNGATED: { line?: string; reason: string; backlog: number };
   TICK_FAILED: { error: string };
   STANDARD_UNREADABLE: { error: string };
-  CLAIM_OPENED: { subject: string; try_n: number; since: string };
-  CLAIM_RECLAIMED: { subject: string; try_n: number; outcome: 'retry' | 'parked' };
-  CLAIM_PARKED: { subject: string; try_n: number; until_days: number };
-  CLAIM_UNPARKED: { subject: string };
+  CLAIM_OPENED: { subject: string; line?: string; try_n: number; since: string };
+  /** `line` is which platform's claim — one subject may hold one per platform. */
+  CLAIM_RECLAIMED: { subject: string; line: string; try_n: number; outcome: 'retry' | 'parked' };
+  CLAIM_PARKED: { subject: string; line?: string; try_n: number; until_days: number };
+  CLAIM_UNPARKED: { subject: string; line?: string };
   REGISTRY_REFRESHED: { count: number; origin?: string };
   REGISTRY_VERSIONS_FAILED: { error: string; origin?: string };
   REGISTRY_RECOVERED: { count: number; origin?: string };
@@ -290,9 +291,16 @@ interface EventDetails {
    */
   ADMIN_MCP_CALL: { tool: string; failed: boolean; read_only: boolean };
   CHAT_TURN_FAILED: { calls: number; error: string };
-  ASSAY_REQUIREMENT_REVISED: { subject: string; id: string; from: string; to: string };
+  ASSAY_REQUIREMENT_REVISED: {
+    subject: string;
+    id: string;
+    /** Which section changed its mind: one id may belong to more than one. */
+    section: string | undefined;
+    from: string;
+    to: string;
+  };
   ASSAY_REQUIREMENT_UNLISTED: { subject: string; id: string; section: string | undefined };
-  PROTOCOL_MISSING: { dir: string };
+  PROTOCOL_MISSING: { dir: string; scope?: string[] };
   /** `via` is who asked — the editor, the chat, or an agent on the admin MCP. A label on the
    *  row rather than a permission: all three go through `domain/protocoledit.ts`. */
   PROTOCOL_EDITED: {

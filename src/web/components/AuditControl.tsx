@@ -71,8 +71,11 @@ export default function AuditControl({
   const [error, setError] = useState<string | null>(null);
   const wasRunning = useRef(false);
 
-  const bench = status?.bench;
-  const poolUp = bench ? bench.leasable > 0 : null;
+  // One press asks for an audit on every platform, so the note is about whichever pools
+  // cannot currently take one — not about "the pool", which stopped having a referent.
+  const pools = status?.benches;
+  const empty = pools?.filter((p) => p.leasable === 0) ?? [];
+  const poolUp = pools && pools.length > 0 ? empty.length === 0 : null;
   const ours = status?.running?.subject === subject;
   const elapsed = useElapsed(status?.running?.started_at);
 
@@ -165,8 +168,11 @@ export default function AuditControl({
           degrades a run — it holds the line — so the note says that instead. */}
       {!error && poolUp === false ? (
         <span className="reassay-note">
-          no usable bench — the queue waits rather than auditing half the rubric
-          {bench?.window ? ` · ${bench.window}` : ''}
+          {empty.length === pools?.length
+            ? 'no usable bench'
+            : `no usable ${empty.map((p) => p.label).join(', ')} bench`}
+          {' '}— that line waits rather than auditing half the rubric
+          {empty[0]?.window ? ` · ${empty[0].window}` : ''}
         </span>
       ) : null}
       {!error && poolUp !== false && !queued && last ? (

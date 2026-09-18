@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { AlertStore } from '../services/alerts.js';
 import { EventLog } from '../services/events.js';
-import type { BenchProber } from '../services/bench.js';
+import type { BenchPools } from '../services/bench.js';
 import { classify, extractText } from './agent.js';
 import { DEFAULT_ORIGIN, subjectKey } from '../../shared/subject.js';
 import { Runner, type RunnerOptions } from './index.js';
@@ -144,7 +144,7 @@ function make(over: Partial<RunnerOptions> = {}, answers: string[] = [sse(agentJ
     protocols: protocolsOf(),
     // Both capabilities available by default. An *absent* prober is not "we could not check"
     // — it is a capability nothing can satisfy, and the sections needing it are blocked.
-    prober: proberOf(['https://demostaging1.example']),
+    pools: poolsOf(['https://demostaging1.example']),
     ports: portsOf(['http://touchstone-browser:9746/mcp']),
     events,
     busyBackoffMs: 1,
@@ -159,8 +159,18 @@ function make(over: Partial<RunnerOptions> = {}, answers: string[] = [sse(agentJ
   });
 }
 
-function proberOf(urls: string[]): BenchProber {
-  return { leasable: () => urls.map((url) => ({ name: 'demo', url })) } as unknown as BenchProber;
+/**
+ * A pool registry answering one capability — `bench` unless another is named.
+ *
+ * The second argument is what a FOSS pool looks like from here: the same fake, a different
+ * capability string, and nothing in the runner knowing the difference.
+ */
+function poolsOf(urls: string[], capability = 'bench'): BenchPools {
+  return {
+    capabilities: [capability],
+    leasable: (asked: string) =>
+      asked === capability ? urls.map((url) => ({ name: 'demo', url })) : [],
+  } as unknown as BenchPools;
 }
 
 beforeEach(async () => {
@@ -344,7 +354,7 @@ describe('a run that produces a verdict', () => {
   });
 
   it('records the bench it ran against', async () => {
-    await make({ prober: proberOf(['https://demostaging1.example']) }).run({
+    await make({ pools: poolsOf(['https://demostaging1.example']) }).run({
       subject: SUBJECT,
       try_n: 1,
     });
@@ -494,12 +504,12 @@ describe('refusing to run', () => {
    * again one layer down. The job degrades instead: static runs, functional is recorded.
    */
   it('runs the rest of the audit when no bench is leasable', async () => {
-    const out = await make({ prober: proberOf([]) }).run({ subject: SUBJECT, try_n: 1 });
+    const out = await make({ pools: poolsOf([]) }).run({ subject: SUBJECT, try_n: 1 });
     expect(out.kind).toBe('verdict');
   });
 
   it('still writes both sections, the one that needed a bench blocked', async () => {
-    await make({ prober: proberOf([]) }).run({ subject: SUBJECT, try_n: 1 });
+    await make({ pools: poolsOf([]) }).run({ subject: SUBJECT, try_n: 1 });
     const files = await fs.readdir(subjectDir());
     expect(files.filter((f) => f.endsWith('-static.md'))).toHaveLength(1);
     expect(files.filter((f) => f.endsWith('-functional.md'))).toHaveLength(1);
@@ -515,7 +525,7 @@ describe('refusing to run', () => {
   });
 
   it('says out loud which section it could not attempt', async () => {
-    await make({ prober: proberOf([]) }).run({ subject: SUBJECT, try_n: 1 });
+    await make({ pools: poolsOf([]) }).run({ subject: SUBJECT, try_n: 1 });
     await events.flush();
     expect(events.query({ code: 'ASSAY_DEGRADED' })).toHaveLength(1);
   });
@@ -524,7 +534,7 @@ describe('refusing to run', () => {
   it('asks the agent for the runnable sections only', async () => {
     let prompt = '';
     const runner = make({
-      prober: proberOf([]),
+      pools: poolsOf([]),
       agent: {
         fetchImpl: (async (_url: string, init: { body: string }) => {
           prompt = String(JSON.parse(init.body).params.arguments.prompt ?? '');
@@ -541,7 +551,7 @@ describe('refusing to run', () => {
 
   /** A section that requires nothing runs whatever the state of the pool. */
   it('still produces a verdict for the sections that need no bench', async () => {
-    await make({ prober: proberOf([]) }).run({ subject: SUBJECT, try_n: 1 });
+    await make({ pools: poolsOf([]) }).run({ subject: SUBJECT, try_n: 1 });
     const files = await fs.readdir(subjectDir());
     const body = await fs.readFile(
       path.join(subjectDir(), files.find((f) => f.endsWith('-static.md'))!),
@@ -637,7 +647,7 @@ describe('a failure that is not busy', () => {
 describe('the browser sidecar', () => {
   it('skips the sections that need it when no sidecar is answering', async () => {
     const out = await make({
-      prober: proberOf(['https://demostaging1.example']),
+      pools: poolsOf(['https://demostaging1.example']),
       ports: portsOf([]),
     }).run({ subject: SUBJECT, try_n: 1 });
     expect(out.kind).toBe('verdict');
@@ -645,7 +655,7 @@ describe('the browser sidecar', () => {
 
   /** A missing sidecar is infrastructure, so it is recorded against the browser, not the app. */
   it('names the browser as the reason the functional leg is blocked', async () => {
-    await make({ prober: proberOf(['https://x.example']), ports: portsOf([]) }).run({
+    await make({ pools: poolsOf(['https://x.example']), ports: portsOf([]) }).run({
       subject: SUBJECT,
       try_n: 1,
     });
@@ -659,7 +669,7 @@ describe('the browser sidecar', () => {
 
   it('records which browser the run drove', async () => {
     await make({
-      prober: proberOf(['https://demostaging1.example']),
+      pools: poolsOf(['https://demostaging1.example']),
       ports: portsOf(['http://touchstone-browser:9746/mcp']),
     }).run({ subject: SUBJECT, try_n: 1 });
 
@@ -861,7 +871,7 @@ describe('a trial', () => {
 
   it('blocks the functional section only when it has no address to serve its store from', async () => {
     const root = path.join(dir, 'trials', SLUG);
-    await make({ prober: proberOf(['https://demostaging1.example']) }).run(unservableJob(root));
+    await make({ pools: poolsOf(['https://demostaging1.example']) }).run(unservableJob(root));
 
     const d = path.join(root, SLUG, 'Tuwunel');
     const fn = (await fs.readdir(d)).find((f) => f.endsWith('-functional.md'))!;
@@ -890,7 +900,7 @@ describe('a trial', () => {
     const root = path.join(dir, 'trials', SLUG);
     let sent = '';
     const out = await make({
-      prober: proberOf(['https://demostaging1.example']),
+      pools: poolsOf(['https://demostaging1.example']),
       ports: portsOf(['http://touchstone-browser:9746/mcp']),
       agent: {
         fetchImpl: (async (_u: string, init: RequestInit) => {
@@ -1079,11 +1089,14 @@ describe('what a run would be made of', () => {
   const browser = [{ name: 'browser-1', kind: 'browser', url: 'http://browser:9746/mcp', status: 'healthy' }] as never;
 
   it('runs everything when the world supplies everything', () => {
-    const plan = resolveCapabilities(two(), { benches: bench, browsers: browser });
+    const plan = resolveCapabilities(two(), { benches: { bench }, browsers: browser });
     expect(plan.run.map((s) => s.id)).toEqual(['static', 'functional']);
     expect(plan.blocked).toEqual([]);
     expect(plan.lease).toEqual({
       benchHost: 'https://b1.example',
+      // Which pool the host came from. On the record because a report naming a host says
+      // nothing about which platform it was, once there is more than one.
+      benchCapability: 'bench',
       benchBuild: 'index-abc',
       browserEndpoint: 'http://browser:9746/mcp',
     });
@@ -1095,7 +1108,7 @@ describe('what a run would be made of', () => {
    */
   it('keeps input order in both arrays, so blocked[0] is the earliest-ordered section', () => {
     const three = [...two(), { ...two()[1]!, id: 'later', order: 3 }];
-    const plan = resolveCapabilities(three, { benches: [], browsers: browser });
+    const plan = resolveCapabilities(three, { benches: {}, browsers: browser });
     expect(plan.blocked.map((b) => b.section.id)).toEqual(['functional', 'later']);
     expect(plan.blocked[0]!.reason).toBe('bench_unavailable');
   });
@@ -1103,7 +1116,7 @@ describe('what a run would be made of', () => {
   /** Downstream reads `body`, `executor`, `sha256` off these. A projection would break it. */
   it('hands back the same section objects, not copies', () => {
     const input = two();
-    const plan = resolveCapabilities(input, { benches: bench, browsers: browser });
+    const plan = resolveCapabilities(input, { benches: { bench }, browsers: browser });
     expect(plan.run[0]).toBe(input[0]);
   });
 
@@ -1113,7 +1126,7 @@ describe('what a run would be made of', () => {
    */
   it('leases no bench for an unservable trial, even with a full pool', () => {
     const plan = resolveCapabilities(two(), {
-      benches: bench,
+      benches: { bench },
       browsers: browser,
       benchUnservable: 'store_url_unconfigured',
     });
@@ -1121,23 +1134,105 @@ describe('what a run would be made of', () => {
     expect(plan.lease.benchHost).toBeUndefined();
   });
 
+  /**
+   * Two platforms, two pools, and the rule that keeps them apart.
+   *
+   * A FOSS section must never be leased a Yundera box: the report would name a real host,
+   * carry a real verdict, and be about the wrong stack — indistinguishable from a correct
+   * one. And a FOSS section on a box that has no FOSS pool must be *blocked*, not run,
+   * which is the one place `requires:` departs from "an unknown capability is satisfied".
+   */
+  describe('more than one bench pool', () => {
+    const fossBench = [
+      { name: 'test2', pool: 'foss', url: 'https://test2.example', status: 'healthy', build: 'index-f' },
+    ] as never;
+    const fossSection = () => [{ ...two()[1]!, id: 'functional-foss', requires: ['bench.foss', 'browser'] }];
+
+    it('leases each section from the pool its capability names', () => {
+      const plan = resolveCapabilities(fossSection(), {
+        benches: { bench, 'bench.foss': fossBench },
+        configured: ['bench', 'bench.foss'],
+        browsers: browser,
+      });
+      expect(plan.run.map((s) => s.id)).toEqual(['functional-foss']);
+      expect(plan.lease.benchHost).toBe('https://test2.example');
+      expect(plan.lease.benchCapability).toBe('bench.foss');
+    });
+
+    /**
+     * The FOSS pool is empty while the demo pool is full. Blocking is the whole point: the
+     * alternative — falling back to whatever bench is free — is the wrong-stack verdict.
+     */
+    it('blocks rather than falling back to another pool', () => {
+      const plan = resolveCapabilities(fossSection(), {
+        benches: { bench, 'bench.foss': [] },
+        configured: ['bench', 'bench.foss'],
+        browsers: browser,
+      });
+      expect(plan.run).toEqual([]);
+      expect(plan.blocked[0]!.reason).toBe('bench_unavailable');
+      expect(plan.lease.benchHost).toBeUndefined();
+    });
+
+    /**
+     * The trap that made this feature impossible to add by configuration alone. Before the
+     * `configured` check, a `requires: [bench.foss]` on a box with no such pool fell through
+     * "a capability nothing supplies is satisfied" and **ran** — no host in the lease, no
+     * live instructions in the prompt, and an agent asked for a runtime audit with nowhere to
+     * perform it. Whatever it then said was recorded as a verdict about the app.
+     */
+    it('blocks a bench capability no pool answers, rather than running without one', () => {
+      const plan = resolveCapabilities(fossSection(), {
+        benches: { bench },
+        configured: ['bench'],
+        browsers: browser,
+      });
+      expect(plan.run).toEqual([]);
+      expect(plan.blocked[0]!.reason).toBe('bench_unconfigured');
+    });
+
+    /** An unservable trial suppresses every pool's lease, not only the default one's. */
+    it('leases no bench from any pool for an unservable trial', () => {
+      const plan = resolveCapabilities(fossSection(), {
+        benches: { bench, 'bench.foss': fossBench },
+        configured: ['bench', 'bench.foss'],
+        browsers: browser,
+        benchUnservable: 'store_url_unconfigured',
+      });
+      expect(plan.blocked[0]!.reason).toBe('store_url_unconfigured');
+      expect(plan.lease.benchHost).toBeUndefined();
+    });
+
+    /** One pool down does not cost the other its sections — invariant 2, per pool. */
+    it('runs the pool that is up while blocking the one that is down', () => {
+      const both = [...two(), ...fossSection()];
+      const plan = resolveCapabilities(both, {
+        benches: { bench, 'bench.foss': [] },
+        configured: ['bench', 'bench.foss'],
+        browsers: browser,
+      });
+      expect(plan.run.map((s) => s.id)).toEqual(['static', 'functional']);
+      expect(plan.blocked.map((b) => b.section.id)).toEqual(['functional-foss']);
+    });
+  });
+
   /** Invariant 2: nothing here enumerates capabilities, so an unknown one is not a gate. */
   it('runs a section requiring something nothing supplies', () => {
     const gpu = [{ ...two()[0]!, id: 'gpu-thing', requires: ['gpu'] }];
-    expect(resolveCapabilities(gpu, { benches: [], browsers: [] }).run.map((s) => s.id)).toEqual([
+    expect(resolveCapabilities(gpu, { benches: {}, browsers: [] }).run.map((s) => s.id)).toEqual([
       'gpu-thing',
     ]);
   });
 
   it('blocks only the sections that asked for what is missing', () => {
-    const plan = resolveCapabilities(two(), { benches: [], browsers: browser });
+    const plan = resolveCapabilities(two(), { benches: {}, browsers: browser });
     expect(plan.run.map((s) => s.id)).toEqual(['static']);
     expect(plan.blocked.map((b) => b.section.id)).toEqual(['functional']);
   });
 
   /** An absent prober is a capability nothing can satisfy — the inverse of the scheduler's. */
   it('treats an absent prober as no bench rather than as no opinion', () => {
-    expect(liveWorld({}).benches).toEqual([]);
+    expect(liveWorld({}).benches).toEqual({});
   });
 });
 
@@ -1149,7 +1244,7 @@ describe('what a run would be made of', () => {
  */
 describe('forecasting a run before it starts', () => {
   it('predicts exactly what a run against the same world then records', async () => {
-    const runner = make({ prober: proberOf([]) });
+    const runner = make({ pools: poolsOf([]) });
     const forecast = await runner.forecast();
 
     expect(forecast.run).toEqual(['static']);

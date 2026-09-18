@@ -26,6 +26,7 @@
  * (status `done`) while a blocked one writes `blocked` and so never counts as a last run.
  */
 
+import type { LineKey, LineSchedule } from '../../shared/schedule.js';
 import type { SchedulerConstants, SubjectSchedule } from './policy.js';
 
 /**
@@ -50,6 +51,15 @@ export interface RecordInput {
   now: Date;
   constants: SchedulerConstants;
   subject: string;
+  /**
+   * Which line this attempt was for — the platform it was dispatched against.
+   *
+   * Everything this function decides is about *an attempt*, so all of it is per line: three
+   * FOSS failures park the FOSS line and leave the Yundera rotation untouched, which is the
+   * whole of "one platform's outage must not park the other". With one pool configured there
+   * is one line and this is the state the row has always had.
+   */
+  line: LineKey;
   outcome: Outcome;
   schedule: SubjectSchedule | undefined;
 }
@@ -66,8 +76,17 @@ export interface RecordResult {
 }
 
 export function recordResult(input: RecordInput): RecordResult {
-  const { constants, now, outcome } = input;
-  const previous = input.schedule ?? { try_n: 0 };
+  const { constants, now, outcome, line } = input;
+  const row = input.schedule ?? {};
+  // The line's own state, or the v1 body a boot that could not read the protocols left
+  // behind. Falling back to `legacy` is what stops an upgrade reading "no entry for this
+  // line" as "nothing has ever been attempted" and resetting an error streak to zero.
+  const previous = row.lines?.[line] ?? row.legacy ?? { try_n: 0 };
+  /** This line's state replaced, every other line's carried through untouched. */
+  const withLine = (next: LineSchedule): SubjectSchedule => ({
+    ...row,
+    lines: { ...row.lines, [line]: next },
+  });
   // The attempt number this claim was issued under. Falling back to `try_n + 1` covers a
   // result arriving for a claim that was already reclaimed — the count still has to make
   // sense, and pretending it was attempt 1 would reset the parking clock.
@@ -77,7 +96,7 @@ export function recordResult(input: RecordInput): RecordResult {
     return {
       // Claim released, everything else exactly as it was. `try_n` is *not* `attempt`:
       // the attempt never happened.
-      schedule: { ...previous, claim: undefined },
+      schedule: withLine({ ...previous, claim: undefined }),
       stampsFinish: false,
       parked: false,
       note:
@@ -101,7 +120,7 @@ export function recordResult(input: RecordInput): RecordResult {
    */
   if (outcome.kind === 'agent_auth') {
     return {
-      schedule: { ...previous, claim: undefined },
+      schedule: withLine({ ...previous, claim: undefined }),
       stampsFinish: true,
       parked: false,
       note: 'the agent is not logged in, so the subject keeps its try',
@@ -111,13 +130,11 @@ export function recordResult(input: RecordInput): RecordResult {
   if (outcome.kind === 'error') {
     const parked = attempt >= constants.max_tries;
     return {
-      schedule: {
+      schedule: withLine({
         try_n: attempt,
         parked_at: parked ? now.toISOString() : previous.parked_at,
         claim: undefined,
-        // Carried, never cleared here — see the verdict branch below.
-        flagged_at: previous.flagged_at,
-      },
+      }),
       stampsFinish: true,
       parked,
       note: parked
@@ -134,7 +151,7 @@ export function recordResult(input: RecordInput): RecordResult {
     // a finisher clearing it eagerly would eat the one case the timestamp exists for: a flag
     // set at 10:05 while a run that started at 10:00 was still going is asking for the next
     // look, and this code cannot tell those two apart. The comparison can.
-    schedule: { try_n: 0, parked_at: undefined, claim: undefined, flagged_at: previous.flagged_at },
+    schedule: withLine({ try_n: 0, parked_at: undefined, claim: undefined }),
     stampsFinish: true,
     parked: false,
     note: 'assay completed',
@@ -144,14 +161,22 @@ export function recordResult(input: RecordInput): RecordResult {
 /** The claim written when a target is picked — n8n's `Mark in-progress`, row C1. */
 export function openClaim(input: {
   now: Date;
+  line: LineKey;
   schedule: SubjectSchedule | undefined;
 }): SubjectSchedule {
-  const previous = input.schedule ?? { try_n: 0 };
+  const row = input.schedule ?? {};
+  const previous = row.lines?.[input.line] ?? row.legacy ?? { try_n: 0 };
   return {
-    ...previous,
-    // C2: the finish time is deliberately NOT stamped here. Stamping at claim time makes a
-    // run that crashes look freshly audited, and the subject drops out of the backlog for a
-    // week having produced nothing.
-    claim: { since: input.now.toISOString(), try_n: previous.try_n + 1 },
+    ...row,
+    lines: {
+      ...row.lines,
+      [input.line]: {
+        ...previous,
+        // C2: the finish time is deliberately NOT stamped here. Stamping at claim time makes
+        // a run that crashes look freshly audited, and the subject drops out of the backlog
+        // for a week having produced nothing.
+        claim: { since: input.now.toISOString(), try_n: previous.try_n + 1 },
+      },
+    },
   };
 }
