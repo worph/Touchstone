@@ -121,6 +121,13 @@ export interface AssaySection {
   id: string;
   /** Human name, for the report heading. */
   name: string;
+  /**
+   * Which platform this section's verdict is about, when it is about one at all.
+   *
+   * Absent for a section that is not target-scoped — `static` judges bytes in a repo, and the
+   * same compose read on two platforms is one finding.
+   */
+  target?: string;
   /** What judged it, and which revision of it — principle 6, recorded on every assay. */
   standard: Standard;
   /** The ids of its phase plan, in order. Empty for a section that has no phases. */
@@ -202,6 +209,7 @@ export function blockedSectionAssay(input: {
       subject,
       ...(input.origin ? { origin: input.origin } : {}),
       section: section.id,
+      ...(section.target ? { target: section.target } : {}),
       standard: section.standard.name,
       standard_sha256: section.standard.sha256,
       status: 'blocked',
@@ -390,15 +398,22 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
     (input.benchHost ? ` against ${input.benchHost}` : '') +
     `.\n> The report covers the whole audit; the {leg} section is reproduced below verbatim.\n`;
 
+  // Which capabilities each section declared, so the bench fields can be stamped on the
+  // sections that actually used one. They used to ride `common` onto every section of the run,
+  // which was harmless while a run had one bench and nothing claimed a platform — and is
+  // misleading the moment a record says which platform it is about.
+  const usedBench = (section: AssaySection): boolean => (section.requires ?? []).includes('bench');
+  const benchFields = {
+    ...(input.benchHost ? { bench_host: input.benchHost } : {}),
+    ...(input.benchBuild ? { bench_build: input.benchBuild } : {}),
+    ...(input.browserEndpoint ? { browser: input.browserEndpoint } : {}),
+  };
   const common = {
     ...(input.origin ? { origin: input.origin } : {}),
     subject_ref: input.subjectRef ?? `Yundera/AppStore@main:Apps/${subject}`,
     ...(input.subjectSha ? { subject_sha: input.subjectSha } : {}),
     started_at: input.startedAt,
     finished_at: input.finishedAt,
-    ...(input.benchHost ? { bench_host: input.benchHost } : {}),
-    ...(input.benchBuild ? { bench_build: input.benchBuild } : {}),
-    ...(input.browserEndpoint ? { browser: input.browserEndpoint } : {}),
     ...(input.kbSha256 ? { kb_sha256: input.kbSha256 } : {}),
     produced_by: 'touchstone-runner',
   };
@@ -478,6 +493,11 @@ export function assaysFromAgentReport(input: AgentAssayInput): { meta: AssayMeta
         ...(isPrimary && sections.length > 1 ? { combined_score_of: sections.map((s) => s.id) } : {}),
         ...(status.ran || !blockedDetail ? {} : { blocked_detail: blockedDetail }),
         ...common,
+        ...(usedBench(section) ? benchFields : {}),
+        // **After `...common`, deliberately.** That spread lands last, so a key written earlier
+        // in this literal is silently overwritten by it — and `target` is per section, not per
+        // run: one run can carry a target-scoped section and a target-less one together.
+        ...(section.target ? { target: section.target } : {}),
         ...(coverage ? { coverage } : {}),
         ...(mine.length > 0 ? { requirements: mine } : {}),
         ...(phases.length > 0 ? { phases } : {}),

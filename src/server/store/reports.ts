@@ -62,6 +62,17 @@ function coerceMeta(data: Record<string, unknown>, where: string): AssayMeta {
   // identity — a file that has not been moved into `reports/<origin>/` yet still reads
   // correctly, which is what lets the boot migration be cosmetic instead of load-bearing.
   if (typeof data.origin !== 'string' || data.origin === '') data.origin = DEFAULT_ORIGIN;
+  // `target` is the same move, one axis later: every assay written before platforms existed is
+  // about the one platform there was. Defaulting it here rather than deriving it from the
+  // section id is what keeps the id a *derived* name rather than the identity — a record whose
+  // section says `functional` and whose target says `foss` is legal, and reads as itself.
+  //
+  // Deliberately **not** defaulted for a section that is not target-scoped: `static` carries no
+  // target, and inventing one would claim its verdict was about a platform when it is about
+  // bytes in a repo. Absent here means the writer said nothing, which `coerceMeta` cannot tell
+  // apart from "not target-scoped" — so readers that need the distinction ask the protocol, and
+  // readers that only need a grouping key use `DEFAULT_TARGET`.
+  if (data.target !== undefined && typeof data.target !== 'string') delete data.target;
   // Everything else is passed through as-is. Unknown keys ride along untouched; this is a
   // widening cast, not a validation pass — the archive may legitimately be ahead of us.
   return data as unknown as AssayMeta;

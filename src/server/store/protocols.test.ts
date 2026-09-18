@@ -164,6 +164,20 @@ describe('ids', () => {
   it('does not read one through the store either', async () => {
     expect(await store.get('../../etc/passwd')).toBeNull();
   });
+
+  /**
+   * **A composite section id is not a protocol id, and this is what enforces it.**
+   *
+   * `functional@foss` names a *section* — one rubric audited on one platform. The rubric is
+   * still `functional.md`, and there is no such file as `functional@foss.md`. Because `@` fails
+   * this regex, a composite id can never reach `save()` however it arrives: not through
+   * `PUT /protocols/:id`, and not through the chat's `edit_protocol` on an admin MCP that
+   * authenticates nobody. Invariant 11 holds by the guard that was already here, which is why
+   * the seam de-composes with `rubricOf` at the call sites instead of relaxing this.
+   */
+  it('refuses a composite section id, so no target can mint a protocol file', () => {
+    expect(isSafeId('functional@foss')).toBe(false);
+  });
 });
 
 /**
@@ -174,6 +188,41 @@ describe('ids', () => {
 describe('sections', () => {
   const leaf = (id: string, extra: string) =>
     `---\nid: ${id}\nname: ${id} rubric\nversion: 2\nkind: leaf\n${extra}---\n\nthe ${id} rubric\n`;
+
+  /**
+   * One rubric, audited on two platforms, is two sections — its own assay, its own verdict, its
+   * own place in the backlog. The **default target keeps the bare id**, which is what lets the
+   * entire existing archive go on reading correctly with nothing rewritten.
+   */
+  it('expands a target-scoped rubric into one section per platform', async () => {
+    await fs.writeFile(
+      path.join(dir, 'functional.md'),
+      ['---', 'id: functional', 'name: Functional Review Protocol', 'kind: leaf', 'order: 2',
+       'requires: [bench, browser]', 'targets:', '  - yundera', '  - id: foss', '    scores: false',
+       '---', '', '# Functional', '', 'Drive it.', ''].join('\n'),
+      'utf8',
+    );
+    const out = sectionsOf(await store.list());
+    const mine = out.filter((s) => s.rubric === 'functional');
+
+    expect(mine.map((s) => s.id)).toEqual(['functional', 'functional@foss']);
+    expect(mine.map((s) => s.target)).toEqual(['yundera', 'foss']);
+    // One rubric, one revision: an edit moves both platforms' chips together, because the same
+    // bytes really did judge them both.
+    expect(new Set(mine.map((s) => s.sha256)).size).toBe(1);
+    expect(new Set(mine.map((s) => s.body)).size).toBe(1);
+    // A per-target override is how a platform ships measured-before-it-judges.
+    expect(mine.map((s) => s.scores)).toEqual([true, false]);
+  });
+
+  /** A rubric that names no platform is not target-scoped: one assay, and no target at all. */
+  it('leaves a rubric with no targets as one section carrying none', async () => {
+    const out = sectionsOf(await store.list());
+    const stat = out.find((s) => s.id === 'static');
+    expect(stat?.target).toBeUndefined();
+    expect(stat?.rubric).toBe('static');
+    expect(out.filter((s) => s.rubric === 'static')).toHaveLength(1);
+  });
 
   it('are the leaf protocols, in declared order rather than alphabetical order', async () => {
     await fs.writeFile(path.join(dir, 'functional.md'), leaf('functional', 'order: 2\nrequires: [bench, browser]\n'), 'utf8');

@@ -104,6 +104,32 @@ function packedFiles(zip: Buffer, subject: string): string[] {
     .sort();
 }
 
+/**
+ * A trial is the one caller that may name a platform.
+ *
+ * Everything else infers it: a scheduled audit is dispatched on the line it was picked from. A
+ * trial has no subject row and therefore no line — and trialling a change against the FOSS
+ * stack is the whole reason for having one.
+ */
+describe('which platform a trial is audited on', () => {
+  it('carries the target the caller named onto the spec', async () => {
+    const { uploads, id } = await sessionOf('Widget', { 'docker-compose.yml': 'name: w\n' });
+    const out = await buildSpec(
+      depsOf(uploads, ['yundera~Widget'], storeArchive()),
+      { upload: id, target: 'foss' },
+      'now',
+    );
+    expect(out.ok && out.spec.target).toBe('foss');
+  });
+
+  /** Absent means the default platform, which is what every trial was before targets existed. */
+  it('names none when the caller did not, rather than inventing one', async () => {
+    const { uploads, id } = await sessionOf('Widget', { 'docker-compose.yml': 'name: w\n' });
+    const out = await buildSpec(depsOf(uploads, ['yundera~Widget'], storeArchive()), { upload: id }, 'now');
+    expect(out.ok && out.spec.target).toBeUndefined();
+  });
+});
+
 describe('an upload trial, laid over the app its store has', () => {
   it('inherits the files the session left out rather than calling them missing', async () => {
     const { uploads, id } = await sessionOf('Widget', { 'docker-compose.yml': 'name: changed\n' });

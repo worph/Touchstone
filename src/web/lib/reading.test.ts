@@ -10,6 +10,11 @@ function rec(meta: Record<string, unknown>): AssayRecord {
       section: 'currency',
       standard: 'Image Currency',
       standard_version: 1,
+      // Every reading in the archive is produced by a script — `domain/scripted.ts` writes
+      // `executor` onto each one — and that is now what separates a measurement from a
+      // section that merely does not score. The fixture says so rather than relying on
+      // `scores: false` alone, which no longer carries the distinction.
+      executor: 'currency.sh',
       status: 'done',
       verdict: null,
       top_severity: 'none',
@@ -40,7 +45,32 @@ function subject(sections: Record<string, AssayRecord | null>): SubjectState {
 }
 
 describe('what counts as a reading', () => {
-  it('is `scores: false` and nothing else', () => {
+  /**
+   * The distinction that `scores: false` alone cannot make, and the reason it had to be made:
+   * a platform shipped non-scoring is still judged by an agent, and drawing its verdict with a
+   * badge renderer produces a blank cell where a verdict belongs.
+   */
+  it('is a scripted measurement, not merely a section that does not score', () => {
+    const scripted = rec({ scores: false, executor: 'currency.sh', badge: '3 stale' });
+    // An agent section: no executor, no badge — a verdict, reached on a platform that is not
+    // yet allowed to publish one.
+    const nonScoringVerdict = rec({
+      scores: false,
+      verdict: 'compliant',
+      section: 'functional@foss',
+      target: 'foss',
+      executor: undefined,
+    });
+    expect(isReading(scripted)).toBe(true);
+    expect(isReading(nonScoringVerdict)).toBe(false);
+  });
+
+  /** A reading whose run was blocked has no badge yet, and still belongs in its own column. */
+  it('still counts a blocked scripted section, which has no badge to show', () => {
+    expect(isReading(rec({ scores: false, executor: 'currency.sh', status: 'blocked' }))).toBe(true);
+  });
+
+  it('is a scripted section that does not score', () => {
     expect(isReading(rec({ scores: false }))).toBe(true);
     expect(isReading(rec({}))).toBe(false);
     expect(isReading(rec({ scores: true }))).toBe(false);

@@ -103,7 +103,8 @@ export function migrateLines(
   const out: Record<string, SubjectSchedule> = {};
   for (const [subject, row] of Object.entries(stored)) {
     if (!row) continue;
-    const { try_n, parked_at, claim, from_rollup, flagged_at, lines, legacy } = row;
+    const { try_n, parked_at, claim, from_rollup, flagged_at, legacy } = row;
+    const lines = renameCapabilityLines(row.lines);
     const v1: LineSchedule | undefined =
       try_n !== undefined || parked_at || claim || from_rollup
         ? {
@@ -126,6 +127,37 @@ export function migrateLines(
       ...(Object.keys(next).length > 0 ? { lines: next } : {}),
       ...(body && !settled ? { legacy: body } : {}),
     };
+  }
+  return out;
+}
+
+/**
+ * Re-key lines written when a line was a bench *capability* rather than a target.
+ *
+ * v1.1.21 named a line after the capability its sections leased — `bench`, `bench.foss`. A line
+ * is a **target** now, so those keys no longer match anything the scheduler asks for, and a row
+ * carrying them would read as a subject with no state at all: parks lifted, error streaks reset,
+ * a claim held across the restart dropped so the next tick opens a second one.
+ *
+ * That is the same absence-as-state failure `migrateLines` exists to prevent, arriving through a
+ * rename rather than through a new field — which is exactly how it gets missed. On a box with
+ * nothing parked and nothing claimed the damage is invisible, so this cannot be left to be
+ * noticed later.
+ *
+ * The mapping is total: `bench` was the one pool there was, so it is the default target;
+ * `bench.<id>` named its pool after the target, so it is that target.
+ */
+function renameCapabilityLines(
+  lines: Record<LineKey, LineSchedule> | undefined,
+): Record<LineKey, LineSchedule> | undefined {
+  if (!lines) return undefined;
+  const out: Record<LineKey, LineSchedule> = {};
+  for (const [key, cell] of Object.entries(lines)) {
+    const target =
+      key === 'bench' ? DEFAULT_TARGET : key.startsWith('bench.') ? key.slice('bench.'.length) : key;
+    // First wins: a file that somehow holds both spellings keeps the one already using the new
+    // name, rather than letting the legacy row overwrite state written since the upgrade.
+    if (!out[target]) out[target] = cell;
   }
   return out;
 }

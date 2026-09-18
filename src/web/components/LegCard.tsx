@@ -18,6 +18,8 @@ import { dateOnly, since } from '../lib/format';
 import { displayState, runningState } from '../lib/status';
 
 /** The run in flight, when it is this subject's. See `lib/overview.ts` for why it is an overlay. */
+import { rubricOf } from '@shared/target';
+
 export interface LiveLeg {
   legs: Section[];
   started_at: string;
@@ -106,7 +108,7 @@ export function StandardTag({ meta, section }: { meta: AssayMeta; section: Secti
   return (
     <Link
       className="tag tag--link"
-      to={`/protocol?p=${encodeURIComponent(section)}&rev=${encodeURIComponent(meta.standard_sha256)}`}
+      to={`/protocol?p=${encodeURIComponent(rubricOf(section))}&rev=${encodeURIComponent(meta.standard_sha256)}`}
       title="Read the revision of the standard that judged this assay"
     >
       {label}

@@ -7,6 +7,9 @@ import { displayState, runningState } from './status';
 import { readingRank } from './reading';
 
 /** A verdict older than FRESH_DAYS makes a subject eligible again (ARCHITECTURE §2). */
+import { DEFAULT_TARGET } from '@shared/target';
+import { isReading } from './reading';
+
 export const FRESH_DAYS = 7;
 
 /**
@@ -104,10 +107,24 @@ export function isStale(s: SubjectState): boolean {
   return s.age_days == null || s.age_days >= FRESH_DAYS;
 }
 
-function legsOf(leg: 'any' | Leg): Leg[] {
-  if (leg === 'static') return ['static'];
-  if (leg === 'functional') return ['functional'];
-  return ['static', 'functional'];
+/**
+ * Which sections a filter is asking about.
+ *
+ * **`any` means every section this subject has**, not a hard-coded pair. It used to return
+ * `['static', 'functional']`, which silently hid a row whose only failure was on a third
+ * section — an app failing on one platform and passing on another would simply not appear under
+ * "either section", which is the one thing a filter must never do.
+ *
+ * Readings are excluded: they carry no verdict, so no `kind` of theirs is a thing to filter on.
+ */
+function legsOf(s: SubjectState, leg: 'any' | Leg): string[] {
+  if (leg !== 'any') return [leg];
+  const ids = Object.entries(s.sections ?? {})
+    .filter(([, rec]) => rec && !isReading(rec))
+    .map(([id]) => id);
+  // The two named columns stay in the set even with nothing recorded, so a never-audited
+  // subject still matches `never` rather than matching nothing at all.
+  return [...new Set(['static', 'functional', ...ids])];
 }
 
 function matchesKind(
@@ -116,7 +133,7 @@ function matchesKind(
   kinds: StateKind[],
   live?: LiveRun | null,
 ): boolean {
-  return legsOf(leg).some((l) => kinds.includes(legState(s, l, live).kind));
+  return legsOf(s, leg).some((l) => kinds.includes(legState(s, l, live).kind));
 }
 
 export function applyShow(
@@ -155,17 +172,48 @@ export function search(s: SubjectState, q: string): boolean {
 }
 
 /**
- * A subject's coverage, summed across its sections.
+ * A subject's coverage: summed **within** a platform, worst platform wins.
  *
- * Summing is right because the partition is real: each requirement is recorded against the
- * section whose protocol listed it, so no item is counted twice. A section that was never
- * attempted simply contributes nothing, which is what makes a subject with a blocked section
- * read as partly checked rather than as fully checked or not checked at all.
+ * Summing across the sections of one platform is right because the partition is real — each
+ * requirement is recorded against the section whose protocol listed it, so no item is counted
+ * twice. A section that was never attempted contributes nothing, which is what makes a subject
+ * with a blocked section read as partly checked rather than as fully checked or not at all.
+ *
+ * **Across platforms that partition does not hold.** The same rubric audited on two targets
+ * records the same requirement ids twice, so a summed 40-item checklist would report
+ * `applicable: 80` — a number that cannot be read against the rubric it came from. So group
+ * first, sum within, and take the **worst-covered** target: a row must not read as well-checked
+ * because one platform was, which is the argument `rollUp` in `domain/hallmark.ts` makes for the
+ * standard badge.
+ *
+ * One consequence worth knowing: `coverage.risk` therefore stops being a sum across platforms
+ * while `SubjectState.risk` still is. That divergence is not new in kind — it is what
+ * `combined_score_of` / `combined_score_on` exist to explain about a single run — but it is new
+ * in degree, and a reader comparing the two columns should know which is which.
  */
 export function coverageOf(s: SubjectState): Coverage | undefined {
-  const parts = Object.values(s.sections ?? {})
-    .map((rec) => rec?.meta.coverage)
-    .filter(Boolean) as Coverage[];
+  const byTarget = new Map<string, Coverage[]>();
+  for (const rec of Object.values(s.sections ?? {})) {
+    const coverage = rec?.meta.coverage;
+    if (!coverage) continue;
+    const target = String(rec?.meta.target ?? DEFAULT_TARGET);
+    byTarget.set(target, [...(byTarget.get(target) ?? []), coverage]);
+  }
+  const summed = [...byTarget.values()].map(sumCoverage).filter(Boolean) as Coverage[];
+  if (summed.length === 0) return undefined;
+  // Worst-covered first: the lowest verified-of-applicable, and where two are equally covered
+  // the one that checked more items is the more honest answer.
+  return summed.sort(
+    (a, b) => ratio(a) - ratio(b) || b.applicable - a.applicable,
+  )[0];
+}
+
+/** How much of what applied was actually checked. `-1` when nothing applied, as `coverageRatio`. */
+function ratio(c: Coverage): number {
+  return c.applicable > 0 ? c.verified / c.applicable : -1;
+}
+
+function sumCoverage(parts: readonly Coverage[]): Coverage | undefined {
   if (parts.length === 0) return undefined;
   return parts.reduce((sum, c) => ({
     verified: sum.verified + c.verified,
@@ -220,10 +268,7 @@ export function sortSubjects(
         const bv = b.age_days ?? Number.POSITIVE_INFINITY;
         return av - bv;
       }
-      case 'static':
-        return stateRank(a.static) - stateRank(b.static);
-      case 'functional':
-        return stateRank(a.functional) - stateRank(b.functional);
+
       case 'coverage': {
         // Least-checked first when ascending: the interesting end of this column is the
         // assay that could not answer, not the one that answered everything.
@@ -236,6 +281,10 @@ export function sortSubjects(
       default:
         // `notice:<section>` — worst reading last when ascending, so descending (the default
         // direction on every column here) puts the app furthest behind at the top.
+        if (key.startsWith('section:')) {
+          const id = key.slice('section:'.length);
+          return stateRank(a.sections?.[id] ?? null) - stateRank(b.sections?.[id] ?? null);
+        }
         if (key.startsWith('notice:')) {
           const id = key.slice('notice:'.length);
           return readingRank(a, id) - readingRank(b, id);

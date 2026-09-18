@@ -15,6 +15,7 @@
  */
 
 import { asSubjectKey, splitSubjectKey, type SubjectKey } from '../../shared/subject.js';
+import { DEFAULT_TARGET } from '../../shared/target.js';
 import type {
   AssayMeta,
   AssayRecord,
@@ -148,20 +149,45 @@ export function standardStateOf(state: LegState, standards: Standards): Standard
 /**
  * How the app a subject's verdicts were reached about relates to the app on offer now.
  *
- * Reads the newest **`done`** record of any section — the verdicts on display were all
- * reached in one run against one version, so one comparison answers for the row. Null when
- * there is nothing to say, and `unknown` rather than `changed` whenever either side is
- * missing: an app the store offers no compose for, or an assay written before this was
- * recorded, is not evidence that anything moved. That asymmetry is the whole safeguard —
- * `unknown` must never make a subject eligible, or every app in the archive would go eligible
- * the day this ships and stay so until audited.
+ * **Per target, then worst-wins.** This used to read the newest `done` record of *any* section,
+ * on the stated assumption that "the verdicts on display were all reached in one run against
+ * one version, so one comparison answers for the row". Two platforms are two runs, at two
+ * times, potentially against two different composes — so the row would report whichever target
+ * finished last, and could say `current` while the other platform was eligible for re-audit as
+ * `changed`. That is the badge and the backlog contradicting each other about the same app; the
+ * scheduler has been per-line since v1.1.21 and this is the display side catching up.
+ *
+ * `unknown` rather than `changed` whenever either side is missing: an app the store offers no
+ * compose for, or an assay written before this was recorded, is not evidence that anything
+ * moved. That asymmetry is the whole safeguard — `unknown` must never make a subject eligible,
+ * or every app in the archive would go eligible the day this ships and stay so until audited.
+ * It survives the roll-up below, where `unknown` still loses to `changed`.
  */
 export function subjectVersionOf(
   records: readonly AssayRecord[],
   offered: string | undefined,
 ): SubjectVersionState | null {
-  const done = sortNewestFirst(records.filter(isDone))[0];
-  if (!done) return null;
+  const done = sortNewestFirst(records.filter(isDone));
+  if (done.length === 0) return null;
+  // One answer per platform, from that platform's own newest verdict. With one target this is
+  // the single comparison it has always been.
+  const byTarget = new Map<string, AssayRecord>();
+  for (const rec of done) {
+    const target = String(rec.meta.target ?? DEFAULT_TARGET);
+    if (!byTarget.has(target)) byTarget.set(target, rec);
+  }
+  return rollUpVersion([...byTarget.values()].map((rec) => versionOfOne(rec, offered)));
+}
+
+/** Worst wins, for the reason `rollUp` does: a row with one stale platform is stale. */
+function rollUpVersion(states: readonly SubjectVersionState[]): SubjectVersionState | null {
+  if (states.length === 0) return null;
+  if (states.includes('changed')) return 'changed';
+  if (states.includes('unknown')) return 'unknown';
+  return 'current';
+}
+
+function versionOfOne(done: AssayRecord, offered: string | undefined): SubjectVersionState {
   // Coerced rather than type-checked, because YAML will hand back a **number** for a sha that
   // happens to be all digits — `0000…0` parses as `0` — and a stricter read would then answer
   // `unknown` for an app that had in fact changed. Vanishingly rare for a 40-hex-digit blob

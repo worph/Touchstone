@@ -36,6 +36,7 @@ import type { ReportIndex } from '../store/index.js';
 import { recordFor, writeReport } from '../store/reports.js';
 import { subjectRefOf, type OriginEntry } from '../store/config.js';
 import type { AlertStore } from '../services/alerts.js';
+import { DEFAULT_TARGET } from '../../shared/target.js';
 import type { Targets } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 import { sectionsOf, type ExecutorRef, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
@@ -59,10 +60,23 @@ export { runScript, parseOutput, type ScriptOutput, type ScriptRun } from './exe
  * `blocked[0]` as "the earliest-ordered blocked section". Filtering preserves that; picking
  * them out in the scope's own order would not.
  */
-function scopedTo<T extends { id: string }>(sections: readonly T[], scope: string[] | undefined): T[] {
-  if (!scope) return [...sections];
-  const want = new Set(scope);
-  return sections.filter((s) => want.has(s.id));
+function scopedTo<T extends { id: string; target?: string }>(
+  sections: readonly T[],
+  scope: string[] | undefined,
+  target?: string,
+): T[] {
+  if (scope) {
+    const want = new Set(scope);
+    return sections.filter((s) => want.has(s.id));
+  }
+  // No scope: every section, filtered to the run's platform. A trial has no line and so no
+  // scope, and without this filter it would try to audit *both* platforms in one call — two
+  // bench capabilities in a run that can hold one lease, which is the wrong-stack verdict this
+  // whole arrangement exists to prevent.
+  //
+  // A target-less section (`static`, `currency`) belongs to every run: its verdict does not
+  // depend on the platform, so whichever run is going may as well establish it.
+  return sections.filter((s) => !s.target || s.target === (target ?? DEFAULT_TARGET));
 }
 
 export interface RunnerJob {
@@ -86,6 +100,15 @@ export interface RunnerJob {
    * record on its own cadence rather than a hole where an answer should be.
    */
   scope?: string[];
+  /**
+   * Which platform this run is about.
+   *
+   * The scheduler derives it from the line it picked. A **trial** has no subject row and so no
+   * line to infer one from, which is why it may name one: a trial of a FOSS change should be
+   * audited on FOSS. Absent means the default target, which is what every run was before
+   * platforms existed.
+   */
+  target?: string;
   /**
    * Present, this is a **trial**: the same run written where the report index does not look.
    *
@@ -360,12 +383,16 @@ export class Runner {
    * - **No events, no `note()`.** It is a read.
    * - **Section ids only** — no rubric bodies crossing into a chat turn.
    */
-  async forecast(job?: Pick<RunnerJob, 'trial' | 'scope'>): Promise<Forecast> {
+  async forecast(job?: Pick<RunnerJob, 'trial' | 'scope' | 'target'>): Promise<Forecast> {
     const plan = await this.plan();
     if (!plan || plan.sections.length === 0) return { run: [], blocked: [], noProtocol: true };
     const { run, blocked } = resolveCapabilities(
-      scopedTo(plan.sections, job?.scope),
-      liveWorld({ ...this.opts, ...(job?.trial ? { trial: job.trial } : {}) }),
+      scopedTo(plan.sections, job?.scope, job?.target),
+      liveWorld({
+        ...this.opts,
+        ...(job?.target ? { target: job.target } : {}),
+        ...(job?.trial ? { trial: job.trial } : {}),
+      }),
     );
     return {
       run: run.map((s) => s.id as Section),
@@ -474,7 +501,7 @@ export class Runner {
     // The line's scope, applied **before** capabilities are resolved so that
     // `capabilities.ts`'s property 1 stays true of this run: `blocked[0]` has to be the
     // earliest-ordered blocked section *of the run*, and that is what the strip says.
-    const sections = scopedTo(plan.sections, job.scope);
+    const sections = scopedTo(plan.sections, job.scope, job.target);
     if (sections.length === 0) {
       // A scope naming nothing the protocol declares. Not an audit of zero sections — that
       // would stamp a finish and read as a completed run — but nothing to do, said out loud.
@@ -507,7 +534,11 @@ export class Runner {
       lease: { benchHost, benchBuild, browserEndpoint },
     } = resolveCapabilities(
       sections,
-      liveWorld({ ...this.opts, ...(job.trial ? { trial: job.trial } : {}) }),
+      liveWorld({
+        ...this.opts,
+        ...(job.target ? { target: job.target } : {}),
+        ...(job.trial ? { trial: job.trial } : {}),
+      }),
     );
 
     this.note({
@@ -912,6 +943,7 @@ export class Runner {
     return {
       id: section.id,
       name: section.name,
+      ...(section.target ? { target: section.target } : {}),
       standard: { name: section.name, sha256: section.sha256 },
       phases: section.phases.map((p) => p.id),
       requires: section.requires,
@@ -1058,7 +1090,7 @@ export class Runner {
       // writes one blocked assay per section of the *whole* protocol, so a Yundera run that
       // failed to dispatch would stamp a `functional-foss` attempt — silently spending the
       // FOSS line's request and resetting its due-ness, for a run that never touched it.
-      const sections = scopedTo(plan.sections, scope);
+      const sections = scopedTo(plan.sections, scope, undefined);
       if (sections.length === 0) return;
       await this.recordAttempt({ subject, try_n: 0 }, reason, {
         sections,
