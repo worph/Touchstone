@@ -136,8 +136,14 @@ async function resolve(
       ...(executor ? { executor_sha256: executor.sha256 } : {}),
     };
     if (!section.scores) continue;
-    const line = into(lineOf(section.requires));
-    const file = fileOf.get(section.id);
+    const line = into(lineOf(section));
+    // **`rubric`, not `id`.** `fileOf` is keyed on the protocol file's own id, so a section id
+    // derived from (rubric, target) misses — and the `if (file)` below would swallow the miss,
+    // leaving the rubric contributing to neither `judging` nor this line. The symptom is a
+    // rubric edit that silently stops re-eligibling anybody: no error, no failing test, a whole
+    // clause quietly inert. `rubricOf` is the same value for a section that is not
+    // target-scoped, so this is an identity until expansion lands.
+    const file = fileOf.get(section.rubric);
     if (file) {
       judging.push({ file, sha256: section.sha256 });
       line.push({ file, sha256: section.sha256 });

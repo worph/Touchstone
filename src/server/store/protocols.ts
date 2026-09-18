@@ -261,6 +261,22 @@ export function parseExecutor(value: unknown): Executor {
  */
 export interface ProtocolSection {
   id: string;
+  /**
+   * The rubric this section came from — the protocol **file's** own id.
+   *
+   * Equal to `id` for a section that is not target-scoped. When one rubric is audited on
+   * several platforms its expansions share this, which is what lets `standards.ts` find the
+   * file, the chat resolve `get_protocol`, and the standard tag link to the right document —
+   * all without anybody parsing the composite id.
+   */
+  rubric: string;
+  /**
+   * Which platform this section's verdict is about — `config.targets[].id`.
+   *
+   * Absent when the section is not target-scoped: `static` judges bytes in a repo, so the same
+   * compose read on two platforms is one finding, not two.
+   */
+  target?: string;
   name: string;
   order: number;
   /** Capabilities this section needs before it can be attempted. */
@@ -317,6 +333,7 @@ export function sectionsOf(protocols: readonly Protocol[]): ProtocolSection[] {
     .filter((p) => p.meta.kind === 'leaf')
     .map((p) => ({
       id: p.meta.id,
+      rubric: p.meta.id,
       name: p.meta.name,
       order: Number.isFinite(Number(p.meta.order)) ? Number(p.meta.order) : 100,
       requires: p.meta.requires ?? [],

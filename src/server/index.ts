@@ -12,9 +12,14 @@ import { splitSubjectKey } from '../shared/subject.js';
 import { TrialStore } from './store/trials.js';
 import { startTrial, type TrialRunDeps } from './services/trialrun.js';
 import { UploadStore } from './store/uploads.js';
-import { benchPools, ensureConfigFile, loadConfig, resolveDataDir } from './store/config.js';
+import {
+  targets as resolveTargets,
+  ensureConfigFile,
+  loadConfig,
+  resolveDataDir,
+} from './store/config.js';
 import { AlertStore } from './services/alerts.js';
-import { BenchPools, BenchProber } from './services/bench.js';
+import { BenchProber, Targets } from './services/bench.js';
 import { EventLog } from './services/events.js';
 import { Notifier } from './services/notify.js';
 import { PushService } from './services/push.js';
@@ -116,29 +121,31 @@ await alerts.load();
 // notify about it again.
 events.subscribe((event) => notifier.handleEvent(event));
 
-// One prober per pool — see `benchPools()` for what an installation with no `bench.pools:`
-// key resolves to, which is exactly the single demo pool this was before.
-const pools = new BenchPools(
-  benchPools(cfg).map((pool) => ({
-    capability: pool.capability,
+// One prober per target — see `targets()` for what an installation with no `targets:` key
+// resolves to, which is exactly the single demo platform this was before.
+const targetList = resolveTargets(cfg);
+const targets = new Targets(
+  targetList.map((target) => ({
+    id: target.id,
+    ...(target.board_url ? { boardUrl: target.board_url } : {}),
     prober: new BenchProber({
-      benches: pool.benches,
+      benches: target.benches,
       stateDir: cfg.stateDir,
       events,
       alerts,
-      pool: pool.id,
-      label: pool.label,
-      stateFile: pool.state_file,
-      poolUrl: pool.pool_url,
-      minRemainingMin: pool.min_remaining_min,
+      target: target.id,
+      label: target.label,
+      stateFile: target.state_file,
+      poolUrl: target.pool_url,
+      minRemainingMin: target.min_remaining_min,
       probeTimeoutMs: cfg.bench.probe_timeout_ms,
     }),
   })),
 );
-await pools.load();
-// The demo pool specifically, for the readers whose question is about it rather than about
-// "a bench" — the runway control, and the board link.
-const prober = pools.primary;
+await targets.load();
+// The default target specifically, for the readers whose question is about the demo platform
+// rather than about "a bench" — the runway control.
+const prober = targets.primary;
 
 // The driver. Ships dry-run: with `scheduler.armed: false` it decides and logs and claims
 // nothing, which is what lets its pick be diffed against the live n8n loop's before it is
@@ -284,7 +291,7 @@ const runner = new Runner({
   subjectVersion: (key) => registry.versionOf(key),
   events,
   index: store,
-  pools,
+  targets,
   ports,
   protocols,
   revisions,
@@ -447,7 +454,7 @@ const scheduler = new Scheduler({
   index: store,
   registry,
   events,
-  pools,
+  targets,
   // Read per tick, not captured at boot: `data/protocols/` is a volume somebody edits over
   // SSH, and the sweep that records such an edit runs before the answer is asked for.
   standardMovedAt: async () => (await readStandards(protocols, revisions)).moved_at_by_line,
@@ -456,7 +463,7 @@ const scheduler = new Scheduler({
   sections: async () =>
     sectionsOf(await protocols.list()).map((section) => ({
       id: section.id,
-      line: lineOf(section.requires),
+      line: lineOf(section),
       scores: section.scores,
     })),
   // The registry's own cached map — the tree fetch rides its refresh, so a tick costs no
@@ -561,7 +568,7 @@ await app.register(registerRoutes, {
   store,
   events,
   alerts,
-  pools,
+  targets,
   push,
   scheduler,
   runner,
@@ -594,9 +601,7 @@ await app.register(registerRoutes, {
   },
   uploads: { uploads, maxFileBytes: cfg.uploads.max_file_bytes, events },
   boardUrls: Object.fromEntries(
-    benchPools(cfg)
-      .filter((pool) => pool.board_url)
-      .map((pool) => [pool.id, pool.board_url]),
+    targetList.filter((t) => t.board_url).map((t) => [t.id, t.board_url]),
   ),
   // This instance about itself: the context prompt the chat is handed, and the config this
   // process booted with — redacted on the way out, `routes/settings.ts`.
@@ -623,7 +628,7 @@ await app.register(registerRoutes, {
       ledger,
       alerts,
       ports,
-      pools,
+      targets,
       // The archive, the log and the backlog: what the chat's read tools answer from. All
       // three are durable, which is the point — the live runner state they used to be limited
       // to is empty after a restart, and an audit that ended is exactly what gets asked about.
@@ -694,7 +699,7 @@ await app.register(registerRoutes, {
     status: async () => {
       const tool = CHAT_TOOLS.find((t) => t.name === 'get_status');
       if (!tool) return 'unavailable';
-      const result = await tool.handler({}, { runner, registry, ledger, alerts, ports, pools });
+      const result = await tool.handler({}, { runner, registry, ledger, alerts, ports, targets });
       return result.text;
     },
   },
@@ -776,13 +781,13 @@ events.log({
 // written to disk. An open bench alert could then never resolve on its own.
 // Across every pool: one of them having nothing to probe is not a reason to stop probing the
 // others, and it is the whole-installation case that is worth a warning.
-if (benchPools(cfg).every((pool) => pool.benches.length === 0 && !pool.pool_url)) {
+if (targetList.every((t) => t.benches.length === 0 && !t.pool_url)) {
   app.log.warn('no benches configured and no pool to discover — sections needing one stay blocked');
 } else {
   // Probe once at boot rather than waiting out the first interval: a restart during an
   // outage should not show a stale ✅ for five minutes.
-  void pools.probeAll().catch((err) => app.log.error({ err }, 'first bench probe failed'));
-  pools.start(cfg.bench.probe_interval_min * 60_000);
+  void targets.probeAll().catch((err) => app.log.error({ err }, 'first bench probe failed'));
+  targets.start(cfg.bench.probe_interval_min * 60_000);
 }
 
 // The ports are probed on the same cadence as the benches, and at boot for the same reason:
@@ -826,7 +831,7 @@ app.log.info(
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
-    pools.stop();
+    targets.stop();
     ports.stop();
     registry.stop();
     scheduler.stop();

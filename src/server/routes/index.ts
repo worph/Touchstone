@@ -30,7 +30,7 @@ import type { TrialRoutesOptions } from './trials.js';
 import type { UploadRoutesOptions } from './uploads.js';
 import type { BrowserRoutesOptions } from './browser.js';
 import type { AlertStore } from '../services/alerts.js';
-import type { BenchPools } from '../services/bench.js';
+import type { Targets } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 import type { ProtocolStore } from '../store/protocols.js';
 import type { RevisionStore } from '../store/revisions.js';
@@ -66,7 +66,7 @@ export interface RoutesOptions {
   events?: EventLog;
   alerts?: AlertStore;
   /** Every bench pool, keyed by capability. Was a single `prober` before there were two. */
-  pools?: BenchPools;
+  targets?: Targets;
   ports?: PortProber;
   protocols?: ProtocolStore;
   revisions?: RevisionStore;
@@ -126,7 +126,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
   await app.register(eventRoutes, { events: options.events });
   await app.register(alertRoutes, { alerts: options.alerts });
   await app.register(benchRoutes, {
-    pools: options.pools,
+    targets: options.targets,
     ports: options.ports,
     boardUrls: options.boardUrls,
   });
@@ -187,7 +187,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     runner: options.runner,
     scheduler: options.scheduler,
     ledger: options.ledger,
-    pools: options.pools,
+    targets: options.targets,
   });
 
   /**

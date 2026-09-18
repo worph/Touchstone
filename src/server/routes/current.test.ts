@@ -42,13 +42,13 @@ function fakeRunner(running: RunStatus['running']) {
   } as never;
 }
 
-async function build(running: RunStatus['running'], pools?: unknown) {
+async function build(running: RunStatus['running'], targets?: unknown) {
   const instance = Fastify();
   await instance.register(routes, {
     prefix: '/api/v1',
     ledger,
     runner: fakeRunner(running),
-    ...(pools ? { pools: pools as never } : {}),
+    ...(targets ? { targets: targets as never } : {}),
   });
   await instance.ready();
   return instance;
@@ -178,8 +178,8 @@ describe('the demo pool, on the endpoint the whole UI already polls', () => {
     const instance = await build(null, {
       windows: () => [
         {
-          capability: 'bench',
-          label: 'demo',
+          target: 'yundera',
+          label: 'Yundera PCS',
           leasable: 1,
           window: 'demostaging1 is usable for another 92 min, until its wipe at ~14:59 UTC',
         },
@@ -189,8 +189,8 @@ describe('the demo pool, on the endpoint the whole UI already polls', () => {
     const body = res.json() as RunStatus;
     expect(body.benches).toEqual([
       {
-        capability: 'bench',
-        label: 'demo',
+        target: 'yundera',
+        label: 'Yundera PCS',
         leasable: 1,
         window: 'demostaging1 is usable for another 92 min, until its wipe at ~14:59 UTC',
       },
@@ -205,12 +205,12 @@ describe('the demo pool, on the endpoint the whole UI already polls', () => {
   it('carries one entry per pool, so a control can say which line is held', async () => {
     const instance = await build(null, {
       windows: () => [
-        { capability: 'bench', label: 'demo', leasable: 2, window: 'two benches free' },
-        { capability: 'bench.foss', label: 'FOSS', leasable: 0, window: 'no FOSS bench is answering' },
+        { target: 'yundera', label: 'Yundera PCS', leasable: 2, window: 'two benches free' },
+        { target: 'foss', label: 'FOSS stack', leasable: 0, window: 'no FOSS bench is answering' },
       ],
     });
     const body = (await instance.inject({ method: 'GET', url: '/api/v1/assays/current' })).json() as RunStatus;
-    expect(body.benches?.filter((p) => p.leasable === 0).map((p) => p.label)).toEqual(['FOSS']);
+    expect(body.benches?.filter((p) => p.leasable === 0).map((p) => p.label)).toEqual(['FOSS stack']);
     await instance.close();
   });
 

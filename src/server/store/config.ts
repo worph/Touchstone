@@ -18,14 +18,12 @@ import path from 'node:path';
 import { fileURLToPath, URL as NodeURL } from 'node:url';
 import YAML from 'yaml';
 
-import { DEFAULT_BENCH_CAPABILITY } from '../../shared/capability.js';
 import { DEFAULT_ORIGIN } from '../../shared/subject.js';
+import { DEFAULT_TARGET } from '../../shared/target.js';
 import type { Severity } from '../../shared/types.js';
 
 /** Repo root, resolved from this file so cwd never matters. */
 export const REPO_ROOT = fileURLToPath(new NodeURL('../../../', import.meta.url));
-
-export { DEFAULT_BENCH_CAPABILITY };
 
 /**
  * One demo instance a functional assay can install into.
@@ -41,79 +39,86 @@ export interface BenchEntry {
   enabled?: boolean;
 }
 
-/** Its id: the name on every row, and the reason its state file keeps the old path. */
-export const DEFAULT_BENCH_POOL = 'demo';
+/** Re-exported so config readers need not know which module owns it. */
+export { DEFAULT_TARGET };
 
 /**
- * One **pool** of demo instances — a platform an app can be audited on.
+ * One **target** — a platform an app is audited on, and the pool of instances that serves it.
  *
- * The Yundera demo pool is discovered from a JSON API and wiped daily; the FOSS stack is one
- * fixed box that is not. Both are pools here, and the difference is entirely which fields are
- * filled in: `pool_url` discovers, `benches` pins, and a pinned box has no countdown to read,
- * which `isLeasable` already handles.
+ * This is the axis the archive was missing. A capability (`bench`, `browser`) says *what kind of
+ * resource* a section needs; a target says *which platform the verdict is about*, which is a
+ * property of the finding rather than of the machine. Until 2026-09-18 one string was both, plus
+ * the pool as well, and the code had to sniff a `bench.` prefix to tell them apart.
+ *
+ * A target owns a **bench** pool. `browsers:` stays global: a sidecar drives whatever host it is
+ * pointed at, so there is nothing platform-shaped about it. If one ever is, `targets[].browsers`
+ * is where it goes.
  */
-export interface BenchPoolEntry {
-  /** Stable, and load-bearing: it names the state file, the alert keys and every row's `pool`. */
+export interface TargetEntry {
+  /** Stable, and load-bearing: it names the state file, the alert keys and every assay's `target`. */
   id: string;
-  /**
-   * What a protocol's `requires:` asks for to be leased from this pool.
-   *
-   * Two pools may not share one, and a `requires:` naming a capability no pool answers is
-   * recorded `bench_unconfigured` rather than silently running with no bench at all.
-   */
-  capability: string;
-  /** Shown in the UI as the pool's own name. Defaults to the id. */
+  /** Shown wherever a column or a pool is named. Defaults to the id. */
   label?: string;
-  pool_url?: string;
-  board_url?: string;
-  /** Defaults to `bench.min_remaining_min`. A fixed box that is never wiped wants `0`. */
-  min_remaining_min?: number;
-  /** A hand-written roster. Non-empty disables discovery for this pool. */
-  benches?: BenchEntry[];
+  /**
+   * Where this target's instances come from.
+   *
+   * `pool_url` discovers them (the demo pool is wiped daily, so a hardcoded host goes stale);
+   * `benches` pins them. A pinned box has no cleanup countdown to read, which `isLeasable`
+   * already treats as claimable, so such a target wants `min_remaining_min: 0`.
+   */
+  pool?: {
+    pool_url?: string;
+    board_url?: string;
+    min_remaining_min?: number;
+    benches?: BenchEntry[];
+  };
 }
 
-/** One pool, with every default resolved — what the prober and the routes are handed. */
-export interface ResolvedBenchPool extends BenchPoolEntry {
+/** One target, with every default resolved — what the probers and the routes are handed. */
+export interface ResolvedTarget {
+  id: string;
   label: string;
   pool_url: string;
   board_url: string;
   min_remaining_min: number;
   benches: BenchEntry[];
-  /** `state/benches.json` for the default pool, so an existing roster is not orphaned. */
+  /** `state/benches.json` for the default target, so an existing roster is not orphaned. */
   state_file: string;
 }
 
 /**
- * The pools this installation has, defaults resolved and back-compatibility applied.
+ * The targets this installation audits on, defaults resolved and back-compatibility applied.
  *
- * `config.yaml` is hand-edited on live volumes, so "no `pools:` key" has to keep meaning
- * exactly what it meant before there was one: a single pool, described by `bench.pool_url`
+ * `config.yaml` is hand-edited on live volumes, so **"no `targets:` key" has to keep meaning
+ * exactly what it meant before there was one**: a single platform, described by `bench.pool_url`
  * and friends, with the top-level `benches:` list as its override. That is not a migration —
  * nothing is rewritten — it is the absent case having a definition.
+ *
+ * The **first entry is the default target**, and it is the one whose sections keep their bare
+ * ids and whose roster keeps `state/benches.json`.
  */
-export function benchPools(cfg: TouchstoneConfig): ResolvedBenchPool[] {
-  const declared = cfg.bench.pools ?? [];
-  const entries: BenchPoolEntry[] =
-    declared.length > 0
-      ? declared
-      : [{ id: DEFAULT_BENCH_POOL, capability: DEFAULT_BENCH_CAPABILITY }];
+export function targets(cfg: TouchstoneConfig): ResolvedTarget[] {
+  const declared = cfg.targets ?? [];
+  const entries: TargetEntry[] = declared.length > 0 ? declared : [{ id: DEFAULT_TARGET }];
 
-  return entries.map((pool) => {
-    const isDefault = pool.capability === DEFAULT_BENCH_CAPABILITY;
+  return entries.map((target, i) => {
+    const isDefault = i === 0;
+    const pool = target.pool ?? {};
     return {
-      ...pool,
-      label: pool.label ?? pool.id,
-      // The top-level fields describe the default pool and nothing else: a second pool that
-      // inherited `pool_url` would discover the demo roster and lease a Yundera box for a
-      // FOSS audit, which is the exact wrong verdict this whole arrangement exists to avoid.
+      id: target.id,
+      label: target.label ?? target.id,
+      // The top-level `bench:` fields describe the default target and nothing else. A second
+      // target that inherited `pool_url` would discover the *demo* roster and lease a Yundera
+      // box for a FOSS audit — a report naming a real host, carrying a real verdict, about the
+      // wrong platform, and indistinguishable from a correct one.
       pool_url: pool.pool_url ?? (isDefault ? cfg.bench.pool_url : ''),
       board_url: pool.board_url ?? (isDefault ? cfg.bench.board_url : ''),
       min_remaining_min: pool.min_remaining_min ?? cfg.bench.min_remaining_min,
       benches: pool.benches ?? (isDefault ? cfg.benches : []),
-      // Keyed on the capability rather than the id: an operator who lists the demo pool
-      // explicitly and calls it something else is still describing the pool whose roster is
-      // already on disk, and orphaning it would drop every `healthy_at` across the upgrade.
-      state_file: isDefault ? 'benches.json' : `benches.${pool.id}.json`,
+      // Positional rather than keyed on the id: an operator who lists the demo pool explicitly
+      // and calls it something else is still describing the roster already on disk, and
+      // orphaning it would drop every `healthy_at` across the upgrade.
+      state_file: isDefault ? 'benches.json' : `benches.${target.id}.json`,
     };
   });
 }
@@ -243,21 +248,19 @@ export interface TouchstoneConfig {
     min_remaining_min: number;
     probe_interval_min: number;
     probe_timeout_ms: number;
-    /**
-     * **The platforms an app can be audited on**, one entry per pool of demo instances.
-     *
-     * Absent — which is every installation before this existed, and every one that only ever
-     * wants the Yundera pool — means the four fields above describe the single pool, and
-     * `benchPools()` synthesises exactly that. So an untouched `config.yaml` boots identically
-     * and nothing on the volume has to be edited to keep working.
-     *
-     * A pool is named by its `capability`, and that string is what a protocol's `requires:`
-     * asks for. Nothing in the code knows what a capability means: adding a pool here and a
-     * `requires: [bench.foss]` to a rubric adds a platform, which is invariant 2 reaching the
-     * bench layer.
-     */
-    pools?: BenchPoolEntry[];
   };
+  /**
+   * **The platforms an app is audited on.** One entry per target; the first is the default.
+   *
+   * Absent — which is every installation before this existed, and every one that only ever
+   * audits on Yundera — means the `bench:` block above describes the single target, and
+   * `targets()` synthesises exactly that. So an untouched `config.yaml` boots identically and
+   * nothing on a volume has to be edited to keep working.
+   *
+   * Top-level rather than under `bench:` because a target is not a bench setting: it is the
+   * axis a verdict is about, and the pool that serves it is one of its properties.
+   */
+  targets?: TargetEntry[];
   /**
    * The operator's tools, served over MCP at `/api/v1/mcp/admin` — `routes/mcp-admin.ts`.
    *

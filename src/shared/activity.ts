@@ -60,14 +60,14 @@ export type AlertKey =
   | 'bench.auth'
   | 'bench.unreachable'
   /**
-   * The same two conditions on a pool that is not the default one — `bench.<pool>.auth`.
+   * The same two conditions on a target that is not the default one — `bench.<target>.auth`.
    *
    * Interpolated, which the rule just above forbids for a *bench*, and the difference is what
    * the key is bounded by. One row per occurrence is what destroys an alert list; one row per
-   * configured pool is exactly one row per outage, because a pool is a thing an operator wrote
-   * in `config.yaml` rather than a thing the world produces. Two pools failing are two outages
-   * with two fixes, and collapsing them would mean the demo pool recovering resolved the card
-   * about the FOSS box.
+   * configured target is exactly one row per outage, because a target is a thing an operator
+   * wrote in `config.yaml` rather than a thing the world produces. Two platforms failing are
+   * two outages with two fixes, and collapsing them would mean the demo pool recovering
+   * resolved the card about the FOSS box.
    */
   | `bench.${string}.auth`
   | `bench.${string}.unreachable`
@@ -100,13 +100,13 @@ export type BenchStatus = 'healthy' | 'auth' | 'unreachable' | 'unconfigured' | 
 export interface BenchHealth {
   name: string;
   /**
-   * Which pool this bench belongs to — `bench.pools[].id`.
+   * Which **target** this bench serves — `config.targets[].id`.
    *
-   * The name alone stopped identifying a row once there was more than one pool: two pools may
-   * legitimately hold same-named instances, and the name is what keys the roster. Absent only
-   * on a row read from a file written before pools existed, and filled in on read.
+   * The name alone stopped identifying a row once there was more than one platform: two targets
+   * may legitimately hold same-named instances, and the name is what keys the roster. Absent
+   * only on a row read from a file written before targets existed, and filled in on read.
    */
-  pool?: string;
+  target?: string;
   url: string;
   status: BenchStatus;
   detail?: string;
@@ -164,10 +164,9 @@ export interface PortHealth {
  * FOSS platform, and an operator reading it concludes that auditing is fine.
  */
 export interface BenchPoolHealth {
+  /** The target id — `config.targets[].id`. */
   id: string;
   label: string;
-  /** What a protocol's `requires:` names to be leased from here. */
-  capability: string;
   leasable: number;
   total: number;
   /** `describeWindow` for this pool — when its answer next changes. */
@@ -202,8 +201,8 @@ export interface BenchesResponse {
  * an hour older than the strip above it.
  */
 export interface BenchWindow {
-  /** Which pool this is about. One request now fans out across every line. */
-  capability: string;
+  /** Which target this is about. One request now fans out across every platform. */
+  target: string;
   label: string;
   leasable: number;
   window: string;

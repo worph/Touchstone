@@ -565,11 +565,11 @@ describe('a run started here reports back into the conversation', () => {
         runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }), ...runner } as never,
         // One entry per pool, as `BenchPools.windows()` returns. The window of an *empty*
         // pool is what the reply quotes, so the fixture has to say this one is empty.
-        pools: {
+        targets: {
           windows: () => [
             {
-              capability: 'bench',
-              label: 'demo',
+              target: 'yundera',
+              label: 'Yundera PCS',
               leasable: 0,
               window: 'demostaging1 is mid-cleanup — usually back within minutes',
             },
