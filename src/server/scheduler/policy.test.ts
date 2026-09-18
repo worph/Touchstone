@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_BENCH_CAPABILITY } from '../../shared/capability.js';
+import type { LegacySubjectSchedule } from '../../shared/schedule.js';
+import { migrateLines } from './index.js';
 import {
   decide,
   queue,
+  requests,
   stateLine,
   type PolicyInput,
   type SchedulerConstants,
@@ -28,15 +32,60 @@ function minutesAgo(n: number): string {
   return new Date(NOW.getTime() - n * 60_000).toISOString();
 }
 
-function input(over: Partial<PolicyInput> = {}): PolicyInput {
+/**
+ * The fixtures below are written the way they always were — one subject, one flat row, one
+ * date — because that is what almost every rule in this file is about, and re-punctuating a
+ * hundred literals to say `{ lines: { bench: … } }` would have buried the rules in syntax.
+ *
+ * This adapter is what makes that legal, and it is deliberately **`migrateLines` itself**
+ * rather than a hand-rolled shim: every test in this file now exercises the upgrade path as a
+ * side effect, and a fixture that means something different after the fan-out than before it
+ * would fail here rather than in production.
+ *
+ * A test that is genuinely about two platforms passes `lines:` directly and skips all of it.
+ */
+type FlatInput = Omit<
+  Partial<PolicyInput>,
+  'schedule' | 'lastDoneAt' | 'lastAttemptAt' | 'auditedVersion' | 'standardMovedAt'
+> & {
+  schedule?: Record<string, LegacySubjectSchedule | undefined>;
+  lastDoneAt?: Record<string, string | undefined>;
+  lastAttemptAt?: Record<string, string | undefined>;
+  auditedVersion?: Record<string, string | undefined>;
+  standardMovedAt?: string;
+  /** The old single-pool gate, still the honest way to write a one-platform test. */
+  benchAvailable?: boolean;
+  benchNote?: string;
+};
+
+const LINE = DEFAULT_BENCH_CAPABILITY;
+
+/** `{Alpha: '2026-01-01'}` → `{Alpha: {bench: '2026-01-01'}}`. */
+function byLine(
+  flat: Record<string, string | undefined> | undefined,
+): Record<string, Record<string, string | undefined>> | undefined {
+  if (!flat) return undefined;
+  return Object.fromEntries(Object.entries(flat).map(([k, v]) => [k, { [LINE]: v }]));
+}
+
+function input(over: FlatInput = {}): PolicyInput {
+  const { schedule, lastDoneAt, lastAttemptAt, auditedVersion, standardMovedAt, benchAvailable, benchNote, ...rest } =
+    over;
   return {
     now: NOW,
     constants: CONSTANTS,
     subjects: ['Alpha', 'Beta', 'Gamma'],
-    lastDoneAt: {},
-    schedule: {},
-    benchAvailable: true,
-    ...over,
+    sections: [{ id: 'static', line: LINE, scores: true }],
+    lastDoneAt: byLine(lastDoneAt) ?? {},
+    schedule: migrateLines(schedule ?? {}, [LINE]),
+    ...(lastAttemptAt ? { lastAttemptAt: byLine(lastAttemptAt) } : {}),
+    ...(auditedVersion ? { auditedVersion: byLine(auditedVersion) } : {}),
+    ...(standardMovedAt ? { standardMovedAt: { [LINE]: standardMovedAt } } : {}),
+    capabilities:
+      benchAvailable === false
+        ? { [LINE]: { available: false, ...(benchNote ? { note: benchNote } : {}) } }
+        : { [LINE]: { available: true } },
+    ...rest,
   };
 }
 
@@ -197,7 +246,8 @@ describe('parking', () => {
         schedule: { Alpha: { try_n: 3, parked_at: daysAgo(8) } },
       }),
     );
-    expect(d.unparked).toEqual(['Alpha']);
+    // The cell, not the subject: a park belongs to a platform now.
+    expect(d.unparked).toEqual([{ subject: 'Alpha', line: LINE }]);
     expect(d.action).toBe('audit');
     expect(d.subject).toBe('Alpha');
     // The park cleared the streak, so this is attempt one again rather than a fourth try.
@@ -220,7 +270,7 @@ describe('leases', () => {
         schedule: { Beta: { try_n: 0, claim: { since: minutesAgo(121), try_n: 1 } } },
       }),
     );
-    expect(d.reclaimed).toEqual([{ subject: 'Beta', outcome: 'retry', try_n: 1 }]);
+    expect(d.reclaimed).toEqual([{ subject: 'Beta', line: LINE, outcome: 'retry', try_n: 1 }]);
     expect(d.action).toBe('audit');
     expect(d.subject).toBe('Beta');
   });
@@ -233,7 +283,7 @@ describe('leases', () => {
         schedule: { Alpha: { try_n: 2, claim: { since: minutesAgo(200), try_n: 3 } } },
       }),
     );
-    expect(d.reclaimed).toEqual([{ subject: 'Alpha', outcome: 'parked', try_n: 3 }]);
+    expect(d.reclaimed).toEqual([{ subject: 'Alpha', line: LINE, outcome: 'parked', try_n: 3 }]);
     expect(d.action).toBe('idle');
   });
 
@@ -291,11 +341,16 @@ describe('the State line', () => {
 describe('purity', () => {
   /** The caller's state file is not the policy's scratch space. */
   it('does not mutate the schedule it was handed', () => {
+    // Written in the shape the file actually holds, **nested**, because that is the whole
+    // point of this test now: the copy `reclaimExpired` takes used to be one spread plus the
+    // claim, which was exactly deep enough while a row's mutable state was flat. A shallow
+    // copy would share this `lines` object and the reclaim below would write straight through
+    // into the caller's state file.
     const schedule: Record<string, SubjectSchedule> = {
-      Alpha: { try_n: 2, claim: { since: minutesAgo(500), try_n: 3 } },
+      Alpha: { lines: { [LINE]: { try_n: 2, claim: { since: minutesAgo(500), try_n: 3 } } } },
     };
     const before = JSON.stringify(schedule);
-    decide(input({ subjects: ['Alpha'], schedule }));
+    decide({ ...input({ subjects: ['Alpha'] }), schedule });
     expect(JSON.stringify(schedule)).toBe(before);
   });
 });
@@ -312,7 +367,7 @@ describe('when the standard moves under a subject', () => {
   const MOVED = daysAgo(1);
 
   /** Audited two days ago, well inside `fresh_days`; the rubric changed yesterday. */
-  function moved(over: Partial<PolicyInput> = {}): PolicyInput {
+  function moved(over: FlatInput = {}): PolicyInput {
     return input({
       subjects: ['Alpha'],
       lastDoneAt: { Alpha: daysAgo(2) },
@@ -401,7 +456,7 @@ describe('when the standard moves under a subject', () => {
  */
 describe('when the app changes in the store', () => {
   /** Audited two days ago, well inside `fresh_days`, against a compose that has since moved. */
-  function changed(over: Partial<PolicyInput> = {}): PolicyInput {
+  function changed(over: FlatInput = {}): PolicyInput {
     return input({
       subjects: ['Alpha'],
       lastDoneAt: { Alpha: daysAgo(2) },
@@ -490,7 +545,7 @@ describe('when a subject is flagged for re-audit', () => {
   const FLAGGED = daysAgo(1);
 
   /** Audited two days ago, well inside `fresh_days`; flagged yesterday. */
-  function flagged(over: Partial<PolicyInput> = {}): PolicyInput {
+  function flagged(over: FlatInput = {}): PolicyInput {
     return input({
       subjects: ['Alpha'],
       lastDoneAt: { Alpha: daysAgo(2) },
@@ -697,5 +752,171 @@ describe('when a subject is flagged for re-audit', () => {
   it('ignores a flag that is not a date', () => {
     const d = decide(flagged({ schedule: { Alpha: { try_n: 0, flagged_at: 'soon' } } }));
     expect(d.action).toBe('idle');
+  });
+});
+
+/**
+ * Two platforms, two lines.
+ *
+ * Every rule above is about one subject on one platform, which is what a line is. These are
+ * the rules that only exist once there are two, and each of them is a thing that went wrong
+ * in the design before it was written down: a second pool's outage stopping all auditing, one
+ * platform's failures parking the other, and a single press being served by one line and
+ * quietly dropped by the other.
+ */
+describe('more than one platform', () => {
+  const FOSS = 'bench.foss';
+
+  function twoLines(over: Partial<PolicyInput> = {}): PolicyInput {
+    return {
+      ...input({ subjects: ['Alpha'] }),
+      sections: [
+        { id: 'static', line: LINE, scores: true },
+        { id: 'functional', line: LINE, scores: true },
+        { id: 'functional-foss', line: FOSS, scores: true },
+        // A reading rides its line's run and may never anchor one — invariant 12's third
+        // clause. If it could, `currency` would be due constantly and take every slot.
+        { id: 'currency', line: LINE, scores: false },
+      ],
+      capabilities: { [LINE]: { available: true }, [FOSS]: { available: true } },
+      ...over,
+    };
+  }
+
+  it('audits each platform as its own run, scoped to that line', () => {
+    const d = decide(twoLines());
+    expect(d.action).toBe('audit');
+    expect(d.line).toBe(LINE);
+    // The whole line, readings included: `currency` rides the run its line is already making.
+    expect(d.sections).toEqual(['static', 'functional', 'currency']);
+    expect(d.sections).not.toContain('functional-foss');
+  });
+
+  /** Both cells are never-run, so the subject appears once per platform in the backlog. */
+  it('counts a subject once per platform it has not been audited on', () => {
+    expect(decide(twoLines()).backlog).toBe(2);
+  });
+
+  /**
+   * The failure this feature would otherwise have introduced. One `benchAvailable` boolean
+   * had no right answer with two pools: a FOSS outage would have stopped either all auditing
+   * or none of it, depending which way it fell.
+   */
+  it('keeps auditing one platform while the other has no bench', () => {
+    const d = decide(
+      twoLines({
+        capabilities: {
+          [LINE]: { available: true },
+          [FOSS]: { available: false, note: 'demofoss1 unreachable' },
+        },
+      }),
+    );
+    expect(d.action).toBe('audit');
+    expect(d.line).toBe(LINE);
+    // And it says so even though it dispatched — the only place a dead second pool is ever
+    // announced, since `action` is not `idle`.
+    expect(d.gated).toEqual([FOSS]);
+  });
+
+  it('names the held platform when every line is gated', () => {
+    const d = decide(
+      twoLines({
+        capabilities: {
+          [LINE]: { available: false, note: 'demostaging1 unreachable' },
+          [FOSS]: { available: false, note: 'demofoss1 unreachable' },
+        },
+      }),
+    );
+    expect(d.action).toBe('idle');
+    expect(d.reason).toContain(FOSS);
+    expect(d.gated).toEqual([LINE, FOSS]);
+  });
+
+  /**
+   * A line holds at its head rather than advancing to its second-stalest cell: refusing to
+   * claim is the point, and skipping within a line would produce a verdict about half a
+   * rubric. Passing over a *line* is different — they are separate queues for separate
+   * hardware.
+   */
+  it('holds a gated line at its head instead of skipping down it', () => {
+    const d = decide(
+      twoLines({
+        subjects: ['Alpha', 'Beta'],
+        capabilities: { [LINE]: { available: false }, [FOSS]: { available: true } },
+      }),
+    );
+    expect(d.line).toBe(FOSS);
+    expect(d.subject).toBe('Alpha');
+  });
+
+  /** One press, one timestamp, counted per line — the whole of the fan-out. */
+  it('serves one request on both platforms, each spending it on its own run', () => {
+    const asked = daysAgo(0);
+    const base = twoLines({
+      schedule: { Alpha: { flagged_at: asked, lines: { [LINE]: { try_n: 0 } } } },
+      // Both lines are fresh, so only the request can make either eligible.
+      lastDoneAt: { Alpha: { [LINE]: daysAgo(1), [FOSS]: daysAgo(1) } },
+      lastAttemptAt: { Alpha: { [LINE]: daysAgo(1), [FOSS]: daysAgo(1) } },
+    });
+    expect(decide(base).backlog).toBe(2);
+
+    // The Yundera line has now answered it; the FOSS line has not, so the request stands.
+    const half = decide({
+      ...base,
+      lastAttemptAt: { Alpha: { [LINE]: daysAgo(0), [FOSS]: daysAgo(1) } },
+    });
+    expect(half.action).toBe('audit');
+    expect(half.line).toBe(FOSS);
+    expect(half.source).toBe('requested');
+  });
+
+  /** And the queue still shows one row for it, however many lines are outstanding. */
+  it('shows one request row per subject, not one per platform', () => {
+    const rows = requests(
+      twoLines({ schedule: { Alpha: { flagged_at: daysAgo(0), lines: { [LINE]: { try_n: 0 } } } } }),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.lines).toEqual([LINE, FOSS]);
+  });
+
+  /** A FOSS stack that fails every app must not park them out of the Yundera rotation. */
+  it('parks one platform without touching the other', () => {
+    const d = decide(
+      twoLines({
+        schedule: {
+          Alpha: {
+            lines: { [FOSS]: { try_n: 3, parked_at: daysAgo(0) }, [LINE]: { try_n: 0 } },
+          },
+        },
+      }),
+    );
+    expect(d.action).toBe('audit');
+    expect(d.line).toBe(LINE);
+    expect(d.parked).toBe(1);
+  });
+
+  /** Editing one platform's rubric must not spend agent time re-auditing the other. */
+  it('re-eligibles only the line whose rubric moved', () => {
+    const d = decide(
+      twoLines({
+        lastDoneAt: { Alpha: { [LINE]: daysAgo(1), [FOSS]: daysAgo(1) } },
+        lastAttemptAt: { Alpha: { [LINE]: daysAgo(1), [FOSS]: daysAgo(1) } },
+        standardMovedAt: { [FOSS]: daysAgo(0) },
+      }),
+    );
+    expect(d.action).toBe('audit');
+    expect(d.line).toBe(FOSS);
+    expect(d.backlog).toBe(1);
+  });
+
+  /**
+   * A protocol directory that could not be read leaves no sections, and the scope must then
+   * be **absent** rather than empty — an empty one would reach the runner as "audit these
+   * zero sections", which stamps a finish for a run that established nothing.
+   */
+  it('names no scope at all when the protocol could not be read', () => {
+    const d = decide({ ...twoLines(), sections: [] });
+    expect(d.action).toBe('audit');
+    expect(d.sections).toBeUndefined();
   });
 });

@@ -9,24 +9,28 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import type { BenchesResponse } from '../../shared/activity.js';
-import type { BenchProber } from '../services/bench.js';
+import type { BenchPools } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
 
 export interface BenchRoutesOptions {
-  prober?: BenchProber;
+  pools?: BenchPools;
   /** The agent and browser endpoints, reported beside the benches — they are one picture. */
   ports?: PortProber;
-  /** Shown next to the pool so "we are not reading the board" is visible, not assumed. */
-  boardUrl?: string;
+  /**
+   * Each pool's board, by pool id. Shown next to it so "we are not reading the board" is
+   * visible rather than assumed — and per pool, because only the demo pool has one.
+   */
+  boardUrls?: Record<string, string>;
 }
 
 const routes: FastifyPluginAsync<BenchRoutesOptions> = async (app, options) => {
   const answer = (): BenchesResponse => ({
-    benches: options.prober?.list() ?? [],
-    pool_up: options.prober?.poolUp ?? false,
-    leasable: options.prober?.leasable().length ?? 0,
-    window: options.prober?.window() ?? 'no demo bench is configured',
-    board_url: options.boardUrl || null,
+    benches: options.pools?.list() ?? [],
+    // Per pool rather than summed. A sum reads "3 of 4 usable" while the one that is down is
+    // the whole of a platform, which is the reading that lets an operator conclude auditing
+    // is fine when half of it has stopped.
+    pools: options.pools?.health() ?? [],
+    pool_up: options.pools?.poolUp ?? false,
     ports: options.ports?.list() ?? [],
   });
 
@@ -35,7 +39,7 @@ const routes: FastifyPluginAsync<BenchRoutesOptions> = async (app, options) => {
   app.post('/benches/probe', async (): Promise<BenchesResponse> => {
     // One button, everything it depends on. Probing the benches and leaving the agent
     // unprobed is how you end up staring at a green page during an agent outage.
-    await Promise.all([options.prober?.probeAll(), options.ports?.probeAll()]);
+    await Promise.all([options.pools?.probeAll(), options.ports?.probeAll()]);
     return answer();
   });
 };

@@ -25,7 +25,7 @@ import { asSubjectKey, isSubjectKey, type SubjectKey } from '../../shared/subjec
 import { readJson, writeJsonAtomic } from '../store/state.js';
 import type { ReportIndex } from '../store/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
-import type { BenchProber } from '../services/bench.js';
+import type { BenchPools } from '../services/bench.js';
 import type { EventLog } from '../services/events.js';
 import {
   cooldownLeftMin,
@@ -39,7 +39,16 @@ import {
   type SubjectSchedule,
   type TickDecision,
 } from './policy.js';
-import type { QueueRow, RequestRow, ScheduleConstants } from '../../shared/schedule.js';
+import { DEFAULT_BENCH_CAPABILITY } from '../../shared/capability.js';
+import {
+  lineOf,
+  type LegacySubjectSchedule,
+  type LineKey,
+  type LineSchedule,
+  type QueueRow,
+  type RequestRow,
+  type ScheduleConstants,
+} from '../../shared/schedule.js';
 import { openClaim, recordResult, type Outcome } from './record.js';
 
 /**
@@ -65,6 +74,63 @@ function migrateKeys(
 }
 
 /**
+ * Fan a row written before lines existed onto every line this installation has.
+ *
+ * **The whole of this function is the refusal to read absence as state.** A v1 row says
+ * `{try_n: 2, parked_at: "..."}` and means "this subject, on the only platform there was". A
+ * reader that took `row.lines ?? {}` would see no entry for any line and conclude that
+ * nothing has ever been attempted: the error streak erased, **every parked app silently
+ * unparked and back in the backlog at once**, and a claim held across the restart dropped so
+ * the next tick opens a second one on the same subject. On disk "no state" and "state that
+ * predates lines" are byte-identical and they mean opposite things.
+ *
+ * Three rules, each load-bearing:
+ *
+ * 1. **Idempotent** — a row that already carries `lines` is left exactly as it is.
+ * 2. **`known` empty means keep, never discard.** The protocol directory may be unreadable at
+ *    boot, and this scheduler has always had to survive that. The v1 body is parked in
+ *    `legacy`, which every reader falls back to, so a parked subject stays parked until there
+ *    is something to fan it onto. `legacy` is dropped once every known line has its own cell.
+ * 3. **A line the file has never seen gets no cell** — `bench.foss` on the day it lands — and
+ *    absence *there* correctly means "never looked at". That is precisely why the v1 body has
+ *    to be fanned out explicitly rather than left to mean absence: the two cases are
+ *    indistinguishable on disk and only one of them is "nothing has happened yet".
+ */
+export function migrateLines(
+  stored: Record<string, LegacySubjectSchedule | undefined>,
+  known: readonly LineKey[],
+): Record<string, SubjectSchedule> {
+  const out: Record<string, SubjectSchedule> = {};
+  for (const [subject, row] of Object.entries(stored)) {
+    if (!row) continue;
+    const { try_n, parked_at, claim, from_rollup, flagged_at, lines, legacy } = row;
+    const v1: LineSchedule | undefined =
+      try_n !== undefined || parked_at || claim || from_rollup
+        ? {
+            try_n: try_n ?? 0,
+            ...(parked_at ? { parked_at } : {}),
+            ...(claim ? { claim } : {}),
+            ...(from_rollup ? { from_rollup } : {}),
+          }
+        : undefined;
+    const body = legacy ?? v1;
+
+    const next: Record<LineKey, LineSchedule> = { ...lines };
+    if (body) for (const line of known) if (!next[line]) next[line] = { ...body };
+    // Kept until every known line has a cell of its own — and kept for ever when `known` is
+    // empty, which is the unreadable-protocols case rule 2 exists for.
+    const settled = body !== undefined && known.length > 0 && known.every((line) => next[line]);
+
+    out[subject] = {
+      ...(flagged_at ? { flagged_at } : {}),
+      ...(Object.keys(next).length > 0 ? { lines: next } : {}),
+      ...(body && !settled ? { legacy: body } : {}),
+    };
+  }
+  return out;
+}
+
+/**
  * Was this tick stopped by the bench gate?
  *
  * The condition, never the reason string: `benchNote()` interpolates each bench's countdown,
@@ -74,7 +140,27 @@ function migrateKeys(
  * pins it.
  */
 function benchGated(decision: TickDecision | undefined): boolean {
-  return decision?.action === 'idle' && decision.reason.startsWith('no usable demo bench');
+  return gatedLines(decision).length > 0;
+}
+
+/**
+ * Which lines the gate is holding, whatever this tick did.
+ *
+ * Read off `decision.gated` rather than from `action === 'idle'`, and that is the whole point
+ * of the field. With two pools the Yundera line can audit happily while the FOSS pool is dead
+ * — `action` is then `'audit'`, the old predicate answered `false`, and a second pool could
+ * have been down for a week with nothing in the log to say so. The transition below is the
+ * only place that outage is ever announced.
+ *
+ * The trial branch still idles on the default pool alone and keeps the old reason prefix, so
+ * a one-pool installation logs exactly what it always did.
+ */
+function gatedLines(decision: TickDecision | undefined): LineKey[] {
+  if (!decision) return [];
+  if (decision.gated?.length) return decision.gated;
+  return decision.action === 'idle' && decision.reason.startsWith('no usable demo bench')
+    ? [DEFAULT_BENCH_CAPABILITY]
+    : [];
 }
 
 export { decide, stateLine, queue, requests, cooldownLeftMin } from './policy.js';
@@ -118,7 +204,14 @@ export interface SchedulerOptions {
   index: ReportIndex;
   registry: SubjectRegistry;
   events: EventLog;
-  prober?: BenchProber;
+  /**
+   * Every bench pool, keyed by capability — what the per-line gate reads.
+   *
+   * Was a single `prober` collapsed into one `benchAvailable` boolean, which had exactly one
+   * right answer while there was one pool and none once there were two: a FOSS outage would
+   * have stopped either all auditing or none of it, depending which way the boolean fell.
+   */
+  pools?: BenchPools;
   /**
    * When the standard last moved — `readStandards().moved_at`, read fresh each tick.
    *
@@ -127,7 +220,16 @@ export interface SchedulerOptions {
    * memory since boot that `runner.plan()` already re-reads to avoid. Absent, or resolving
    * to `undefined`, leaves the eligibility rule inert.
    */
-  standardMovedAt?: () => Promise<string | undefined>;
+  standardMovedAt?: () => Promise<Record<LineKey, string | undefined>>;
+  /**
+   * The sections the protocol declares, and which line each is audited on.
+   *
+   * Read per tick for the same reason `standardMovedAt` is: `data/protocols/` is a volume an
+   * operator edits over SSH, and a snapshot taken at boot would be stale in exactly the way
+   * `runner.plan()` re-reads to avoid. Absent, the policy falls back to the single default
+   * line, which is what every installation had before there were two.
+   */
+  sections?: () => Promise<{ id: string; line: LineKey; scores: boolean }[]>;
   /**
    * What version of each subject the stores currently offer — `SubjectRegistry.versions()`.
    *
@@ -139,7 +241,20 @@ export interface SchedulerOptions {
    * Called when an armed scheduler has claimed a subject. Absent until the runner lands
    * (P4), which is why an armed scheduler with no dispatcher still only claims.
    */
-  dispatch?: (job: { subject: SubjectKey; try_n: number }) => void | Promise<void>;
+  dispatch?: (job: {
+    subject: SubjectKey;
+    try_n: number;
+    /**
+     * The sections this run covers — **composed here, never supplied by a caller**.
+     *
+     * That is the whole difference between a scope and the `depth` parameter this repo
+     * removed: `depth` was somebody at the point of pressing choosing to audit half the
+     * rubric, and a scope is the line's own answer to what is due on it. `POST /assays` still
+     * takes only a subject. Absent means every section, which is what a rig whose protocol
+     * directory could not be read must still do.
+     */
+    scope?: string[];
+  }) => void | Promise<void>;
   /**
    * Whether the single agent is in somebody's hands — `() => runner.busy`.
    *
@@ -155,7 +270,7 @@ export interface SchedulerOptions {
    * Absent, `dispatchFailed` charges a try and records nothing, which is invariant 14's
    * violation and, since the request queue, a queue head that can never be spent.
    */
-  recordFailedDispatch?: (subject: SubjectKey, reason: string) => Promise<void>;
+  recordFailedDispatch?: (subject: SubjectKey, reason: string, scope?: string[]) => Promise<void>;
   /**
    * The trial half of the request queue: what is waiting, what is running, and how to start
    * one.
@@ -215,7 +330,9 @@ export class Scheduler {
   async load(): Promise<void> {
     const stored = await readJson<ScheduleFile>(this.file, { subjects: {} });
     this.subjects =
-      stored?.subjects && typeof stored.subjects === 'object' ? migrateKeys(stored.subjects) : {};
+      stored?.subjects && typeof stored.subjects === 'object'
+        ? migrateLines(migrateKeys(stored.subjects), await this.knownLines())
+        : {};
     this.lastFinished = stored?.last_finished_at;
     this.lastTick = stored?.last_tick;
     this.armedOverride = typeof stored?.armed === 'boolean' ? stored.armed : undefined;
@@ -280,10 +397,16 @@ export class Scheduler {
    * two surfaces would disagree about the same word.
    */
   isFlagged(subject: string): boolean {
-    return isFlaggedForReaudit(
-      this.subjects[subject]?.flagged_at,
-      this.lastAttemptAt([subject])[subject],
-    );
+    // Counting for **any** line. One press asks for every platform and each spends it on its
+    // own run, so a request whose Yundera audit has completed while the FOSS line waits for
+    // its bench is still a request — and a control that stopped saying so at the first
+    // answer would offer to make it again.
+    const flaggedAt = this.subjects[subject]?.flagged_at;
+    if (!flaggedAt) return false;
+    const attempts = this.lastAttemptAt([subject], () => DEFAULT_BENCH_CAPABILITY)[subject] ?? {};
+    const lines = Object.keys(attempts);
+    if (lines.length === 0) return isFlaggedForReaudit(flaggedAt, undefined);
+    return lines.some((line) => isFlaggedForReaudit(flaggedAt, attempts[line]));
   }
 
   /**
@@ -309,7 +432,7 @@ export class Scheduler {
    * change it did not make.
    */
   async setFlagged(subject: string, flagged: boolean, by = 'operator'): Promise<boolean> {
-    const row = this.subjects[subject] ?? { try_n: 0 };
+    const row: SubjectSchedule = this.subjects[subject] ?? {};
     if (this.isFlagged(subject) === flagged) return false;
     const at = new Date().toISOString();
     // Flagging releases a park, and that is the point rather than a side effect.
@@ -327,11 +450,26 @@ export class Scheduler {
     // reachable state, and an unpark that only fired on the edge would skip it — leaving a row
     // that reports itself queued and can never be picked, which is the one thing a queue must
     // not contain.
-    const unparked = flagged && Boolean(row.parked_at);
+    // **Every** parked line, not one. A request that released the Yundera park and left the
+    // FOSS line parked would be a control that quietly did nothing on the platform the
+    // operator was looking at.
+    const parkedLines = Object.entries(row.lines ?? {})
+      .filter(([, cell]) => cell.parked_at)
+      .map(([line]) => line);
+    const unparked = flagged && parkedLines.length > 0;
     this.subjects[subject] = {
       ...row,
       flagged_at: flagged ? at : undefined,
-      ...(unparked ? { parked_at: undefined, try_n: 0 } : {}),
+      ...(unparked
+        ? {
+            lines: Object.fromEntries(
+              Object.entries(row.lines ?? {}).map(([line, cell]) => [
+                line,
+                cell.parked_at ? { ...cell, parked_at: undefined, try_n: 0 } : cell,
+              ]),
+            ),
+          }
+        : {}),
     };
     this.opts.events.log({
       level: 'info',
@@ -362,7 +500,8 @@ export class Scheduler {
    * work and then quietly undo itself — a worse answer than saying no.
    */
   async forget(subject: string): Promise<boolean> {
-    if (this.subjects[subject]?.claim) return false;
+    // Any line's claim, because any of them would re-create the row when its run finished.
+    if (Object.values(this.subjects[subject]?.lines ?? {}).some((cell) => cell.claim)) return false;
     if (!(subject in this.subjects)) return false;
     delete this.subjects[subject];
     await this.persist();
@@ -506,8 +645,8 @@ export class Scheduler {
 
 
 
-  private async standardMovedAt(): Promise<string | undefined> {
-    if (!this.opts.standardMovedAt) return undefined;
+  private async standardMovedAt(): Promise<Record<LineKey, string | undefined>> {
+    if (!this.opts.standardMovedAt) return {};
     try {
       return await this.opts.standardMovedAt();
     } catch (err) {
@@ -517,7 +656,29 @@ export class Scheduler {
         message: 'The standard in force could not be read; scheduling by freshness alone',
         detail: { error: err instanceof Error ? err.message : String(err) },
       });
-      return undefined;
+      return {};
+    }
+  }
+
+  /**
+   * The sections and their lines, or the one default line when they cannot be read.
+   *
+   * Falling back rather than failing is the same rule the clause above follows: a protocol
+   * directory that cannot be read must not stop a tick, it must only cost the rules that
+   * depend on it.
+   */
+  private async sections(): Promise<{ id: string; line: LineKey; scores: boolean }[]> {
+    if (!this.opts.sections) return [];
+    try {
+      return await this.opts.sections();
+    } catch (err) {
+      this.opts.events.log({
+        level: 'warn',
+        code: 'STANDARD_UNREADABLE',
+        message: 'The protocol could not be read; scheduling the default platform alone',
+        detail: { error: err instanceof Error ? err.message : String(err) },
+      });
+      return [];
     }
   }
 
@@ -537,18 +698,24 @@ export class Scheduler {
    * Imported files from the migration still carry midnight timestamps. That is accurate to
    * day granularity, which is all `fresh_days` needs.
    */
-  private lastDoneAt(subjects: string[]): Record<string, string | undefined> {
-    const out: Record<string, string | undefined> = {};
+  private lastDoneAt(
+    subjects: string[],
+    lineFor: (section: string) => LineKey,
+  ): Record<string, Record<LineKey, string | undefined>> {
+    const out: Record<string, Record<LineKey, string | undefined>> = {};
     for (const subject of subjects) {
-      let newest: string | undefined;
-      // Every section, not a fixed two: a subject is as fresh as its most recently completed
+      const byLine: Record<LineKey, string | undefined> = {};
+      // Every section, not a fixed two: a line is as fresh as its most recently completed
       // section, whatever the protocol happens to be made of this month.
       for (const section of this.opts.index.sections()) {
         const rec = this.opts.index.latest(subject, section);
         const at = rec?.meta.finished_at ? String(rec.meta.finished_at) : undefined;
-        if (at && (!newest || at > newest)) newest = at;
+        if (!at) continue;
+        const line = lineFor(section);
+        const newest = byLine[line];
+        if (!newest || at > newest) byLine[line] = at;
       }
-      out[subject] = newest;
+      out[subject] = byLine;
     }
     return out;
   }
@@ -560,24 +727,28 @@ export class Scheduler {
    * that blocked still looked at that version of the app, and must settle the question.
    * Absent for every assay written before 2026-08-25, which reads as unknown, never changed.
    */
-  private auditedVersion(subjects: string[]): Record<string, string | undefined> {
-    const out: Record<string, string | undefined> = {};
+  private auditedVersion(
+    subjects: string[],
+    lineFor: (section: string) => LineKey,
+  ): Record<string, Record<LineKey, string | undefined>> {
+    const out: Record<string, Record<LineKey, string | undefined>> = {};
     for (const subject of subjects) {
-      let newest: string | undefined;
-      let at = '';
+      const byLine: Record<LineKey, string | undefined> = {};
+      const atLine: Record<LineKey, string> = {};
       for (const section of this.opts.index.sections()) {
         const rec = this.opts.index.latestAny(subject, section);
         if (!rec) continue;
+        const line = lineFor(section);
         const stamp = String(rec.meta.finished_at || rec.meta.started_at || '');
-        if (stamp <= at) continue;
-        at = stamp;
+        if (stamp <= (atLine[line] ?? '')) continue;
+        atLine[line] = stamp;
         // Same coercion as `subjectVersionOf` and for the same reason: an all-digit sha comes
         // back from YAML as a number, and reading it as absent would say "unknown" about an
         // app that changed.
         const raw = rec.meta.subject_sha;
-        newest = raw === undefined || raw === null || raw === '' ? undefined : String(raw);
+        byLine[line] = raw === undefined || raw === null || raw === '' ? undefined : String(raw);
       }
-      out[subject] = newest;
+      out[subject] = byLine;
     }
     return out;
   }
@@ -602,7 +773,12 @@ export class Scheduler {
    * must not starve the others. Three fast tries park it, the loop moves on, and the event
    * says what happened.
    */
-  private dispatchFailed(subject: SubjectKey, err: unknown): void {
+  private dispatchFailed(
+    subject: SubjectKey,
+    line: LineKey,
+    scope: string[] | undefined,
+    err: unknown,
+  ): void {
     const reason = err instanceof Error ? err.message : String(err);
     this.opts.events.log({
       level: 'error',
@@ -622,12 +798,17 @@ export class Scheduler {
     //
     // Ordered before the charge and awaited inside the chain, so a subject cannot be charged
     // by a `record()` that landed while the record it implies was still being written.
-    void Promise.resolve(this.opts.recordFailedDispatch?.(subject, 'dispatch_failed'))
+    //
+    // **Scoped**, and that is the second half of invariant 14 rather than tidiness: without
+    // it this writes one blocked assay per section of the *whole* protocol, so a Yundera run
+    // that failed to dispatch would stamp a `functional-foss` attempt — silently spending the
+    // FOSS line's request and resetting its due-ness, for a run that never touched it.
+    void Promise.resolve(this.opts.recordFailedDispatch?.(subject, 'dispatch_failed', scope))
       .catch((e) => console.error('could not record a failed dispatch attempt', e))
       .then(() =>
         // Nothing above this can be allowed to leave the claim held, so the record is a promise
         // whose own failure is logged rather than thrown into a place with no handler.
-        this.record(subject, { kind: 'error', reason: `dispatch failed: ${reason}` }),
+        this.record(subject, { kind: 'error', reason: `dispatch failed: ${reason}` }, new Date(), line),
       ).catch(
       (e) => {
         console.error('could not record a failed dispatch', e);
@@ -654,18 +835,24 @@ export class Scheduler {
    * also errs the safe way: the worst a run that straddled an edit can now do is be audited
    * once more under the standard that is actually in force.
    */
-  private lastAttemptAt(subjects: string[]): Record<string, string | undefined> {
-    const out: Record<string, string | undefined> = {};
+  private lastAttemptAt(
+    subjects: string[],
+    lineFor: (section: string) => LineKey,
+  ): Record<string, Record<LineKey, string | undefined>> {
+    const out: Record<string, Record<LineKey, string | undefined>> = {};
     for (const subject of subjects) {
-      let newest: string | undefined;
+      const byLine: Record<LineKey, string | undefined> = {};
       for (const section of this.opts.index.sections()) {
         const rec = this.opts.index.latestAny(subject, section);
         // `finished_at` is the fallback, for an assay written before `started_at` was
         // recorded; a blocked one may carry no finish time at all.
         const at = rec ? String(rec.meta.started_at || rec.meta.finished_at || '') : '';
-        if (at && (!newest || at > newest)) newest = at;
+        if (!at) continue;
+        const line = lineFor(section);
+        const newest = byLine[line];
+        if (!newest || at > newest) byLine[line] = at;
       }
-      out[subject] = newest;
+      out[subject] = byLine;
     }
     return out;
   }
@@ -708,19 +895,28 @@ export class Scheduler {
    */
   private async buildInput(opts: { now: Date }): Promise<PolicyInput> {
     const subjects = this.opts.registry.list();
-    const leasable = this.opts.prober?.leasable() ?? [];
-    const benchAvailable = this.opts.prober ? leasable.length > 0 : true;
+    // A protocol directory that cannot be read must not stop a tick: the standard and line
+    // clauses go quiet and every other rule decides exactly as it did before they existed.
+    const sections = await this.sections();
+    // Which line a *recorded* section belongs to. A section the protocol no longer declares
+    // is attributed to the default line rather than dropped, so a retired section's dates go
+    // on counting somewhere instead of silently making every subject look never-audited.
+    const lineOfSection = new Map(sections.map((s) => [s.id, s.line]));
+    const lineFor = (section: string): LineKey =>
+      lineOfSection.get(section) ?? DEFAULT_BENCH_CAPABILITY;
     return {
       now: opts.now,
       constants: this.constants,
       subjects,
-      lastDoneAt: this.lastDoneAt(subjects),
-      lastAttemptAt: this.lastAttemptAt(subjects),
-      // A protocol directory that cannot be read must not stop a tick: the standard clause
-      // goes quiet and every other rule decides exactly as it did before it existed.
+      sections,
+      lastDoneAt: this.lastDoneAt(subjects, lineFor),
+      lastAttemptAt: this.lastAttemptAt(subjects, lineFor),
       standardMovedAt: await this.standardMovedAt(),
       ...(this.opts.subjectVersions
-        ? { currentVersion: this.opts.subjectVersions(), auditedVersion: this.auditedVersion(subjects) }
+        ? {
+            currentVersion: this.opts.subjectVersions(),
+            auditedVersion: this.auditedVersion(subjects, lineFor),
+          }
         : {}),
       schedule: this.subjects,
       lastFinishedAt: this.lastFinishedAt(),
@@ -731,9 +927,31 @@ export class Scheduler {
             ...(this.opts.trials.running() ? { runningTrial: this.opts.trials.running()! } : {}),
           }
         : {}),
-      benchAvailable,
-      benchNote: benchAvailable ? undefined : this.benchNote(),
+      capabilities: this.capabilities(),
     };
+  }
+
+  /**
+   * Which bench capabilities can be claimed, and why not when they cannot.
+   *
+   * **An absent pool registry means available**, which is deliberately the inverse of
+   * `runner/capabilities.ts` and the convention this file has always had: a rig with no pool
+   * wired still picks a subject, and the runner is then the thing that records the sections
+   * needing a bench as blocked. Two files each writing their own `?? true` is how those two
+   * conventions would start disagreeing inside one process, so each says which it is and why.
+   */
+  private capabilities(): Record<string, { available: boolean; note?: string }> {
+    const pools = this.opts.pools;
+    if (!pools) return {};
+    const out: Record<string, { available: boolean; note?: string }> = {};
+    for (const capability of pools.capabilities) {
+      const available = pools.leasable(capability).length > 0;
+      out[capability] = {
+        available,
+        ...(available ? {} : { note: this.benchNote(capability) }),
+      };
+    }
+    return out;
   }
 
   private async runTick(opts: { now?: Date }): Promise<TickDecision> {
@@ -744,11 +962,11 @@ export class Scheduler {
     // or not we are armed, because they are bookkeeping about *our own* claims. In dry-run
     // there are none to apply, which is exactly why this is safe.
     for (const r of decision.reclaimed) {
-      const row = this.subjects[r.subject];
-      if (row) {
-        row.claim = undefined;
-        row.try_n = r.try_n;
-        if (r.outcome === 'parked') row.parked_at = now.toISOString();
+      const cell = this.cell(r.subject, r.line);
+      if (cell) {
+        cell.claim = undefined;
+        cell.try_n = r.try_n;
+        if (r.outcome === 'parked') cell.parked_at = now.toISOString();
       }
       this.opts.events.log({
         level: 'warn',
@@ -758,21 +976,21 @@ export class Scheduler {
             ? `An audit that never finished has used up its last attempt`
             : `An audit that never finished has released its subject`,
         subject: r.subject,
-        detail: { subject: r.subject, try_n: r.try_n, outcome: r.outcome },
+        detail: { subject: r.subject, line: r.line, try_n: r.try_n, outcome: r.outcome },
       });
     }
-    for (const subject of decision.unparked) {
-      const row = this.subjects[subject];
-      if (row) {
-        row.parked_at = undefined;
-        row.try_n = 0;
+    for (const { subject, line } of decision.unparked) {
+      const cell = this.cell(subject, line);
+      if (cell) {
+        cell.parked_at = undefined;
+        cell.try_n = 0;
       }
       this.opts.events.log({
         level: 'info',
         code: 'CLAIM_UNPARKED',
         message: 'A parked subject has served its time and is eligible again',
         subject,
-        detail: { subject },
+        detail: { subject, line },
       });
     }
 
@@ -791,21 +1009,26 @@ export class Scheduler {
     //
     // Both tested on the gate condition rather than on `reason`, which `benchNote()` rewrites
     // every tick as the countdown ticks down — string equality would never match.
-    const gatedNow = benchGated(decision);
-    const gatedBefore = benchGated(this.lastTick?.decision);
-    if (gatedNow && !gatedBefore) {
+    // Per line, so one pool recovering cannot silence the other's outage — and so a tick that
+    // dispatched the Yundera line still announces that the FOSS one is held.
+    const gatedNow = gatedLines(decision);
+    const gatedBefore = gatedLines(this.lastTick?.decision);
+    for (const line of gatedNow) {
+      if (gatedBefore.includes(line)) continue;
       this.opts.events.log({
         level: 'warn',
         code: 'TICK_BENCH_GATED',
-        message: 'The tick found no demo bench worth claiming, so nothing was audited',
-        detail: { reason: decision.reason, backlog: decision.backlog },
+        message: 'The tick found no demo bench worth claiming, so that platform was not audited',
+        detail: { line, reason: decision.reason, backlog: decision.backlog },
       });
-    } else if (!gatedNow && gatedBefore) {
+    }
+    for (const line of gatedBefore) {
+      if (gatedNow.includes(line)) continue;
       this.opts.events.log({
         level: 'info',
         code: 'TICK_BENCH_UNGATED',
         message: 'A demo bench is claimable again, so sections that need one can run',
-        detail: { reason: decision.reason, backlog: decision.backlog },
+        detail: { line, reason: decision.reason, backlog: decision.backlog },
       });
     }
 
@@ -854,14 +1077,21 @@ export class Scheduler {
       });
 
       if (mayDispatch) {
-        this.subjects[decision.subject] = openClaim({ now, schedule: this.subjects[decision.subject] });
-        const claim = this.subjects[decision.subject]!.claim!;
+        // The line the decision picked. A claim belongs to a platform, not to an app: the
+        // FOSS line auditing FileBrowser must not stop the Yundera line auditing it too.
+        const line = decision.line ?? DEFAULT_BENCH_CAPABILITY;
+        this.subjects[decision.subject] = openClaim({
+          now,
+          line,
+          schedule: this.subjects[decision.subject],
+        });
+        const claim = this.subjects[decision.subject]!.lines![line]!.claim!;
         this.opts.events.log({
           level: 'info',
           code: 'CLAIM_OPENED',
           message: 'The scheduler claimed an app and is starting its audit',
           subject: decision.subject,
-          detail: { subject: decision.subject, try_n: claim.try_n, since: claim.since },
+          detail: { subject: decision.subject, line, try_n: claim.try_n, since: claim.since },
         });
         // No dispatcher yet is not an error: an armed scheduler with no runner claims and
         // waits, which is a legitimate state during P4's bring-up.
@@ -873,8 +1103,15 @@ export class Scheduler {
         // migrates any bare key off disk, so anything reaching here is already one — and
         // re-normalising would quietly hide a violation of that contract rather than surface it.
         void Promise.resolve(
-          this.opts.dispatch?.({ subject: decision.subject as SubjectKey, try_n: claim.try_n }),
-        ).catch((err) => this.dispatchFailed(decision.subject as SubjectKey, err));
+          this.opts.dispatch?.({
+            subject: decision.subject as SubjectKey,
+            try_n: claim.try_n,
+            // **The scheduler's answer, never a caller's.** This is what makes a scope not a
+            // return of `depth`: nothing outside this line composes it, and `POST /assays`
+            // still takes only a subject.
+            ...(decision.sections ? { scope: decision.sections } : {}),
+          }),
+        ).catch((err) => this.dispatchFailed(decision.subject as SubjectKey, line, decision.sections, err));
       }
     } else if (benchGated(decision)) {
       // Logged above, as a transition rather than once per tick.
@@ -896,8 +1133,55 @@ export class Scheduler {
    * Why no bench, in one clause. Names the hosts and what each said, because "no usable
    * demo bench" on its own sends whoever reads it to go and look the same thing up.
    */
-  private benchNote(): string {
-    const rows = this.opts.prober?.list() ?? [];
+  /**
+   * One line's mutable state on a subject, created on demand.
+   *
+   * Written through rather than replaced, because `runTick` applies reclaims and unparks by
+   * mutating what it finds — the same way it always has, one level down.
+   */
+  /**
+   * The lines this installation knows about, for the migration.
+   *
+   * Empty when the protocol directory cannot be read — which is a state this scheduler has
+   * always had to boot in — and `migrateLines` then keeps every v1 row intact under `legacy`
+   * rather than guessing. Read once at load, not per tick: a migration that ran again every
+   * hour would keep re-deciding a question it already answered.
+   */
+  private async knownLines(): Promise<LineKey[]> {
+    const sections = await this.sections();
+    const lines: LineKey[] = [];
+    for (const section of sections) if (!lines.includes(section.line)) lines.push(section.line);
+    return lines;
+  }
+
+  /** Which line currently holds this subject's claim, if any. */
+  private claimedLine(subject: string): LineKey | undefined {
+    const lines = this.subjects[subject]?.lines ?? {};
+    for (const [line, cell] of Object.entries(lines)) if (cell.claim) return line;
+    return undefined;
+  }
+
+  private cell(subject: string, line: LineKey): LineSchedule | undefined {
+    const row = this.subjects[subject];
+    if (!row) return undefined;
+    if (!row.lines) row.lines = {};
+    // A v1 body that has not been fanned out is this line's state until it is: reading past
+    // it would unpark an app the moment the tick touched it.
+    if (!row.lines[line]) row.lines[line] = { ...(row.legacy ?? { try_n: 0 }) };
+    return row.lines[line];
+  }
+
+  private benchNote(capability?: string): string {
+    const all = this.opts.pools?.list() ?? [];
+    // One pool's rows, so a held FOSS line is not explained by the demo pool's countdowns.
+    const poolId = capability
+      ? this.opts.pools?.health().find((p) => p.capability === capability)?.id
+      : undefined;
+    // A row with no `pool` belongs to whoever is asking: that is a roster written before
+    // pools existed, which `load()` backfills, and it is every row on a single-pool box.
+    // Filtering it out would leave the note saying "the pool has not been read" about a pool
+    // we had just read.
+    const rows = poolId ? all.filter((b) => !b.pool || b.pool === poolId) : all;
     if (rows.length === 0) return 'the pool has not been read';
     return rows
       .map((b) => {
@@ -960,11 +1244,17 @@ export class Scheduler {
   }
 
   /** Apply a finished attempt — rows E1, E5–E7. */
-  async record(subject: string, outcome: Outcome, now = new Date()): Promise<void> {
+  async record(subject: string, outcome: Outcome, now = new Date(), line?: LineKey): Promise<void> {
+    // The line this attempt was for. Derived from the claim rather than required of the
+    // caller: the runner reports an outcome for a subject, and which platform it was on is
+    // something this file already knows — asking the caller would be a second place for the
+    // answer to be wrong.
+    const forLine = line ?? this.claimedLine(subject) ?? DEFAULT_BENCH_CAPABILITY;
     const result = recordResult({
       now,
       constants: this.constants,
       subject,
+      line: forLine,
       outcome,
       schedule: this.subjects[subject],
     });
@@ -978,7 +1268,8 @@ export class Scheduler {
         subject,
         detail: {
           subject,
-          try_n: result.schedule.try_n,
+          line: forLine,
+          try_n: result.schedule.lines?.[forLine]?.try_n ?? 0,
           until_days: this.constants.stuck_days,
         },
       });

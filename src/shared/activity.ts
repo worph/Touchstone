@@ -59,6 +59,18 @@ export interface EventsResponse {
 export type AlertKey =
   | 'bench.auth'
   | 'bench.unreachable'
+  /**
+   * The same two conditions on a pool that is not the default one — `bench.<pool>.auth`.
+   *
+   * Interpolated, which the rule just above forbids for a *bench*, and the difference is what
+   * the key is bounded by. One row per occurrence is what destroys an alert list; one row per
+   * configured pool is exactly one row per outage, because a pool is a thing an operator wrote
+   * in `config.yaml` rather than a thing the world produces. Two pools failing are two outages
+   * with two fixes, and collapsing them would mean the demo pool recovering resolved the card
+   * about the FOSS box.
+   */
+  | `bench.${string}.auth`
+  | `bench.${string}.unreachable`
   /** The agent answered, and told us its own session is dead. Only the runner ever sees this. */
   | 'agent.auth'
   | 'agent.unavailable'
@@ -87,6 +99,14 @@ export type BenchStatus = 'healthy' | 'auth' | 'unreachable' | 'unconfigured' | 
 
 export interface BenchHealth {
   name: string;
+  /**
+   * Which pool this bench belongs to — `bench.pools[].id`.
+   *
+   * The name alone stopped identifying a row once there was more than one pool: two pools may
+   * legitimately hold same-named instances, and the name is what keys the roster. Absent only
+   * on a row read from a file written before pools existed, and filled in on read.
+   */
+  pool?: string;
   url: string;
   status: BenchStatus;
   detail?: string;
@@ -136,18 +156,39 @@ export interface PortHealth {
   healthy_at?: string;
 }
 
-export interface BenchesResponse {
-  benches: BenchHealth[];
-  pool_up: boolean;
-  /**
-   * How many benches a functional assay may actually claim — healthy, not mid-cleanup, and
-   * with more than an hour of runway. Distinct from `pool_up` on purpose: a pool that is
-   * answering but all expiring is up and unusable at the same time.
-   */
+/**
+ * One pool's own answer to the two questions every surface asks of it.
+ *
+ * Reported per pool rather than summed, because the sum is misleading in exactly the case
+ * that matters: "3 of 4 usable" over two pools hides that the dead one is the whole of the
+ * FOSS platform, and an operator reading it concludes that auditing is fine.
+ */
+export interface BenchPoolHealth {
+  id: string;
+  label: string;
+  /** What a protocol's `requires:` names to be leased from here. */
+  capability: string;
   leasable: number;
-  /** The pool in one sentence, including when the answer changes. `describeWindow`. */
+  total: number;
+  /** `describeWindow` for this pool — when its answer next changes. */
   window: string;
   board_url: string | null;
+  up: boolean;
+}
+
+export interface BenchesResponse {
+  /** Every pool's benches in one roster; each row carries the `pool` it belongs to. */
+  benches: BenchHealth[];
+  /** One entry per configured pool, in config order. */
+  pools: BenchPoolHealth[];
+  /**
+   * Whether **any** pool has a usable bench.
+   *
+   * Kept as the coarse answer it always was — with one pool it is unchanged — but it stopped
+   * being the whole story the day there were two, so the page reads `pools` and this is only
+   * the headline.
+   */
+  pool_up: boolean;
   /** The agent and the browser sidecars, reported beside the benches — one picture. */
   ports: PortHealth[];
 }
@@ -161,6 +202,9 @@ export interface BenchesResponse {
  * an hour older than the strip above it.
  */
 export interface BenchWindow {
+  /** Which pool this is about. One request now fans out across every line. */
+  capability: string;
+  label: string;
   leasable: number;
   window: string;
 }
@@ -284,6 +328,10 @@ export function blockedReasonClause(reason: string): string {
   switch (reason) {
     case 'bench_unavailable':
       return 'no usable demo bench';
+    case 'bench_unconfigured':
+      // Deliberately not "no bench": an operator who reads that waits for a pool to come
+      // back, and this one is never coming back until `bench.pools` names it.
+      return 'no bench pool is configured for that platform';
     case 'browser_unavailable':
       return 'no browser was answering';
     case 'runner_disabled':
@@ -388,7 +436,7 @@ export interface RunStatus {
    * Optional because a rig without a prober is a real configuration, not an error — the
    * button then says nothing about the bench rather than guessing.
    */
-  bench?: BenchWindow;
+  benches?: BenchWindow[];
   /**
    * How many things are in the request queue right now, the running one included.
    *

@@ -563,7 +563,18 @@ describe('a run started here reports back into the conversation', () => {
       ctx: {
         registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}), delisted: () => [], isDelisted: () => false } as never,
         runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }), ...runner } as never,
-        prober: { window: () => 'demostaging1 is mid-cleanup — usually back within minutes' } as never,
+        // One entry per pool, as `BenchPools.windows()` returns. The window of an *empty*
+        // pool is what the reply quotes, so the fixture has to say this one is empty.
+        pools: {
+          windows: () => [
+            {
+              capability: 'bench',
+              label: 'demo',
+              leasable: 0,
+              window: 'demostaging1 is mid-cleanup — usually back within minutes',
+            },
+          ],
+        } as never,
         startAssay: () => ({ started: true }),
       },
       events,

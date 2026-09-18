@@ -42,13 +42,13 @@ function fakeRunner(running: RunStatus['running']) {
   } as never;
 }
 
-async function build(running: RunStatus['running'], prober?: unknown) {
+async function build(running: RunStatus['running'], pools?: unknown) {
   const instance = Fastify();
   await instance.register(routes, {
     prefix: '/api/v1',
     ledger,
     runner: fakeRunner(running),
-    ...(prober ? { prober: prober as never } : {}),
+    ...(pools ? { pools: pools as never } : {}),
   });
   await instance.ready();
   return instance;
@@ -176,15 +176,41 @@ describe('GET /assays/current', () => {
 describe('the demo pool, on the endpoint the whole UI already polls', () => {
   it('carries how many benches are claimable and when that changes', async () => {
     const instance = await build(null, {
-      leasable: () => [{ name: 'demostaging1' }],
-      window: () => 'demostaging1 is usable for another 92 min, until its wipe at ~14:59 UTC',
+      windows: () => [
+        {
+          capability: 'bench',
+          label: 'demo',
+          leasable: 1,
+          window: 'demostaging1 is usable for another 92 min, until its wipe at ~14:59 UTC',
+        },
+      ],
     });
     const res = await instance.inject({ method: 'GET', url: '/api/v1/assays/current' });
     const body = res.json() as RunStatus;
-    expect(body.bench).toEqual({
-      leasable: 1,
-      window: 'demostaging1 is usable for another 92 min, until its wipe at ~14:59 UTC',
+    expect(body.benches).toEqual([
+      {
+        capability: 'bench',
+        label: 'demo',
+        leasable: 1,
+        window: 'demostaging1 is usable for another 92 min, until its wipe at ~14:59 UTC',
+      },
+    ]);
+    await instance.close();
+  });
+
+  /**
+   * One press asks for an audit on every platform, so a control that said "no usable bench"
+   * off the demo pool alone would be silent about the line that had actually stopped.
+   */
+  it('carries one entry per pool, so a control can say which line is held', async () => {
+    const instance = await build(null, {
+      windows: () => [
+        { capability: 'bench', label: 'demo', leasable: 2, window: 'two benches free' },
+        { capability: 'bench.foss', label: 'FOSS', leasable: 0, window: 'no FOSS bench is answering' },
+      ],
     });
+    const body = (await instance.inject({ method: 'GET', url: '/api/v1/assays/current' })).json() as RunStatus;
+    expect(body.benches?.filter((p) => p.leasable === 0).map((p) => p.label)).toEqual(['FOSS']);
     await instance.close();
   });
 
@@ -192,7 +218,7 @@ describe('the demo pool, on the endpoint the whole UI already polls', () => {
   it('omits the pool entirely when nothing can be asked', async () => {
     const instance = await build(null);
     const body = (await instance.inject({ method: 'GET', url: '/api/v1/assays/current' })).json() as RunStatus;
-    expect(body.bench).toBeUndefined();
+    expect(body.benches).toBeUndefined();
     await instance.close();
   });
 });

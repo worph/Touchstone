@@ -89,7 +89,7 @@ import type { RunLedger } from '../services/ledger.js';
 import type { AlertStore } from '../services/alerts.js';
 import type { EventLog } from '../services/events.js';
 import type { PortProber } from '../services/ports.js';
-import type { BenchProber } from '../services/bench.js';
+import type { BenchPools } from '../services/bench.js';
 import {
   enqueueTrial,
   buildSpec,
@@ -105,7 +105,7 @@ export interface ChatToolContext {
   ledger?: RunLedger;
   alerts?: AlertStore;
   ports?: PortProber;
-  prober?: BenchProber;
+  pools?: BenchPools;
   /** The archive. Absent means the read tools say so rather than answering emptily. */
   store?: AssayStore;
   events?: EventLog;
@@ -591,15 +591,18 @@ export const CHAT_TOOLS: ChatTool[] = [
       );
 
       for (const p of ctx.ports?.list() ?? []) lines.push(`Port ${p.name} (${p.kind}): ${p.status}.`);
-      const benches = ctx.prober?.list() ?? [];
-      if (benches.length > 0) {
+      // One line per pool. Reported off the demo pool alone, a second platform's outage was
+      // invisible to every question the chat can be asked about whether auditing is working.
+      for (const pool of ctx.pools?.health() ?? []) {
+        if (pool.total === 0) continue;
+        const rows = (ctx.pools?.list() ?? []).filter((b) => b.pool === pool.id);
         lines.push(
-          `Demo pool: ${ctx.prober?.leasable().length ?? 0} of ${benches.length} usable — ` +
-            benches.map((b) => `${b.name} ${b.status}`).join(', ') +
+          `${pool.label} pool: ${pool.leasable} of ${pool.total} usable — ` +
+            rows.map((b) => `${b.name} ${b.status}`).join(', ') +
             '.',
           // When it changes, not only what it is. A turn that reports "0 of 2 usable" and
           // stops there leaves the operator with no next step and no time to wait for.
-          `${ctx.prober?.window() ?? ''}.`,
+          `${pool.window}.`,
         );
       }
       return ok(lines.join('\n'));
@@ -713,7 +716,12 @@ export const CHAT_TOOLS: ChatTool[] = [
       // Every reason names the same condition once, so a run blocked on two things does not
       // read as two outages.
       const why = [...new Set(forecast.blocked.map((b) => blockedReasonClause(b.reason)))].join(' and ');
-      const window = ctx.prober?.window();
+      // The window of whichever pools are empty — naming the demo pool's countdown while the
+      // FOSS line is the one that is held tells the operator to wait for the wrong thing.
+      const window = (ctx.pools?.windows() ?? [])
+        .filter((p) => p.leasable === 0)
+        .map((p) => p.window)
+        .join('; ');
       const because = window ? `${why} (${window})` : why;
 
       if (forecast.run.length === 0) {

@@ -30,7 +30,10 @@
  */
 
 import type { Leg } from '../../shared/types.js';
+import { DEFAULT_BENCH_CAPABILITY } from '../../shared/capability.js';
 import type {
+  LineKey,
+  LineSchedule,
   QueueRow,
   QueueState,
   Reclaim,
@@ -38,6 +41,31 @@ import type {
   SubjectSchedule,
   TickDecision,
 } from '../../shared/schedule.js';
+
+/**
+ * **One unit of scheduling** — a subject on one platform.
+ *
+ * The pick, the backlog, the parks and the try counters are all about a cell rather than a
+ * subject, because a run is one line's scope: auditing FileBrowser on Yundera says nothing
+ * about whether it has been audited on the FOSS stack, and a failure on one must not park
+ * the other. With one pool configured every subject has exactly one cell and this is the
+ * subject-grained scheduler it has always been.
+ */
+export interface Cell {
+  subject: string;
+  line: LineKey;
+}
+
+/**
+ * A cell as a `Set`/`Map` key.
+ *
+ * `\u0000` because a subject key is `<origin>~<name>` and a line is a capability string —
+ * both may contain almost anything a person types into `config.yaml`, and a separator that
+ * can appear in either would collide two cells into one and silently merge their state.
+ */
+export function cellKey(subject: string, line: LineKey): string {
+  return `${subject}\u0000${line}`;
+}
 
 export interface SchedulerConstants {
   fresh_days: number;
@@ -52,8 +80,27 @@ export interface PolicyInput {
   constants: SchedulerConstants;
   /** The registry, in the order the roll-up renders it. */
   subjects: string[];
-  /** Latest *completed* assay per subject, ISO. Blocked and running runs are not completions. */
-  lastDoneAt: Record<string, string | undefined>;
+  /**
+   * The sections the protocol declares now, and the line each belongs to.
+   *
+   * The second axis of the pick, and all of it the policy needs: it never reads a rubric, only
+   * which platform a section is audited on and whether it scores. A section that measures
+   * (`scores: false`) may **ride** a run but never anchor one — invariant 12's third clause at
+   * this grain, and without it `currency`, which is due constantly and takes six seconds,
+   * would anchor a run per subject per window and starve everything else.
+   */
+  sections: { id: string; line: LineKey; scores: boolean }[];
+  /**
+   * Latest *completed* assay per subject **per line**, ISO. Blocked and running runs are not
+   * completions.
+   *
+   * Per line rather than per section, deliberately. Per section would be the finer answer and
+   * would fix a known wart — a completed `static` makes a blocked `functional` read fresh —
+   * but it would also make every subject permanently due during a browser outage and spend
+   * the whole rotation re-running `static`. That wart has a remedy already (the request), and
+   * changing eligibility semantics is not what this change is for.
+   */
+  lastDoneAt: Record<string, Record<LineKey, string | undefined> | undefined>;
   schedule: Record<string, SubjectSchedule | undefined>;
   /** When any assay last finished, anywhere. The cooldown anchor. */
   lastFinishedAt?: string;
@@ -92,14 +139,14 @@ export interface PolicyInput {
    * pointed the current standard at this app at all* — and a blocked attempt answers it yes.
    * See `domain/standards.ts` for why the two cannot be one field.
    */
-  lastAttemptAt?: Record<string, string | undefined>;
+  lastAttemptAt?: Record<string, Record<LineKey, string | undefined> | undefined>;
   /**
    * When the standard last moved — `StandardSnapshot.moved_at`.
    *
    * Absent means the question is not being asked (no revision history, or nothing recorded
    * yet), and the eligibility rule below is then a no-op.
    */
-  standardMovedAt?: string;
+  standardMovedAt?: Record<LineKey, string | undefined>;
   /**
    * The version of each subject the store offers now — a git blob sha of its compose.
    *
@@ -114,11 +161,20 @@ export interface PolicyInput {
    * still looked at that version, and must settle the question rather than leave the subject
    * eligible for ever.
    */
-  auditedVersion?: Record<string, string | undefined>;
-  /** Whether a bench may be claimed right now — `BenchProber.leasable().length > 0`. */
-  benchAvailable: boolean;
-  /** Why not, for the reason string. Never an error object; one clause a human reads. */
-  benchNote?: string;
+  auditedVersion?: Record<string, Record<LineKey, string | undefined> | undefined>;
+  /**
+   * Which bench capabilities can be claimed right now, and why not when they cannot.
+   *
+   * Replaces the single `benchAvailable` boolean, which had exactly one right answer while
+   * there was one pool and no right answer once there were two: a FOSS outage would have
+   * stopped either all auditing or none of it, depending which way the boolean fell.
+   *
+   * A capability nothing supplies is **available** here, matching `resolveCapabilities`'
+   * property 4 — `requires: ['gpu']` runs. A bench capability no pool answers is caught by
+   * the runner, which records `bench_unconfigured`, not by the gate: gating it would hold a
+   * line for ever over a configuration answer that no wait can change.
+   */
+  capabilities: Record<string, { available: boolean; note?: string }>;
 }
 
 const DAY_MS = 86_400_000;
@@ -140,11 +196,15 @@ function daysSince(iso: string | undefined, now: Date): number {
  * section it cannot run. Attempting settles it; the badge on the Store page goes on saying
  * `older`, because the verdict on display really was reached under an older revision.
  */
-function standardMoved(input: PolicyInput, subject: string): boolean {
-  if (!input.standardMovedAt) return false;
-  const moved = Date.parse(input.standardMovedAt);
+function standardMoved(input: PolicyInput, subject: string, line: LineKey): boolean {
+  // Per line: editing `functional-foss.md` must re-eligible the FOSS line and leave the
+  // Yundera rotation alone, or one platform's rubric edit spends three days of agent time
+  // re-auditing the other.
+  const movedAt = input.standardMovedAt?.[line];
+  if (!movedAt) return false;
+  const moved = Date.parse(movedAt);
   if (Number.isNaN(moved)) return false;
-  const attempted = Date.parse(input.lastAttemptAt?.[subject] ?? '');
+  const attempted = Date.parse(input.lastAttemptAt?.[subject]?.[line] ?? '');
   return Number.isNaN(attempted) || attempted < moved;
 }
 
@@ -156,9 +216,12 @@ function standardMoved(input: PolicyInput, subject: string): boolean {
  * that asymmetry every subject in the archive would become eligible the day this shipped and
  * stay eligible until audited, which is the same flood the `seed` rule avoids for rubrics.
  */
-function subjectChanged(input: PolicyInput, subject: string): boolean {
+function subjectChanged(input: PolicyInput, subject: string, line: LineKey): boolean {
+  // One compose, so `currentVersion` stays per subject; what is per line is *when each
+  // platform last looked at it*. A compose change makes both lines eligible, and each spends
+  // that eligibility on its own run.
   const now = input.currentVersion?.[subject];
-  const then = input.auditedVersion?.[subject];
+  const then = input.auditedVersion?.[subject]?.[line];
   if (!now || !then) return false;
   return now !== then;
 }
@@ -193,12 +256,19 @@ export function isFlaggedForReaudit(
 function flaggedForReaudit(
   input: PolicyInput,
   subject: string,
+  line: LineKey,
   row: SubjectSchedule | undefined,
 ): boolean {
   // The row comes from the caller rather than from `input.schedule`, because `plan()` works
   // on the copy `reclaimExpired` returned and that copy is the one the rest of the tick
   // agrees with.
-  return isFlaggedForReaudit(row?.flagged_at, input.lastAttemptAt?.[subject]);
+  //
+  // **One timestamp, compared per line.** That is the whole of the fan-out and it stores
+  // nothing: one press counts for every line whose last attempt predates it, and each line
+  // spends it on its own run. A per-line *request* would need a platform picker on every row,
+  // which is `depth` wearing a new name — whether the FOSS bench is free is a fact about the
+  // line, not a choice at the point of pressing.
+  return isFlaggedForReaudit(row?.flagged_at, input.lastAttemptAt?.[subject]?.[line]);
 }
 
 function minutesSince(iso: string | undefined, now: Date): number {
@@ -223,37 +293,71 @@ function reclaimExpired(
   const reclaimed: Reclaim[] = [];
   let busy: { subject: string; since: string } | undefined;
 
+  // **Deep enough to own every object it will mutate.** The copy used to be one spread plus
+  // the claim, which was exactly deep enough while a row's mutable state was flat. It is not
+  // any more: sharing the `lines` object would let this function's reclaim write straight
+  // through into the caller's input, and `policy.test.ts`'s "does not mutate the schedule it
+  // was handed" is the test that catches it.
+  const copy = (row: SubjectSchedule): SubjectSchedule => ({
+    ...row,
+    ...(row.lines
+      ? {
+          lines: Object.fromEntries(
+            Object.entries(row.lines).map(([line, cell]) => [
+              line,
+              { ...cell, claim: cell.claim ? { ...cell.claim } : undefined },
+            ]),
+          ),
+        }
+      : {}),
+    ...(row.legacy ? { legacy: { ...row.legacy, claim: row.legacy.claim ? { ...row.legacy.claim } : undefined } } : {}),
+  });
+
   for (const subject of input.subjects) {
     const row = schedule[subject];
     if (!row) continue;
-    out[subject] = { ...row, claim: row.claim ? { ...row.claim } : undefined };
+    out[subject] = copy(row);
   }
   // A claim on a subject the registry no longer lists still has to be released, or it
   // holds single-flight shut forever.
   for (const [subject, row] of Object.entries(schedule)) {
-    if (!out[subject] && row) out[subject] = { ...row, claim: row.claim ? { ...row.claim } : undefined };
+    if (!out[subject] && row) out[subject] = copy(row);
   }
 
   for (const [subject, row] of Object.entries(out)) {
-    if (!row.claim) continue;
-    if (minutesSince(row.claim.since, input.now) < input.constants.lease_min) {
-      // Still held. n8n reports the first one it meets; the ordering is the registry's.
-      if (!busy) busy = { subject, since: row.claim.since };
-      continue;
-    }
-    const tryN = row.claim.try_n;
-    row.claim = undefined;
-    if (tryN >= input.constants.max_tries) {
-      row.try_n = tryN;
-      row.parked_at = input.now.toISOString();
-      reclaimed.push({ subject, outcome: 'parked', try_n: tryN });
-    } else {
-      row.try_n = tryN;
-      reclaimed.push({ subject, outcome: 'retry', try_n: tryN });
+    // Every line, not only the ones the protocol still declares: a claim on a retired line
+    // holds single-flight shut just as effectively as one on a live line.
+    for (const [line, cell] of Object.entries(row.lines ?? {})) {
+      if (!cell.claim) continue;
+      if (minutesSince(cell.claim.since, input.now) < input.constants.lease_min) {
+        // Still held. n8n reports the first one it meets; the ordering is the registry's.
+        if (!busy) busy = { subject, since: cell.claim.since };
+        continue;
+      }
+      const tryN = cell.claim.try_n;
+      cell.claim = undefined;
+      cell.try_n = tryN;
+      if (tryN >= input.constants.max_tries) {
+        cell.parked_at = input.now.toISOString();
+        reclaimed.push({ subject, line, outcome: 'parked', try_n: tryN });
+      } else {
+        reclaimed.push({ subject, line, outcome: 'retry', try_n: tryN });
+      }
     }
   }
 
   return { schedule: out, reclaimed, busy };
+}
+
+/**
+ * One line's state, falling back to a v1 body that has not been fanned out yet.
+ *
+ * The fallback is the load-bearing half: on disk "this line has no entry" and "this row
+ * predates lines" look identical and mean opposite things, and reading the second as the
+ * first unparks every parked app and resets every error streak.
+ */
+function cellOf(row: SubjectSchedule | undefined, line: LineKey): LineSchedule | undefined {
+  return row?.lines?.[line] ?? row?.legacy;
 }
 
 /**
@@ -269,8 +373,8 @@ function plan(input: PolicyInput): {
   schedule: Record<string, SubjectSchedule>;
   reclaimed: Reclaim[];
   busy?: { subject: string; since: string };
-  unparked: string[];
-  eligible: string[];
+  unparked: Cell[];
+  eligible: Cell[];
   /** Of those, the ones that are only eligible because the standard moved under them. */
   restandard: Set<string>;
   /** Of those, the ones that are only eligible because the app itself changed. */
@@ -288,56 +392,75 @@ function plan(input: PolicyInput): {
    * had been parked for three days by a misclassified success, and it sent them looking for a
    * bug in the scheduling rather than in the classifier.
    */
-  parked: string[];
+  parked: Cell[];
+  /** The lines being scheduled, in first-declared order — the comparator's tie-break. */
+  lines: LineKey[];
 } {
   const { constants, now } = input;
   const { schedule, reclaimed, busy } = reclaimExpired(input.schedule, input);
 
-  // Parks that have served their time. Done before eligibility so a subject released this
-  // tick can be picked this tick, which is what n8n's `daysSince(lr) >= STUCK_DAYS` does.
-  const unparked: string[] = [];
+  // The lines worth scheduling: those some *scoring* section belongs to, in first-declared
+  // order. A reading rides whatever run its line is already making and may never anchor one
+  // (invariant 12's third clause), so a line made only of readings is not a line at all.
+  const lines: LineKey[] = [];
+  for (const section of input.sections) {
+    if (!section.scores) continue;
+    if (!lines.includes(section.line)) lines.push(section.line);
+  }
+  // A rig whose protocol directory could not be read still has to schedule: fall back to the
+  // one line every installation has had, rather than deciding the backlog is empty.
+  if (lines.length === 0) lines.push(DEFAULT_BENCH_CAPABILITY);
+
+  // Parks that have served their time. Done before eligibility so a cell released this tick
+  // can be picked this tick, which is what n8n's `daysSince(lr) >= STUCK_DAYS` does.
+  const unparked: Cell[] = [];
   for (const [subject, row] of Object.entries(schedule)) {
-    if (!row.parked_at) continue;
-    if (daysSince(row.parked_at, now) < constants.stuck_days) continue;
-    row.parked_at = undefined;
-    row.try_n = 0;
-    unparked.push(subject);
+    for (const [line, cell] of Object.entries(row.lines ?? {})) {
+      if (!cell.parked_at) continue;
+      if (daysSince(cell.parked_at, now) < constants.stuck_days) continue;
+      cell.parked_at = undefined;
+      cell.try_n = 0;
+      unparked.push({ subject, line });
+    }
   }
 
-  const eligible: string[] = [];
-  const parked: string[] = [];
+  const eligible: Cell[] = [];
+  const parked: Cell[] = [];
   const restandard = new Set<string>();
   const rechanged = new Set<string>();
   const reflagged = new Set<string>();
   for (const subject of input.subjects) {
     const row = schedule[subject];
-    // Computed first, and for every subject rather than only for the ones the freshness
-    // window would have skipped. Unlike the two clauses below it, the flag is a *stored*
-    // thing an operator toggles, and the control that toggles it renders from this — so a
-    // flag on a row that was already due, already retrying or already claimed still has to
-    // come back as set, or the button offers to set it again.
-    const flagged = flaggedForReaudit(input, subject, row);
-    if (flagged) reflagged.add(subject);
-    if (row?.claim) continue;
-    if (row?.parked_at) {
-      parked.push(subject);
-      continue;
-    }
-    // An errored subject is retried on the next tick — no freshness wait. That is what
-    // makes `MAX_TRIES` the thing that stops a loop, rather than the calendar.
-    if ((row?.try_n ?? 0) > 0) {
-      eligible.push(subject);
-      continue;
-    }
-    const last = input.lastDoneAt[subject];
-    if (!last) {
-      eligible.push(subject);
-      continue;
-    }
-    if (daysSince(last, now) >= constants.fresh_days) {
-      eligible.push(subject);
-      continue;
-    }
+    for (const line of lines) {
+      const cell = cellOf(row, line);
+      const key = cellKey(subject, line);
+      // Computed first, and for every cell rather than only for the ones the freshness
+      // window would have skipped. Unlike the two clauses below it, the flag is a *stored*
+      // thing an operator toggles, and the control that toggles it renders from this — so a
+      // flag on a row that was already due, already retrying or already claimed still has to
+      // come back as set, or the button offers to set it again.
+      const flagged = flaggedForReaudit(input, subject, line, row);
+      if (flagged) reflagged.add(key);
+      if (cell?.claim) continue;
+      if (cell?.parked_at) {
+        parked.push({ subject, line });
+        continue;
+      }
+      // An errored cell is retried on the next tick — no freshness wait. That is what
+      // makes `MAX_TRIES` the thing that stops a loop, rather than the calendar.
+      if ((cell?.try_n ?? 0) > 0) {
+        eligible.push({ subject, line });
+        continue;
+      }
+      const last = input.lastDoneAt[subject]?.[line];
+      if (!last) {
+        eligible.push({ subject, line });
+        continue;
+      }
+      if (daysSince(last, now) >= constants.fresh_days) {
+        eligible.push({ subject, line });
+        continue;
+      }
     // Three ways past the freshness window, and they are independent: the question changed,
     // the subject did, or somebody asked. **Two of the three merely add to the backlog** —
     // no jump, no bypass of the cooldown, the park or the bench gate. A rubric edit and a
@@ -352,20 +475,21 @@ function plan(input: PolicyInput): {
     // see the comparator below. That asymmetry is the whole design: `standard_moved` and
     // `subject_changed` must go on proving they do not jump, or a rubric edit would put
     // seventy-three apps ahead of the one somebody actually pressed a button for.
-    const moved = standardMoved(input, subject);
-    const changed = subjectChanged(input, subject);
-    if (!moved && !changed && !flagged) continue;
-    eligible.push(subject);
-    if (moved) restandard.add(subject);
-    if (changed) rechanged.add(subject);
+      const moved = standardMoved(input, subject, line);
+      const changed = subjectChanged(input, subject, line);
+      if (!moved && !changed && !flagged) continue;
+      eligible.push({ subject, line });
+      if (moved) restandard.add(key);
+      if (changed) rechanged.add(key);
+    }
   }
   // Requested first, oldest ask first; everything else by staleness underneath. Two
   // comparators stacked rather than one, because they are answering different questions —
   // "who asked first" has nothing to say about an app nobody asked for, and "who is stalest"
   // has nothing to say about a queue.
-  const askedAt = (subject: string): number => {
-    if (!reflagged.has(subject)) return Number.NaN;
-    const t = Date.parse(schedule[subject]?.flagged_at ?? '');
+  const askedAt = (cell: Cell): number => {
+    if (!reflagged.has(cellKey(cell.subject, cell.line))) return Number.NaN;
+    const t = Date.parse(schedule[cell.subject]?.flagged_at ?? '');
     // A flag whose timestamp will not parse still counts as a request — `reflagged` is the
     // authority on *whether*, this is only the authority on *when*. Sorting it to the back of
     // the requested block is the safe direction: it keeps its place in the queue.
@@ -378,17 +502,22 @@ function plan(input: PolicyInput): {
     const requestedB = Number.isNaN(rb) ? 1 : 0;
     if (requestedA !== requestedB) return requestedA - requestedB;
     if (requestedA === 0 && ra !== rb) return ra - rb;
-    const d = daysSince(input.lastDoneAt[b], now) - daysSince(input.lastDoneAt[a], now);
+    const d =
+      daysSince(input.lastDoneAt[b.subject]?.[b.line], now) -
+      daysSince(input.lastDoneAt[a.subject]?.[a.line], now);
     // Only NaN falls through to the tie-break. `Infinity` is a real answer — it is what a
     // never-run subject scores against a dated one, and it must win. `Infinity - Infinity`
     // is the NaN case: two never-run subjects, where the comparator would otherwise leave
     // the order to the engine rather than to the data. Registry order settles it, so a
-    // replay of the same tick picks the same app it picked before.
+    // replay of the same tick picks the same app it picked before — and line order settles
+    // the two never-run cells of one subject, for the same reason.
     if (!Number.isNaN(d) && d !== 0) return d;
-    return input.subjects.indexOf(a) - input.subjects.indexOf(b);
+    const bySubject = input.subjects.indexOf(a.subject) - input.subjects.indexOf(b.subject);
+    if (bySubject !== 0) return bySubject;
+    return lines.indexOf(a.line) - lines.indexOf(b.line);
   });
 
-  return { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged, parked };
+  return { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged, parked, lines };
 }
 
 /**
@@ -410,6 +539,8 @@ export function decide(input: PolicyInput): TickDecision {
   };
 
   let action: 'audit' | 'trial' | 'idle' = 'idle';
+  /** The cell this tick would audit — subject and platform together. */
+  let picked: Cell | undefined;
   let subject: string | undefined;
   let trial: string | undefined;
   let source: 'requested' | 'backlog' | undefined;
@@ -425,8 +556,34 @@ export function decide(input: PolicyInput): TickDecision {
   // both asked for at a moment, and that moment is the only thing that orders them: one
   // agent, one queue, first come first served. Ordering them separately would be two queues
   // wearing one heading, and the operator would have no way to answer "when does mine run".
+  // ── the bench gate, per line — row D7, which n8n does not have ────────────────────────
+  // A line whose capability cannot be claimed **holds at its head**: it does not advance to
+  // its second-stalest cell, because refusing to claim is the whole point — an assay
+  // dispatched at a bench we cannot log into produces a verdict about the bench and files it
+  // against the app. But lines are independent queues for independent hardware, so passing
+  // over a gated line to run a different one is not skipping, and it is what turns a FOSS
+  // outage from "all auditing stops" into "the FOSS line waits".
+  //
+  // A capability nothing supplies is available, matching `resolveCapabilities`' property 4.
+  const available = (line: LineKey): boolean => input.capabilities[line]?.available ?? true;
+  // Each line's head, in the global order `plan()` sorted — requested first by ask time, then
+  // stalest. `Map` keeps insertion order, so the first *available* head is also the earliest.
+  const headOfLine = new Map<LineKey, Cell>();
+  for (const cell of eligible) if (!headOfLine.has(cell.line)) headOfLine.set(cell.line, cell);
+  const heads = [...headOfLine.values()];
+  const runnable = heads.filter((c) => available(c.line));
+  const gatedLines = heads.filter((c) => !available(c.line)).map((c) => c.line);
+
   const headTrial = (input.queuedTrials ?? [])[0];
-  const headSubject = eligible.find((s) => reflagged.has(s));
+  // Two heads, and the difference is load-bearing. `headCell` is what may be *dispatched*, so
+  // it comes from the lines that can run. `headAny` is what is at the front of the queue
+  // whether or not its line is gated, and it is what `waiting_on` reports — without it a
+  // request held by a dead bench renders exactly like an empty queue, which is the one thing
+  // a queue view must never do.
+  const requested = (c: Cell): boolean => reflagged.has(cellKey(c.subject, c.line));
+  const headCell = runnable.find(requested);
+  const headAny = heads.find(requested);
+  const headSubject = headAny?.subject;
   const trialAt = headTrial ? Date.parse(headTrial.queued_at) : Number.NaN;
   const subjectAt = headSubject ? Date.parse(schedule[headSubject]?.flagged_at ?? '') : Number.NaN;
   // An unparseable timestamp loses the comparison rather than winning it by accident, on
@@ -455,9 +612,10 @@ export function decide(input: PolicyInput): TickDecision {
     trial = headTrial.slug;
     source = 'requested';
     reason = `requested — trial of ${headTrial.subject}`;
-  } else if (headSubject) {
+  } else if (headCell) {
     action = 'audit';
-    subject = headSubject;
+    picked = headCell;
+    subject = headCell.subject;
     source = 'requested';
     reason = 'requested — somebody asked for this app';
   } else if (input.lastFinishedAt && cooldownLeft > 0) {
@@ -471,39 +629,55 @@ export function decide(input: PolicyInput): TickDecision {
       parked.length > 0
         ? `backlog empty — ${fresh} app(s) audited within ${constants.fresh_days}d, ${parked.length} parked`
         : `backlog empty — all ${input.subjects.length} app(s) audited within ${constants.fresh_days}d`;
+  } else if (runnable.length === 0) {
+    // Everything eligible is on a gated line. This is the D7 idle, and it now names the line
+    // rather than "the demo bench": with two pools, "no usable demo bench" while the FOSS
+    // line is the held one sends the operator to the wrong board.
+    const notes = gatedLines.map((line) => input.capabilities[line]?.note).filter(Boolean);
+    const which =
+      // One pool, and it is the default one: the sentence an operator has always read, and
+      // the prefix `gatedLines()` falls back to parsing. Naming the line here would be
+      // "no usable bench for bench", which is worse English about the same fact.
+      gatedLines.length === 1 && gatedLines[0] === DEFAULT_BENCH_CAPABILITY
+        ? 'no usable demo bench'
+        : `no usable bench for ${gatedLines.join(', ')}`;
+    reason = which + (notes.length > 0 ? ` — ${notes.join('; ')}` : '');
   } else {
     action = 'audit';
-    subject = eligible[0];
+    picked = runnable[0];
+    subject = picked!.subject;
     source = 'backlog';
-    const stale = daysSince(input.lastDoneAt[subject!], now);
+    const last = input.lastDoneAt[subject]?.[picked!.line];
+    const stale = daysSince(last, now);
     reason = Number.isFinite(stale)
-      ? `last run ${String(input.lastDoneAt[subject!]).slice(0, 10)}, ${Math.floor(stale)}d ago`
+      ? `last run ${String(last).slice(0, 10)}, ${Math.floor(stale)}d ago`
       : 'never run';
+    const key = cellKey(subject, picked!.line);
     // Said out loud, because this is the second place after the bench gate where the pick is
     // *expected* to differ from n8n's: n8n has no notion of the standard moving, so a shadow
     // diff on this tick is the feature working rather than a divergence to chase.
-    if (restandard.has(subject!)) {
-      reason += ` · standard revised ${String(input.standardMovedAt).slice(0, 10)}`;
+    if (restandard.has(key)) {
+      reason += ` · standard revised ${String(input.standardMovedAt?.[picked!.line]).slice(0, 10)}`;
     }
-    if (rechanged.has(subject!)) reason += ' · app changed in the store';
+    if (rechanged.has(key)) reason += ' · app changed in the store';
     // Named for the same reason as the clause above: n8n has no flag, so a shadow diff on
     // this tick is somebody having asked rather than a divergence to chase.
-    if (reflagged.has(subject!)) reason += ' · flagged for re-audit';
+    if (reflagged.has(key)) reason += ' · flagged for re-audit';
   }
 
-  // ── the bench gate — row D7, which n8n does not have ──────────────────────────────────
-  // Refusing to claim is the whole point: an assay dispatched at a bench we cannot log into
-  // produces a verdict about the bench and files it against the app. Idling here consumes no
-  // try and stamps no last-run, so the subject comes back untouched on the next tick.
-  if (action !== 'idle' && !input.benchAvailable) {
+  // The trial half of the queue is still gated on the **default** line, because a trial has no
+  // line of its own: it audits a store zip against every section the protocol declares, and the
+  // one it most needs a bench for is the default platform's. A trial that ran with a dead pool
+  // would answer the static half and record `functional` blocked, and a PR author reading that
+  // reasonably concludes the app is fine.
+  if (action === 'trial' && !available(DEFAULT_BENCH_CAPABILITY)) {
+    const note = input.capabilities[DEFAULT_BENCH_CAPABILITY]?.note;
     return {
       ...base,
       action: 'idle',
-      reason: `no usable demo bench${input.benchNote ? ` — ${input.benchNote}` : ''}`,
-      // The gate covers a trial as well as an audit, and deliberately: a trial that ran with
-      // a dead pool would answer the static half and record `functional` blocked, and a PR
-      // author reading that reasonably concludes the app is fine. One rule for both verbs.
+      reason: `no usable demo bench${note ? ` — ${note}` : ''}`,
       ...(waitingOn ? { waiting_on: waitingOn } : {}),
+      ...(gatedLines.length > 0 ? { gated: gatedLines } : {}),
     };
   }
 
@@ -514,11 +688,43 @@ export function decide(input: PolicyInput): TickDecision {
     trial,
     source,
     reason,
+    // **Only when there is a scope to name.** An empty array here would reach the runner as
+    // "audit these zero sections" — and the case that produces one is a protocol directory
+    // that could not be read, where the honest answer is the one this had before scopes
+    // existed: no scope, audit everything the protocol declares.
+    ...(picked
+      ? {
+          line: picked.line,
+          ...(scopeOf(input, picked.line).length > 0
+            ? { sections: scopeOf(input, picked.line) }
+            : {}),
+        }
+      : {}),
+    // Every line that is held, whatever this tick did. On a tick that dispatched the Yundera
+    // line, this is the only thing that says the FOSS pool is down — and without it the
+    // transition logging in `scheduler/index.ts` could never fire for a second pool.
+    ...(gatedLines.length > 0 ? { gated: gatedLines } : {}),
     // Only when nothing is moving. On a tick that dispatched, the head *is* the thing that
     // started, and repeating it as "waiting" would be a lie a page would render.
     ...(action === 'idle' && waitingOn ? { waiting_on: waitingOn } : {}),
-    try_n: action === 'audit' && subject ? (schedule[subject]?.try_n ?? 0) + 1 : undefined,
+    try_n:
+      action === 'audit' && picked
+        ? (cellOf(schedule[picked.subject], picked.line)?.try_n ?? 0) + 1
+        : undefined,
   };
+}
+
+/**
+ * What a run on this line covers: every section that belongs to it.
+ *
+ * Including the readings, which is how `currency` goes on riding every run of its own line
+ * without ever anchoring one. **The scheduler composes this, never a caller** — that is the
+ * whole difference between a scope and the `depth` parameter this repo removed: `depth` was
+ * somebody at the point of pressing deciding to audit half the rubric, and a scope is the
+ * line's own answer to what is due on it.
+ */
+function scopeOf(input: PolicyInput, line: LineKey): string[] {
+  return input.sections.filter((s) => s.line === line).map((s) => s.id);
 }
 
 /**
@@ -535,42 +741,85 @@ export function decide(input: PolicyInput): TickDecision {
  */
 export function queue(input: PolicyInput): QueueRow[] {
   const { constants, now } = input;
-  const { schedule, eligible, restandard, rechanged, reflagged } = plan(input);
-  const position = new Map(eligible.map((subject, i) => [subject, i + 1]));
+  const { schedule, eligible, restandard, rechanged, reflagged, lines } = plan(input);
+  const position = new Map(eligible.map((cell, i) => [cellKey(cell.subject, cell.line), i + 1]));
 
+  /** How actionable a state is. The subject's row shows the most actionable of its cells. */
+  const RANK: Record<QueueState, number> = {
+    running: 0, parked: 1, retry: 2, never: 3, due: 4, fresh: 5,
+  };
+
+  // **One row per subject, not one per cell.** 73 apps on two platforms is 146 cells, and an
+  // Automation page listing each twice answers "when does mine run" worse than one that
+  // summarises and carries the detail. The per-line breakdown rides along in `lines`.
   const rows = input.subjects.map((subject): QueueRow => {
     const row = schedule[subject];
-    const last = input.lastDoneAt[subject];
-    const days = last ? daysSince(last, now) : undefined;
 
-    let state: QueueState;
-    if (row?.claim) state = 'running';
-    else if (row?.parked_at) state = 'parked';
-    else if ((row?.try_n ?? 0) > 0) state = 'retry';
-    else if (!last) state = 'never';
-    else if (daysSince(last, now) >= constants.fresh_days) state = 'due';
-    // A restandard row carries a queue position, so calling it `fresh` would put a
-    // contradiction on one line. It is due; the note says what made it due.
-    // `position` is the honest test now that a flag is reported on every row it is set on:
-    // a claimed or parked subject can carry one, and neither of those is due.
-    else state = position.has(subject) ? 'due' : 'fresh';
+    const cells = lines.map((line) => {
+      const cell = cellOf(row, line);
+      const key = cellKey(subject, line);
+      const last = input.lastDoneAt[subject]?.[line];
+      const days = last ? daysSince(last, now) : undefined;
+
+      let state: QueueState;
+      if (cell?.claim) state = 'running';
+      else if (cell?.parked_at) state = 'parked';
+      else if ((cell?.try_n ?? 0) > 0) state = 'retry';
+      else if (!last) state = 'never';
+      else if (daysSince(last, now) >= constants.fresh_days) state = 'due';
+      // A restandard cell carries a queue position, so calling it `fresh` would put a
+      // contradiction on one line. It is due; the note says what made it due.
+      // `position` is the honest test now that a flag is reported on every cell it is set
+      // on: a claimed or parked cell can carry one, and neither of those is due.
+      else state = position.has(key) ? 'due' : 'fresh';
+
+      return {
+        line,
+        state,
+        ...(position.has(key) ? { position: position.get(key)! } : {}),
+        ...(last ? { last_done_at: last } : {}),
+        ...(days !== undefined && Number.isFinite(days) ? { days: Math.round(days * 10) / 10 } : {}),
+        try_n: cell?.try_n ?? 0,
+        ...(restandard.has(key) ? { standard_moved: true } : {}),
+        ...(rechanged.has(key) ? { subject_changed: true } : {}),
+        ...(reflagged.has(key) ? { flagged: true } : {}),
+        ...(cell?.parked_at ? { parked_at: cell.parked_at } : {}),
+        ...(cell?.claim ? { claim_since: cell.claim.since } : {}),
+      };
+    });
+
+    const best = [...cells].sort((a, b) => RANK[a.state] - RANK[b.state])[0]!;
+    // The subject's own figures are the most actionable cell's, except the ones where "any"
+    // is the honest answer: a subject is queued if *any* line queued it, and its last result
+    // is the newest anywhere. `try_n` is the worst of them — how close this app is to being
+    // parked somewhere, which is what an operator scanning the column wants to know.
+    const positions = cells.map((c) => c.position).filter((p): p is number => p !== undefined);
+    const lastAny = cells
+      .map((c) => c.last_done_at)
+      .filter((d): d is string => Boolean(d))
+      .sort()
+      .at(-1);
+    const daysAny = lastAny ? daysSince(lastAny, now) : undefined;
 
     return {
       subject,
-      state,
-      ...(position.has(subject) ? { position: position.get(subject)! } : {}),
-      ...(last ? { last_done_at: last } : {}),
-      ...(days !== undefined && Number.isFinite(days) ? { days: Math.round(days * 10) / 10 } : {}),
-      try_n: row?.try_n ?? 0,
+      state: best.state,
+      lines: cells,
+      ...(positions.length > 0 ? { position: Math.min(...positions) } : {}),
+      ...(lastAny ? { last_done_at: lastAny } : {}),
+      ...(daysAny !== undefined && Number.isFinite(daysAny)
+        ? { days: Math.round(daysAny * 10) / 10 }
+        : {}),
+      try_n: Math.max(...cells.map((c) => c.try_n)),
       // `due` and not a state of its own: it *is* due, and the only extra thing to say is
       // why — which the Automation page appends to the note rather than to the status word.
-      ...(restandard.has(subject) ? { standard_moved: true } : {}),
-      ...(rechanged.has(subject) ? { subject_changed: true } : {}),
+      ...(cells.some((c) => c.standard_moved) ? { standard_moved: true } : {}),
+      ...(cells.some((c) => c.subject_changed) ? { subject_changed: true } : {}),
       // Reported from the *derived* set rather than from `flagged_at` being present, so a
       // flag the last attempt already answered stops showing the moment it stops counting.
-      ...(reflagged.has(subject) ? { flagged: true } : {}),
-      ...(row?.parked_at ? { parked_at: row.parked_at } : {}),
-      ...(row?.claim ? { claim_since: row.claim.since } : {}),
+      ...(cells.some((c) => c.flagged) ? { flagged: true } : {}),
+      ...(best.parked_at ? { parked_at: best.parked_at } : {}),
+      ...(best.claim_since ? { claim_since: best.claim_since } : {}),
     };
   });
 
@@ -599,11 +848,15 @@ export function queue(input: PolicyInput): QueueRow[] {
  * output is compared and tested, not rendered.
  */
 export function requests(input: PolicyInput): RequestRow[] {
-  const { schedule, reflagged } = plan(input);
+  const { schedule, reflagged, lines } = plan(input);
   const rows: RequestRow[] = [];
 
   for (const subject of input.subjects) {
-    if (!reflagged.has(subject)) continue;
+    // **One row per subject, however many of its lines are outstanding.** One press is one
+    // request; fanning it into a row per platform would make the position count meaningless
+    // and the operator's "mine is third" wrong by a factor of the number of pools.
+    const pending = lines.filter((line) => reflagged.has(cellKey(subject, line)));
+    if (pending.length === 0) continue;
     const row = schedule[subject];
     rows.push({
       kind: 'audit',
@@ -611,7 +864,11 @@ export function requests(input: PolicyInput): RequestRow[] {
       label: subject,
       requested_at: row?.flagged_at ?? '',
       position: 0,
-      state: row?.claim ? 'running' : 'waiting',
+      // Running while *any* line of it holds a claim.
+      state: pending.some((line) => cellOf(row, line)?.claim) ? 'running' : 'waiting',
+      // Which platforms are still to go, so a half-served request reads as half-served
+      // rather than disappearing when the first line answers it.
+      ...(lines.length > 1 ? { lines: pending } : {}),
     });
   }
   for (const t of input.queuedTrials ?? []) {

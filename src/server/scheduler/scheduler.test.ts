@@ -5,9 +5,33 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ReportIndex } from '../store/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
-import type { BenchProber } from '../services/bench.js';
+import type { BenchPools } from '../services/bench.js';
 import { EventLog } from '../services/events.js';
-import { Scheduler, type SchedulerOptions } from './index.js';
+import { DEFAULT_BENCH_CAPABILITY } from '../../shared/capability.js';
+import { migrateLines, Scheduler, type SchedulerOptions } from './index.js';
+
+/** One pool, so one line — the shape every installation had before there were two. */
+const LINE = DEFAULT_BENCH_CAPABILITY;
+
+/**
+ * That line's state on a subject, which is where the try counter and the claim now live.
+ *
+ * Falls back to `legacy` exactly as `cellOf` does in the policy, and that is not a
+ * convenience: these fixtures build a `Scheduler` with no `sections` port, so `migrateLines`
+ * has no lines to fan onto and correctly parks the v1 body in `legacy` rather than guessing.
+ * A helper that read only `lines` would report every migrated row as never attempted — which
+ * is the exact misreading the migration exists to prevent, so the test must not make it.
+ */
+function cell(
+  row:
+    | {
+        lines?: Record<string, { try_n: number; claim?: { since: string; try_n: number }; parked_at?: string }>;
+        legacy?: { try_n: number; claim?: { since: string; try_n: number }; parked_at?: string };
+      }
+    | undefined,
+) {
+  return row?.lines?.[LINE] ?? row?.legacy;
+}
 
 const CONSTANTS = { fresh_days: 7, stuck_days: 7, lease_min: 120, cooldown_min: 55, max_tries: 3 };
 
@@ -41,23 +65,34 @@ function registryOf(names: string[]): SubjectRegistry {
   return { list: () => names, isLive: true, lastFetchedAt: undefined } as unknown as SubjectRegistry;
 }
 
-function proberOf(leasable: number, rows: unknown[] = []): BenchProber {
+/**
+ * A pool registry answering the default capability, which is what a one-pool installation is.
+ *
+ * `health()` is what `benchNote(capability)` reads to find the pool's own rows; with one pool
+ * every row belongs to it, so the id is fixed and the filter is a no-op — exactly the shape a
+ * single-pool box has.
+ */
+function proberOf(leasable: number, rows: unknown[] = []): BenchPools {
   return {
+    capabilities: [LINE],
     leasable: () => new Array(leasable).fill({ name: 'demostaging1' }),
     list: () => rows,
-  } as unknown as BenchProber;
+    health: () => [{ id: 'demo', capability: LINE }],
+  } as unknown as BenchPools;
 }
 
 /** A pool that changes between ticks — an outage starting, or lifting, under a live scheduler. */
-function changingPool(leasable: number, rows: unknown[] = []): BenchProber & { set: (n: number, r?: unknown[]) => void } {
+function changingPool(leasable: number, rows: unknown[] = []): BenchPools & { set: (n: number, r?: unknown[]) => void } {
   let now = { leasable, rows };
   return {
+    capabilities: [LINE],
     leasable: () => new Array(now.leasable).fill({ name: 'demostaging1' }),
     list: () => now.rows,
+    health: () => [{ id: 'demo', capability: LINE }],
     set: (n: number, r: unknown[] = now.rows) => {
       now = { leasable: n, rows: r };
     },
-  } as unknown as BenchProber & { set: (n: number, r?: unknown[]) => void };
+  } as unknown as BenchPools & { set: (n: number, r?: unknown[]) => void };
 }
 
 function make(over: Partial<SchedulerOptions> = {}): Scheduler {
@@ -68,7 +103,7 @@ function make(over: Partial<SchedulerOptions> = {}): Scheduler {
     index: indexOf({}),
     registry: registryOf(['Alpha', 'Beta']),
     events,
-    prober: proberOf(1),
+    pools: proberOf(1),
     // Off by default. `record()` schedules a look-again, and a test that calls it directly
     // would otherwise dispatch a real run a second later — into a temp directory `afterEach`
     // has already deleted. The kick's own tests turn it back on.
@@ -96,7 +131,7 @@ describe('dry-run — what shadow mode depends on', () => {
     expect(d.action).toBe('audit');
     expect(d.subject).toBe('Alpha');
     // The whole point: a full decision, and no claim behind it.
-    expect(s.snapshot().subjects.Alpha?.claim).toBeUndefined();
+    expect(cell(s.snapshot().subjects.Alpha)?.claim).toBeUndefined();
     expect(events.query({ code: 'CLAIM_OPENED' })).toHaveLength(0);
 
     const tick = events.query({ code: 'TICK_SELECTED' })[0];
@@ -131,7 +166,7 @@ describe('armed', () => {
     await s.tick();
     await events.flush();
 
-    const claim = s.snapshot().subjects.Alpha?.claim;
+    const claim = cell(s.snapshot().subjects.Alpha)?.claim;
     expect(claim?.try_n).toBe(1);
     expect(events.query({ code: 'CLAIM_OPENED' })).toHaveLength(1);
   });
@@ -162,7 +197,7 @@ describe('armed', () => {
 describe('the bench gate', () => {
   it('idles and names the hosts when nothing is leasable', async () => {
     const s = make({
-      prober: proberOf(0, [
+      pools: proberOf(0, [
         { name: 'demostaging1', status: 'healthy', remaining_min: 30 },
         { name: 'demostaging2', status: 'unreachable' },
       ]),
@@ -178,7 +213,7 @@ describe('the bench gate', () => {
 
   /** No prober at all is not the same as a dead pool — a test rig has neither. */
   it('does not gate when there is no prober wired', async () => {
-    const s = make({ prober: undefined });
+    const s = make({ pools: undefined });
     expect((await s.tick()).action).toBe('audit');
   });
 
@@ -190,7 +225,7 @@ describe('the bench gate', () => {
    * standing condition lives in the `bench.unreachable` alert; the log says when it began.
    */
   it('logs a gated tick once, not on every tick it stays gated', async () => {
-    const s = make({ prober: proberOf(0, [{ name: 'demostaging1', status: 'unreachable' }]) });
+    const s = make({ pools: proberOf(0, [{ name: 'demostaging1', status: 'unreachable' }]) });
     await s.tick();
     await s.tick();
     await s.tick();
@@ -206,7 +241,7 @@ describe('the bench gate', () => {
    */
   it('stays quiet even though the reason text changes as the countdown runs', async () => {
     const pool = changingPool(0, [{ name: 'demostaging1', status: 'healthy', remaining_min: 30 }]);
-    const s = make({ prober: pool });
+    const s = make({ pools: pool });
     const first = await s.tick();
     pool.set(0, [{ name: 'demostaging1', status: 'healthy', remaining_min: 20 }]);
     const second = await s.tick();
@@ -223,7 +258,7 @@ describe('the bench gate', () => {
    */
   it('says so once when a bench becomes claimable again', async () => {
     const pool = changingPool(0, [{ name: 'demostaging1', status: 'unreachable' }]);
-    const s = make({ prober: pool });
+    const s = make({ pools: pool });
     await s.tick();
     pool.set(1, [{ name: 'demostaging1', status: 'healthy' }]);
     await s.tick();
@@ -240,7 +275,7 @@ describe('recording a result', () => {
     await s.tick();
     await s.record('Alpha', { kind: 'verdict' });
 
-    expect(s.snapshot().subjects.Alpha?.claim).toBeUndefined();
+    expect(cell(s.snapshot().subjects.Alpha)?.claim).toBeUndefined();
     expect(s.snapshot().last_finished_at).toBeTruthy();
 
     const next = await s.tick();
@@ -252,7 +287,7 @@ describe('recording a result', () => {
     await s.tick();
     await s.record('Alpha', { kind: 'agent_busy' });
 
-    expect(s.snapshot().subjects.Alpha?.try_n).toBe(0);
+    expect(cell(s.snapshot().subjects.Alpha)?.try_n).toBe(0);
     expect(s.snapshot().last_finished_at).toBeUndefined();
     // Straight back into the backlog, unpunished.
     expect((await s.tick()).subject).toBe('Alpha');
@@ -334,7 +369,7 @@ describe('automated mode — the runtime switch', () => {
 
     await s.tick();
     expect(dispatched).toEqual(['Alpha']);
-    expect(s.snapshot().subjects.Alpha?.claim).toBeDefined();
+    expect(cell(s.snapshot().subjects.Alpha)?.claim).toBeDefined();
   });
 
   it('remembers the switch across a restart, and says the config did not set it', async () => {
@@ -361,16 +396,16 @@ describe('automated mode — the runtime switch', () => {
     const s = make({ armed: true });
     await s.load();
     await s.tick();
-    const claim = s.snapshot().subjects.Alpha?.claim;
+    const claim = cell(s.snapshot().subjects.Alpha)?.claim;
     expect(claim).toBeDefined();
 
     await s.setArmed(false);
     // The audit is still running and still holds its subject: stopping means "claim nothing
     // further", never "abandon the run", or the try is burned for nothing.
-    expect(s.snapshot().subjects.Alpha?.claim).toEqual(claim);
+    expect(cell(s.snapshot().subjects.Alpha)?.claim).toEqual(claim);
     // And the next tick claims nobody else.
     await s.tick();
-    expect(s.snapshot().subjects.Beta?.claim).toBeUndefined();
+    expect(cell(s.snapshot().subjects.Beta)?.claim).toBeUndefined();
   });
 
   it('logs who changed it and what the config would have said', async () => {
@@ -468,9 +503,12 @@ describe('a schedule file written before subjects were keyed', () => {
     await s.load();
     const rows = s.snapshot().subjects;
 
-    expect(rows['yundera~Alpha']?.try_n).toBe(2);
-    expect(rows['yundera~Beta']?.try_n).toBe(3);
-    expect(rows['yundera~Beta']?.parked_at).toBe('2026-08-19T00:00:00.000Z');
+    // Re-keyed **and** fanned onto the line, in one load. Both migrations have the same
+    // shape of consequence if skipped: a row that is there but unreadable reads as a subject
+    // that has never been attempted, which unparks it and resets its streak.
+    expect(cell(rows['yundera~Alpha'])?.try_n).toBe(2);
+    expect(cell(rows['yundera~Beta'])?.try_n).toBe(3);
+    expect(cell(rows['yundera~Beta'])?.parked_at).toBe('2026-08-19T00:00:00.000Z');
     // And the bare keys are gone, so nothing can read them back by accident.
     expect(rows.Alpha).toBeUndefined();
   });
@@ -485,7 +523,7 @@ describe('a schedule file written before subjects were keyed', () => {
     const s = make();
     await s.load();
 
-    expect(s.snapshot().subjects['acme~Alpha']?.try_n).toBe(1);
+    expect(cell(s.snapshot().subjects['acme~Alpha'])?.try_n).toBe(1);
     expect(s.snapshot().subjects['yundera~acme~Alpha']).toBeUndefined();
   });
 });
@@ -526,7 +564,7 @@ describe('a run that straddled a standard edit', () => {
     return make({
       index: straddling(),
       registry: registryOf(['Alpha']),
-      standardMovedAt: async () => MOVED,
+      standardMovedAt: async () => ({ [LINE]: MOVED }),
     });
   }
 
@@ -555,7 +593,7 @@ describe('a run that straddled a standard edit', () => {
         subjects: () => ['Alpha'],
       } as unknown as ReportIndex,
       registry: registryOf(['Alpha']),
-      standardMovedAt: async () => MOVED,
+      standardMovedAt: async () => ({ [LINE]: MOVED }),
     }).tick();
     expect(d.action).toBe('idle');
     expect(d.reason).toContain('backlog empty');
@@ -590,7 +628,7 @@ describe('a dispatcher that throws', () => {
     await scheduler.tick();
     // The dispatcher rejects on a later turn than the tick that called it.
     await new Promise((r) => setImmediate(r));
-    expect(scheduler.snapshot().subjects['Alpha']?.claim).toBeUndefined();
+    expect(cell(scheduler.snapshot().subjects['Alpha'])?.claim).toBeUndefined();
   });
 
   it('says so in the log, with the error the operator has to act on', async () => {
@@ -612,7 +650,7 @@ describe('a dispatcher that throws', () => {
     await new Promise((r) => setImmediate(r));
 
     const snap = scheduler.snapshot();
-    expect(snap.subjects['Alpha']?.try_n).toBe(1);
+    expect(cell(snap.subjects['Alpha'])?.try_n).toBe(1);
     expect(snap.last_finished_at).toBeTruthy();
   });
 
@@ -624,7 +662,7 @@ describe('a dispatcher that throws', () => {
       await scheduler.tick({ now });
       await new Promise((r) => setImmediate(r));
     }
-    expect(scheduler.snapshot().subjects['Alpha']?.parked_at).toBeTruthy();
+    expect(cell(scheduler.snapshot().subjects['Alpha'])?.parked_at).toBeTruthy();
     expect(calls()).toBe(CONSTANTS.max_tries);
   });
 });
@@ -915,5 +953,75 @@ describe('the request queue', () => {
     }
     expect(ticks).toEqual([ALPHA]);
     s.stop();
+  });
+});
+
+/**
+ * Fanning a row written before lines existed onto the platforms there are now.
+ *
+ * Every test here is about the same mistake: reading **absence as state**. On disk a row with
+ * no `lines` key and a row for a platform nothing has ever audited are byte-identical, and
+ * they mean opposite things — "this is everything we know about the subject" versus "nothing
+ * has happened yet". Reading the first as the second erases every error streak, unparks every
+ * parked app in one tick, and drops a claim held across the restart so the next tick opens a
+ * second one on the same subject.
+ */
+describe('a schedule file written before platforms existed', () => {
+  const FOSS = 'bench.foss';
+
+  it('fans a v1 row onto every platform, so a parked app stays parked', () => {
+    const out = migrateLines(
+      { Alpha: { try_n: 3, parked_at: '2026-09-01T00:00:00.000Z' } },
+      [LINE, FOSS],
+    );
+    expect(out.Alpha?.lines?.[LINE]?.parked_at).toBe('2026-09-01T00:00:00.000Z');
+    expect(out.Alpha?.lines?.[FOSS]?.parked_at).toBe('2026-09-01T00:00:00.000Z');
+    expect(out.Alpha?.lines?.[LINE]?.try_n).toBe(3);
+    // Fanned out completely, so there is nothing left to fall back to.
+    expect(out.Alpha?.legacy).toBeUndefined();
+  });
+
+  it('carries a claim across the restart rather than dropping it', () => {
+    const claim = { since: '2026-09-17T10:00:00.000Z', try_n: 2 };
+    const out = migrateLines({ Alpha: { try_n: 1, claim } }, [LINE]);
+    expect(out.Alpha?.lines?.[LINE]?.claim).toEqual(claim);
+  });
+
+  /** The request is the subject's, not a line's, so it survives untouched. */
+  it('leaves the request where it is', () => {
+    const out = migrateLines({ Alpha: { try_n: 0, flagged_at: '2026-09-17T09:00:00.000Z' } }, [LINE]);
+    expect(out.Alpha?.flagged_at).toBe('2026-09-17T09:00:00.000Z');
+  });
+
+  /**
+   * The scheduler has always had to boot with `data/protocols/` unreadable. With no lines to
+   * fan onto, the v1 body is kept rather than discarded — conservative in the one direction
+   * that matters, since the alternative is an upgrade that unparks the whole registry.
+   */
+  it('keeps a v1 row intact when the protocol list cannot be read', () => {
+    const out = migrateLines({ Alpha: { try_n: 3, parked_at: '2026-09-01T00:00:00.000Z' } }, []);
+    expect(out.Alpha?.legacy?.parked_at).toBe('2026-09-01T00:00:00.000Z');
+    expect(out.Alpha?.lines).toBeUndefined();
+  });
+
+  /**
+   * And the point of fanning out at all: a platform the file has never seen gets **no** cell,
+   * because there absence really does mean "never looked at". The two cases are
+   * indistinguishable on disk, which is why the v1 body has to be written out explicitly.
+   */
+  it('gives a platform that is new today no state, which reads as never audited', () => {
+    const out = migrateLines({ Alpha: { lines: { [LINE]: { try_n: 2 } } } }, [LINE, FOSS]);
+    expect(out.Alpha?.lines?.[FOSS]).toBeUndefined();
+    expect(out.Alpha?.lines?.[LINE]?.try_n).toBe(2);
+  });
+
+  it('leaves an already-fanned row exactly as it is', () => {
+    const row = { lines: { [LINE]: { try_n: 1 }, [FOSS]: { try_n: 0 } } };
+    expect(migrateLines({ Alpha: row }, [LINE, FOSS]).Alpha).toEqual(row);
+  });
+
+  /** A brand-new file is not a v1 row: nothing to fan, nothing to keep. */
+  it('invents no state for a subject that has none', () => {
+    expect(migrateLines({ Alpha: {} }, [LINE, FOSS]).Alpha).toEqual({});
   });
 });

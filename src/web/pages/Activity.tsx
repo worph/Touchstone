@@ -218,12 +218,17 @@ export default function Activity() {
           Composed by the server (`services/bench.ts`), so the page, the re-assay button, the
           alert and the chat cannot phrase the same pool three ways.
         */}
-        {benches && benches.benches.length > 0 ? (
-          <div className="act-quiet" data-pool={benches.leasable > 0 ? 'up' : 'down'}>
-            <strong className="num">{benches.leasable}</strong> of {benches.benches.length} usable
-            {benches.window ? ` — ${benches.window}` : ''}.
+        {/* One line per pool, never a sum. Summed, "3 of 4 usable" reads as healthy while
+            the pool that is down is the whole of a platform — and the line that stopped is
+            exactly what this block exists to make visible. */}
+        {benches?.pools.map((pool) => (
+          <div key={pool.id} className="act-quiet" data-pool={pool.leasable > 0 ? 'up' : 'down'}>
+            {benches.pools.length > 1 ? <strong>{pool.label}</strong> : null}
+            {benches.pools.length > 1 ? ' — ' : null}
+            <strong className="num">{pool.leasable}</strong> of {pool.total} usable
+            {pool.window ? ` — ${pool.window}` : ''}.
           </div>
-        ) : null}
+        ))}
 
         {(benches?.benches.length ?? 0) === 0 ? (
           <div className="act-quiet">
