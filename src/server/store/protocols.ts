@@ -24,6 +24,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 
+import { composeSectionId } from '../../shared/target.js';
 import { REPO_ROOT } from './config.js';
 
 export interface ProtocolMeta {
@@ -208,7 +209,7 @@ function replaceBody(raw: string | null, meta: ProtocolMeta, body: string): stri
 export function serialiseProtocol(meta: ProtocolMeta, body: string): string {
   // Key order is stable so an edit that changes only the body produces a one-hunk diff.
   const ordered: Record<string, unknown> = {};
-  for (const key of ['id', 'name', 'kind', 'order', 'requires', 'executor', 'scores', 'policy', 'phases', 'report_headings', 'requirements', 'imported_from', 'imported_at']) {
+  for (const key of ['id', 'name', 'kind', 'order', 'requires', 'targets', 'executor', 'scores', 'policy', 'phases', 'report_headings', 'requirements', 'imported_from', 'imported_at']) {
     if (meta[key] !== undefined) ordered[key] = meta[key];
   }
   for (const [k, v] of Object.entries(meta)) if (!(k in ordered)) ordered[k] = v;
@@ -328,12 +329,61 @@ export function phasesOf(meta: ProtocolMeta): { id: string; label: string }[] {
     .map((r) => ({ id: String(r.id), label: String(r.phase) }));
 }
 
+/**
+ * One entry of a rubric's `targets:` — a platform id, optionally overriding `scores` for it.
+ *
+ * `- foss` and `- { id: foss, scores: false }` are both legal, because naming a platform is the
+ * common case and overriding one is not.
+ */
+function targetsOf(meta: ProtocolMeta): { id: string; scores?: boolean }[] | null {
+  const declared = (meta as { targets?: unknown }).targets;
+  if (!Array.isArray(declared)) return null;
+  const out: { id: string; scores?: boolean }[] = [];
+  for (const entry of declared) {
+    if (typeof entry === 'string' && entry.trim() !== '') out.push({ id: entry.trim() });
+    else if (entry && typeof entry === 'object') {
+      const id = String((entry as { id?: unknown }).id ?? '').trim();
+      if (!id) continue;
+      const scores = (entry as { scores?: unknown }).scores;
+      out.push({ id, ...(typeof scores === 'boolean' ? { scores } : {}) });
+    }
+  }
+  return out.length > 0 ? out : null;
+}
+
+/**
+ * The leaves, as the run sees them — **expanded per target**.
+ *
+ * A rubric that declares `targets:` is audited on each of them, and each is its own section:
+ * its own assay, its own verdict, its own place in the backlog. The **default target keeps the
+ * bare id** so the whole existing archive reads unchanged, and every expansion carries `rubric`
+ * and `target` so nothing downstream has to parse an id to learn what it is about.
+ *
+ * They share one `sha256` and one `body`, because they *are* one rubric: an edit is one
+ * revision, and both platforms' verdicts go `older` together — which is true, since the same
+ * bytes judged them both.
+ *
+ * A rubric with no `targets:` is not target-scoped and expands to exactly one section, with no
+ * target at all. `static` judges bytes in a repo; the same compose read on two platforms is one
+ * finding rather than two.
+ */
 export function sectionsOf(protocols: readonly Protocol[]): ProtocolSection[] {
   return protocols
     .filter((p) => p.meta.kind === 'leaf')
-    .map((p) => ({
-      id: p.meta.id,
-      rubric: p.meta.id,
+    .flatMap((p) => {
+      const targets = targetsOf(p.meta);
+      return (targets ?? [null]).map((target) => ({
+        id: target ? composeSectionId(p.meta.id, target.id) : p.meta.id,
+        rubric: p.meta.id,
+        ...(target ? { target: target.id } : {}),
+        scoresOverride: target?.scores,
+        source: p,
+      }));
+    })
+    .map(({ id, rubric, target, scoresOverride, source: p }) => ({
+      id,
+      rubric,
+      ...(target ? { target } : {}),
       name: p.meta.name,
       order: Number.isFinite(Number(p.meta.order)) ? Number(p.meta.order) : 100,
       requires: p.meta.requires ?? [],
@@ -343,7 +393,11 @@ export function sectionsOf(protocols: readonly Protocol[]): ProtocolSection[] {
       executor: parseExecutor(p.meta.executor),
       // Absent means true: every section written before this field existed scores, and a
       // default of false would have quietly emptied the Overview's risk column on upgrade.
-      scores: p.meta.scores !== false,
+      //
+      // A per-target override wins, which is how a platform ships **measured before it judges**:
+      // non-scoring, it mints no scheduler line and so enters no backlog, and its verdicts stay
+      // out of the hallmark until somebody promotes it.
+      scores: scoresOverride ?? p.meta.scores !== false,
       policy:
         p.meta.policy && typeof p.meta.policy === 'object' && !Array.isArray(p.meta.policy)
           ? (p.meta.policy as Record<string, unknown>)

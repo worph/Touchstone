@@ -1608,3 +1608,56 @@ started something, or that stopping the loop stopped their audit.
 - **The thread a chat-started run reports back into is held in memory**, not persisted. The only
   thing persistence would buy is a note delivered after a restart, which cannot happen — a restart
   kills the run the note would be about.
+
+
+## 22. Two platforms — capability, target and pool pulled apart — 2026-09-18
+
+### 22.1 The requirement
+
+Every app carries one verdict: does it work on a Yundera PCS demo bench? It should carry one per
+**platform** — Yundera today, the FOSS stack (`demofoss1.nsl.sh`) alongside it — because "works
+on Yundera" and "works on the FOSS stack" are different facts about the same app, and an author
+fixing one wants to know about the other.
+
+### 22.2 What it cost, and what was wrong first
+
+It shipped twice. **v1.1.21** added a second bench pool by making `bench.foss` a *capability*,
+which worked and was wrong: one string was simultaneously a capability (what kind of resource a
+section needs), a target (which platform the verdict is about) and a pool (where instances come
+from). The seams were visible in the code — `isBenchCapability` sniffing a string prefix,
+`lineOf` breaking ties with "first bench capability in sorted order", `static` pinned to a line
+to stop its risk score being overwritten — and in a latent bug: `resolveCapabilities` assigned
+`lease.benchHost` in a loop over the capabilities a run wanted, last one wins, so a run naming
+two would have been stamped with one host. A FOSS verdict reached on a Yundera box, and
+indistinguishable from a correct one.
+
+**v1.1.23** separates them. A capability is opaque again; a **target** is a first-class entry in
+`config.targets[]` owning a pool; a rubric declares `targets:` and `sectionsOf()` expands it into
+one section per platform. A run has one target and therefore one lease, so the bug is not guarded
+against but unrepresentable.
+
+### 22.3 The shape of the identity
+
+The section id is **derived** from (rubric, target) and the target is **also recorded** on every
+assay — the pairing every test-matrix system uses, where a CI job called `test (ubuntu, 18)`
+carries its axis values structurally as well as in its name. The default target keeps the bare id
+(`functional`), which is the `DEFAULT_ORIGIN` precedent again and is what made it nearly free:
+the report index keys on path, `reportRelPathFor` is unchanged, the archive reads correctly with
+nothing rewritten, and `test/reports.test.ts` and `test/index.test.ts` pass untouched.
+
+### 22.4 Shipped measured, not judging
+
+The FOSS target ships `scores: false`. A non-scoring section mints no scheduler line, so it
+enters no backlog — on an armed box the alternative was 78 FOSS audits starting immediately,
+which is a commitment rather than a release. It is exercised by **trials**, which name their own
+target because they have no schedule row to infer one from, and which write where the report
+index never looks. Promotion is one frontmatter line, recorded as a revision with a reason.
+
+### 22.5 Not done, deliberately
+
+- **Roster editing in the UI.** Benches within a pool pass `domain/controls.ts`'s mechanical bar
+  — the prober re-reads its list every five minutes — and are worth making live-editable.
+  Target *creation* stays operator-only: it reshapes the archive, which invariant 6 forbids a
+  model from doing.
+- **`targets: any`** (run once, wherever there is capacity). Only safe now that `target` is on
+  the record; add it when something needs it.

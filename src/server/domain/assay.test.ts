@@ -32,6 +32,9 @@ const FUNCTIONAL: AssaySection = {
   standard: { name: 'Functional Review Protocol', sha256: '3'.repeat(64) },
   phases: ['A', 'C', 'E8'],
   headings: ['^functionality'],
+  // What makes it the *live* section, and — since the bench fields are stamped on the sections
+  // that used a bench rather than on every section of the run — what earns it those fields.
+  requires: ['bench', 'browser'],
 };
 
 const REPORT = [
@@ -309,10 +312,18 @@ describe('the scope of the score is on the record', () => {
 });
 
 /** Which platform build produced a verdict — see `buildFrom` in `services/bench.ts`. */
-describe('the bench build rides every assay', () => {
-  it('stamps the fingerprint onto every section that ran', () => {
+describe('the bench build rides the sections that used a bench', () => {
+  /**
+   * It used to ride *every* section of the run, which was harmless while a run had one bench
+   * and no record claimed a platform. Once an assay says which platform it is about, stamping
+   * a demo host onto `static` — which reads bytes out of a repo and never opened a browser —
+   * claims an environment produced a verdict it had nothing to do with.
+   */
+  it('stamps the fingerprint onto the live section and not onto the desk one', () => {
     const out = compose({ benchHost: 'https://demostaging1.inojob.com', benchBuild: 'index-C_5OE2_1' });
-    expect(out.map((a) => a.meta.bench_build)).toEqual(['index-C_5OE2_1', 'index-C_5OE2_1']);
+    expect(out.find((a) => a.meta.section === 'functional')?.meta.bench_build).toBe('index-C_5OE2_1');
+    expect(out.find((a) => a.meta.section === 'static')?.meta.bench_build).toBeUndefined();
+    expect(out.find((a) => a.meta.section === 'static')?.meta.bench_host).toBeUndefined();
   });
 
   it('leaves a blocked section without one, exactly as it leaves it without a bench_host', () => {
@@ -325,14 +336,23 @@ describe('the bench build rides every assay', () => {
       benchHost: 'https://demostaging1.inojob.com',
       benchBuild: 'index-C_5OE2_1',
     });
-    expect(out[0]?.meta.bench_build).toBe('index-C_5OE2_1');
     expect(out[1]?.meta.bench_build).toBeUndefined();
     expect(out[1]?.meta.bench_host).toBeUndefined();
   });
 
   it('is simply absent when the probe could not read one', () => {
     const out = compose({ benchHost: 'https://demostaging1.inojob.com' });
-    expect(out[0]?.meta.bench_build).toBeUndefined();
+    expect(out.find((a) => a.meta.section === 'functional')?.meta.bench_build).toBeUndefined();
+  });
+
+  /** The platform a verdict is about, on the record rather than inferred from a host string. */
+  it('records the target of a section that has one, and none for a section that has not', () => {
+    const out = compose({
+      sections: [STATIC, { ...FUNCTIONAL, id: 'functional@foss', target: 'foss' }],
+      benchHost: 'https://demofoss1.nsl.sh',
+    });
+    expect(out.find((a) => a.meta.section === 'functional@foss')?.meta.target).toBe('foss');
+    expect(out.find((a) => a.meta.section === 'static')?.meta.target).toBeUndefined();
   });
 });
 

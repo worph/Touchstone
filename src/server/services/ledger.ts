@@ -22,6 +22,7 @@
 
 import { randomBytes } from 'node:crypto';
 
+import { rubricOf } from '../../shared/target.js';
 import type { Severity } from '../../shared/types.js';
 import type { EventLog } from './events.js';
 
@@ -350,6 +351,12 @@ function sectionFor(run: RunState, id: string, declared: string | undefined): st
   if (owners.length > 1 && asked && owners.some((c) => c.section === asked)) return asked;
   if (owners[0]?.section) return owners[0].section;
   if (asked && run.sections.some((s) => s.id === asked)) return asked;
+  // The rubric's own name, which is what the prose calls it: an agent auditing
+  // `functional@foss` reads a rubric headed "Functional Review Protocol" and may well answer
+  // `functional`. Matching it here is better than falling through to the run's first section,
+  // which would file a FOSS finding against the Yundera verdict.
+  const byRubric = asked ? run.sections.find((s) => rubricOf(s.id) === asked) : undefined;
+  if (byRubric) return byRubric.id;
   return run.sections[0]?.id;
 }
 
@@ -368,6 +375,8 @@ function phaseSectionFor(run: RunState, phase: string, declared: string | undefi
   if (owners[0]) return owners[0].id;
   const asked = String(declared ?? '').trim();
   if (asked && run.sections.some((s) => s.id === asked)) return asked;
+  const byRubric = asked ? run.sections.find((s) => rubricOf(s.id) === asked) : undefined;
+  if (byRubric) return byRubric.id;
   const withPhases = run.sections.filter((s) => s.phases.length > 0);
   return withPhases.length === 1 ? withPhases[0]!.id : undefined;
 }

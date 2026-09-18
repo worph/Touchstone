@@ -67,5 +67,14 @@ export type ShowFilter =
  * time a scripted check is added.
  */
 export type SortKey =
-  | 'risk' | 'coverage' | 'name' | 'age' | 'static' | 'functional'
+  | 'risk' | 'coverage' | 'name' | 'age'
+  /**
+   * A verdict column, by section id — `section:functional`, `section:functional@foss`.
+   *
+   * Open-ended for the same reason `notice:` is, and now for a second: the set of verdict
+   * columns is the set of sections in the archive, which grows with a rubric's platforms as
+   * well as with the protocol directory. `'static' | 'functional'` were literals here until
+   * 2026-09-18, which meant a third column could be drawn but never sorted.
+   */
+  | `section:${string}`
   | `notice:${string}`;

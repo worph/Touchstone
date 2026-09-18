@@ -18,7 +18,16 @@ New capability beyond parity belongs in `docs/requirements.md`, numbered, with w
 
 Vocabulary used throughout the code: **subject** (an app), **standard** (a versioned rubric),
 **assay** (one run of one standard against one subject), **hallmark** (the composed verdict),
-**bench** (a leasable demo instance), **section** (one leaf of the protocol — one rubric, one
+**target** (**a platform a verdict is about** — `yundera`, `foss`; `config.targets[]`. Not a
+*capability*, which is what kind of resource a section needs (`bench`, `browser`), and not a
+*pool*, which is where interchangeable instances come from. One string was all three until
+2026-09-18, and the code had to sniff a `bench.` prefix to tell them apart. A rubric declares
+`targets:` and is expanded by `sectionsOf()` into one section per platform — the **default
+target keeps the bare section id** (`functional`), others get a composite (`functional@foss`) —
+and every assay records `target`, so nothing parses an id to learn what it is about. **A section
+is target-scoped iff its verdict is about a platform**: `static` judges bytes in a repo, so the
+same compose read twice is one finding and it carries no target at all), **bench** (a leasable
+demo instance of one target), **section** (one leaf of the protocol — one rubric, one
 assay file; `static` and `functional` today, but the set is whatever `data/protocols/*.md`
 declares), **alert** (a deduplicated environment condition), **origin** (an app store — one
 `{repo, ref, apps_path}` a subject comes from, labelled "Store" in the UI; **not** `store/`,
@@ -85,8 +94,14 @@ key, and `SubjectKey` is a branded type so the compiler catches a bare name used
 
 `leg` is the old name for a section and survives only in report files written before
 2026-08-20, in the two-column Overview, and in `Leg`/`LEGS` in `domain/hallmark.ts`. New code
-says `section`. There is **no `depth`**: a run audits every section, and a section whose
-`requires:` cannot be satisfied is recorded blocked rather than narrowing the run.
+says `section`. There is **no `depth`** in the sense that was removed: a run's section scope is derived by the
+scheduler from what is due on one **line**, never supplied by a caller — `POST /assays` still
+takes only a subject — and a section whose `requires:` cannot be satisfied is recorded blocked
+rather than narrowing the run. `depth` was somebody at the point of pressing choosing to audit
+half the rubric; a scope is the line's own answer to what is due on it, which is the same
+distinction the `Audit` verb collapse made. A **line is a target**: a section with none rides the
+default target's run, because its verdict does not depend on the platform and auditing it per
+target would write one finding twice and double-count its risk.
 
 ## Commands
 

@@ -1022,6 +1022,37 @@ describe('a schedule file written before platforms existed', () => {
     expect(migrateLines({ Alpha: row }, [LINE, FOSS]).Alpha).toEqual(row);
   });
 
+  /**
+   * The same failure arriving through a **rename** rather than a new field, which is how it
+   * gets missed: v1.1.21 named a line after the bench capability, and a line is a target now.
+   *
+   * On a box with nothing parked and nothing claimed the damage is completely invisible — which
+   * is precisely why it cannot be left to be noticed later.
+   */
+  it('re-keys a line named after the old bench capability, so a park survives', () => {
+    const out = migrateLines(
+      { Alpha: { lines: { bench: { try_n: 3, parked_at: '2026-09-15T00:00:00.000Z' } } } },
+      [LINE],
+    );
+    expect(out.Alpha?.lines?.[LINE]?.parked_at).toBe('2026-09-15T00:00:00.000Z');
+    expect(out.Alpha?.lines?.[LINE]?.try_n).toBe(3);
+    expect(out.Alpha?.lines?.bench).toBeUndefined();
+  });
+
+  it('re-keys a second platform\'s line onto its target', () => {
+    const out = migrateLines(
+      { Alpha: { lines: { 'bench.foss': { try_n: 1 } } } },
+      [LINE, FOSS],
+    );
+    expect(out.Alpha?.lines?.[FOSS]?.try_n).toBe(1);
+  });
+
+  /** A file already using target names is left exactly as it is — the rename is idempotent. */
+  it('leaves a line already named after its target alone', () => {
+    const row = { lines: { [LINE]: { try_n: 2 }, [FOSS]: { try_n: 0 } } };
+    expect(migrateLines({ Alpha: row }, [LINE, FOSS]).Alpha).toEqual(row);
+  });
+
   /** A brand-new file is not a v1 row: nothing to fan, nothing to keep. */
   it('invents no state for a subject that has none', () => {
     expect(migrateLines({ Alpha: {} }, [LINE, FOSS]).Alpha).toEqual({});

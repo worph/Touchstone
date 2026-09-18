@@ -8,6 +8,20 @@ kind: leaf
 # what the runner probes before dispatching — this section is recorded blocked, on its own,
 # when they are missing.
 order: 2
+
+# **The platforms this verdict is about.** One assay per target, each with its own verdict, its
+# own place in the backlog and its own bench — one rubric, because what makes an app work is the
+# same question on both and a second copy of this file would drift within a month.
+#
+# The FOSS target ships `scores: false`: measured before it judges. It therefore mints no
+# scheduler line and enters no backlog, its verdicts stay out of the hallmark, and it is
+# exercised by trials until somebody promotes it — which is a one-line edit here, recorded as a
+# revision with a reason, and re-eligibles the archive as it should.
+targets:
+  - yundera
+  - id: foss
+    scores: false
+
 requires:
   - bench
   - browser
@@ -199,6 +213,10 @@ base's `maison.md`. What follows is only what it changes about *judging*.
   broken app. `install` brackets itself with a refresh and a compose check for that reason.
 - **One sign-in covers the dashboard and every protected app for 30 days.** That is what makes
   `auth-gate` the step the platform makes easiest to fool; its tie-breaker is stated there.
+  **That window is a fact about the demo platform's IdP, not about Maison** — the FOSS target
+  runs Authelia, whose session policy is its own. So do not reason from the number on either
+  platform: `auth-gate`'s tie-breaker is a *fresh context with no session*, which is true
+  wherever the audit runs and is why it was written that way.
 - **An uninstall archives rather than deletes**, which is why `data-persistence` is a restore
   and §7's cleanup has two halves.
 
@@ -212,6 +230,19 @@ record against.
 1. `new_page` → `https://<DEMO>/` in a fresh isolated context, and sign in with `LOGIN`.
 2. ✅ **pass** when the dashboard is up. A box that has never been set up is infra → `errored`,
    never a fault of the app.
+
+**On the FOSS target the sign-in differs, and only the sign-in.** Both platforms run the same
+Maison behind the same `/nhl-auth/oidc/login` gate; what sits behind that gate is a different
+identity provider — Authelia and Dex rather than the demo IdP. Follow the flow wherever it
+leads and sign in with the credentials the run supplies. Confirmed by hand on 2026-09-17:
+`https://demofoss1.nsl.sh/` redirects to the OIDC login and lands back on Maison itself, so the
+flow completes without a password prompt.
+
+> ⚠️ **Written from a probe, not from having driven it.** If the FOSS box asks for anything the
+> demo box does not, that is this step being wrong rather than the platform being broken: record
+> the phase `errored`, say exactly what it asked for, and do **not** file a finding against the
+> app. The knowledge-base page `foss-stack.md` is where the corrected mechanics belong once
+> somebody has watched it happen.
 
 **`install`** — fresh install
 

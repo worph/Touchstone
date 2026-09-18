@@ -27,9 +27,57 @@ export interface Reading {
   blocked: boolean;
 }
 
-/** True when this record measures rather than judges — the whole test, in one field. */
+/**
+ * True when this record **measures** rather than judges.
+ *
+ * `scores: false` used to be the whole test, and it was right while it had one meaning. It now
+ * has two:
+ *
+ * 1. *this section measures rather than judges* — `currency`, a script that reports image ages
+ *    and draws a badge and a table;
+ * 2. *this platform is being measured before it is allowed to judge* — a target shipped
+ *    non-scoring so that its first sweep cannot publish verdicts in app authors' names.
+ *
+ * Only the first is a reading. A non-scoring **agent** section still produces a verdict, a
+ * severity and findings; classified as a reading it would be drawn by `ReadingBadge`, which
+ * reads `meta.badge` — absent on an agent section, so the column would be a blank cell where a
+ * verdict belongs.
+ *
+ * What separates them is that a reading *produces a badge*, which in practice means a scripted
+ * executor. `executor` is the durable half of that pair: a reading whose run was blocked has no
+ * badge yet still belongs in its own column, which is why this does not simply test `badge`.
+ */
 export function isReading(record: AssayRecord | null | undefined): boolean {
-  return record?.meta.scores === false;
+  if (record?.meta.scores !== false) return false;
+  return record.meta.executor !== undefined || record.meta.badge !== undefined;
+}
+
+/**
+ * Which sections in this set of rows carry a **verdict**, in a stable order.
+ *
+ * The mirror of `readingSections`, and derived from the archive for the same reason: a section
+ * gets a column the moment one of its assays exists, and nothing here has to be told its name.
+ * That is what lets a rubric audited on a second platform appear as its own column with no edit
+ * to any page — and, equally, what keeps it *absent* until something has actually been audited
+ * there, rather than showing an empty column for a platform nothing has run on yet.
+ *
+ * `static` and `functional` are seeded so the two columns the table has always drawn survive an
+ * empty archive; `domain/hallmark.ts` seeds the same pair into every row for the same reason.
+ */
+export function verdictSectionsOf(rows: readonly SubjectState[]): string[] {
+  const ids = new Set<string>(['static', 'functional']);
+  for (const row of rows) {
+    for (const [id, rec] of Object.entries(row.sections ?? {})) {
+      if (rec && !isReading(rec)) ids.add(id);
+    }
+  }
+  // Protocol order is not on the wire, so: the two named columns first, then the rest by id —
+  // which puts `functional@foss` directly after `functional`, where a reader expects it.
+  return [...ids].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
+
+function rank(id: string): number {
+  return id === 'static' ? 0 : id === 'functional' ? 1 : 2;
 }
 
 /** Which sections in this set of rows are readings, in a stable order. */

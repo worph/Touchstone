@@ -57,6 +57,32 @@ Measure how far behind each image tag is.
 
 const SCRIPT = '#!/bin/sh\necho \'{"requirements":[]}\'\n';
 
+/**
+ * A rubric audited on two platforms — the shape that catches the break the other fixtures
+ * cannot see.
+ *
+ * `static.md` and `currency.md` are not target-scoped, so their section id equals their file id
+ * and every lookup keyed on either one works. A target-scoped rubric expands into
+ * `functional` and `functional@foss`, and a lookup keyed on the **section** id then misses the
+ * file entirely — silently, because the miss is swallowed rather than raised.
+ */
+const FUNCTIONAL = `---
+id: functional
+name: Functional Review Protocol
+kind: leaf
+order: 20
+requires: [bench, browser]
+targets:
+  - yundera
+  - id: foss
+    scores: false
+---
+
+# Functional Review Protocol
+
+Install it and drive it.
+`;
+
 /** A clock that advances a second per call, so `at` is ordered and comparable. */
 function ticker(): () => Date {
   let t = Date.parse('2026-08-23T09:00:00Z');
@@ -80,6 +106,7 @@ beforeEach(async () => {
   await write('static.md', STATIC);
   await write('currency.md', CURRENCY);
   await write('currency.sh', SCRIPT);
+  await write('functional.md', FUNCTIONAL);
   protocols = new ProtocolStore(dir);
 });
 
@@ -92,7 +119,24 @@ describe('the rubric in force, per section', () => {
     const { sections } = await readStandards(protocols);
     const onDisk = await protocols.get('static');
     expect(sections.static?.sha256).toBe(onDisk?.sha256);
-    expect(Object.keys(sections).sort()).toEqual(['currency', 'static']);
+    expect(Object.keys(sections).sort()).toEqual([
+      'currency',
+      'functional',
+      'functional@foss',
+      'static',
+    ]);
+  });
+
+  /**
+   * One rubric, one revision, one chip. Both platforms are judged by the same bytes, so a
+   * verdict reached on either goes `older` together when that file is edited — which is why
+   * the expansions share a sha rather than each carrying their own.
+   */
+  it('gives every target of one rubric the same sha, because it is the same rubric', async () => {
+    const { sections } = await readStandards(protocols);
+    const onDisk = await protocols.get('functional');
+    expect(sections.functional?.sha256).toBe(onDisk?.sha256);
+    expect(sections['functional@foss']?.sha256).toBe(onDisk?.sha256);
   });
 
   /** The procedure is half the standard for a section a script performs — invariant 9. */
@@ -141,6 +185,44 @@ describe('when the standard last moved', () => {
     await write('static.md', `${STATIC}\nOne more clause.\n`);
     await revisions.sweep();
     expect((await readStandards(protocols, revisions)).moved_at).toBeDefined();
+  });
+
+  /**
+   * **The one this file could not previously catch.** `resolve()` looks the rubric's file up to
+   * decide what counts as judging, and it was keyed on the *section* id — fine for `static`,
+   * where the two are equal, and a silent miss for `functional@foss`. The `if (file)` swallowed
+   * it, so editing the functional rubric stopped re-eligibling anybody: no error, no failure,
+   * a whole clause quietly inert.
+   */
+  it('moves when a target-scoped rubric is edited', async () => {
+    const revisions = revisionsFor();
+    await revisions.sweep();
+    await write('functional.md', `${FUNCTIONAL}\nOne more clause.\n`);
+    await revisions.sweep();
+
+    const { moved_at, moved_at_by_line } = await readStandards(protocols, revisions);
+    expect(moved_at).toBeDefined();
+    expect(moved_at_by_line.yundera).toBeDefined();
+  });
+
+  /**
+   * Invariant 12, reaching the target axis: a platform shipped **non-scoring** mints no line and
+   * so has no backlog to re-eligible. Editing the shared rubric must not conjure one — the
+   * whole point of shipping a platform measured-before-it-judges is that it costs no agent time
+   * until somebody promotes it.
+   *
+   * The same bytes still move the *scoring* target's line, in the same edit, which is what
+   * makes this a statement about `scores` rather than about the file.
+   */
+  it('does not move a line for a target that measures rather than judges', async () => {
+    const revisions = revisionsFor();
+    await revisions.sweep();
+    await write('functional.md', `${FUNCTIONAL}\nOne more clause.\n`);
+    await revisions.sweep();
+
+    const { moved_at_by_line } = await readStandards(protocols, revisions);
+    expect(moved_at_by_line.foss).toBeUndefined();
+    expect(moved_at_by_line.yundera).toBeDefined();
   });
 
   /**

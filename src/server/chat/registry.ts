@@ -89,6 +89,7 @@ import type { RunLedger } from '../services/ledger.js';
 import type { AlertStore } from '../services/alerts.js';
 import type { EventLog } from '../services/events.js';
 import type { PortProber } from '../services/ports.js';
+import { rubricOf } from '../../shared/target.js';
 import type { Targets } from '../services/bench.js';
 import {
   enqueueTrial,
@@ -1229,7 +1230,10 @@ export const CHAT_TOOLS: ChatTool[] = [
         );
       }
 
-      const found = all.find((p) => p.meta.id === id);
+      // `rubricOf`, because a model reading `functional@foss` off a report is holding a *section*
+      // id and this tool answers about *files*. Refusing it would tell the model its own
+      // evidence does not exist; the bare rubric is the document it meant.
+      const found = all.find((p) => p.meta.id === rubricOf(id));
       if (!found) {
         return failed(`There is no protocol called "${id}". These exist: ${all.map((p) => p.meta.id).join(', ')}.`);
       }
@@ -1327,7 +1331,11 @@ export const CHAT_TOOLS: ChatTool[] = [
       const protocols = ctx.protocols;
       if (!protocols) return failed('No protocol store is wired, so the rubric cannot be edited here.');
 
-      const id = String(input.id ?? '').trim();
+      // The rubric, not the section: a model that read `functional@foss` off a report is
+      // naming a platform's *section*, and one rubric judges every platform it declares. The
+      // save therefore goes to the file — and to both platforms' next audits, which is what
+      // editing a shared rubric means.
+      const id = rubricOf(String(input.id ?? '').trim());
       const current = await protocols.get(id);
       if (!current) {
         const all = await protocols.list();

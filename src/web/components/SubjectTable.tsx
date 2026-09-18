@@ -18,7 +18,7 @@ import CoverageCell from './CoverageCell';
 import StandardChip, { DelistedChip, VersionChip } from './StandardChip';
 import StatusCell from './StatusCell';
 import { ReadingBadge } from './Reading';
-import { readingOf, readingSections } from '../lib/reading';
+import { readingOf, readingSections, verdictSectionsOf } from '../lib/reading';
 import { coverageOf, legState, type LegTally, type LiveRun, type Tallies } from '../lib/overview';
 import { ageLabel, num } from '../lib/format';
 import type { ShowFilter, SortKey } from '../types';
@@ -52,14 +52,20 @@ export default function SubjectTable({
   // Derived from what is in the archive rather than passed in: a section that measures gets
   // a column the moment one of its assays exists, and nothing here has to be told its name.
   const notices = readingSections(rows);
+  // Derived exactly as the reading columns are, so a rubric audited on a second platform gets
+  // its own column the moment it has been audited there — and none before. These were two
+  // hard-coded headers until 2026-09-18; `hallmark.ts`'s `LEGS` says in as many words that it
+  // "goes when the table learns to draw N".
+  const verdicts = verdictSectionsOf(rows);
   return (
     <div className="tbl-wrap">
       <table className="tbl">
         <thead>
           <tr>
             <Th label="Subject" k="name" sort={sort} dir={dir} onSort={onSort} />
-            <Th label="Static" k="static" sort={sort} dir={dir} onSort={onSort} />
-            <Th label="Functional" k="functional" sort={sort} dir={dir} onSort={onSort} />
+            {verdicts.map((id) => (
+              <Th key={id} label={label(id)} k={`section:${id}`} sort={sort} dir={dir} onSort={onSort} />
+            ))}
             {notices.map((id) => (
               <Th key={id} label={label(id)} k={`notice:${id}`} sort={sort} dir={dir} onSort={onSort} />
             ))}
@@ -78,6 +84,7 @@ export default function SubjectTable({
               live={live}
               showOrigin={showOrigin}
               href={href}
+              verdicts={verdicts}
               notices={notices}
               action={action}
             />
@@ -88,18 +95,27 @@ export default function SubjectTable({
   );
 }
 
-/** `currency` → `Currency`. The section id is the only name a reading column has. */
+/**
+ * `currency` → `Currency`, `functional@foss` → `Functional · foss`.
+ *
+ * The section id is the only name a derived column has: protocol names and target labels are
+ * not on the wire, and inventing a lookup for them would be a second place for a column's name
+ * to be wrong.
+ */
 function label(id: string): string {
-  return id.charAt(0).toUpperCase() + id.slice(1).replace(/[-_]/g, ' ');
+  const [rubric, target] = id.split('@');
+  const head = (rubric ?? id).charAt(0).toUpperCase() + (rubric ?? id).slice(1).replace(/[-_]/g, ' ');
+  return target ? `${head} · ${target}` : head;
 }
 
 function Row({
-  s, live, showOrigin, href, notices, action,
+  s, live, showOrigin, href, verdicts, notices, action,
 }: {
   s: SubjectState;
   live: LiveRun | null;
   showOrigin: boolean;
   href: (s: SubjectState) => string;
+  verdicts: string[];
   notices: string[];
   action?: (s: SubjectState) => ReactNode;
 }) {
@@ -125,8 +141,12 @@ function Row({
       </td>
       {/* The state comes from `legState`, not from the record, so a leg being audited right
           now says so in the same cell that will hold its verdict in four minutes. */}
-      <td><StatusCell state={legState(s, 'static', live)} showNote={running} /></td>
-      <td><StatusCell state={legState(s, 'functional', live)} /></td>
+      {verdicts.map((id, i) => (
+        <td key={id}>
+          {/* The elapsed-time note rides the first column only: it is one fact about the row. */}
+          <StatusCell state={legState(s, id, live)} showNote={i === 0 && running} />
+        </td>
+      ))}
       {notices.map((id) => (
         <td key={id}><ReadingBadge reading={readingOf(s, id)} /></td>
       ))}

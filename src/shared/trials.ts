@@ -82,6 +82,8 @@ export interface TrialRecord {
   repo: string;
   /** Where the apps live inside the archive — `Apps` in the Yundera store. */
   apps_path: string;
+  /** Which platform this trial was audited on. Absent means the default target. */
+  target?: string;
   /** The bare app name audited. A trial is single-subject — see below. */
   subject: string;
   /**
@@ -176,6 +178,14 @@ export interface TrialRequest {
   /** Required with `store_url`; taken from the session for an upload. */
   subject?: string;
   apps_path?: string;
+  /**
+   * Which platform to audit on — a target id from `config.targets`.
+   *
+   * A scheduled audit gets this from the line it was picked on. A trial has no subject row and
+   * so no line, which is why it is the one caller that may name a platform: trialling a change
+   * against the FOSS stack is the whole point of having one. Absent means the default target.
+   */
+  target?: string;
 }
 
 /**

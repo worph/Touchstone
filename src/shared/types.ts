@@ -115,6 +115,21 @@ export interface AssayMeta {
   origin?: string;
   /** Which section of the protocol this assay is. `parseReportMeta` guarantees it. */
   section: Section;
+  /**
+   * **Which platform this verdict is about** — `config.targets[].id`.
+   *
+   * The axis the archive was missing: an assay answers "does app A conform to rubric R *when
+   * run on platform P*". Filled in by `coerceMeta` when absent, exactly as `leg` → `section`
+   * and `origin` → `DEFAULT_ORIGIN` are, so the whole archive written before targets existed
+   * reads as the default platform with nothing rewritten.
+   *
+   * It would have ridden the index signature untyped, as `bench_host` does — but a dimension
+   * of identity should be declared, not inferred from a string that happens to be there.
+   *
+   * Absent on a section that is **not** target-scoped. `static` judges bytes in a repo, so the
+   * same compose read on two platforms is one finding rather than two.
+   */
+  target?: string;
   /** The pre-rename spelling of `section`, still on every file written before 2026-08-20. */
   leg?: Section;
   standard: string;

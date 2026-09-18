@@ -52,6 +52,8 @@ export interface TrialSpec {
   slug: string;
   subject: string;
   apps_path: string;
+  /** Which platform to audit on. See `TrialRequest.target`. */
+  target?: string;
   /**
    * The **rubric anchor** — never a place a byte came from.
    *
@@ -277,6 +279,11 @@ export async function buildSpec(
       slug,
       subject,
       apps_path: appsPath,
+      // Named by the caller, because a trial has no schedule row and so no line to infer a
+      // platform from. Unvalidated here on purpose: an unknown target is recorded
+      // `bench_unconfigured` by the runner, which is a better answer than a 400 that cannot
+      // say which platforms this installation actually has.
+      ...(body.target ? { target: String(body.target) } : {}),
       repo: rubricRepo(deps, compareTo),
       source_url: sourceUrl,
       ...(uploadId ? { upload_id: uploadId } : {}),
@@ -334,6 +341,7 @@ export async function enqueueTrial(
     ...(spec.upload_id ? { upload_id: spec.upload_id } : {}),
     repo: spec.repo,
     apps_path: spec.apps_path,
+    ...(spec.target ? { target: spec.target } : {}),
     subject: spec.subject,
     ...(compareTo ? { compare_to: compareTo } : {}),
     store_token: spec.store_token,
@@ -405,6 +413,9 @@ export async function startTrial(deps: TrialRunDeps, slug: string): Promise<void
       // The slug is the synthetic origin, so the report path machinery is untouched.
       subject: subjectKey(slug, record.subject),
       try_n: 1,
+      // The platform this trial is about. A trial audits bytes rather than a subject the
+      // scheduler tracks, so nothing else can infer it — see `TrialRequest.target`.
+      ...(record.target ? { target: record.target } : {}),
       trial: {
         repo: record.repo,
         apps_path: record.apps_path,
