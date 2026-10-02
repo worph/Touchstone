@@ -395,6 +395,14 @@ export default function Automation() {
             </span>
           </div>
         ) : null}
+        {/* The workshop is last in this line and says why it is not starting, which is a
+            different thing from the queue being stuck: it is waiting for quiet on purpose. */}
+        {data.last_tick?.decision.workshop_hold ? (
+          <div className="backlog-note">
+            <span aria-hidden="true">⚒</span>
+            <span>The workshop {data.last_tick.decision.workshop_hold}.</span>
+          </div>
+        ) : null}
       </section>
 
       {/* ── the backlog the loop works out for itself ─────────────────────── */}
@@ -514,12 +522,23 @@ function RequestLine({
       <span className="env-name">
         {row.kind === 'trial' ? (
           <Link to={`/trials/${encodeURIComponent(row.id)}`}>{row.label}</Link>
+        ) : row.kind === 'workshop' ? (
+          // An idle candidate has no proposal yet (`cand:…`), so it links to the page, not a row.
+          <Link to={row.id.startsWith('cand:') ? '/workshop' : `/workshop/${encodeURIComponent(row.id)}`}>{row.label}</Link>
         ) : (
           <Link to={`/s/${encodeURIComponent(row.id)}`}>{row.label}</Link>
         )}
       </span>
       <span className="env-status">
-        {row.state === 'running' ? 'being audited now' : row.kind === 'trial' ? 'trial' : 'audit'}
+        {row.kind === 'workshop'
+          ? row.state === 'running'
+            ? 'being authored now'
+            : 'workshop · waits for quiet'
+          : row.state === 'running'
+            ? 'being audited now'
+            : row.kind === 'trial'
+              ? 'trial'
+              : 'audit'}
       </span>
       <span className="env-note">asked for {since(row.requested_at)}</span>
       {/* Only an audit can be withdrawn from here. A trial is a whole record with its own

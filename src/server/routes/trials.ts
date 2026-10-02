@@ -77,6 +77,12 @@ export interface TrialRoutesOptions {
   publicBaseUrl?: string;
   /** Injected in tests so a trial can be started without reaching GitHub. */
   fetchImpl?: typeof fetch;
+  /**
+   * A workshop authoring session's staged working copy, by its token — the same address
+   * shape, so the bench installs a draft exactly as it installs a trial. In memory and
+   * short-lived; see `Workshop.stage`.
+   */
+  staged?: (token: string) => { zip: Buffer; subject: string } | undefined;
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
@@ -175,7 +181,16 @@ const routes: FastifyPluginAsync<TrialRoutesOptions> = async (app, options) => {
     const named = /^([A-Za-z0-9_-]+)\.zip$/.exec(request.params.file);
     if (!named) return fail(reply, 404, 'no such trial store');
     const found = options.trials?.byStoreToken(named[1]!);
-    if (!found || !options.trials) return fail(reply, 404, 'no such trial store');
+    if (!found || !options.trials) {
+      const staged = options.staged?.(named[1]!);
+      if (!staged) return fail(reply, 404, 'no such trial store');
+      return reply
+        .type('application/zip')
+        .header('content-disposition', `attachment; filename="${staged.subject}-draft.zip"`)
+        .header('x-content-type-options', 'nosniff')
+        .header('cache-control', 'no-store')
+        .send(staged.zip);
+    }
 
     let zip: Buffer;
     try {

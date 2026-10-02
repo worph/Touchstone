@@ -15,6 +15,7 @@ import { EmptyState, Loading, Notice } from '../components/Ui';
 import { getReport, getSubject } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
 import AuditControl from '../components/AuditControl';
+import ProposeControl from '../components/ProposeControl';
 import FixReportPanel, { FixReportButton } from '../components/FixReport';
 import LegCard, { StandardTag, verdictSections } from '../components/LegCard';
 import { RequirementsPanel } from '../components/RequirementList';
@@ -120,6 +121,15 @@ export default function SubjectDetail() {
             {/* Only when there is something to brief anyone on. A "fix report" button on a
                 compliant app is a button that produces a document saying nothing. */}
             {fixable ? <FixReportButton open={fixOpen} onToggle={() => setFixOpen((v) => !v)} /> : null}
+            {/* The workshop's verb: author a fix and, once it passes, open a pull request. Only
+                where there is something to fix and the workshop could take it. */}
+            <ProposeControl
+              subject={subject.name}
+              fixable={fixable}
+              ready={data.workshop_ready}
+              {...(data.workshop ? { active: data.workshop } : {})}
+              onChanged={() => reload()}
+            />
             {/* One verb. There were two here — the queue's and the agent's — and the split
                 asked the operator to decide something that was never theirs to decide: whether
                 an audit starts now or waits is a fact about the line. */}

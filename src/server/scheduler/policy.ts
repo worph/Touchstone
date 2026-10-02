@@ -216,6 +216,21 @@ export interface PolicyInput {
    * line for ever over a configuration answer that no wait can change.
    */
   capabilities: Record<string, { available: boolean; note?: string }>;
+  /**
+   * The workshop — the lowest line in the queue (docs/auto-app-pr.md §6.1).
+   *
+   * `slot` is what it would author next, chosen by `services/workshop.ts`; the policy only
+   * decides **whether now**: never while anything somebody asked for is queued or running, and
+   * for work it picked for itself (`idle`) also never while an audit is in flight or — when the
+   * backlog is being worked at all — while any of it is due. It holds one (bench, browser) pair
+   * on the default line, and only what this tick's other dispatches left over.
+   */
+  workshop?: {
+    slot?: { id: string; label: string; class: 'operator' | 'idle'; asked_at: string };
+    running?: { id: string; label: string; started_at: string };
+    /** Whether due backlog counts as "in the pipe" — true exactly while the scheduler is armed. */
+    backlogCounts: boolean;
+  };
 }
 
 const DAY_MS = 86_400_000;
@@ -818,7 +833,7 @@ function decideSingle(input: PolicyInput): TickDecision {
  */
 function decideConcurrent(input: PolicyInput, free: NonNullable<PolicyInput['free']>): TickDecision {
   const { constants, now } = input;
-  const { schedule, reclaimed, unparked, eligible, restandard, rechanged, reflagged, parked } =
+  const { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged, parked } =
     plan(input);
 
   const base = {
@@ -957,6 +972,50 @@ function decideConcurrent(input: PolicyInput, free: NonNullable<PolicyInput['fre
     });
   }
 
+  // ── the workshop, last ──────────────────────────────────────────────────────────────────
+  let workshopHold: string | undefined;
+  const ws = input.workshop;
+  if (ws?.slot && !ws.running) {
+    const slot = ws.slot;
+    const want = needs(DEFAULT_TARGET);
+    const ahead = requests({ ...input, workshop: undefined }).length;
+    // A disarmed scheduler decides backlog dispatches that `runTick` will never start, so on
+    // such a box they neither count as "in the pipe" nor hold the pair the workshop needs.
+    if (!ws.backlogCounts) {
+      for (const d of dispatches) {
+        if (d.source !== 'backlog') continue;
+        const w = needs(d.line);
+        if (w.bench && d.line in benches) benches[d.line]! += 1;
+        if (w.browser) browsers += 1;
+      }
+    }
+    if (ahead > 0 || dispatches.some((d) => d.source === 'requested')) {
+      workshopHold = `waits for quiet — ${Math.max(ahead, 1)} request(s) ahead`;
+    } else if (slot.class === 'idle' && busy) {
+      workshopHold = 'waits for the audit in flight';
+    } else if (slot.class === 'idle' && ws.backlogCounts && eligible.length > 0) {
+      workshopHold = `waits for the backlog — ${eligible.length} due`;
+    } else if (!available(DEFAULT_TARGET)) {
+      workshopHold = gateText([DEFAULT_TARGET]);
+    } else if (free.browsersHealthy === 0) {
+      workshopHold = 'no usable browser';
+    } else if (DEFAULT_TARGET in benches && benches[DEFAULT_TARGET]! <= 0) {
+      workshopHold = `every ${DEFAULT_TARGET} bench is in use`;
+    } else if (want.browser && browsers <= 0) {
+      workshopHold = 'every browser is in use';
+    } else {
+      if (DEFAULT_TARGET in benches) benches[DEFAULT_TARGET]! -= 1;
+      browsers -= 1;
+      dispatches.push({
+        action: 'workshop',
+        workshop: slot.id,
+        line: DEFAULT_TARGET,
+        source: 'workshop',
+        reason: `workshop — ${slot.label}`,
+      });
+    }
+  }
+
   const held = [...holds.values()];
   const gated = held.filter((h) => h.why === 'gated').map((h) => h.line);
   const first = dispatches[0];
@@ -982,11 +1041,13 @@ function decideConcurrent(input: PolicyInput, free: NonNullable<PolicyInput['fre
     action: first ? first.action : 'idle',
     ...(first?.subject ? { subject: first.subject } : {}),
     ...(first?.trial ? { trial: first.trial } : {}),
+    ...(first?.workshop ? { workshop: first.workshop } : {}),
     ...(first ? { source: first.source, line: first.line } : {}),
     ...(first?.sections ? { sections: first.sections } : {}),
     ...(first?.try_n !== undefined ? { try_n: first.try_n } : {}),
     reason,
     dispatches,
+    ...(workshopHold ? { workshop_hold: workshopHold } : {}),
     ...(held.length > 0 ? { held } : {}),
     ...(gated.length > 0 ? { gated } : {}),
     ...(!first && waitingOn ? { waiting_on: waitingOn } : {}),
@@ -1177,6 +1238,26 @@ export function requests(input: PolicyInput): RequestRow[] {
       state: 'running',
     });
   }
+  const ws = input.workshop;
+  if (ws?.running) {
+    rows.push({
+      kind: 'workshop',
+      id: ws.running.id,
+      label: ws.running.label,
+      requested_at: ws.running.started_at,
+      position: 0,
+      state: 'running',
+    });
+  } else if (ws?.slot) {
+    rows.push({
+      kind: 'workshop',
+      id: ws.slot.id,
+      label: ws.slot.label,
+      requested_at: ws.slot.asked_at,
+      position: 0,
+      state: 'waiting',
+    });
+  }
 
   rows.sort((a, b) => {
     // Whatever is running is the head, whatever it was asked for. It is not waiting on the
@@ -1184,6 +1265,10 @@ export function requests(input: PolicyInput): RequestRow[] {
     const ra = a.state === 'running' ? 0 : 1;
     const rb = b.state === 'running' ? 0 : 1;
     if (ra !== rb) return ra - rb;
+    // A waiting workshop entry is last whenever it was asked for: it waits for quiet.
+    const wa = a.kind === 'workshop' ? 1 : 0;
+    const wb = b.kind === 'workshop' ? 1 : 0;
+    if (wa !== wb) return wa - wb;
     const ta = Date.parse(a.requested_at);
     const tb = Date.parse(b.requested_at);
     // An unparseable ask sorts last rather than first — it keeps its place in the queue

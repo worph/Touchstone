@@ -125,16 +125,19 @@ export interface Reclaim {
  * one per request or backlog cell, in queue order.
  */
 export interface Dispatch {
-  action: 'audit' | 'trial';
+  action: 'audit' | 'trial' | 'workshop';
   /** The subject key, for an audit. */
   subject?: string;
   /** The trial slug, for a trial. */
   trial?: string;
+  /** The proposal id, for a workshop authoring session. */
+  workshop?: string;
   /** The platform this run is on, and therefore which pool its bench comes from. */
   line: LineKey;
   /** The scope, for an audit — the scheduler's answer, never a caller's. */
   sections?: string[];
-  source: 'requested' | 'backlog';
+  /** `workshop` — the lowest line in the queue, which only ever starts when the rest is quiet. */
+  source: 'requested' | 'backlog' | 'workshop';
   reason: string;
   /** The try this attempt would be, for an audit. */
   try_n?: number;
@@ -163,10 +166,17 @@ export interface TickDecision {
    * and an audit are two things one agent can be asked for, and the decision about which one
    * happens next has to name both or it is not the decision.
    */
-  action: 'audit' | 'trial' | 'idle';
+  action: 'audit' | 'trial' | 'workshop' | 'idle';
   subject?: string;
   /** The trial slug, when `action` is `trial`. */
   trial?: string;
+  /** The proposal id, when `action` is `workshop`. */
+  workshop?: string;
+  /**
+   * Why the workshop did not start this tick, when it had something it would have started.
+   * Absent when it had nothing to offer — an empty workshop is not waiting on anything.
+   */
+  workshop_hold?: string;
   /**
    * Whether this came out of the request queue or out of the derived backlog.
    *
@@ -174,7 +184,7 @@ export interface TickDecision {
    * reads this to decide whether a disarmed scheduler may still dispatch. A request is
    * somebody asking; the backlog is the loop helping itself.
    */
-  source?: 'requested' | 'backlog';
+  source?: 'requested' | 'backlog' | 'workshop';
   /**
    * What the queue is waiting on, when something is requested and the tick idled anyway.
    *
@@ -320,7 +330,12 @@ export interface QueueRow {
  * agent. A queue that ordered them separately would be two queues wearing one heading.
  */
 export interface RequestRow {
-  kind: 'audit' | 'trial';
+  /**
+   * `workshop` is the proposal the workshop would author next, or is authoring — always last
+   * while waiting, because it waits for the rest of the queue to be quiet (docs/auto-app-pr.md
+   * §6.1), and first while running, like anything else that is running.
+   */
+  kind: 'audit' | 'trial' | 'workshop';
   /** The subject key for an audit, the slug for a trial — the address, not the label. */
   id: string;
   /** What to show a person: the bare app name. */

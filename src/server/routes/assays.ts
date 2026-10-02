@@ -42,6 +42,8 @@ export interface AssayRoutesOptions {
   targets?: Targets;
   /** Who holds which bench and browser — what `capacity` reports. */
   leases?: Leases;
+  /** For the authoring session in flight — see `RunStatus.workshop`. */
+  workshop?: { liveView(): import('../../shared/workshop.js').WorkshopLive | undefined };
 }
 
 /** How many settled requirements ride along. Enough to see movement, not a second report. */
@@ -133,6 +135,7 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
       // The depth of the request queue, so the strip on every page can say what is after this
       // one. Absent rather than 0 when no scheduler is wired, which is not the same answer.
       ...(options.scheduler ? { queued: (await options.scheduler.previewRequests()).length } : {}),
+      ...(options.workshop?.liveView() ? { workshop: options.workshop.liveView()! } : {}),
     };
   });
 

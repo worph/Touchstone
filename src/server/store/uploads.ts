@@ -36,7 +36,7 @@ import { isAppDirName } from './trials.js';
  * for the same reason. `..` is rejected twice, by the character class and again by name,
  * because the first is easy to widen by accident when somebody adds a legal character.
  */
-const UPLOAD_PATH_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
+export const UPLOAD_PATH_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
 
 /** An id this module minted. Guards every `rm` and every directory lookup. */
 const UPLOAD_ID_RE = /^[a-f0-9]{12}$/;

@@ -22,6 +22,13 @@ export interface SubjectDetail {
   queued?: boolean;
   /** Its 1-based place in the request queue, when it is in one. */
   queue_position?: number;
+  /**
+   * The workshop's business with this app — a proposal in flight, an open pull request.
+   * Operator-only, like `queued`, and for the same reason.
+   */
+  workshop?: { state: string; pr?: { number: number; url: string } };
+  /** Whether the workshop could take a proposal at all. Absent: not wired. */
+  workshop_ready?: boolean;
 }
 
 /** What StatusCell renders. Derived, never transported. */

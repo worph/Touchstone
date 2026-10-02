@@ -122,6 +122,26 @@ export const EVENT_CODES = {
   TRIAL_COMPLETED: { category: 'assay', label: 'trial finished' },
   TRIAL_FAILED: { category: 'assay', label: 'trial failed' },
   TRIAL_SWEPT: { category: 'system', label: 'orphaned trial reports removed' },
+
+  // ── workshop ──────────────────────────────────────────────────────────────
+  TICK_WORKSHOP_SELECTED: { category: 'scheduler', label: 'workshop session started' },
+  PROPOSAL_QUEUED: { category: 'workshop', label: 'proposal queued' },
+  AUTHORING_STARTED: { category: 'workshop', label: 'authoring started' },
+  AUTHORING_ENDED: { category: 'workshop', label: 'authoring ended' },
+  PROPOSAL_INFRA: { category: 'workshop', label: 'proposal held by infrastructure' },
+  PROPOSAL_CANNOT: { category: 'workshop', label: 'proposal cannot be done' },
+  PROPOSAL_VALIDATING: { category: 'workshop', label: 'proposal sent to validation' },
+  PROPOSAL_READY: { category: 'workshop', label: 'proposal passed validation' },
+  PROPOSAL_REVISING: { category: 'workshop', label: 'proposal failed a round' },
+  PROPOSAL_FAILED: { category: 'workshop', label: 'proposal given up' },
+  PROPOSAL_DISCARDED: { category: 'workshop', label: 'proposal discarded' },
+  PROPOSAL_SUBMITTED: { category: 'workshop', label: 'pull request opened' },
+  PROPOSAL_SUBMIT_FAILED: { category: 'workshop', label: 'pull request could not be opened' },
+  PROPOSAL_MERGED: { category: 'workshop', label: 'pull request merged' },
+  PROPOSAL_CLOSED: { category: 'workshop', label: 'pull request closed unmerged' },
+  WORKSHOP_ARMED: { category: 'workshop', label: 'workshop armed' },
+  WORKSHOP_DISARMED: { category: 'workshop', label: 'workshop disarmed' },
+  WORKSHOP_MEMORY_CLEARED: { category: 'workshop', label: 'task memory cleared' },
   UPLOAD_WRITTEN: { category: 'assay', label: 'trial file uploaded' },
 
   // ── the archive ───────────────────────────────────────────────────────────
@@ -248,6 +268,24 @@ interface EventDetails {
   };
   TRIAL_FAILED: { slug: string; subject: string; reason: string };
   TRIAL_SWEPT: { slugs: string[] };
+  TICK_WORKSHOP_SELECTED: { proposal: string; line: string; reason: string };
+  PROPOSAL_QUEUED: { proposal: string; kind: string; app: string; class: string; by?: string };
+  AUTHORING_STARTED: { proposal: string; app: string; round: number; bench?: string };
+  AUTHORING_ENDED: { proposal: string; app: string; round: number; outcome: string; reason?: string };
+  PROPOSAL_INFRA: { proposal: string; app: string; reason: string; retry_after?: string };
+  PROPOSAL_CANNOT: { proposal: string; app: string; reason: string };
+  PROPOSAL_VALIDATING: { proposal: string; app: string; round: number; trials: string[] };
+  PROPOSAL_READY: { proposal: string; app: string; round: number };
+  PROPOSAL_REVISING: { proposal: string; app: string; round: number; failing: string[] };
+  PROPOSAL_FAILED: { proposal: string; app: string; reason: string };
+  PROPOSAL_DISCARDED: { proposal: string; app: string; reason: string; by?: string };
+  PROPOSAL_SUBMITTED: { proposal: string; app: string; pr: number; url: string; branch: string; by: string };
+  PROPOSAL_SUBMIT_FAILED: { proposal: string; app: string; error: string };
+  PROPOSAL_MERGED: { proposal: string; app: string; pr: number };
+  PROPOSAL_CLOSED: { proposal: string; app: string; pr: number };
+  WORKSHOP_ARMED: { armed: boolean; by: string };
+  WORKSHOP_DISARMED: { armed: boolean; by: string };
+  WORKSHOP_MEMORY_CLEARED: { task: string; by: string };
   UPLOAD_WRITTEN: { upload: string; path: string; bytes: number };
   ARCHIVE_MIGRATED: {
     origin: string;
@@ -372,6 +410,7 @@ export function categoryOf(code: string): EventCategory {
   if (code.startsWith('PROTOCOL_')) return 'config';
   if (code.startsWith('ASSAY_')) return 'assay';
   if (code.startsWith('AGENT_')) return 'agent';
+  if (code.startsWith('PROPOSAL_') || code.startsWith('WORKSHOP_') || code.startsWith('AUTHORING_')) return 'workshop';
   return 'other';
 }
 

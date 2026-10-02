@@ -50,6 +50,7 @@ const CATEGORIES = [
   'assay',
   'bench',
   'agent',
+  'workshop',
   'importer',
   'notify',
   'config',

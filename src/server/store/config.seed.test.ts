@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { ensureConfigFile, loadConfig } from './config.js';
+import { ensureConfigFile, loadConfig, REDACTED, redactConfig } from './config.js';
 
 let dir: string;
 const saved: Record<string, string | undefined> = {};
@@ -28,6 +28,7 @@ const ENV = [
   'TOUCHSTONE_POOL_URL',
   'TOUCHSTONE_BOARD_URL',
   'TOUCHSTONE_PUBLIC_BASE_URL',
+  'TOUCHSTONE_GITHUB_TOKEN',
 ];
 
 beforeEach(async () => {
@@ -141,5 +142,26 @@ describe('the blocks upload trials added', () => {
     // A sibling of trials/, never inside it — a trial's own directory is scanned as reports.
     expect(cfg.uploadsRoot).toBe(path.join(dir, 'uploads'));
     expect(cfg.uploadsRoot.startsWith(cfg.trialsRoot)).toBe(false);
+  });
+});
+
+describe('the workshop GitHub token', () => {
+  it('is never written into the seeded file, so the environment keeps winning', async () => {
+    process.env.TOUCHSTONE_GITHUB_TOKEN = 'github_pat_SEED';
+    await ensureConfigFile(dir);
+    const raw = await fs.readFile(path.join(dir, 'config.yaml'), 'utf8');
+    expect(raw).not.toContain('github_pat_SEED');
+    const cfg = await loadConfig(dir);
+    expect(cfg.github.token).toBe('github_pat_SEED');
+    expect(cfg.workshop.armed).toBe(false);
+    expect(cfg.workshop.prs_per_day).toBe(1);
+    expect(cfg.github.commit_name).toBe('Mael (Touchstone)');
+  });
+
+  it('is redacted by the configuration page', async () => {
+    process.env.TOUCHSTONE_GITHUB_TOKEN = 'github_pat_SEED';
+    const cfg = await loadConfig(dir);
+    const shown = redactConfig(cfg) as { github: { token: string } };
+    expect(shown.github.token).toBe(REDACTED);
   });
 });

@@ -60,6 +60,9 @@ import controlsRoutes from './controls.js';
 import settingsRoutes from './settings.js';
 import trialRoutes from './trials.js';
 import uploadRoutes from './uploads.js';
+import workshopRoutes from './workshop.js';
+import mcpWorkshopRoutes from './mcp-workshop.js';
+import type { Workshop } from '../services/workshop.js';
 
 export interface RoutesOptions {
   /** The index built at boot. Omitted in dev and in the route tests. */
@@ -119,6 +122,8 @@ export interface RoutesOptions {
    * `routes/mcp-admin.ts` for why that is a real state rather than a 503.
    */
   adminMcp?: Omit<AdminMcpOptions, 'ctx' | 'events'>;
+  /** The workshop — docs/auto-app-pr.md. Absent, its page says it is not wired. */
+  workshop?: Workshop;
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
@@ -149,6 +154,9 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     ...(options.targets ? { targets: options.targets } : {}),
   });
   await app.register(mcpRoutes, { ledger: options.ledger });
+  // The authoring surface. Its own route, so the auditor's tools and the author's never mix.
+  await app.register(mcpWorkshopRoutes, { ...(options.workshop ? { workshop: options.workshop } : {}) });
+  await app.register(workshopRoutes, { ...(options.workshop ? { workshop: options.workshop } : {}) });
   /**
    * The same registry the chat calls, over MCP. It takes the chat's own context rather than a
    * second one assembled here: one definition of what an agent may ask this app, so the two
@@ -178,7 +186,10 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     ...(options.events ? { events: options.events } : {}),
     ...(options.ports ? { ports: options.ports } : {}),
   });
-  await app.register(trialRoutes, options.trials ?? {});
+  await app.register(trialRoutes, {
+    ...(options.trials ?? {}),
+    ...(options.workshop ? { staged: (token: string) => options.workshop!.staged(token) } : {}),
+  });
   // Its own plugin, and that matters: it swaps the content-type parsers for a
   // buffer-everything one, which must not reach the JSON API around it.
   await app.register(uploadRoutes, options.uploads ?? {});
@@ -202,6 +213,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     ledger: options.ledger,
     targets: options.targets,
     ...(options.leases ? { leases: options.leases } : {}),
+    ...(options.workshop ? { workshop: options.workshop } : {}),
   });
 
   /**
@@ -286,6 +298,19 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     return { queued, ...(at >= 0 ? { queue_position: at + 1 } : {}) };
   };
 
+  /**
+   * The workshop's business with this subject — a proposal in flight, an open PR. A sibling
+   * of the hallmark for the same reason `queued` is: `SubjectState` is what `/public` serves,
+   * and a board addressed to app authors does not publish the operator's pull requests.
+   */
+  const workshopOf = (
+    subject: string,
+  ): { workshop?: { state: string; pr?: { number: number; url: string } }; workshop_ready?: boolean } => {
+    if (!options.workshop) return {};
+    const row = options.workshop.activeBySubject()[subject];
+    return { workshop_ready: !options.workshop.unconfigured(), ...(row ? { workshop: row } : {}) };
+  };
+
   // GET /subjects/:name — the subject detail page: the composed row plus full history.
   app.get<{ Params: { name: string } }>('/subjects/:name', async (request, reply) => {
     const resolved = resolveSubject(request.params.name);
@@ -301,6 +326,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
         }).state,
         history: sortNewestFirst(resolved.records), // newest first, both legs interleaved
         ...(await queueOf(resolved.name)),
+        ...workshopOf(resolved.name),
       };
     }
 

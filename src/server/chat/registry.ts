@@ -9,7 +9,8 @@
  * Every one is a thin wrapper over something the API already does; the chat is a way of
  * reaching the app by conversation, not a second implementation of it.
  *
- * **Twelve of the seventeen read, and five act.** The chat began with three tools, two of which
+ * **Thirteen of the eighteen read, and five act.** (`get_workshop` is the thirteenth, and the
+ * workshop's verbs are deliberately not here — see its tool.) The chat began with three tools, two of which
  * described the *live process* — `runner.status()`, the ledger — and that was the wrong half
  * of the app to know about. An audit takes minutes, a turn takes seconds, and `tsx watch`
  * restarts the process on any edit; so by the time the operator asked what came of a run,
@@ -71,7 +72,7 @@ import {
   type SubjectKey,
 } from '../../shared/subject.js';
 import type { AssayRecord, Section, SubjectState } from '../../shared/types.js';
-import { listControls, resetControl, setControl, type ControlPorts } from '../domain/controls.js';
+import { isOperatorOnly, listControls, resetControl, setControl, type ControlPorts } from '../domain/controls.js';
 import { buildFixReport } from '../domain/fixreport.js';
 import { saveProtocol } from '../domain/protocoledit.js';
 import { hallmarks, LEGS, subjectHallmark, subjectNames, type LegState } from '../domain/hallmark.js';
@@ -161,6 +162,13 @@ export interface ChatToolContext {
    * from here.
    */
   controls?: ControlPorts;
+  /**
+   * The workshop, **read-only from here**. `get_workshop` reads it; nothing in this registry
+   * proposes, submits, discards or clears memory — those open pull requests under a person's
+   * GitHub identity, and this registry is also served by an MCP surface that authenticates
+   * nobody (docs/auto-app-pr.md §10).
+   */
+  workshop?: { view(): Promise<import('../../shared/workshop.js').WorkshopView> };
 }
 
 export interface ChatToolResult {
@@ -1454,6 +1462,48 @@ export const CHAT_TOOLS: ChatTool[] = [
 
   {
     /**
+     * What the workshop is doing — read-only, and the only workshop tool there is.
+     *
+     * Proposing, opening a PR, discarding and clearing memory are buttons on the Workshop page
+     * and nowhere else: each ends in a pull request under a person's GitHub identity or changes
+     * what will, and this registry is also the admin MCP's, which authenticates nobody.
+     */
+    name: 'get_workshop',
+    description:
+      'The workshop — the proposals Touchstone authors to fix, update or add an app and opens as pull requests on the store. Says whether it is configured and armed, the daily PR quota and when the next slot opens, the proposal being authored now, every proposal and its state (queued, authoring, validating, ready, submitted, merged, closed, failed, cannot), the candidates it would pick next with why each is or is not eligible, and the wishlist. Read-only: proposing and opening pull requests are done by a person on the Workshop page, never from here.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: async (_input, ctx) => {
+      if (!ctx.workshop) return failed('The workshop is not wired up in this build.');
+      const v = await ctx.workshop.view();
+      const lines: string[] = [];
+      lines.push(v.configured ? `Configured, origin ${v.origin}.` : `Not configured: ${v.unconfigured_reason}.`);
+      lines.push(`GitHub: ${v.github.state}${v.github.login ? ` as ${v.github.login}` : ''}${v.github.problems.length ? ` — ${v.github.problems.join('; ')}` : ''}.`);
+      lines.push(`Armed: ${v.armed ? 'yes' : 'no'}. Quota: ${v.prs_per_day} a day, ${v.quota.opened_last_24h} opened in the last 24h${v.quota.allowed ? ', a slot is free' : v.quota.next_slot_at ? `, next slot ${v.quota.next_slot_at}` : ''}.`);
+      if (v.live) lines.push(`Authoring now: ${v.live.kind} ${v.live.app}, round ${v.live.round}.`);
+      const shown = v.proposals.slice(0, 20);
+      if (shown.length > 0) {
+        lines.push('', 'Proposals (newest first):');
+        for (const p of shown) {
+          lines.push(`  ${p.id} ${p.kind} ${p.app}: ${p.state}${p.round > 1 ? ` (round ${p.round})` : ''}${p.pr ? ` — PR #${p.pr.number} ${p.pr.url}` : ''}${p.reason ? ` — ${p.reason}` : ''}`);
+        }
+      }
+      const cands = v.candidates.slice(0, 15);
+      if (cands.length > 0) {
+        lines.push('', 'Candidates (first eligible is next):');
+        for (const c of cands) lines.push(`  ${c.label}: ${c.eligible ? 'eligible' : c.reasons.join('; ')}`);
+      }
+      if (v.wishlist.length > 0) {
+        lines.push('', 'Wishlist:');
+        for (const w of v.wishlist) {
+          lines.push(`  ${w.file} → ${w.name}${w.problem ? ` — ${w.problem}` : ''}${w.memory ? ` — last tried ${w.memory.last_attempt_at.slice(0, 10)}: ${w.memory.outcome}${w.memory.reason ? ` (${w.memory.reason})` : ''}` : ''}`);
+        }
+      }
+      return ok(lines.join('\n'));
+    },
+  },
+
+  {
+    /**
      * The tool that answers "can you change the 7-day automation to 14 days?" with a change
      * rather than with directions to a page.
      *
@@ -1491,6 +1541,11 @@ export const CHAT_TOOLS: ChatTool[] = [
       const ports = ctx.controls;
       if (!ports) return failed('Settings are not wired up in this build, so nothing here can be changed.');
       const key = String(input.key ?? '').trim();
+      // The workshop's switch and quota decide whether pull requests are opened under a
+      // person's GitHub identity. No model may move them — docs/auto-app-pr.md §10.
+      if (isOperatorOnly(key)) {
+        return failed(`${key} can only be changed by a person, on the Workshop or Automation page.`);
+      }
 
       const result =
         input.reset === true

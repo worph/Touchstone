@@ -809,6 +809,31 @@ app is *running on* rather than what the file says on its own.
 
 ---
 
+### 2.9 Workshop — what Touchstone is making
+
+`/workshop`, beside Trials. The one page where Touchstone *makes* rather than judges: proposals
+to fix, update or add an app, authored against a bench, validated by trials on every platform,
+and opened as pull requests within a daily quota (docs/auto-app-pr.md).
+
+- **State** — the GitHub identity and what the probe found, the automatic switch (Arm /
+  Disarm), the quota with the time the next slot opens, and the session being authored now.
+- **In flight** — every live proposal: its kind, state in words (*waiting for quiet*,
+  *authoring now*, *validating*, *back for another round*, *ready to open*, *pull request
+  open*), round, the size of its change, and **Open PR** on a ready one — disabled, with the
+  next slot, when the quota is spent. **Discard** charges the task nothing.
+- **Candidates** — what it would pick next, eligible first, each ineligible one with its
+  reasons. **Propose** queues one now; **Clear** forgets a parked attempt.
+- **Wishlist** — one row per `data/wishlist/*.md`, with what is wrong with the file or what
+  became of its last attempt. The page never writes a wish.
+- **History** — finished proposals, with the reason a failed one stopped.
+- `/workshop/:id` opens one proposal above the rest: the author's summary, the validation
+  table linking each trial, the last failing round's feedback, and the change file by file.
+
+Elsewhere: **Propose fix** on a non-compliant subject's page (only when the workshop could take
+it), a *proposal* or *PR #n* chip there and on the Store row, the workshop's row last in the
+Automation queue with the reason it is holding, and the authoring session in the running
+strip. None of it is on `/public`.
+
 ## 3. Reports as files
 
 Docmost stops being storage. Layout inside the data dir:

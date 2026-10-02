@@ -254,6 +254,18 @@ export function archiveUrlFor(repo: string, ref: string): string {
   return `https://github.com/${repo}/archive/refs/heads/${ref}.zip`;
 }
 
+/**
+ * The same archive, pinned to one commit — what the workshop builds a proposal on.
+ *
+ * A branch archive moves under you; a proposal has to be validated and committed against the
+ * bytes it was built on, so it records the commit and fetches *that*. Only a full 40-hex sha
+ * is accepted, so this cannot be talked into naming anything but a commit of a configured repo.
+ */
+export function archiveUrlForCommit(repo: string, sha: string): string {
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new TrialStoreError(`not a commit sha: ${sha}`);
+  return `https://github.com/${repo}/archive/${sha}.zip`;
+}
+
 /** Write the trial's own copy of the archive, creating its directory. */
 export async function saveStoreZip(zipPath: string, zip: Buffer): Promise<void> {
   await fs.mkdir(path.dirname(zipPath), { recursive: true });
