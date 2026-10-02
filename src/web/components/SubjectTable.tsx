@@ -14,13 +14,12 @@ import { Fragment, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
 import type { Section, SubjectState } from '@shared/types';
-import CoverageCell from './CoverageCell';
 import StandardChip, { DelistedChip, VersionChip } from './StandardChip';
 import StatusCell from './StatusCell';
 import { ReadingBadge } from './Reading';
 import { sectionLabel } from '../lib/format';
 import { provisionalSections, readingOf, readingSections, verdictSectionsOf } from '../lib/reading';
-import { coverageOf, legState, liveFor, type LegTally, type LiveRuns, type Tallies } from '../lib/overview';
+import { legState, liveFor, type LegTally, type LiveRuns, type Tallies } from '../lib/overview';
 import { ageLabel, num } from '../lib/format';
 import type { LegFilter, ShowFilter, SortKey } from '../types';
 
@@ -81,10 +80,10 @@ export default function SubjectTable({
             {notices.map((id) => (
               <Th key={id} label={sectionLabel(id)} k={`notice:${id}`} sort={sort} dir={dir} onSort={onSort} />
             ))}
-            <Th label="Verified" k="coverage" sort={sort} dir={dir} onSort={onSort} align="right" />
-            {/* No Risk column since 2026-10: what a row has to say is compliant or not, per
-                platform, and the verdict columns say it. The score is still the default sort
-                (worst first) and still in each report and on the subject page. */}
+            {/* No Risk and no Verified column since 2026-10: what a row has to say is compliant
+                or not, per platform, and the verdict columns say it — the room goes to them.
+                Risk is still the default sort (worst first); both figures are still in each
+                report and on the subject page. */}
             <Th label="Last" k="age" sort={sort} dir={dir} onSort={onSort} align="right" />
             {action ? <th aria-label="audit" /> : null}
             <th aria-label="open" />
@@ -152,9 +151,6 @@ function Row({
       {notices.map((id) => (
         <td key={id}><ReadingBadge reading={readingOf(s, id)} /></td>
       ))}
-      <td className="col-num">
-        <CoverageCell coverage={coverageOf(s)} />
-      </td>
       <td className="col-num dim">{ageLabel(s.age_days)}</td>
       {action ? <td className="col-action">{action(s)}</td> : null}
       <td className="col-chev">
