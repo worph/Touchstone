@@ -132,6 +132,8 @@ export interface TrialRecord {
   /** Paths relative to the trials root. */
   files?: string[];
   error?: string;
+  /** The workshop proposal this trial validates — docs/auto-app-pr.md §7. */
+  proposal_id?: string;
 }
 
 /**

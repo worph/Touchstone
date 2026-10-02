@@ -15,6 +15,7 @@ import Configuration from './pages/Configuration';
 import Protocols from './pages/Protocols';
 import Settings from './pages/Settings';
 import Trials from './pages/Trials';
+import Workshop from './pages/Workshop';
 import TrialDetail from './pages/TrialDetail';
 import AdminChat from './pages/AdminChat';
 import Store from './pages/Store';
@@ -54,6 +55,8 @@ createRoot(root).render(
           {/* A trial has its own address so a result can be pasted into the PR it is about
               and survive a reload. It was a panel under the list until 2026-08-23. */}
           <Route path="/trials/:slug" element={<TrialDetail />} />
+          <Route path="/workshop" element={<Workshop />} />
+          <Route path="/workshop/:id" element={<Workshop />} />
           {/* This instance about itself: the one setting the app owns, and the file it
               booted on. Separate pages because they are separate kinds of thing — one is
               written here, the other is read here and written on the volume. */}
@@ -74,7 +77,7 @@ createRoot(root).render(
                 <EmptyState
                   glyph="⌕"
                   title="No such page"
-                  sub="Touchstone has the administrator, the store, a subject, the protocol, trials, automation, activity and settings."
+                  sub="Touchstone has the administrator, the store, a subject, the protocol, trials, the workshop, automation, activity and settings."
                 />
               </div>
             }

@@ -35,6 +35,9 @@ const NAV: { group: string; items: NavItem[] }[] = [
       // it answers the same question the Store page does — would this pass — about code that
       // is not in the store yet.
       { to: '/trials', label: 'Trials' },
+      // Proposals Touchstone authors and opens as pull requests — the one place it *makes*
+      // rather than judges. Beside Trials because a proposal is validated by them.
+      { to: '/workshop', label: 'Workshop' },
     ],
   },
   {
@@ -257,6 +260,12 @@ const GLYPH: Record<string, ReactNode> = {
       <circle cx="18" cy="6" r="3" />
       <circle cx="6" cy="18" r="3" />
       <path d="M18 9a9 9 0 0 1-9 9" />
+    </>
+  ),
+  // a wrench: the workshop
+  '/workshop': (
+    <>
+      <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4Z" />
     </>
   ),
   // sliders: what this instance is set to

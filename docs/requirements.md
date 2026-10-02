@@ -43,6 +43,7 @@ surprise.
 | — | The rubric is seeded from `seed/`, not committed as if it were the live standard | ✅ done 2026-08-28 — §19 |
 | — | An app the store has stopped offering is marked, unscheduled, and deletable — *delisted* | ✅ done 2026-08-31 — §20 |
 | **R16** | Every way of asking for the single agent is one queue, drained in order — and one verb | ✅ built 2026-09-01 — §21 |
+| **R17** | Touchstone proposes fixes, updates and new apps as pull requests — the *workshop* | ✅ built 2026-10-02 — §24, design in [auto-app-pr.md](auto-app-pr.md) |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -1742,3 +1743,64 @@ line does not count. Once the line has looked at the app, the attempt is the com
 - **Per-target `armed`.** One switch still gates every line's backlog.
 - **A configured concurrency cap.** Capacity is what the pools and `config.browsers` add up to;
   a cap would be a second number to keep in step with them.
+
+
+## 24. R17 — The workshop: proposals opened as pull requests — 2026-10-02
+
+### 24.1 The requirement
+
+Touchstone judges apps; it should also **repair and add** them. When the queue is quiet it
+picks one task — fix a non-compliant app, bring an outdated one current, integrate an app from
+an operator-written wishlist — authors the listing against a leased bench, validates it with
+the same rubric, and opens **at most one pull request a day** on the store as the configured
+GitHub account (Mael). The design and its fourteen decisions are
+[auto-app-pr.md](auto-app-pr.md); this section records what it cost.
+
+It **reverses a deliberate drop**: `Findings → pull requests` is in architecture.md §1.4 G.
+
+### 24.2 The rule it is built around
+
+**The workshop never judges its own work.** Validation is trials (never `reports/`, so nothing
+here moves a hallmark); the authoring surface (`routes/mcp-workshop.ts`) has no verdict, trial
+or GitHub tool; the GitHub token never reaches a prompt or a tool result; and Touchstone opens
+pull requests but never merges them. A hallmark moves the ordinary way, after a person merges.
+
+### 24.3 What it took
+
+- **`services/github.ts`** — the only code that writes to GitHub. Git Data API commits (no
+  clone, no `git` binary); every ref write through one guard admitting only
+  `refs/heads/touchstone/<kind>/<App>-<yyyymmdd>-<id6>`; no update-ref call exists. `main` on
+  the store is unprotected (D14), so this guard is the guard. `githubprobe.ts` opens
+  `github.auth`.
+- **`store/workshop.ts`** — proposals, task memory and a **content-addressed working copy**
+  (`objects/` + `base.json` + `work.json`), which is what an upload session could not be: it
+  expresses a deletion, and the trial zip and the commit diff are made from one set of bytes.
+  The base is pinned to a commit (`archiveUrlForCommit`).
+- **`services/workshop.ts`** — propose, slot, dispatch (author → submit/cannot), validation
+  (one trial per scoring target, derived from the protocol), judging (`domain/workshop.ts`
+  `judgeValidation`: blocked is never a pass; infra re-queues free; an unusable answer is a
+  failed round), submission, PR polling and branch cleanup.
+- **The scheduler** gained a third candidate kind. `PolicyInput.workshop` is offered a slot by
+  the workshop and decides *whether now*: never while any audit or trial request is queued or
+  running; for idle work also never while an audit is in flight or — when the scheduler is
+  armed — while backlog is due. It takes only the pair the tick left over.
+  `TrialRunDeps.finished` now carries the slug, which is how a round learns its trials ended.
+- **Two operator-only controls** — `workshop.armed` (persisted in `state/workshop.json`) and
+  `workshop.prs_per_day`. `ControlDef.operatorOnly` makes the chat's `set_control` refuse
+  them, so the admin MCP cannot arm the workshop or raise its quota.
+- **One read tool**, `get_workshop`. Proposing, opening a PR, discarding, arming and clearing
+  memory are buttons on the Workshop page and nowhere else.
+- **The wishlist** — `data/wishlist/*.md`, operator-authored on the volume; no route writes one.
+- **UI** — the Workshop page, Propose fix on a subject, a workshop row in the Automation queue
+  with its hold reason, the authoring session in the running strip, PR chips on Store rows.
+
+### 24.4 Not done, deliberately
+
+- **Cross-major currency is reported only if the reading reports it.** `currency.md` ships
+  `compare_majors: false`, so a candidate is offered when the app is behind within its major;
+  the agent may still move across majors (D9). Flipping it is a rubric edit, left to the operator.
+- **Moving the registry's reads onto the token.** It would lift the 60-an-hour ceiling and
+  make a bot-account problem stop auditing; not without a decision.
+- **Pausing an authoring session for a request.** A session holds its pair up to
+  `session_minutes`; the queue row says so.
+

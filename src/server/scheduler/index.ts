@@ -354,6 +354,23 @@ export interface SchedulerOptions {
     failed?: (slug: string, reason: string) => void | Promise<void>;
   };
   /**
+   * The workshop — last in the queue (docs/auto-app-pr.md §6.1).
+   *
+   * The same narrow-port shape as `trials`: the scheduler learns that the workshop has
+   * something it would author, whether a session is running, and how to start one. **Which**
+   * proposal is the workshop's question; **whether now** is the policy's. Never `record()`ed,
+   * never claimed: an authoring session touches no subject's schedule.
+   */
+  workshop?: {
+    slot: () =>
+      | { id: string; label: string; class: 'operator' | 'idle'; asked_at: string }
+      | undefined
+      | Promise<{ id: string; label: string; class: 'operator' | 'idle'; asked_at: string } | undefined>;
+    running: () => { id: string; label: string; started_at: string } | undefined;
+    dispatch: (id: string, lease?: Lease) => void | Promise<void>;
+    failed?: (id: string, reason: string) => void | Promise<void>;
+  };
+  /**
    * How long after a completed run to look again, in ms. 0 disables the kick entirely.
    *
    * Injectable so the tests that call `record()` directly do not start dispatching real runs
@@ -1033,6 +1050,24 @@ export class Scheduler {
         : {}),
       capabilities: this.capabilities(),
       ...(this.opts.leases ? this.leaseInput(sections) : {}),
+      ...(this.opts.workshop ? { workshop: await this.workshopInput() } : {}),
+    };
+  }
+
+  private async workshopInput(): Promise<NonNullable<PolicyInput['workshop']>> {
+    const ws = this.opts.workshop!;
+    const running = ws.running();
+    let slot: Awaited<ReturnType<typeof ws.slot>>;
+    try {
+      slot = running ? undefined : await ws.slot();
+    } catch {
+      // The workshop failing to pick must never stop a tick.
+      slot = undefined;
+    }
+    return {
+      ...(slot ? { slot } : {}),
+      ...(running ? { running } : {}),
+      backlogCounts: this.armed,
     };
   }
 
@@ -1221,6 +1256,26 @@ export class Scheduler {
         void Promise.resolve(this.opts.trials?.dispatch(slug, lease)).catch((err) => {
           this.opts.leases?.release(lease?.id);
           this.trialDispatchFailed(slug, queued?.subject ?? slug, err);
+        });
+        continue;
+      }
+
+      if (d.action === 'workshop' && d.workshop) {
+        const id = d.workshop;
+        // No `mayStart`: the workshop offers a slot only when it may be worked — an operator
+        // proposal is a request, and an idle one already required `workshop.armed`.
+        const lease = this.reserve(d.line, { bench: true, browser: true }, `workshop ${d.reason.replace(/^workshop — /, '')}`);
+        if (lease === null) continue;
+        started += 1;
+        this.opts.events.log({
+          level: 'info',
+          code: 'TICK_WORKSHOP_SELECTED',
+          message: 'The scheduler started a workshop authoring session',
+          detail: { proposal: id, line: d.line, reason: d.reason },
+        });
+        void Promise.resolve(this.opts.workshop?.dispatch(id, lease)).catch((err) => {
+          this.opts.leases?.release(lease?.id);
+          void Promise.resolve(this.opts.workshop?.failed?.(id, (err as Error)?.message ?? String(err))).catch(() => {});
         });
         continue;
       }

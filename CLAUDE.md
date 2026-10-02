@@ -75,7 +75,17 @@ trials in one line, served in ask order as (bench, browser) pairs come free — 
 2026-10 runs are concurrent and **capacity is whatever pairs are free**: two Yundera benches and
 one browser is one run at a time, add a sidecar and it is two. Never a configured number. A pool
 whose benches are all *held* is `full`, not `gated` — busy is not broken, and only `gated` feeds
-the bench alert. Requirements §23).
+the bench alert. Requirements §23), **workshop** (the one part of Touchstone that *makes*
+rather than judges: it authors a change to one app's store listing against a leased bench,
+validates it with trials, and opens it as a pull request under the configured GitHub account —
+`services/workshop.ts`, docs/auto-app-pr.md, requirements §24), **proposal** (one such change
+to one app, on its way to one PR; kind `fix`, `currency` or `wish`; it **never judges its own
+work** — its verdicts are trials, so nothing it does moves a hallmark until a person merges),
+**wish** (one operator-authored file in `data/wishlist/`, an existing Docker image to integrate
+as a new listing — integration only, never writing an app), **task memory** (what the workshop
+last tried for one task key and against which input; a task it gave up on waits for its input —
+the app, the standard, the wish file — to change, the same way the standard moving re-eligibles
+an app. Infra outcomes are never remembered).
 
 **One verb, one word: `Audit`.** `AuditControl`, `POST /assays`. It writes a request and asks
 the scheduler to look; the tick decides whether that means now or third in line, and the row
@@ -182,6 +192,9 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | `trials/<slug>/store.zip` | that trial's own copy of the archive it audited, re-served at `/api/v1/trialstore/<store_token>.zip` for the bench to install. Inside the trial's directory because the index only ever picks up `*.md`, so it is invisible to it and dies with the trial |
 | `uploads/<id>/` | a session's files — a **working copy**, not a whole app: a trial lays them over `Apps/<Subject>/` as the subject's origin has it and zips the result, so a file here replaces its counterpart and one that is absent is inherited. A sibling of `trials/`, never inside it: a trial's own directory is scanned as a report tree |
 | `state/*.json`, `events.jsonl` | small mutable runtime state and the append-only log |
+| `workshop/proposals/<id>/` | a proposal's **working copy**, content-addressed: `objects/<sha256>`, `base.json` and `work.json` (path → sha). A deletion is a missing key, which an upload session could never say; the trial zip and the commit are made from one map. Plus `evidence/` (the passing reports, copied so trial eviction cannot take a PR's evidence) and `feedback.md`. `workshop/author.md` is the operator's standing authoring instructions, seeded from `seed/workshop/` |
+| `wishlist/*.md` | **the wishlist** — one file per app to integrate, operator-authored on the volume. No route or tool writes one. `_`-prefixed files are examples |
+| `state/workshop.json` | proposals, task memory, and the `workshop.armed` override |
 | `state/controls.json` | **what somebody changed while it was running** — the override for each *control*, re-applied at boot. `config.yaml` stays what a fresh install boots into, so deleting this one file puts every setting back. `scheduler.armed` is deliberately **not** here: the scheduler has kept that switch in `state/schedule.json` since the Automation page had a button, and two files claiming one switch is how they come to disagree |
 | `state/index.json` | cache only — deleting it must always be safe |
 
@@ -263,7 +276,7 @@ because its data access was smeared through two 200-line n8n Code nodes.
   cooldown and releases a park; it does not bypass the bench gate, which holds the whole line
   rather than skipping — a request that cannot run says why instead of producing a verdict about
   half the rubric. `POST /assays` is now the only thing that writes it, so there is one verb.
-- **`routes/mcp-admin.ts`** — the *same* seventeen tools, served as an MCP server at
+- **`routes/mcp-admin.ts`** — the *same* eighteen tools, served as an MCP server at
   `POST /api/v1/mcp/admin` so an agent can ask them: it renders `CHAT_TOOLS` into `tools/list`
   and hands `tools/call` to the same handlers with the chat's own `ChatToolContext`. It also
   carries the surface's `instructions` — what `initialize` returns, read once before any tool
@@ -271,7 +284,7 @@ because its data access was smeared through two 200-line n8n Code nodes.
   question belongs to. Each description argues for its own tool and is read alone, so a caller
   that reached for the wrong one is refused by the wrong one and never sees the right one's
   text; keep it to that fork (audit an app a store offers, versus trial bytes) rather than
-  letting it grow into a summary of seventeen tools that then has to be kept in step with them. There is
+  letting it grow into a summary of eighteen tools that then has to be kept in step with them. There is
   no second definition of what an agent may ask this app, which is the point — a second one
   would be a second thing to keep in step with invariant 6. **Off unless `admin_mcp.enabled`**,
   and disabled it registers no route at all: it is meant to be beaconified into an aggregator
@@ -291,6 +304,18 @@ because its data access was smeared through two 200-line n8n Code nodes.
   selects per run from `sections:` so a static-only audit carries nothing about a dashboard it
   will not open. `forSections()` returns **null** when the volume has no KB — the prompt is then
   byte-for-byte what it was before one existed.
+- **`services/workshop.ts` + `store/workshop.ts` + `services/github.ts` + `routes/mcp-workshop.ts`**
+  — the workshop (requirements §24, docs/auto-app-pr.md). `github.ts` is **the only code that
+  writes to GitHub**, and `main` on the store is unprotected, so its guard is the guard: every
+  ref write goes through `assertOwnRef` (only `refs/heads/touchstone/<kind>/<App>-…`), there is
+  no update-ref call, and the token is scrubbed from every error. `mcp-workshop.ts` is the
+  author's surface — edit the working copy, `stage` it for the bench, end with `submit` or
+  `cannot` — and is a **separate route** from `/mcp` so the auditor never sees `write_file` and
+  the author never sees `record_requirement`. The scheduler offers the workshop a slot **last**
+  (`PolicyInput.workshop`): never while a request is queued or running, and for idle work never
+  while an audit runs or armed backlog is due. Validation is one trial per scoring target,
+  derived from the protocol; `TrialRunDeps.finished(slug)` is how a round learns it ended.
+  Pure rules — `judgeValidation`, `quota`, `refFor`, `candidates` — are in `domain/workshop.ts`.
 - **`domain/fixreport.ts`** — the audit composed into a brief for whoever has to fix the app,
   served as markdown by `GET /subjects/:name/fix.md`. It **quotes**: findings, severities,
   evidence and remedies all come out of the frontmatter, and where the agent proposed no remedy
@@ -408,9 +433,10 @@ because its data access was smeared through two 200-line n8n Code nodes.
   same shape as the browser wedge `browserLiveness()` exists for — a wrapper answering
   cheerfully while the thing underneath is broken.
 - **`src/server/chat/`** — the administrator chat: a bounded turn loop (`loop.ts`, 8 calls and
-  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), seventeen tools wrapping the
+  120 s), file-backed threads (`thread.ts` → `state/chat/*.jsonl`), eighteen tools wrapping the
   API (`registry.ts`), and the agent call (`driver.ts`) reusing `postToAgent` from the runner.
-  Twelve of the seventeen **read**, and most of those read what is *written down* — the board, the
+  Thirteen of the eighteen **read** (`get_workshop` is the thirteenth; the workshop's verbs are
+  deliberately *not* tools — they open pull requests under a person's identity), and most of those read what is *written down* — the board, the
   archive, a report file, the fix brief, the log, the backlog — not the live process, which a
   `tsx watch` restart empties while the operator is still waiting for the run it started
   (HANDOFF §5k). Four of them are the same question at four depths, which is why their
@@ -442,7 +468,7 @@ because its data access was smeared through two 200-line n8n Code nodes.
   substituted **last** — a context containing `{{HISTORY}}` must reach the model as those
   characters rather than as the conversation. No tool reads or writes it: standing instructions
   a model can rewrite are not standing instructions.
-- **`src/web/`** — React + Vite SPA in **two frames**. The operator frame is `Shell` and eight pages
+- **`src/web/`** — React + Vite SPA in **two frames**. The operator frame is `Shell` and nine pages (Workshop at `/workshop` is the ninth)
   (Administrator chat at `/`, **Store** at `/store`, Subject detail, Automation, Activity,
   Trials, Settings at `/settings`, Configuration at `/config`) plus Protocols — the chat is the front page and therefore has no nav row of its own,
   the brand being the way back to it; `/chat` redirects to `/`. The
@@ -584,7 +610,7 @@ because its data access was smeared through two 200-line n8n Code nodes.
     `agent_auth` charges nothing, so it records nothing, or an outage would spend every
     subject's flag on runs that established nothing.
 
-## Safety switches (both default off)
+## Safety switches (all three default off)
 
 - `scheduler.armed: false` — the tick still runs, decides and logs every hour, and **works no
   backlog**. Since 2026-08-20 it is also settable at runtime from the Automation page, which
@@ -606,9 +632,18 @@ because its data access was smeared through two 200-line n8n Code nodes.
   still what a fresh boot falls back to, and the flag is read when a job arrives, so turning it off
   leaves the audit in flight alone.
 
-Both are therefore reachable from the Automation page, from the chat (`set_control`) and — unless
-`admin_mcp.read_only` — over the admin MCP. That is deliberate, and it does not change the rule
-below: **do not arm or disarm either without the user's say-so.** Touchstone is what drives the
+- `workshop.armed: false` — the workshop authors only what a person proposes and opens a pull
+  request only when a person presses Open PR. Armed, it picks its own work when the queue is
+  quiet and submits ready proposals within `workshop.prs_per_day`. Persisted in
+  `state/workshop.json`. **Operator-only**: it and `workshop.prs_per_day` carry
+  `ControlDef.operatorOnly`, so the chat's `set_control` — and therefore the admin MCP —
+  refuses them. Arming it is how pull requests under a person's GitHub identity start being
+  opened, and no model may cause that.
+
+The first two are therefore reachable from the Automation page, from the chat (`set_control`) and — unless
+`admin_mcp.read_only` — over the admin MCP; the third only from the Workshop and Automation pages. That is deliberate, and it does not change the rule
+below: **do not arm or disarm any of them without the user's say-so** — and never raise
+`workshop.prs_per_day` or press Open PR on a live box without it either. Touchstone is what drives the
 audits now, so a switch flipped in passing is not a dry run any more — it is the loop.
 
 ## Gotchas

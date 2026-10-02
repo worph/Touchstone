@@ -41,6 +41,11 @@ import { ContextStore } from './store/context.js';
 import { ControlStore } from './store/controls.js';
 import { applyStoredControls, type ControlPorts } from './domain/controls.js';
 import { CHAT_TOOLS } from './chat/registry.js';
+import { GitHubClient } from './services/github.js';
+import { GitHubProbe } from './services/githubprobe.js';
+import { Workshop } from './services/workshop.js';
+import { WorkshopStore } from './store/workshop.js';
+import { WishlistStore, WISHLIST_SEED_DIR, WORKSHOP_SEED_DIR } from './store/wishlist.js';
 
 const PORT = Number(process.env.TOUCHSTONE_PORT ?? 8080);
 const HOST = process.env.TOUCHSTONE_HOST ?? '0.0.0.0';
@@ -71,6 +76,11 @@ const seededProtocols = await ensureProtocolFiles(cfg.protocolsDir);
 // entirely is a supported state — the prompt is then what it was before the KB existed — so
 // this failing is never fatal.
 const seededKb = await ensureKbFiles(cfg.kbDir);
+
+// The workshop's standing authoring instructions and the wishlist's example, on the same
+// never-overwrite terms: `ensureKbFiles` is a plain "copy *.md that is not there yet".
+await ensureKbFiles(cfg.workshopDir, WORKSHOP_SEED_DIR).catch(() => undefined);
+await ensureKbFiles(cfg.wishlistDir, WISHLIST_SEED_DIR).catch(() => undefined);
 
 // Reports moved under a store folder when the store became a configured value:
 // `reports/<Subject>/` → `reports/<origin>/<Subject>/`. This runs before the index, or the
@@ -405,7 +415,79 @@ const trialDeps = (): TrialRunDeps => ({
   onError: (err: unknown, slug: string) => app.log.error({ err, slug }, 'trial failed'),
   kick: () => void scheduler.tick().catch((err) => app.log.error({ err }, 'trial kick failed')),
   leases,
-  finished: () => scheduler.nudge(),
+  finished: (slug: string) => {
+    scheduler.nudge();
+    // A proposal's validation is a pair of trials; the workshop judges the round when the
+    // last of them ends.
+    void workshop.onTrialFinished(slug).catch((err) => app.log.error({ err, slug }, 'workshop could not judge a trial'));
+  },
+});
+
+/**
+ * The workshop — proposals authored against a bench, validated by trials, opened as pull
+ * requests (docs/auto-app-pr.md). The GitHub client exists only when a token is configured;
+ * without one the page says so and nothing can reach GitHub's write API.
+ */
+const workshopStore = new WorkshopStore(cfg.stateDir, cfg.workshopDir, {
+  maxFileBytes: cfg.uploads.max_file_bytes,
+  maxTotalBytes: 16 * 1024 * 1024,
+});
+await workshopStore.load();
+const interruptedProposals = await workshopStore.reconcile();
+for (const id of interruptedProposals) {
+  events.log({
+    level: 'warn',
+    code: 'PROPOSAL_INFRA',
+    message: 'An authoring session was running when Touchstone last stopped; it goes back in the queue at no cost',
+    detail: { proposal: id, app: workshopStore.get(id)?.app ?? id, reason: 'the process restarted' },
+  });
+}
+const workshopOrigin = cfg.origins.find((o) => o.id === cfg.workshop.origin);
+const github =
+  cfg.github.token && workshopOrigin
+    ? new GitHubClient({ token: cfg.github.token, repo: workshopOrigin.repo })
+    : undefined;
+const githubProbe = new GitHubProbe({ ...(github ? { client: github } : {}), expectedLogin: cfg.github.login, alerts });
+const workshop: Workshop = new Workshop({
+  store: workshopStore,
+  settings: {
+    origin: cfg.workshop.origin,
+    armed: cfg.workshop.armed,
+    prs_per_day: cfg.workshop.prs_per_day,
+    max_rounds: cfg.workshop.max_rounds,
+    session_minutes: cfg.workshop.session_minutes,
+    currency_section: cfg.workshop.currency_section,
+    login: cfg.github.login,
+    commit_name: cfg.github.commit_name,
+    commit_email: cfg.github.commit_email,
+  },
+  origins: cfg.origins,
+  ...(github ? { github } : {}),
+  probe: githubProbe,
+  publicBaseUrl: cfg.trials.public_base_url,
+  // The authoring surface sits beside the ledger's: `/api/v1/mcp` → `/api/v1/mcp/workshop`.
+  callbackUrl: cfg.runner.callback_url.replace(/\/mcp\/?$/, '/mcp/workshop'),
+  agent: { url: cfg.runner.agent_url, tool: cfg.runner.agent_tool, via: cfg.runner.agent_via },
+  runner: {
+    get enabled() {
+      return runner.enabled;
+    },
+    get busyBackoffMin() {
+      return runner.busyBackoffMin;
+    },
+  },
+  index: store,
+  registry,
+  protocols,
+  kb,
+  storedoc,
+  wishlist: new WishlistStore(cfg.wishlistDir),
+  trialDeps,
+  trialsRoot: cfg.trialsRoot,
+  leases,
+  alerts,
+  events,
+  kick: () => void scheduler.tick().catch((err) => app.log.error({ err }, 'workshop kick failed')),
 });
 
 /**
@@ -556,6 +638,14 @@ const scheduler = new Scheduler({
         error: reason,
       }) as unknown as Promise<void>,
   },
+  // Last in the queue: the scheduler asks whether there is something to author and starts it
+  // only when everything somebody asked for is done.
+  workshop: {
+    slot: () => workshop.slot(),
+    running: () => workshop.running(),
+    dispatch: (id, lease) => workshop.dispatch(id, lease),
+    failed: (id, reason) => workshop.failed(id, reason),
+  },
 });
 await scheduler.load();
 
@@ -572,11 +662,12 @@ const controlStore = new ControlStore({ stateDir: cfg.stateDir });
 await controlStore.load();
 const controlPorts: ControlPorts = {
   controls: controlStore,
-  defaults: { scheduler: cfg.scheduler, runner: cfg.runner, bench: cfg.bench },
+  defaults: { scheduler: cfg.scheduler, runner: cfg.runner, bench: cfg.bench, workshop: cfg.workshop },
   scheduler,
   runner,
   prober,
   events,
+  workshop,
 };
 const restored = await applyStoredControls(controlPorts);
 if (restored.applied.length > 0) {
@@ -598,6 +689,7 @@ await app.register(registerRoutes, {
   prefix: '/api/v1',
   store,
   events,
+  workshop,
   alerts,
   targets,
   push,
@@ -616,7 +708,7 @@ await app.register(registerRoutes, {
     // on the box".
     runningSubject: (browserUrl) => {
       const live = runner.status().runs.find((r) => r.browser === browserUrl);
-      return live ? splitSubjectKey(live.subject).name : null;
+      return live ? splitSubjectKey(live.subject).name : workshop.runningOn(browserUrl);
     },
   },
   trials: {
@@ -690,6 +782,7 @@ await app.register(registerRoutes, {
        * `domain/controls.ts`'s, and a value with no live reader is deliberately not in it.
        */
       controls: controlPorts,
+      workshop,
       /**
        * The same bundle `POST /trials` uses, so a trial started by conversation is written,
        * logged and dispatched identically to one started over HTTP. `onError` is the only
@@ -829,6 +922,20 @@ if (targetList.every((t) => t.benches.length === 0 && !t.pool_url)) {
 void ports.probeAll().catch((err) => app.log.error({ err }, 'first port probe failed'));
 ports.start(cfg.bench.probe_interval_min * 60_000);
 
+// The workshop's GitHub identity, and the pull requests it opened. The probe is silent with
+// no token; the PR poll is hourly, on the registry's cadence, and also lets an armed workshop
+// submit a proposal that became ready while the quota was spent.
+void githubProbe.probe().catch((err) => app.log.error({ err }, 'first GitHub probe failed'));
+githubProbe.start(cfg.bench.probe_interval_min * 60_000);
+const workshopTimer = setInterval(() => {
+  void workshop
+    .pollPrs()
+    .then(() => workshop.maybeSubmit())
+    .catch((err) => app.log.error({ err }, 'workshop poll failed'));
+}, 60 * 60_000);
+workshopTimer.unref?.();
+void workshop.reconcile().catch((err) => app.log.error({ err }, 'workshop reconcile failed'));
+
 /**
  * The tick.
  *
@@ -867,6 +974,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     targets.stop();
     ports.stop();
+    githubProbe.stop();
+    clearInterval(workshopTimer);
     registry.stop();
     scheduler.stop();
     void events.flush().finally(() => process.exit(0));

@@ -24,6 +24,7 @@ import type { Diff } from '@shared/linediff';
 import type { ScheduleResponse } from '@shared/schedule';
 import type { Revision } from '@shared/standard';
 import type { SubjectDetail } from '../types';
+import type { Proposal, ProposalDetail, WorkshopView } from '@shared/workshop';
 
 const BASE = '/api/v1';
 
@@ -646,4 +647,48 @@ export async function streamChatTurn(
       else if (name === 'error') handlers.onError?.(String((payload as { error?: string }).error ?? 'failed'));
     }
   }
+}
+
+// ---------------------------------------------------------------- workshop
+// Proposals Touchstone authors, validates by trials and opens as pull requests. Every verb here
+// is the operator's: the chat and the admin MCP can only read the workshop.
+
+export function getWorkshop(): Promise<WorkshopView> {
+  return get<WorkshopView>('/workshop');
+}
+
+export function getProposal(id: string): Promise<ProposalDetail> {
+  return get<ProposalDetail>(`/workshop/proposals/${encodeURIComponent(id)}`);
+}
+
+/** Queue a proposal. `{subject, kind}` for a fix or an update, `{wish, kind: 'wish'}` for a wish. */
+export function proposeWork(body: { subject?: string; wish?: string; kind: 'fix' | 'currency' | 'wish' }): Promise<{ proposal: Proposal }> {
+  return post('/workshop/proposals', body);
+}
+
+/** Open the pull request. Refused when the daily quota is spent. */
+export function submitProposal(id: string): Promise<{ proposal: Proposal }> {
+  return post(`/workshop/proposals/${encodeURIComponent(id)}/submit`);
+}
+
+export function discardProposal(id: string): Promise<{ proposal: Proposal }> {
+  return post(`/workshop/proposals/${encodeURIComponent(id)}/discard`);
+}
+
+/** `null` puts the switch back to what config.yaml says. */
+export function armWorkshop(armed: boolean | null): Promise<{ armed: boolean; armed_default: boolean }> {
+  return post('/workshop/arm', { armed });
+}
+
+export async function forgetTask(task: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/workshop/memory/${encodeURIComponent(task)}`, {
+      method: 'DELETE',
+      headers: { accept: 'application/json' },
+    });
+  } catch {
+    throw new ApiError(0, 'The API is not reachable.');
+  }
+  if (!res.ok) throw new ApiError(res.status, `Could not clear it (${res.status}).`);
 }

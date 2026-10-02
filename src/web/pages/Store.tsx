@@ -29,7 +29,7 @@ import AuditControl from '../components/AuditControl';
 import { StatusLegend } from '../components/StatusCell';
 import SubjectTable, { SubjectSummary } from '../components/SubjectTable';
 import { EmptyState, Loading, Notice } from '../components/Ui';
-import { getAlerts, getSchedule, getSubjects } from '../data/client';
+import { getAlerts, getSchedule, getSubjects, getWorkshop } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
 import { duration, num, plural, sectionLabel } from '../lib/format';
 import {
@@ -62,6 +62,11 @@ export default function Store() {
    * as the first is how this page came to announce a bench outage over a healthy pool.
    */
   const alerts = useAsync(getAlerts, []);
+  // The workshop's open pull requests, joined onto the operator's rows only — the board that
+  // shares `SubjectTable` never fetches this, so it cannot publish them (invariant 10).
+  const workshop = useAsync(() => getWorkshop().catch(() => null), []);
+  const prOf = (subject: string) =>
+    workshop.data?.proposals.find((p) => p.subject === subject && p.state === 'submitted' && p.pr)?.pr;
   /**
    * The scheduler's opinion of each row, for the flag.
    *
@@ -306,16 +311,29 @@ export default function Store() {
               s.delisted ? (
                 <DeleteSubjectButton subject={s.name} label={s.label} onDone={reload} />
               ) : (
-                <AuditControl
-                  variant="row"
-                  subject={s.name}
-                  label={s.label}
-                  {...requestOf(s.name)}
-                  /* A schedule when the queue moved, nothing when a run finished — and the
-                     second case is the one that needs the rows refetched, because a finished
-                     run is a new verdict. */
-                  onChanged={(next) => (next ? setFlags(next) : reload())}
-                />
+                <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                  {prOf(s.name) ? (
+                    <a
+                      className="btn btn--sm"
+                      href={prOf(s.name)!.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="The workshop's open pull request for this app"
+                    >
+                      PR #{prOf(s.name)!.number}
+                    </a>
+                  ) : null}
+                  <AuditControl
+                    variant="row"
+                    subject={s.name}
+                    label={s.label}
+                    {...requestOf(s.name)}
+                    /* A schedule when the queue moved, nothing when a run finished — and the
+                       second case is the one that needs the rows refetched, because a finished
+                       run is a new verdict. */
+                    onChanged={(next) => (next ? setFlags(next) : reload())}
+                  />
+                </span>
               )
             }
           />

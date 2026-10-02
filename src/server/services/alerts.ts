@@ -30,6 +30,7 @@ export const ALERT_KEYS: AlertKey[] = [
   'agent.auth',
   'agent.unavailable',
   'browser.unavailable',
+  'github.auth',
 ];
 
 export interface AlertInput {

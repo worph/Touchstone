@@ -36,6 +36,7 @@ import type { Scheduler } from '../scheduler/index.js';
 import type { Runner } from '../runner/index.js';
 import type { BenchProber } from '../services/bench.js';
 import type { EventLog } from '../services/events.js';
+import type { Workshop } from '../services/workshop.js';
 
 /**
  * The three blocks of `config.yaml` a control can come from.
@@ -44,7 +45,8 @@ import type { EventLog } from '../services/events.js';
  * have to be the ones the process actually booted with, and a second literal would drift the
  * first time somebody changed a default in `store/config.ts`.
  */
-export type ControlDefaults = Pick<TouchstoneConfig, 'scheduler' | 'runner' | 'bench'>;
+export type ControlDefaults = Pick<TouchstoneConfig, 'scheduler' | 'runner' | 'bench'> &
+  Partial<Pick<TouchstoneConfig, 'workshop'>>;
 
 export interface ControlPorts {
   /** Where an override is kept. Absent, controls are readable and every write is refused. */
@@ -55,6 +57,7 @@ export interface ControlPorts {
   runner?: Runner;
   prober?: BenchProber;
   events?: EventLog;
+  workshop?: Workshop;
 }
 
 interface ControlDef {
@@ -85,11 +88,21 @@ interface ControlDef {
    * `setArmed` already writes `SCHEDULER_ARMED`.
    */
   ownPersistence?: true;
+  /**
+   * Settable from the Automation and Workshop pages and nowhere else — not by the chat's
+   * `set_control`, and therefore not over the admin MCP, which authenticates nobody.
+   *
+   * The workshop's two controls carry it: arming it, or raising its quota, is how pull
+   * requests under a person's GitHub identity start being opened, and no model may cause
+   * that (docs/auto-app-pr.md §10).
+   */
+  operatorOnly?: true;
 }
 
 const SCHEDULER = 'Automated mode';
 const RUNNER = 'The runner';
 const BENCH = 'Demo benches';
+const WORKSHOP = 'The workshop';
 
 /** Scheduler constants, whose setter takes a patch of the same shape. */
 function constant(
@@ -239,7 +252,47 @@ export const CONTROLS: ControlDef[] = [
     apply: (p, v) => p.prober?.setMinRemainingMin(Number(v)),
     revert: (p) => p.prober?.clearMinRemainingMin(),
   },
+  {
+    key: 'workshop.armed',
+    label: 'Workshop',
+    group: WORKSHOP,
+    kind: 'boolean',
+    description:
+      'Whether the workshop picks its own work when the queue is quiet and opens pull requests within the quota. Off, a person can still press Propose and Open PR.',
+    effect: 'Takes effect on the next decision. A session already authoring finishes.',
+    ownPersistence: true,
+    operatorOnly: true,
+    read: (p) => p.workshop?.armed,
+    fallback: (p) => p.defaults?.workshop?.armed ?? p.workshop?.armedDefault,
+    apply: async (p, v) => {
+      await p.workshop?.setArmed(v === true, 'control');
+    },
+    revert: async (p) => {
+      await p.workshop?.clearArmed('control');
+    },
+  },
+  {
+    key: 'workshop.prs_per_day',
+    label: 'Pull requests a day',
+    group: WORKSHOP,
+    kind: 'number',
+    min: 0,
+    max: 10,
+    operatorOnly: true,
+    description:
+      'At most this many pull requests opened in any rolling 24 hours — what the reviewers can take. 0 builds and validates proposals but never opens one.',
+    effect: 'Read at the next submission.',
+    read: (p) => p.workshop?.prsPerDay,
+    fallback: (p) => p.defaults?.workshop?.prs_per_day ?? p.workshop?.prsPerDayDefault,
+    apply: (p, v) => p.workshop?.setPrsPerDay(Number(v)),
+    revert: (p) => p.workshop?.clearPrsPerDay(),
+  },
 ];
+
+/** Whether a control may be changed only from the operator's own pages. */
+export function isOperatorOnly(key: string): boolean {
+  return controlDef(key)?.operatorOnly === true;
+}
 
 export function controlDef(key: string): ControlDef | undefined {
   return CONTROLS.find((c) => c.key === key);
@@ -280,6 +333,7 @@ function describe(def: ControlDef): Omit<ControlRow, 'value' | 'default' | 'sour
     ...(def.max === undefined ? {} : { max: def.max }),
     description: def.description,
     effect: def.effect,
+    ...(def.operatorOnly ? { operator_only: true } : {}),
   };
 }
 

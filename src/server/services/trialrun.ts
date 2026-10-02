@@ -80,6 +80,8 @@ export interface TrialSpec {
   zip: Buffer;
   /** The unguessable name this trial's copy is served under. */
   store_token: string;
+  /** The workshop proposal this trial validates, when it is one. */
+  proposal_id?: string;
 }
 
 export interface TrialRunDeps {
@@ -117,8 +119,11 @@ export interface TrialRunDeps {
    * A trial finished and handed back its bench and browser. The scheduler looks again: with
    * several lines that pair may be exactly what the next request was waiting for, and a trial
    * never reaches `Scheduler.record()`, whose kick covers every audit.
+   *
+   * Carries the slug since the workshop: a proposal's validation is a pair of trials, and the
+   * workshop has to learn that one of *its* trials ended without subscribing to the event log.
    */
-  finished?: () => void;
+  finished?: (slug: string) => void;
 }
 
 export type Refusal = { ok: false; code: number; error: string };
@@ -264,10 +269,55 @@ export async function buildSpec(
   // The app comes out of the archive once, and everything downstream is built from *those*
   // bytes: the prompt's view of the files, and the store the bench installs. They cannot
   // disagree, because there is only one copy.
-  let source: TrialSource;
   let files: Map<string, Uint8Array>;
   try {
     files = extractApp(zip, appsPath, subject);
+  } catch (err) {
+    if (err instanceof TrialStoreError) return { ok: false, code: 400, error: err.message };
+    throw err;
+  }
+  return specFromFiles(
+    deps,
+    {
+      subject,
+      files,
+      apps_path: appsPath,
+      source_url: sourceUrl,
+      ...(uploadId ? { upload_id: uploadId } : {}),
+      ...(body.target ? { target: String(body.target) } : {}),
+    },
+    at,
+  );
+}
+
+/**
+ * The tail of `buildSpec`, for a caller that already holds the app's files.
+ *
+ * The workshop's validation is that caller: its working copy is a map of bytes, never a zip
+ * or an upload session, and going through either would be a second copy of the app that could
+ * disagree with the one being committed.
+ */
+export function specFromFiles(
+  deps: TrialRunDeps,
+  input: {
+    subject: string;
+    files: Map<string, Uint8Array>;
+    apps_path?: string;
+    source_url: string;
+    upload_id?: string;
+    target?: string;
+    /** The rubric anchor, when the subject resolves to no origin (a wish). */
+    repo?: string;
+    proposal_id?: string;
+  },
+  at: string,
+): { ok: true; spec: TrialSpec; compare_to?: string } | Refusal {
+  const { subject, files } = input;
+  const appsPath = input.apps_path ?? 'Apps';
+  const sourceUrl = input.source_url;
+  const uploadId = input.upload_id;
+  let source: TrialSource;
+  try {
     source = sourceOf(files, appsPath, subject);
   } catch (err) {
     if (err instanceof TrialStoreError) return { ok: false, code: 400, error: err.message };
@@ -292,13 +342,14 @@ export async function buildSpec(
       // platform from. Unvalidated here on purpose: an unknown target is recorded
       // `bench_unconfigured` by the runner, which is a better answer than a 400 that cannot
       // say which platforms this installation actually has.
-      ...(body.target ? { target: String(body.target) } : {}),
-      repo: rubricRepo(deps, compareTo),
+      ...(input.target ? { target: input.target } : {}),
+      repo: compareTo ? rubricRepo(deps, compareTo) : (input.repo ?? rubricRepo(deps, compareTo)),
       source_url: sourceUrl,
       ...(uploadId ? { upload_id: uploadId } : {}),
       source,
       zip: packAppStore(files, subject, slug),
       store_token: randomBytes(24).toString('base64url'),
+      ...(input.proposal_id ? { proposal_id: input.proposal_id } : {}),
     },
   };
 }
@@ -354,6 +405,7 @@ export async function enqueueTrial(
     subject: spec.subject,
     ...(compareTo ? { compare_to: compareTo } : {}),
     store_token: spec.store_token,
+    ...(spec.proposal_id ? { proposal_id: spec.proposal_id } : {}),
     started_at: startedAt,
     // The marker that this row entered a queue, as opposed to having been started outright by
     // a version that had none. `queued()` requires it; `reconcile()` closes rows without it.
@@ -493,7 +545,7 @@ export async function startTrial(deps: TrialRunDeps, slug: string, lease?: Lease
         .catch(() => undefined);
       deps.onError?.(err, spec.slug);
     })
-    .finally(() => deps.finished?.());
+    .finally(() => deps.finished?.(spec.slug));
 }
 
 /**

@@ -1132,3 +1132,106 @@ describe('a request older than its line', () => {
     expect(requests(promoted({ lineSince: undefined })).length).toBe(1);
   });
 });
+
+/**
+ * The workshop — last in the queue (docs/auto-app-pr.md §6.1).
+ *
+ * The rule the user asked for in so many words: no workshop task while an audit or a trial
+ * somebody asked for is in the pipe. Work the workshop picked for itself waits for more —
+ * nothing running at all, and no backlog due while the scheduler is working one.
+ */
+describe('the workshop slot', () => {
+  const fresh = { Alpha: daysAgo(1), Beta: daysAgo(1), Gamma: daysAgo(1) };
+
+  function quiet(over: Partial<PolicyInput> = {}, flat: FlatInput = {}): PolicyInput {
+    return {
+      ...input({ lastDoneAt: fresh, ...flat }),
+      free: { benches: { [LINE]: 1 }, browsers: 1, browsersHealthy: 1 },
+      workshop: { slot: { id: 'p1', label: 'fix Alpha', class: 'operator', asked_at: minutesAgo(5) }, backlogCounts: true },
+      ...over,
+    };
+  }
+
+  it('starts when the line is quiet, on the default target', () => {
+    const d = decide(quiet());
+    expect(d.dispatches).toEqual([
+      { action: 'workshop', workshop: 'p1', line: LINE, source: 'workshop', reason: 'workshop — fix Alpha' },
+    ]);
+    expect(d.action).toBe('workshop');
+    expect(d.workshop_hold).toBeUndefined();
+  });
+
+  it('waits for an audit request, even one asked for later', () => {
+    const d = decide(quiet({}, { schedule: { Beta: { try_n: 0, flagged_at: minutesAgo(1) } } }));
+    expect((d.dispatches ?? []).map((x) => x.action)).toEqual(['audit']);
+    expect(d.workshop_hold).toContain('waits for quiet');
+  });
+
+  it('waits for a queued trial', () => {
+    const d = decide(quiet({ queuedTrials: [{ slug: 't1', subject: 'X', queued_at: minutesAgo(30) }], free: { benches: { [LINE]: 2 }, browsers: 2, browsersHealthy: 2 } }));
+    expect((d.dispatches ?? []).map((x) => x.action)).toEqual(['trial']);
+    expect(d.workshop_hold).toContain('waits for quiet');
+  });
+
+  it('waits for a running trial', () => {
+    const d = decide(quiet({ runningTrials: [{ slug: 't1', subject: 'X', queued_at: minutesAgo(30) }] }));
+    expect(d.dispatches ?? []).toEqual([]);
+    expect(d.workshop_hold).toContain('1 request(s) ahead');
+  });
+
+  it('an operator proposal does not wait for the backlog; an idle one does while it is worked', () => {
+    const due = { lastDoneAt: { Alpha: daysAgo(30), Beta: daysAgo(1), Gamma: daysAgo(1) } };
+    const free = { benches: { [LINE]: 2 }, browsers: 2, browsersHealthy: 2 };
+    const op = decide(quiet({ free }, due));
+    expect((op.dispatches ?? []).map((x) => x.action)).toEqual(['audit', 'workshop']);
+
+    const idle = decide(
+      quiet({ free, workshop: { slot: { id: 'cand:x', label: 'fix Alpha', class: 'idle', asked_at: minutesAgo(1) }, backlogCounts: true } }, due),
+    );
+    expect((idle.dispatches ?? []).map((x) => x.action)).toEqual(['audit']);
+    expect(idle.workshop_hold).toBe('waits for the backlog — 1 due');
+
+    // A disarmed scheduler's backlog is not "in the pipe": nothing will ever work it, and the
+    // dispatch it decides must not hold the pair either.
+    const one = { benches: { [LINE]: 1 }, browsers: 1, browsersHealthy: 1 };
+    const disarmed = decide(
+      quiet({ free: one, workshop: { slot: { id: 'cand:x', label: 'fix Alpha', class: 'idle', asked_at: minutesAgo(1) }, backlogCounts: false } }, due),
+    );
+    expect((disarmed.dispatches ?? []).map((x) => x.action)).toEqual(['audit', 'workshop']);
+
+    // But an audit actually in flight holds idle work, armed or not.
+    const inFlight = decide(
+      quiet(
+        { free, workshop: { slot: { id: 'cand:x', label: 'fix Alpha', class: 'idle', asked_at: minutesAgo(1) }, backlogCounts: false } },
+        { schedule: { Beta: { try_n: 0, claim: { since: minutesAgo(5), try_n: 1 } } } },
+      ),
+    );
+    expect(inFlight.workshop_hold).toBe('waits for the audit in flight');
+  });
+
+  it('takes only what the tick left over', () => {
+    const due = { lastDoneAt: { Alpha: daysAgo(30), Beta: daysAgo(1), Gamma: daysAgo(1) } };
+    const d = decide(quiet({}, due));
+    expect((d.dispatches ?? []).map((x) => x.action)).toEqual(['audit']);
+    expect(d.workshop_hold).toBe(`every ${LINE} bench is in use`);
+  });
+
+  it('never runs a second session', () => {
+    const d = decide(quiet({ workshop: { running: { id: 'p0', label: 'fix Beta', started_at: minutesAgo(3) }, slot: { id: 'p1', label: 'fix Alpha', class: 'operator', asked_at: minutesAgo(5) }, backlogCounts: true } }));
+    expect(d.dispatches ?? []).toEqual([]);
+  });
+
+  it('never starts on the single-flight path', () => {
+    const { free: _free, ...single } = quiet();
+    expect(decide(single).action).not.toBe('workshop');
+  });
+
+  it('is listed last while waiting, and first while running', () => {
+    const waiting = requests(quiet({}, { schedule: { Beta: { try_n: 0, flagged_at: minutesAgo(1) } } }));
+    expect(waiting.map((r) => r.kind)).toEqual(['audit', 'workshop']);
+    const running = requests(
+      quiet({ workshop: { running: { id: 'p0', label: 'fix Beta', started_at: minutesAgo(3) }, backlogCounts: true } }, { schedule: { Beta: { try_n: 0, flagged_at: minutesAgo(1) } } }),
+    );
+    expect(running.map((r) => `${r.kind}:${r.state}`)).toEqual(['workshop:running', 'audit:waiting']);
+  });
+});

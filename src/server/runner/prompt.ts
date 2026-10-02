@@ -156,6 +156,16 @@ export interface PromptInput {
   store_url?: string;
 }
 
+/**
+ * How the agent is told which browser to drive. Shared with the workshop's authoring prompt
+ * (`workshop/prompt.ts`), which leases a sidecar the same way and must name it the same way.
+ */
+export function browserRule(endpoint: string): string {
+  return endpoint
+    ? ('Drive all of it via the browser-mcp instance at ' + endpoint + ', which is leased to THIS run alone - connect to it directly over MCP and do NOT use the shared browser-mcp on the aggregator, whose tabs belong to other work')
+    : 'Drive all of it via browser-mcp reached through mcp__beacon__call (bare tool names browser-mcp__*, Chrome CDP on the direct beacon:9300, NOT the claude.ai connector)';
+}
+
 export function buildPrompt(input: PromptInput): { app_name: string; sections: string[]; prompt: string } {
   const f = input;
   const app = (f.app_name || '').trim();
@@ -191,9 +201,7 @@ export function buildPrompt(input: PromptInput): { app_name: string; sections: s
   const cb = f.callback;
   // Substituted into the step-4 clause below. A leased sidecar is named so the agent cannot
   // reach for the shared box-wide browser, whose tabs belong to other work.
-  const BROWSER_RULE = browserEndpoint
-    ? ('Drive all of it via the browser-mcp instance at ' + browserEndpoint + ', which is leased to THIS run alone - connect to it directly over MCP and do NOT use the shared browser-mcp on the aggregator, whose tabs belong to other work')
-    : 'Drive all of it via browser-mcp reached through mcp__beacon__call (bare tool names browser-mcp__*, Chrome CDP on the direct beacon:9300, NOT the claude.ai connector)';
+  const BROWSER_RULE = browserRule(browserEndpoint);
   // The caller always hands us a host it has already logged into: it probes the OIDC flow end
   // to end, which the demo board does not. On 2026-08-19 the board called an instance Ready
   // while its login gate answered 500, and the board's own "most time remaining" rule preferred

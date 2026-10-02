@@ -12,6 +12,7 @@
  */
 
 import type { LiveRun } from '@shared/activity';
+import type { WorkshopLive } from '@shared/workshop';
 import { subjectName } from '@shared/subject';
 import { Link } from 'react-router-dom';
 
@@ -31,13 +32,16 @@ export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 
    * one question a run cannot answer about itself, and the one that used to need a trip to
    * Automation to find out.
    */
-  const waiting = Math.max(0, (status?.queued ?? 0) - runs.length);
+  const authoring = status?.workshop;
+  // The authoring session is a row of the request queue too, so it is not "behind" anything.
+  const waiting = Math.max(0, (status?.queued ?? 0) - runs.length - (authoring ? 1 : 0));
 
-  if (runs.length === 0) return null;
+  if (runs.length === 0 && !authoring) return null;
+  if (runs.length === 0 && authoring) return <Authoring live={authoring} compact={variant === 'compact'} />;
 
   // The phone header has room for one: the oldest run, and a count of the rest.
   if (variant === 'compact') {
-    return <OneRun run={runs[0]!} compact others={runs.length - 1} waiting={waiting} />;
+    return <OneRun run={runs[0]!} compact others={runs.length - 1 + (authoring ? 1 : 0)} waiting={waiting} />;
   }
   // One strip per run. Several go at once now — one per free (bench, browser) pair — and the
   // same app may be running on both platforms, which is why each strip names its platform.
@@ -46,7 +50,27 @@ export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 
       {runs.map((run, i) => (
         <OneRun key={run.id} run={run} waiting={i === runs.length - 1 ? waiting : 0} />
       ))}
+      {authoring ? <Authoring live={authoring} compact={false} /> : null}
     </>
+  );
+}
+
+/** The workshop authoring a proposal — the third kind of thing a strip can be about. */
+function Authoring({ live, compact }: { live: WorkshopLive; compact: boolean }) {
+  const clock = mmss(useElapsed(live.started_at));
+  const verb = live.kind === 'fix' ? 'Fixing' : live.kind === 'currency' ? 'Updating' : 'Adding';
+  return (
+    <Link
+      className="run-strip run-strip--compact"
+      to={`/workshop/${encodeURIComponent(live.id)}`}
+      aria-label={`The workshop is ${verb.toLowerCase()} ${live.app}, round ${live.round}, running ${clock}`}
+    >
+      <span className="run-strip__mark" aria-hidden="true">⚒</span>
+      <span className="run-strip__name">
+        {compact ? live.app : `${verb} ${live.app}`}
+      </span>
+      <span className="run-strip__clock num">{clock}</span>
+    </Link>
   );
 }
 

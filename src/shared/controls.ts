@@ -49,6 +49,8 @@ export interface ControlRow {
    * that silently vanishes — but a write is refused rather than accepted and dropped.
    */
   settable: boolean;
+  /** Changeable from the operator's pages only — never by the chat or the admin MCP. */
+  operator_only?: boolean;
 }
 
 export interface ControlsResponse {

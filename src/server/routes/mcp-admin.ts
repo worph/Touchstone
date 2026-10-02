@@ -6,7 +6,7 @@
  * agent may ask Touchstone" would be a second thing to keep in step with invariant 6, and the
  * first time the two disagreed the weaker one would be the one somebody had connected.
  *
- * So the scope here is exactly the scope of the chat: seventeen tools, twelve of which read
+ * So the scope here is exactly the scope of the chat: eighteen tools, thirteen of which read
  * what is *written down* — the board, the archive, a report file, the fix brief, a trial, the
  * log, the backlog, the schedule, the rubric, the store's own files, and this instance's own
  * settings — and five which act: `run_assay`, the pair that trials files nobody has committed
@@ -58,7 +58,7 @@ import type { FastifyPluginAsync } from 'fastify';
  * turned that into a trial.
  *
  * Kept to the fork in the road. Everything else a caller needs is on the tool it picked, and
- * an instructions block that restates seventeen descriptions is one more thing to keep in
+ * an instructions block that restates eighteen descriptions is one more thing to keep in
  * step with them.
  */
 const INSTRUCTIONS = [

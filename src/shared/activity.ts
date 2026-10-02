@@ -25,6 +25,8 @@ export type EventCategory =
   | 'agent'
   /** The administrator chat: what it was asked, and what it could not do. */
   | 'chat'
+  /** Proposals: authoring, validation and the pull requests the workshop opens. */
+  | 'workshop'
   | 'importer'
   | 'notify'
   | 'system'
@@ -74,7 +76,9 @@ export type AlertKey =
   /** The agent answered, and told us its own session is dead. Only the runner ever sees this. */
   | 'agent.auth'
   | 'agent.unavailable'
-  | 'browser.unavailable';
+  | 'browser.unavailable'
+  /** The workshop's GitHub token is missing a permission, belongs to the wrong account, or failed. */
+  | 'github.auth';
 
 export interface Alert {
   key: AlertKey;
@@ -487,4 +491,9 @@ export interface RunStatus {
    * what is happening, which is the problem `data/runStatus.ts` exists to have solved once.
    */
   queued?: number;
+  /**
+   * The workshop's authoring session, when one is running — the shell strip's third kind of
+   * work. Rides the same poller for the same reason `queued` does.
+   */
+  workshop?: import('./workshop.js').WorkshopLive;
 }

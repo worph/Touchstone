@@ -171,7 +171,7 @@ They are removed from the plan.
 | ✂ History strip | per-subject glyph run |
 | ✂ Standards page, rubric drift, `content_hash` | drift detection |
 | ✂ PR-scoped assays, check API, `scope: pr-diff` | phase 3, the merge gate |
-| ✂ Findings → pull requests | phase 4 |
+| ✂ Findings → pull requests — **reversed 2026-10-02 by R17, the workshop** ([auto-app-pr.md](auto-app-pr.md)) | phase 4 |
 | ✂ Incident ack / mute / impact accounting | a stateful incident engine |
 | ✂ Generic `subject.kind`, pluggable tenants | a generic conformance product |
 

@@ -100,6 +100,19 @@ const ROUTES: Record<string, { beacon: boolean; push: boolean }> = {
   TRIAL_STARTED: { beacon: false, push: false },
   TRIAL_COMPLETED: { beacon: false, push: false },
   TRIAL_FAILED: { beacon: false, push: false },
+
+  /**
+   * The workshop pushes the three things a person has to act on, and nothing else.
+   *
+   * `READY` is a proposal waiting for somebody to press Open PR (or for the next slot);
+   * `SUBMITTED` is a pull request waiting for review — the store team's queue, so it goes to
+   * the outlets too; `CANNOT` is the agent saying a task is impossible as written, which is
+   * the only way a wish file's author learns to rewrite it. Rounds, infra holds and the rest
+   * are logged: a proposal moving through its states is not news.
+   */
+  PROPOSAL_READY: { beacon: false, push: true },
+  PROPOSAL_SUBMITTED: { beacon: true, push: true },
+  PROPOSAL_CANNOT: { beacon: false, push: true },
 };
 
 export function routeFor(code: string): { beacon: boolean; push: boolean } {

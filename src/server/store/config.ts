@@ -308,6 +308,50 @@ export interface TouchstoneConfig {
     /** How long a session stays writable, and how long its files survive. */
     ttl_min: number;
   };
+  /**
+   * The GitHub identity the **workshop** opens pull requests as — `services/github.ts`.
+   *
+   * A fine-grained token on the origin's organisation, pushing to `touchstone/…` branches of
+   * the origin repo itself (no fork: a fine-grained token cannot open a PR on a repo owned by
+   * somebody else). Empty means the workshop is unconfigured and nothing it does can reach
+   * GitHub. Never handed to an agent — see docs/auto-app-pr.md §3.
+   */
+  github: {
+    /** `TOUCHSTONE_GITHUB_TOKEN` when unset here. Masked by `redactConfig` (key name). */
+    token: string;
+    /** The account the token must belong to. A token for anybody else is an alert. */
+    login: string;
+    /** Commit author name — D8: the person is accountable, the name says a machine wrote it. */
+    commit_name: string;
+    /** Empty means the account's noreply address. */
+    commit_email: string;
+  };
+  /**
+   * The workshop: proposals to fix, update or add an app, validated by trials and opened as
+   * pull requests — docs/auto-app-pr.md. Every number here is a default a control overrides.
+   */
+  workshop: {
+    /** The origin that receives pull requests. No other origin is ever proposed against. */
+    origin: string;
+    /** Safety switch, default off — automatic selection and submission. */
+    armed: boolean;
+    /** D2: at most this many PRs opened in any rolling 24 hours. 0 is a dry run. */
+    prs_per_day: number;
+    /** Authoring + validation rounds before a proposal is given up. */
+    max_rounds: number;
+    /** Hard limit on one authoring session. */
+    session_minutes: number;
+    /**
+     * The reading that measures image currency — what a `currency` proposal is about. Named
+     * rather than recognised, because nothing in code may enumerate sections (invariant 2).
+     * Empty disables currency proposals.
+     */
+    currency_section: string;
+  };
+  /** Proposal working copies and their evidence — `<dataDir>/workshop`. */
+  workshopDir: string;
+  /** The operator's wishlist — `<dataDir>/wishlist/*.md`, one file per wish. */
+  wishlistDir: string;
   notify: {
     outlets: OutletEntry[];
     /**
@@ -332,6 +376,8 @@ function defaults(dataDir: string): TouchstoneConfig {
     stateDir: path.join(dataDir, 'state'),
     protocolsDir: path.join(dataDir, 'protocols'),
     kbDir: path.join(dataDir, 'kb'),
+    workshopDir: path.join(dataDir, 'workshop'),
+    wishlistDir: path.join(dataDir, 'wishlist'),
     scheduler: {
       armed: false,
       tick_min: 60,
@@ -373,6 +419,20 @@ function defaults(dataDir: string): TouchstoneConfig {
       max_file_bytes: 2 * 1024 * 1024,
       max_total_bytes: 8 * 1024 * 1024,
       ttl_min: 120,
+    },
+    github: {
+      token: process.env.TOUCHSTONE_GITHUB_TOKEN ?? '',
+      login: process.env.TOUCHSTONE_GITHUB_LOGIN ?? '',
+      commit_name: 'Mael (Touchstone)',
+      commit_email: '',
+    },
+    workshop: {
+      origin: DEFAULT_ORIGIN,
+      armed: false,
+      prs_per_day: 1,
+      max_rounds: 3,
+      session_minutes: 90,
+      currency_section: 'currency',
     },
     notify: {
       outlets: [],
@@ -420,6 +480,8 @@ export async function loadConfig(dataDir?: string): Promise<TouchstoneConfig> {
   cfg.reportsRoot = path.resolve(dir, cfg.reportsRoot);
   cfg.trialsRoot = path.resolve(dir, cfg.trialsRoot);
   cfg.uploadsRoot = path.resolve(dir, cfg.uploadsRoot);
+  cfg.workshopDir = path.resolve(dir, cfg.workshopDir);
+  cfg.wishlistDir = path.resolve(dir, cfg.wishlistDir);
   cfg.stateDir = path.resolve(dir, cfg.stateDir);
   cfg.origins = resolveOrigins(cfg.origins);
   return cfg;
@@ -638,6 +700,34 @@ uploads:
   max_total_bytes: ${cfg.uploads.max_total_bytes}
   # A session stays writable this long, and its files are swept once it lapses.
   ttl_min: ${cfg.uploads.ttl_min}
+
+# ── the workshop: pull requests ─────────────────────────────────────────────────────────
+# Touchstone can propose a fix, a version update or a wishlist app as a pull request on the
+# origin below — validated by trials first, at most \`prs_per_day\` a day, never merged by
+# itself. docs/auto-app-pr.md is the design.
+#
+# The token is a fine-grained PAT, resource owner = the origin's organisation, repository =
+# the AppStore only, permissions Contents RW + Pull requests RW + Metadata R. It pushes only
+# \`touchstone/…\` branches; the code refuses any other ref. It is never shown to an agent.
+# Prefer TOUCHSTONE_GITHUB_TOKEN in the environment over writing it here.
+github:
+  # token: ""
+  login: "${cfg.github.login}"
+  commit_name: "${cfg.github.commit_name}"
+  # Empty = the account's noreply address.
+  commit_email: ""
+
+workshop:
+  origin: ${cfg.workshop.origin}
+  # Safety switch. Off: nothing is picked or submitted automatically; an operator can still
+  # press Propose and Open PR. Settable at runtime from the Workshop page only.
+  armed: false
+  # At most this many PRs in any rolling 24 hours. 0 = build and validate, never submit.
+  prs_per_day: ${cfg.workshop.prs_per_day}
+  max_rounds: ${cfg.workshop.max_rounds}
+  session_minutes: ${cfg.workshop.session_minutes}
+  # The reading a "currency" proposal is about. Empty disables them.
+  currency_section: ${cfg.workshop.currency_section}
 
 # ── notification ────────────────────────────────────────────────────────────────────────
 # Outlets go through the local Beacon aggregator. \`target\` is a Telegram chat id or a
