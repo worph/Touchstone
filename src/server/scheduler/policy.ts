@@ -166,6 +166,13 @@ export interface PolicyInput {
    */
   lastFinishedAtByLine?: Record<LineKey, string | undefined>;
   /**
+   * When each line started being scheduled — `Scheduler`'s `line_since`. A request older than
+   * its line counts only on lines that have looked at the app before; see `flaggedForReaudit`.
+   * Absent for a line, every request counts there, which is what this field's absence meant
+   * before it existed.
+   */
+  lineSince?: Record<LineKey, string | undefined>;
+  /**
    * Newest assay of **any status** per subject, ISO — a blocked or errored attempt counts.
    *
    * Only the standard clause below reads this. `lastDoneAt` is the freshness and ordering
@@ -302,7 +309,19 @@ function flaggedForReaudit(
   // spends it on its own run. A per-line *request* would need a platform picker on every row,
   // which is `depth` wearing a new name — whether the FOSS bench is free is a fact about the
   // line, not a choice at the point of pressing.
-  return isFlaggedForReaudit(row?.flagged_at, input.lastAttemptAt?.[subject]?.[line]);
+  const attempted = input.lastAttemptAt?.[subject]?.[line];
+  // **A request is for the platforms that existed when it was made.** A line with no attempt
+  // has nothing to spend a flag against, so without this every request ever answered on
+  // Yundera came back to life the moment a second platform started scoring — 32 of them on
+  // 2026-10-02, each jumping the queue (and the cooldown) ahead of a trial asked for that
+  // morning. Only when the line has never looked at this app: once it has, the attempt is the
+  // comparison, as it always was.
+  if (!attempted && row?.flagged_at) {
+    const since = Date.parse(input.lineSince?.[line] ?? '');
+    const flagged = Date.parse(row.flagged_at);
+    if (!Number.isNaN(since) && !Number.isNaN(flagged) && flagged < since) return false;
+  }
+  return isFlaggedForReaudit(row?.flagged_at, attempted);
 }
 
 function minutesSince(iso: string | undefined, now: Date): number {

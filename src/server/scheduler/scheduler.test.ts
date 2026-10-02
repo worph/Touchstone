@@ -1188,3 +1188,28 @@ describe('several runs at once', () => {
     expect(started[0]?.lease?.bench?.name).toBe('demofoss1');
   });
 });
+
+describe('when each line started', () => {
+  it('records the default line as always having existed, a new one as now, and keeps both', async () => {
+    const sections = [
+      { id: 'functional', line: LINE, scores: true },
+      { id: 'functional@foss', line: 'foss', scores: true },
+      { id: 'currency', line: 'reading-only', scores: false },
+    ];
+    const s = make({ sections: async () => sections });
+    await s.load();
+    const before = Date.now();
+    await s.tick();
+    const file = JSON.parse(await fs.readFile(path.join(dir, 'schedule.json'), 'utf8'));
+    expect(file.line_since[LINE]).toBe(new Date(0).toISOString());
+    expect(Date.parse(file.line_since.foss)).toBeGreaterThanOrEqual(before - 1000);
+    // A line made only of readings is not scheduled, so it has no start.
+    expect(file.line_since['reading-only']).toBeUndefined();
+
+    const again = make({ sections: async () => sections });
+    await again.load();
+    await again.tick();
+    const reread = JSON.parse(await fs.readFile(path.join(dir, 'schedule.json'), 'utf8'));
+    expect(reread.line_since.foss).toBe(file.line_since.foss);
+  });
+});

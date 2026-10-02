@@ -221,6 +221,13 @@ interface ScheduleFile {
    * cooldown that file's box was actually serving.
    */
   last_finished_by_line?: Record<LineKey, string>;
+  /**
+   * When each scoring line was first scheduled by this box. A request made before its line
+   * existed is not a request for that line — see `flaggedForReaudit`. The default line is
+   * recorded as the epoch: it has always existed, and an outstanding request for an app it has
+   * never audited must keep counting across the upgrade that introduced this field.
+   */
+  line_since?: Record<LineKey, string>;
   /** The most recent decision, so the UI can show what the scheduler thinks without a tick. */
   last_tick?: { at: string; state: string; decision: TickDecision };
 }
@@ -361,6 +368,7 @@ export class Scheduler {
   private subjects: Record<string, SubjectSchedule> = {};
   private lastFinished?: string;
   private lastFinishedByLine: Record<LineKey, string> = {};
+  private lineSince: Record<LineKey, string> = {};
   private lastTick?: ScheduleFile['last_tick'];
   private armedOverride?: boolean;
   /**
@@ -396,6 +404,8 @@ export class Scheduler {
       stored?.last_finished_by_line && typeof stored.last_finished_by_line === 'object'
         ? { ...stored.last_finished_by_line }
         : {};
+    this.lineSince =
+      stored?.line_since && typeof stored.line_since === 'object' ? { ...stored.line_since } : {};
     // A file from before per-line cooldowns: the one anchor it has was the cooldown every line
     // was serving, so each known line starts from it. Without this a fresh line would inherit
     // whatever *another* line finished last, via the fallback, until its own first finish.
@@ -1013,6 +1023,7 @@ export class Scheduler {
       ...(Object.keys(this.lastFinishedByLine).length > 0
         ? { lastFinishedAtByLine: { ...this.lastFinishedByLine } }
         : {}),
+      lineSince: this.noteLines(sections, opts.now),
       agentBusy: this.opts.agentBusy?.() ?? false,
       ...(this.opts.trials
         ? {
@@ -1049,6 +1060,24 @@ export class Scheduler {
       free: { benches: cap.benches, browsers: cap.browsers, browsersHealthy: usage.browsers.total },
       ...(Object.keys(needs).length > 0 ? { needs } : {}),
     };
+  }
+
+  /**
+   * Record the first moment each scoring line was scheduled, and hand back the map.
+   *
+   * Written into the object rather than persisted here; the tick's `persist()` saves it. A
+   * preview (`previewQueue`) may note a line first, which is the same moment to within a poll.
+   */
+  private noteLines(
+    sections: { line: LineKey; scores: boolean }[],
+    now: Date,
+  ): Record<LineKey, string> {
+    for (const section of sections) {
+      if (!section.scores || this.lineSince[section.line]) continue;
+      this.lineSince[section.line] =
+        section.line === DEFAULT_TARGET ? new Date(0).toISOString() : now.toISOString();
+    }
+    return { ...this.lineSince };
   }
 
   /** What a run on this line needs, for the reservation the tick makes. */
@@ -1482,6 +1511,7 @@ export class Scheduler {
         ...(Object.keys(this.lastFinishedByLine).length > 0
           ? { last_finished_by_line: this.lastFinishedByLine }
           : {}),
+        ...(Object.keys(this.lineSince).length > 0 ? { line_since: this.lineSince } : {}),
         last_tick: this.lastTick,
       } satisfies ScheduleFile);
     } catch (err) {

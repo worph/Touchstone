@@ -1724,7 +1724,20 @@ FOSS is still `scores: false` in the shipped rubric. Promotion is the one-line f
 the file's hash, so **both** lines re-eligible every subject — accepted: with independent lines
 the Yundera re-audit and the FOSS backlog drain side by side.
 
-### 23.4 Not done, deliberately
+### 23.4 A request older than its platform (1.1.26)
+
+Promoting FOSS on yunderalabs (1.1.25) resurrected 32 long-answered requests on the new line: a
+request counts on a line until that line attempts the app, and FOSS had attempted nothing, so
+every `flagged_at` ever written read as outstanding there. They jumped the queue — and the
+cooldown — ahead of a trial asked for that morning. The audits were due anyway; the order and the
+"asked for" badges were wrong.
+
+Fix: the scheduler records when each scoring line was first scheduled (`line_since` in
+`state/schedule.json`; the default line as the epoch, so a pending request for an app it has
+never audited survives the upgrade), and on a line with **no attempt** a request older than the
+line does not count. Once the line has looked at the app, the attempt is the comparison as before.
+
+### 23.5 Not done, deliberately
 
 - **Per-target `armed`.** One switch still gates every line's backlog.
 - **A configured concurrency cap.** Capacity is what the pools and `config.browsers` add up to;
