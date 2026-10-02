@@ -158,7 +158,7 @@ describe('DELETE /subjects/:name', () => {
     const app = await serve(index, {
       registry: registry([subjectKey(DEFAULT_ORIGIN, 'Gone')]),
       runner: {
-        status: () => ({ running: { subject: subjectKey(DEFAULT_ORIGIN, 'Gone') } }),
+        status: () => ({ runs: [{ subject: subjectKey(DEFAULT_ORIGIN, 'Gone') }] }),
       } as never,
     });
 

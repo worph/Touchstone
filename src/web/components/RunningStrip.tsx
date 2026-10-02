@@ -11,47 +11,77 @@
  * time it matters they do not see it either.
  */
 
+import type { LiveRun } from '@shared/activity';
 import { subjectName } from '@shared/subject';
 import { Link } from 'react-router-dom';
 
 import { sectionLabel } from '../lib/format';
 import { useRunStatus } from '../data/runStatus';
 import { useElapsed } from '../hooks/useElapsed';
-import { documentTitle, mmss, nowDoing, progressLabel, progressRatio } from '../lib/run';
+import { documentTitleOf, mmss, nowDoing, progressLabel, progressRatio } from '../lib/run';
 import { useEffect } from 'react';
 
 export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 'compact' }) {
   const status = useRunStatus();
-  const live = status?.running ?? null;
-  const seconds = useElapsed(live?.started_at);
+  const runs = status?.runs ?? [];
   /**
-   * How many requests are behind this one.
+   * How many requests are behind the runs in flight.
    *
    * The strip is on every page, so this is the ambient answer to "what is after this" — the
-   * one question the run in flight cannot answer about itself, and the one that used to need
-   * a trip to Automation to find out.
+   * one question a run cannot answer about itself, and the one that used to need a trip to
+   * Automation to find out.
    */
-  const waiting = Math.max(0, (status?.queued ?? 0) - 1);
+  const waiting = Math.max(0, (status?.queued ?? 0) - runs.length);
 
-  if (!live) return null;
+  if (runs.length === 0) return null;
 
-  const progress = status?.progress ?? null;
+  // The phone header has room for one: the oldest run, and a count of the rest.
+  if (variant === 'compact') {
+    return <OneRun run={runs[0]!} compact others={runs.length - 1} waiting={waiting} />;
+  }
+  // One strip per run. Several go at once now — one per free (bench, browser) pair — and the
+  // same app may be running on both platforms, which is why each strip names its platform.
+  return (
+    <>
+      {runs.map((run, i) => (
+        <OneRun key={run.id} run={run} waiting={i === runs.length - 1 ? waiting : 0} />
+      ))}
+    </>
+  );
+}
+
+function OneRun({
+  run: live,
+  compact = false,
+  others = 0,
+  waiting,
+}: {
+  run: LiveRun;
+  compact?: boolean;
+  others?: number;
+  waiting: number;
+}) {
+  const seconds = useElapsed(live.started_at);
+  const progress = live.progress;
   const counted = progressLabel(progress);
   const ratio = progressRatio(progress);
   const doing = nowDoing(progress);
   const clock = mmss(seconds);
   const sections = live.sections ?? [];
+  const platform = live.target_label ?? live.target ?? null;
 
   const label =
-    `Auditing ${subjectName(live.subject)}${sections.length > 0 ? `, ${sections.join(' and ')}` : ''}, running ${clock}` +
-    (counted ? `, ${counted} requirements settled` : '');
+    `Auditing ${subjectName(live.subject)}${platform ? ` on ${platform}` : ''}${sections.length > 0 ? `, ${sections.join(' and ')}` : ''}, running ${clock}` +
+    (counted ? `, ${counted} requirements settled` : '') +
+    (others > 0 ? `, and ${others} more` : '');
 
-  if (variant === 'compact') {
+  if (compact) {
     return (
       <Link className="run-strip run-strip--compact" to={`/s/${encodeURIComponent(live.subject)}`} aria-label={label}>
         <span className="run-strip__mark" aria-hidden="true">◴</span>
         <span className="run-strip__name">{subjectName(live.subject)}</span>
         <span className="run-strip__clock num">{clock}</span>
+        {others > 0 ? <span className="run-strip__queued num">×{others + 1}</span> : null}
         {waiting > 0 ? <span className="run-strip__queued num">+{waiting}</span> : null}
       </Link>
     );
@@ -62,7 +92,9 @@ export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 
       <span className="run-strip__head">
         <span className="run-strip__mark" aria-hidden="true">◴</span>
         <span className="run-strip__name">{subjectName(live.subject)}</span>
+        {platform ? <span className="run-strip__platform">{platform}</span> : null}
         <span className="run-strip__clock num">{clock}</span>
+        {waiting > 0 ? <span className="run-strip__queued num">+{waiting}</span> : null}
       </span>
 
       <span className="run-strip__meta">
@@ -102,13 +134,13 @@ export default function RunningStrip({ variant = 'full' }: { variant?: 'full' | 
  */
 export function RunTitle() {
   const status = useRunStatus();
-  const live = status?.running ?? null;
-  const seconds = useElapsed(live?.started_at);
+  const runs = status?.runs;
+  const seconds = useElapsed(runs?.[0]?.started_at);
 
   useEffect(() => {
-    document.title = documentTitle(live, status?.progress ?? null);
+    document.title = documentTitleOf(runs ?? []);
     // The clock is in the title, so the tick is a dependency even though it is not read here.
-  }, [live, status?.progress, seconds]);
+  }, [runs, seconds]);
 
   useEffect(() => () => {
     document.title = 'Touchstone';

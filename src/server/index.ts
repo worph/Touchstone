@@ -26,6 +26,7 @@ import { PushService } from './services/push.js';
 import { SubjectRegistry } from './store/registry.js';
 import { Scheduler } from './scheduler/index.js';
 import { Runner } from './runner/index.js';
+import { Leases } from './services/leases.js';
 import { PortProber } from './services/ports.js';
 import { ensureProtocolFiles, ProtocolStore, sectionsOf } from './store/protocols.js';
 import { lineOf } from '../shared/schedule.js';
@@ -277,6 +278,16 @@ const storedoc = new StoreDocReader();
  */
 const ledger = new RunLedger({ events });
 
+/**
+ * Who holds which bench and which browser. One run per free (bench, browser) pair, across every
+ * platform — so capacity is whatever the pools and `config.browsers` add up to, and adding a
+ * sidecar or a bench raises it with no code change. See `services/leases.ts`.
+ */
+const leases = new Leases({
+  benches: (target) => targets.leasable(target),
+  browsers: () => ports.healthy('browser'),
+});
+
 const runner = new Runner({
   enabled: cfg.runner.enabled,
   reportsRoot: cfg.reportsRoot,
@@ -293,6 +304,7 @@ const runner = new Runner({
   index: store,
   targets,
   ports,
+  leases,
   protocols,
   revisions,
   kb,
@@ -392,6 +404,8 @@ const trialDeps = (): TrialRunDeps => ({
   publicBaseUrl: cfg.trials.public_base_url,
   onError: (err: unknown, slug: string) => app.log.error({ err, slug }, 'trial failed'),
   kick: () => void scheduler.tick().catch((err) => app.log.error({ err }, 'trial kick failed')),
+  leases,
+  finished: () => scheduler.nudge(),
 });
 
 /**
@@ -429,16 +443,22 @@ const pendingThreads = new Map<string, Set<string>>();
  * Best-effort on purpose: a thread file that cannot be appended to must not turn a completed
  * audit into a logged failure.
  */
-async function noteFinished(subject: SubjectKey, outcome: RunOutcome): Promise<void> {
+async function noteFinished(subject: SubjectKey, outcome: RunOutcome, target?: string): Promise<void> {
   const threads = pendingThreads.get(subject);
   if (!threads) return;
-  pendingThreads.delete(subject);
+  // One press asks for every platform, and each line answers it with its own run. Every run
+  // writes its note; the thread is forgotten only once nothing more of this request is
+  // running or waiting, or the second platform's answer would go nowhere.
+  const stillGoing =
+    runner.status().runs.some((r) => r.subject === subject) ||
+    (await scheduler.previewRequests()).some((r) => r.kind === 'audit' && r.id === subject);
+  if (!stillGoing) pendingThreads.delete(subject);
   for (const threadId of threads) {
     await chatThreads
       .append({
         threadId,
         role: 'note',
-        content: `The audit of ${subjectName(subject)} you asked for has finished: ${outcomeClause(outcome)}.`,
+        content: `The audit of ${subjectName(subject)}${target ? ` on ${target}` : ''} you asked for has finished: ${outcomeClause(outcome)}.`,
       })
       .catch((err) => app.log.warn({ err }, 'could not note a finished audit in its thread'));
   }
@@ -465,7 +485,10 @@ const scheduler = new Scheduler({
       id: section.id,
       line: lineOf(section),
       scores: section.scores,
+      requires: section.requires,
     })),
+  // What makes the scheduler concurrent: each tick reserves a pair per run it starts.
+  leases,
   // The registry's own cached map — the tree fetch rides its refresh, so a tick costs no
   // GitHub request of its own. That matters: the budget is 60 an hour and an origin driven
   // unreachable stops the runner dispatching (invariant 3).
@@ -490,34 +513,42 @@ const scheduler = new Scheduler({
               : outcome.kind === 'blocked'
                 ? { kind: 'blocked', reason: outcome.reason }
                 : { kind: 'error', reason: outcome.reason },
+        new Date(),
+        // The line this run was on. Several lines of one subject can be claimed at once, so
+        // "whichever line holds a claim" is no longer an answer.
+        job.target,
       );
     } finally {
       // `finally`, so a schedule that could not be written does not also cost the operator
       // the answer. The two are independent: one is bookkeeping, the other is the reply to a
       // question somebody actually asked.
-      await noteFinished(job.subject, outcome);
+      await noteFinished(job.subject, outcome, job.target);
     }
   },
-  // The runner's own flag, which is the only thing that sees a **trial** holding the agent —
-  // a trial owns no claim by design, so without this the tick is blind to half of what the
-  // agent does and a kick would spin against a running trial for its whole duration.
-  agentBusy: () => runner.busy,
   // Charging a try implies writing an attempt record (invariant 14). `dispatchFailed` charges
   // one; this is what makes it record one, and therefore what lets a failed dispatch spend the
   // request that asked for it instead of leaving it at the head of the queue for ever.
-  recordFailedDispatch: (subject, reason, scope) =>
-    runner.recordFailedDispatch(subject, reason, scope),
+  recordFailedDispatch: (subject, reason, scope, target) =>
+    runner.recordFailedDispatch(subject, reason, scope, target),
   // The trial half of the request queue. Narrow on purpose: the scheduler learns that a trial
   // exists, when it was asked for, and how to start one — never how to record anything about a
   // subject, which is what keeps "a trial says nothing about a subject's schedule" true.
   trials: {
     queued: () =>
-      trials.queued().map((t) => ({ slug: t.slug, subject: t.subject, queued_at: t.started_at })),
-    running: () => {
-      const t = trials.running();
-      return t ? { slug: t.slug, subject: t.subject, queued_at: t.started_at } : undefined;
-    },
-    dispatch: (slug) => startTrial(trialDeps(), slug),
+      trials.queued().map((t) => ({
+        slug: t.slug,
+        subject: t.subject,
+        queued_at: t.started_at,
+        ...(t.target ? { target: t.target } : {}),
+      })),
+    running: () =>
+      trials.runningAll().map((t) => ({
+        slug: t.slug,
+        subject: t.subject,
+        queued_at: t.started_at,
+        ...(t.target ? { target: t.target } : {}),
+      })),
+    dispatch: (slug, lease) => startTrial(trialDeps(), slug, lease),
     failed: (slug, reason) =>
       trials.update(slug, {
         finished_at: new Date().toISOString(),
@@ -577,13 +608,14 @@ await app.register(registerRoutes, {
   protocols,
   revisions,
   ledger,
+  leases,
   browser: {
-    ...(cfg.browsers[0] ? { browserUrl: cfg.browsers[0].url } : {}),
-    // Only while a run is in flight; the panel narrows the tab list to that audit's own
+    browsers: cfg.browsers.map((b) => ({ name: b.name, url: b.url })),
+    // Only while a run holds that sidecar; the panel narrows the tab list to that audit's own
     // isolated context, so it answers "what is THIS audit looking at" rather than "what is
     // on the box".
-    runningSubject: () => {
-      const live = runner.status().running;
+    runningSubject: (browserUrl) => {
+      const live = runner.status().runs.find((r) => r.browser === browserUrl);
       return live ? splitSubjectKey(live.subject).name : null;
     },
   },

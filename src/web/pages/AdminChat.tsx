@@ -98,12 +98,14 @@ export default function AdminChat() {
    * shared run poller — no second interval — and refetches on the running → idle edge, which
    * is exactly when a note can have been written.
    */
-  const wasRunning = useRef(false);
+  const wasRunning = useRef(0);
+  const runningNow = run?.runs.length ?? 0;
   useEffect(() => {
-    const running = Boolean(run?.running);
-    if (wasRunning.current && !running) void state.reload();
-    wasRunning.current = running;
-  }, [run?.running?.started_at, Boolean(run?.running)]);
+    // Any run ending can have written a note — several run at once now, so "back to idle" is
+    // not the only edge that matters.
+    if (runningNow < wasRunning.current) void state.reload();
+    wasRunning.current = runningNow;
+  }, [runningNow]);
 
   const unavailable = state.data && !state.data.available;
 

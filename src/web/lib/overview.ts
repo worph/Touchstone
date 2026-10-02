@@ -35,10 +35,21 @@ export interface LiveRun {
  * Everything on this page — the cells, the tallies, the filters — goes through here, so the
  * overlay cannot apply to one of them and not the others.
  */
-export function legState(s: SubjectState, leg: Section, live?: LiveRun | null): DisplayState {
-  if (live && live.subject === s.name && live.legs.includes(leg)) {
-    return runningState(live.started_at, live.note);
-  }
+/**
+ * The runs in flight, as every derivation below takes them: none, one, or several — one per
+ * free (bench, browser) pair, and possibly the same app on both platforms at once.
+ */
+export type LiveRuns = LiveRun | readonly LiveRun[] | null | undefined;
+
+/** The run producing this leg of this subject right now, if one is. */
+export function liveFor(s: SubjectState, leg: Section, live: LiveRuns): LiveRun | undefined {
+  const runs: readonly LiveRun[] = !live ? [] : Array.isArray(live) ? live : [live as LiveRun];
+  return runs.find((r) => r.subject === s.name && r.legs.includes(leg));
+}
+
+export function legState(s: SubjectState, leg: Section, live?: LiveRuns): DisplayState {
+  const run = liveFor(s, leg, live);
+  if (run) return runningState(run.started_at, run.note);
   return displayState(s.sections?.[leg] ?? null);
 }
 
@@ -82,7 +93,7 @@ function tallyLeg(into: LegTally, s: DisplayState): void {
   }
 }
 
-export function tally(subjects: SubjectState[], live?: LiveRun | null): Tallies {
+export function tally(subjects: SubjectState[], live?: LiveRuns): Tallies {
   const t: Tallies = {
     subjects: subjects.length,
     sections: verdictSectionsOf(subjects).map((id) => ({ id, tally: emptyLeg() })),
@@ -137,7 +148,7 @@ function matchesKind(
   s: SubjectState,
   leg: LegFilter,
   kinds: StateKind[],
-  live?: LiveRun | null,
+  live?: LiveRuns,
 ): boolean {
   return legsOf(s, leg).some((l) => kinds.includes(legState(s, l, live).kind));
 }
@@ -146,7 +157,7 @@ export function applyShow(
   s: SubjectState,
   show: ShowFilter,
   leg: LegFilter,
-  live?: LiveRun | null,
+  live?: LiveRuns,
 ): boolean {
   switch (show) {
     case 'all': return true;
@@ -329,14 +340,14 @@ export interface BlockedBacklog {
 
 export function deriveBacklog(
   subjects: SubjectState[],
-  live?: LiveRun | null,
+  live?: LiveRuns,
 ): BlockedBacklog | null {
   const byReason = new Map<string, { count: number; since: string | null; items: { subject: string; section: Section }[] }>();
   for (const s of subjects) {
     for (const [section, rec] of Object.entries(s.sections ?? {})) {
       if (rec?.meta.status !== 'blocked') continue;
       // Already being answered. The cell says `running`; the note would say "re-assay it".
-      if (live && live.subject === s.name && live.legs.includes(section)) continue;
+      if (liveFor(s, section, live)) continue;
       const reason = rec.meta.blocked_reason ?? 'unknown';
       const entry = byReason.get(reason) ?? { count: 0, since: null, items: [] };
       entry.count++;

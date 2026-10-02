@@ -1661,3 +1661,71 @@ index never looks. Promotion is one frontmatter line, recorded as a revision wit
   model from doing.
 - **`targets: any`** (run once, wherever there is capacity). Only safe now that `target` is on
   the record; add it when something needs it.
+
+
+## 23. Parallel platforms — one run per free (bench, browser) pair — 2026-10-02
+
+### 23.1 The requirement
+
+§22 gave each app a verdict per platform; the loop still produced them one at a time. The ask is
+**two independent queues** for the functional audit — Yundera and the FOSS stack — running
+continuously and concurrently, with FOSS on the same standing as Yundera.
+
+The constraint that shaped it is resources, not the agent: concurrent agent sessions are fine,
+but benches are scarce (two Yundera, one FOSS today) and every functional run drives a browser.
+So **concurrency is resource-bounded, never a configured number**: a run holds a *(bench of its
+platform, browser)* pair for its whole duration, and as many runs go as there are free pairs.
+Add a sidecar or a bench and capacity rises with no code change.
+
+### 23.2 What it cost
+
+- **`services/leases.ts`** — the reservation that single-flight used to be. Nothing was ever
+  reserved before: `resolveCapabilities` took `benches[0]` / `browsers[0]`, which was safe only
+  because one run existed. `Targets.leasable()` stays a *health* answer (the gate and its alert
+  read it); `free()` is "healthy and nobody holds it", and only the allocator asks it.
+- **The tick reserves, the runner releases.** A pair is reserved synchronously in the tick and
+  handed to the job, because `execute()` awaits a sweep and a protocol read before it resolves
+  capabilities — a tick in that gap would otherwise see the pair free and start a second run onto
+  it. `Runner.run()` releases it on every exit path, refusals included.
+- **`policy.decide()` walks the queue allocating pairs** (`decideConcurrent`) when
+  `PolicyInput.free` is present: requests (audits and trials by ask time), then the backlog; each
+  candidate starts or holds its line, and **a line holds at its head** — D7 per line rather than
+  per tick. Without `free` the old single-flight path runs unchanged, which is what keeps a rig
+  with no lease registry safe.
+- **`full` is not `gated`.** A pool whose benches are all busy is working; `TickDecision.held`
+  carries `why: 'gated' | 'full' | 'cooldown'` and only `gated` feeds the transition events.
+  No healthy browser at all gates every line that needs one (`no usable browser`).
+- **Per-line cooldown** (`last_finished_by_line` in `state/schedule.json`, seeded from the old
+  global anchor on first load). A Yundera finish no longer holds the FOSS line.
+- **`record()` takes the line** from the job rather than guessing the first claimed line — one
+  subject can now hold claims on both.
+- **Trials** carry their target to the policy and are gated on their own platform (they were
+  gated on the default one regardless), hold a pair like any run, and nudge the scheduler when
+  they finish.
+- **Wire shape:** `RunStatus.running` → `runs: LiveRun[]` each with its own ledger `progress`
+  (`RunLedger.liveFor(runId)`), plus `capacity`; `GET /schedule` gains per-line `lines[]` and
+  `browsers`. The browser panel takes `?browser=<name>` and proxies each sidecar under
+  `/browser/b/<name>/…` (the first keeps the bare prefixes).
+- **UI:** a strip and a run card per run, every table overlays every run, Automation shows each
+  platform's benches/cooldown/hold and the shared browsers. **The Risk column is gone** from the
+  Store table and the board — what a row must say is compliant or not, per platform, and the
+  verdict columns say it; risk stays in the report and on the subject page.
+- **`age_days` is the oldest platform's newest verdict**, so a fresh FOSS run cannot make a stale
+  Yundera verdict read as current.
+- **Dev stack:** `browser-2` on its own network, published on 9747. The image hard-codes
+  Xvfb `:99`, VNC 5900, websockify 6080 and CDP 9222, so a second instance cannot share `dev`'s
+  namespace.
+
+### 23.3 Promotion
+
+FOSS is still `scores: false` in the shipped rubric. Promotion is the one-line frontmatter edit
+(`- id: foss` without `scores: false`), made through the Protocols editor on each box's live
+`data/protocols/functional.md` as a revision with a reason, then backported to `seed/`. It moves
+the file's hash, so **both** lines re-eligible every subject — accepted: with independent lines
+the Yundera re-audit and the FOSS backlog drain side by side.
+
+### 23.4 Not done, deliberately
+
+- **Per-target `armed`.** One switch still gates every line's backlog.
+- **A configured concurrency cap.** Capacity is what the pools and `config.browsers` add up to;
+  a cap would be a second number to keep in step with them.

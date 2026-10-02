@@ -26,6 +26,7 @@ import { readJson, writeJsonAtomic } from '../store/state.js';
 import type { ReportIndex } from '../store/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import type { Targets } from '../services/bench.js';
+import type { Lease, LeaseNeeds, Leases } from '../services/leases.js';
 import type { EventLog } from '../services/events.js';
 import {
   cooldownLeftMin,
@@ -214,6 +215,12 @@ interface ScheduleFile {
   armed?: boolean;
   /** Set when *we* record a finish. In shadow mode it stays empty; see `lastFinishedAt`. */
   last_finished_at?: string;
+  /**
+   * The same, per line — each platform's own cooldown anchor since 2026-10. A file written
+   * before it has none, and every line then falls back to `last_finished_at`, which is the
+   * cooldown that file's box was actually serving.
+   */
+  last_finished_by_line?: Record<LineKey, string>;
   /** The most recent decision, so the UI can show what the scheduler thinks without a tick. */
   last_tick?: { at: string; state: string; decision: TickDecision };
 }
@@ -261,7 +268,16 @@ export interface SchedulerOptions {
    * `runner.plan()` re-reads to avoid. Absent, the policy falls back to the single default
    * line, which is what every installation had before there were two.
    */
-  sections?: () => Promise<{ id: string; line: LineKey; scores: boolean }[]>;
+  sections?: () => Promise<{ id: string; line: LineKey; scores: boolean; requires?: string[] }[]>;
+  /**
+   * Who holds which bench and browser — `services/leases.ts`.
+   *
+   * **Present, the scheduler is concurrent**: each tick starts one run per free (bench,
+   * browser) pair, reserving the pair *here*, synchronously, before the job is handed over —
+   * so a tick that runs while an earlier run is still reading its protocol cannot see the same
+   * resources free and start a second run onto them. Absent, it is single-flight, as it was.
+   */
+  leases?: Leases;
   /**
    * What version of each subject the stores currently offer — `SubjectRegistry.versions()`.
    *
@@ -286,6 +302,10 @@ export interface SchedulerOptions {
      * directory could not be read must still do.
      */
     scope?: string[];
+    /** The platform — the line this run is on. Decides which pool its bench came from. */
+    target?: LineKey;
+    /** The pair reserved for it. The runner releases it when the run ends. */
+    lease?: Lease;
   }) => void | Promise<void>;
   /**
    * Whether the single agent is in somebody's hands — `() => runner.busy`.
@@ -302,7 +322,12 @@ export interface SchedulerOptions {
    * Absent, `dispatchFailed` charges a try and records nothing, which is invariant 14's
    * violation and, since the request queue, a queue head that can never be spent.
    */
-  recordFailedDispatch?: (subject: SubjectKey, reason: string, scope?: string[]) => Promise<void>;
+  recordFailedDispatch?: (
+    subject: SubjectKey,
+    reason: string,
+    scope?: string[],
+    target?: LineKey,
+  ) => Promise<void>;
   /**
    * The trial half of the request queue: what is waiting, what is running, and how to start
    * one.
@@ -315,9 +340,9 @@ export interface SchedulerOptions {
    * hallmark, a try count or a park.
    */
   trials?: {
-    queued: () => { slug: string; subject: string; queued_at: string }[];
-    running: () => { slug: string; subject: string; queued_at: string } | undefined;
-    dispatch: (slug: string) => void | Promise<void>;
+    queued: () => { slug: string; subject: string; queued_at: string; target?: string }[];
+    running: () => { slug: string; subject: string; queued_at: string; target?: string }[];
+    dispatch: (slug: string, lease?: Lease) => void | Promise<void>;
     /** Mark a row failed when its dispatch threw, so it leaves the queue instead of haunting it. */
     failed?: (slug: string, reason: string) => void | Promise<void>;
   };
@@ -335,6 +360,7 @@ export class Scheduler {
   private readonly opts: SchedulerOptions;
   private subjects: Record<string, SubjectSchedule> = {};
   private lastFinished?: string;
+  private lastFinishedByLine: Record<LineKey, string> = {};
   private lastTick?: ScheduleFile['last_tick'];
   private armedOverride?: boolean;
   /**
@@ -366,6 +392,16 @@ export class Scheduler {
         ? migrateLines(migrateKeys(stored.subjects), await this.knownLines())
         : {};
     this.lastFinished = stored?.last_finished_at;
+    this.lastFinishedByLine =
+      stored?.last_finished_by_line && typeof stored.last_finished_by_line === 'object'
+        ? { ...stored.last_finished_by_line }
+        : {};
+    // A file from before per-line cooldowns: the one anchor it has was the cooldown every line
+    // was serving, so each known line starts from it. Without this a fresh line would inherit
+    // whatever *another* line finished last, via the fallback, until its own first finish.
+    if (Object.keys(this.lastFinishedByLine).length === 0 && this.lastFinished) {
+      for (const line of await this.knownLines()) this.lastFinishedByLine[line] = this.lastFinished;
+    }
     this.lastTick = stored?.last_tick;
     this.armedOverride = typeof stored?.armed === 'boolean' ? stored.armed : undefined;
   }
@@ -609,8 +645,26 @@ export class Scheduler {
     last_tick?: ScheduleFile['last_tick'];
     next_tick_at?: string;
     cooldown_left_min: number;
+    lines: { line: LineKey; last_finished_at: string | null; cooldown_left_min: number }[];
     constants: ScheduleConstants;
   } {
+    const now = new Date();
+    const lineIds = this.opts.targets?.ids ?? [DEFAULT_TARGET];
+    const lines = lineIds.map((line) => {
+      const anchor =
+        Object.keys(this.lastFinishedByLine).length > 0
+          ? this.lastFinishedByLine[line]
+          : this.lastFinishedAt();
+      return {
+        line,
+        last_finished_at: anchor ?? null,
+        cooldown_left_min: cooldownLeftMin({
+          now,
+          cooldown_min: this.constants.cooldown_min,
+          lastFinishedAt: anchor,
+        }),
+      };
+    });
     return {
       armed: this.armed,
       armed_default: this.opts.armed,
@@ -619,11 +673,15 @@ export class Scheduler {
       last_finished_at: this.lastFinishedAt(),
       last_tick: this.lastTick,
       ...(this.nextTickAt() ? { next_tick_at: this.nextTickAt() } : {}),
-      cooldown_left_min: cooldownLeftMin({
-        now: new Date(),
-        cooldown_min: this.constants.cooldown_min,
-        lastFinishedAt: this.lastFinishedAt(),
-      }),
+      // With per-line cooldowns, the soonest any line may start backlog work.
+      cooldown_left_min: this.opts.leases
+        ? Math.min(...lines.map((l) => l.cooldown_left_min))
+        : cooldownLeftMin({
+            now,
+            cooldown_min: this.constants.cooldown_min,
+            lastFinishedAt: this.lastFinishedAt(),
+          }),
+      lines,
       // Named one by one rather than spread: `config.yaml`'s scheduler block carries
       // `armed` and `tick_min` too, and a spread would ship the switch inside the block of
       // numbers describing the cadence.
@@ -835,7 +893,7 @@ export class Scheduler {
     // it this writes one blocked assay per section of the *whole* protocol, so a Yundera run
     // that failed to dispatch would stamp a `functional-foss` attempt — silently spending the
     // FOSS line's request and resetting its due-ness, for a run that never touched it.
-    void Promise.resolve(this.opts.recordFailedDispatch?.(subject, 'dispatch_failed', scope))
+    void Promise.resolve(this.opts.recordFailedDispatch?.(subject, 'dispatch_failed', scope, line))
       .catch((e) => console.error('could not record a failed dispatch attempt', e))
       .then(() =>
         // Nothing above this can be allowed to leave the claim held, so the record is a promise
@@ -952,15 +1010,51 @@ export class Scheduler {
         : {}),
       schedule: this.subjects,
       lastFinishedAt: this.lastFinishedAt(),
+      ...(Object.keys(this.lastFinishedByLine).length > 0
+        ? { lastFinishedAtByLine: { ...this.lastFinishedByLine } }
+        : {}),
       agentBusy: this.opts.agentBusy?.() ?? false,
       ...(this.opts.trials
         ? {
             queuedTrials: this.opts.trials.queued(),
-            ...(this.opts.trials.running() ? { runningTrial: this.opts.trials.running()! } : {}),
+            runningTrials: this.opts.trials.running(),
           }
         : {}),
       capabilities: this.capabilities(),
+      ...(this.opts.leases ? this.leaseInput(sections) : {}),
     };
+  }
+
+  /**
+   * What the lease registry has free, and what a run on each line would need of it.
+   *
+   * `needs` comes from the sections' `requires:`, so a line made of `static` alone — none
+   * today, but nothing forbids one — is not held waiting for a browser it would never open.
+   */
+  private leaseInput(
+    sections: { line: LineKey; requires?: string[] }[],
+  ): Pick<PolicyInput, 'free' | 'needs'> {
+    const leases = this.opts.leases!;
+    const ids = this.opts.targets?.ids ?? [DEFAULT_TARGET];
+    const cap = leases.capacity(ids);
+    const usage = leases.usage(ids);
+    const needs: Record<LineKey, { bench: boolean; browser: boolean }> = {};
+    for (const section of sections) {
+      if (!section.requires) continue;
+      const n = (needs[section.line] ??= { bench: false, browser: false });
+      if (section.requires.includes('bench')) n.bench = true;
+      if (section.requires.includes('browser')) n.browser = true;
+    }
+    return {
+      free: { benches: cap.benches, browsers: cap.browsers, browsersHealthy: usage.browsers.total },
+      ...(Object.keys(needs).length > 0 ? { needs } : {}),
+    };
+  }
+
+  /** What a run on this line needs, for the reservation the tick makes. */
+  private needsOf(decision: TickDecision, line: LineKey, input: PolicyInput): LeaseNeeds {
+    void decision;
+    return input.needs?.[line] ?? { bench: true, browser: true };
   }
 
   /**
@@ -988,7 +1082,8 @@ export class Scheduler {
 
   private async runTick(opts: { now?: Date }): Promise<TickDecision> {
     const now = opts.now ?? new Date();
-    const decision = decide(await this.buildInput({ now }));
+    const input = await this.buildInput({ now });
+    const decision = decide(input);
 
     // Reclaims and unparks are state changes the decision already made; apply them whether
     // or not we are armed, because they are bookkeeping about *our own* claims. In dry-run
@@ -1070,81 +1165,97 @@ export class Scheduler {
     // operator who disarms mid-incident and then presses Audit is asking for that one audit.
     // The Automation page has to say so out loud, because "stopped" over a draining queue is
     // the kind of half-truth that sends somebody looking for a bug in the scheduler.
-    const mayDispatch = this.armed || decision.source === 'requested';
+    // Read per dispatch below, since one tick may now start a request and a backlog run.
+    // Every run this tick decided on, in queue order. A single-flight scheduler (no lease
+    // registry) decides at most one, so this loop is the old branch run once.
+    let started = 0;
+    for (const d of decision.dispatches ?? []) {
+      const mayStart = this.armed || d.source === 'requested';
 
-    if (decision.action === 'trial' && decision.trial) {
-      const slug = decision.trial;
-      const queued = this.opts.trials?.queued().find((t) => t.slug === slug);
-      this.opts.events.log({
-        level: 'info',
-        code: 'TICK_TRIAL_SELECTED',
-        message: mayDispatch
-          ? 'The scheduler took the next trial off the queue'
-          : 'The scheduler would have started a trial, but it is not armed',
-        detail: { slug, reason: decision.reason, backlog: decision.backlog, dry_run: !mayDispatch },
-      });
-      if (mayDispatch) {
+      if (d.action === 'trial' && d.trial) {
+        const slug = d.trial;
+        const queued = this.opts.trials?.queued().find((t) => t.slug === slug);
+        this.opts.events.log({
+          level: 'info',
+          code: 'TICK_TRIAL_SELECTED',
+          message: mayStart
+            ? 'The scheduler took the next trial off the queue'
+            : 'The scheduler would have started a trial, but it is not armed',
+          detail: { slug, line: d.line, reason: d.reason, backlog: decision.backlog, dry_run: !mayStart },
+        });
+        if (!mayStart) continue;
+        const lease = this.reserve(d.line, this.needsOf(decision, d.line, input), `trial ${slug}`);
+        if (lease === null) continue;
+        started += 1;
         // No claim, and none is wanted: a trial has no schedule row and must not acquire one.
-        // What stops a second dispatch is `agentBusy` — the runner's own flag, which the next
-        // tick reads — rather than anything written here.
-        void Promise.resolve(this.opts.trials?.dispatch(slug)).catch((err) =>
-          this.trialDispatchFailed(slug, queued?.subject ?? slug, err),
-        );
+        // What stops a second dispatch of it is the trial store's own `began_at`.
+        void Promise.resolve(this.opts.trials?.dispatch(slug, lease)).catch((err) => {
+          this.opts.leases?.release(lease?.id);
+          this.trialDispatchFailed(slug, queued?.subject ?? slug, err);
+        });
+        continue;
       }
-    } else if (decision.action === 'audit' && decision.subject) {
+
+      if (d.action !== 'audit' || !d.subject) continue;
+      const subject = d.subject as SubjectKey;
       this.opts.events.log({
         level: 'info',
         code: 'TICK_SELECTED',
-        message: mayDispatch
+        message: mayStart
           ? 'The scheduler picked the next app to audit'
           : 'The scheduler would have picked an app, but it is not armed',
-        subject: decision.subject,
+        subject,
         detail: {
-          subject: decision.subject,
-          reason: decision.reason,
+          subject,
+          line: d.line,
+          reason: d.reason,
           backlog: decision.backlog,
-          try_n: decision.try_n ?? 1,
-          dry_run: !mayDispatch,
+          try_n: d.try_n ?? 1,
+          dry_run: !mayStart,
         },
       });
+      if (!mayStart) continue;
 
-      if (mayDispatch) {
-        // The line the decision picked. A claim belongs to a platform, not to an app: the
-        // FOSS line auditing FileBrowser must not stop the Yundera line auditing it too.
-        const line = decision.line ?? DEFAULT_TARGET;
-        this.subjects[decision.subject] = openClaim({
-          now,
-          line,
-          schedule: this.subjects[decision.subject],
-        });
-        const claim = this.subjects[decision.subject]!.lines![line]!.claim!;
-        this.opts.events.log({
-          level: 'info',
-          code: 'CLAIM_OPENED',
-          message: 'The scheduler claimed an app and is starting its audit',
-          subject: decision.subject,
-          detail: { subject: decision.subject, line, try_n: claim.try_n, since: claim.since },
-        });
-        // No dispatcher yet is not an error: an armed scheduler with no runner claims and
-        // waits, which is a legitimate state during P4's bring-up.
-        //
-        // Deliberately not awaited. An audit takes half an hour; a tick that waited for it
-        // would hold the timer, and the claim it just wrote is what stops the next tick from
-        // starting a second one. The dispatcher reports back through `record()`.
-        // Cast, not convert. The registry's contract is that it hands out keys and `load()`
-        // migrates any bare key off disk, so anything reaching here is already one — and
-        // re-normalising would quietly hide a violation of that contract rather than surface it.
-        void Promise.resolve(
-          this.opts.dispatch?.({
-            subject: decision.subject as SubjectKey,
-            try_n: claim.try_n,
-            // **The scheduler's answer, never a caller's.** This is what makes a scope not a
-            // return of `depth`: nothing outside this line composes it, and `POST /assays`
-            // still takes only a subject.
-            ...(decision.sections ? { scope: decision.sections } : {}),
-          }),
-        ).catch((err) => this.dispatchFailed(decision.subject as SubjectKey, line, decision.sections, err));
-      }
+      // Reserved before the claim, so a pair that vanished between the decision and here (a
+      // probe landed in between) costs the subject nothing — no claim was ever opened.
+      const lease = this.reserve(d.line, this.needsOf(decision, d.line, input), subject);
+      if (lease === null) continue;
+
+      // The line the decision picked. A claim belongs to a platform, not to an app: the
+      // FOSS line auditing FileBrowser must not stop the Yundera line auditing it too.
+      const line = d.line;
+      this.subjects[subject] = openClaim({ now, line, schedule: this.subjects[subject] });
+      const claim = this.subjects[subject]!.lines![line]!.claim!;
+      started += 1;
+      this.opts.events.log({
+        level: 'info',
+        code: 'CLAIM_OPENED',
+        message: 'The scheduler claimed an app and is starting its audit',
+        subject,
+        detail: { subject, line, try_n: claim.try_n, since: claim.since },
+      });
+      // Deliberately not awaited. An audit takes half an hour; a tick that waited for it
+      // would hold the timer, and the claim just written is what stops the next tick from
+      // starting it again. The dispatcher reports back through `record()`.
+      void Promise.resolve(
+        this.opts.dispatch?.({
+          subject,
+          try_n: claim.try_n,
+          // **The scheduler's answer, never a caller's.** This is what makes a scope not a
+          // return of `depth`: nothing outside this line composes it, and `POST /assays`
+          // still takes only a subject.
+          ...(d.sections ? { scope: d.sections } : {}),
+          target: line,
+          ...(lease ? { lease } : {}),
+        }),
+      ).catch((err) => {
+        this.opts.leases?.release(lease?.id);
+        this.dispatchFailed(subject, line, d.sections, err);
+      });
+    }
+
+    if (started > 0 || (decision.dispatches?.length ?? 0) > 0) {
+      // Logged above, per dispatch.
     } else if (benchGated(decision)) {
       // Logged above, as a transition rather than once per tick.
     } else {
@@ -1273,6 +1384,35 @@ export class Scheduler {
     this.kickTimer.unref?.();
   }
 
+  /**
+   * Take a (bench, browser) pair for one run, or `null` when the pair the decision counted on
+   * is gone. `undefined` means there is no lease registry and nothing to reserve — the
+   * single-flight scheduler, where the claim is the only lease there has ever been.
+   */
+  private reserve(line: LineKey, needs: LeaseNeeds, holder: string): Lease | undefined | null {
+    if (!this.opts.leases) return undefined;
+    const got = this.opts.leases.reserve(line, needs, holder);
+    if (got.ok) return got.lease;
+    this.opts.events.log({
+      level: 'debug',
+      code: 'TICK_IDLE',
+      message: `Every ${got.full} was taken before ${holder} could start, so it waits for the next look`,
+      detail: { line, holder, full: got.full },
+    });
+    return null;
+  }
+
+  /**
+   * Look again soon — for a caller outside `record()` that knows the queue may have moved.
+   *
+   * A finished **trial** is the case: it never reaches `record()` (it owns no schedule row),
+   * but it releases a bench and a browser, and with several lines that pair may be exactly
+   * what the next request was waiting for.
+   */
+  nudge(): void {
+    this.kick();
+  }
+
   /** Apply a finished attempt — rows E1, E5–E7. */
   async record(subject: string, outcome: Outcome, now = new Date(), line?: LineKey): Promise<void> {
     // The line this attempt was for. Derived from the claim rather than required of the
@@ -1289,7 +1429,11 @@ export class Scheduler {
       schedule: this.subjects[subject],
     });
     this.subjects[subject] = result.schedule;
-    if (result.stampsFinish) this.lastFinished = now.toISOString();
+    if (result.stampsFinish) {
+      this.lastFinished = now.toISOString();
+      // Each line's own cooldown: a Yundera audit finishing must not hold the FOSS line.
+      this.lastFinishedByLine[forLine] = now.toISOString();
+    }
     if (result.parked) {
       this.opts.events.log({
         level: 'warn',
@@ -1335,6 +1479,9 @@ export class Scheduler {
         subjects: this.subjects,
         ...(this.armedOverride === undefined ? {} : { armed: this.armedOverride }),
         last_finished_at: this.lastFinished,
+        ...(Object.keys(this.lastFinishedByLine).length > 0
+          ? { last_finished_by_line: this.lastFinishedByLine }
+          : {}),
         last_tick: this.lastTick,
       } satisfies ScheduleFile);
     } catch (err) {

@@ -552,13 +552,17 @@ export const CHAT_TOOLS: ChatTool[] = [
       const status = ctx.runner?.status();
 
       if (!ctx.runner?.enabled) lines.push('The runner is switched off, so no audit can start.');
-      if (status?.running) {
-        const live = ctx.ledger?.live();
-        const cov = live ? coverageOf(live.requirements) : null;
-        lines.push(
-          `Running: ${status.running.subject}${status.running.sections?.length ? ` (${status.running.sections.join(' + ')})` : ''}, started ${status.running.started_at}` +
-            (cov ? ` — ${cov.verified} of ${cov.applicable} requirements settled so far.` : '.'),
-        );
+      if (status && status.runs.length > 0) {
+        // One line per run: several go at once, one per free (bench, browser) pair, and the
+        // same app may be running on both platforms.
+        for (const run of status.runs) {
+          const live = ctx.ledger?.liveFor(run.id);
+          const cov = live ? coverageOf(live.requirements) : null;
+          lines.push(
+            `Running: ${run.subject}${run.target ? ` on ${run.target}` : ''}${run.sections?.length ? ` (${run.sections.join(' + ')})` : ''}, started ${run.started_at}` +
+              (cov ? ` — ${cov.verified} of ${cov.applicable} requirements settled so far.` : '.'),
+          );
+        }
       } else {
         lines.push('No audit is running.');
       }
@@ -1030,13 +1034,16 @@ export const CHAT_TOOLS: ChatTool[] = [
 
       const record = await enqueueTrial(deps, built.spec, at, built.compare_to);
       const ahead = (deps.trials?.queued() ?? []).findIndex((t) => t.slug === record.slug);
-      const running = deps.runner?.status().running;
+      // Naming what is running is what makes the reply actionable: it says what this waits on.
+      const runs = deps.runner?.status().runs ?? [];
+      const busy =
+        runs.length > 0
+          ? ` ${runs.map((r) => `${subjectName(r.subject)}${r.target ? ` (${r.target})` : ''}`).join(', ')} ${runs.length === 1 ? 'is' : 'are'} running now;`
+          : '';
       const place =
         ahead > 0
           ? ` There ${ahead === 1 ? 'is 1 request' : `are ${ahead} requests`} ahead of it.`
-          : running
-            ? ` ${running.subject} has the agent until it finishes; this is next.`
-            : '';
+          : `${busy || ' It'}${busy ? ' it' : ''} starts as soon as a bench and a browser of its platform are free.`;
       return ok(
         `Trial ${record.slug} is queued — ${record.subject} from ${record.source_url}, judged as ${record.repo}@main.${place} It takes minutes once it starts. Call get_trial with that id for the result.`,
       );

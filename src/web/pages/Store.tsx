@@ -37,7 +37,7 @@ import {
   type BlockedBacklog, type LiveRun,
 } from '../lib/overview';
 import { useRunStatus } from '../data/runStatus';
-import { liveLegs, progressLabel } from '../lib/run';
+import { liveRunsOf } from '../lib/run';
 import { humaniseReason } from '../lib/status';
 import type { LegFilter, ShowFilter, SortKey } from '../types';
 
@@ -126,17 +126,7 @@ export default function Store() {
    * only when it has a verdict. This is where it comes from: not a placeholder file in the
    * archive, but the live run applied at render time.
    */
-  const live: LiveRun | null = useMemo(() => {
-    const running = status?.running;
-    if (!running) return null;
-    const counted = progressLabel(status?.progress);
-    return {
-      subject: running.subject,
-      legs: liveLegs(running),
-      started_at: running.started_at,
-      ...(counted ? { note: counted } : {}),
-    };
-  }, [status?.running, status?.progress]);
+  const live: LiveRun[] = useMemo(() => liveRunsOf(status), [status]);
 
   const t = useMemo(() => tally(subjects, live), [subjects, live]);
   const backlog = useMemo(() => deriveBacklog(subjects, live), [subjects, live]);

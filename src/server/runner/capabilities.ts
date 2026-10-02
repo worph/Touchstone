@@ -36,6 +36,7 @@
 
 import type { BenchHealth, Targets } from '../services/bench.js';
 import { DEFAULT_TARGET } from '../store/config.js';
+import type { Lease } from '../services/leases.js';
 import type { PortHealth, PortProber } from '../services/ports.js';
 import type { ProtocolSection } from '../store/protocols.js';
 
@@ -108,6 +109,14 @@ export function liveWorld(opts: {
   trial?: { store_url?: string };
   /** Which platform this run is about. The scheduler's answer; a trial's default. */
   target?: string;
+  /**
+   * The pair this run holds — `services/leases.ts`. Present, it **is** the world as far as
+   * benches and browsers go: the run may use what it reserved and nothing else, which is what
+   * stops two concurrent runs both reading `[0]` of the same healthy list. A half the lease
+   * lacks (no healthy resource existed when it was taken) reads as an empty list, so the
+   * sections needing it are recorded `*_unavailable`, exactly as before leases.
+   */
+  lease?: Lease;
 }): CapabilityWorld {
   // A trial that cannot be served has nothing for a bench to install, and that falls out of
   // the machinery that already exists rather than needing a branch of its own: declare the
@@ -120,13 +129,17 @@ export function liveWorld(opts: {
   const unservable = opts.trial && !opts.trial.store_url ? 'store_url_unconfigured' : undefined;
   const target = opts.target ?? DEFAULT_TARGET;
   return {
-    benches: opts.targets?.leasable(target) ?? [],
+    benches: opts.lease ? (opts.lease.bench ? [opts.lease.bench] : []) : opts.targets?.leasable(target) ?? [],
     target,
     // Only a claim when we have a registry to ask. Absent, every capability is unknown and the
     // sections needing one are blocked with `bench_unavailable`, which is this file's
     // long-standing "an absent prober blocks" convention.
     ...(opts.targets ? { targetConfigured: opts.targets.has(target) } : {}),
-    browsers: opts.ports?.healthy('browser') ?? [],
+    browsers: opts.lease
+      ? opts.lease.browser
+        ? [opts.lease.browser]
+        : []
+      : opts.ports?.healthy('browser') ?? [],
     ...(unservable ? { benchUnservable: unservable } : {}),
   };
 }
@@ -165,9 +178,10 @@ export function resolveCapabilities(
   }
 
   if (wanted.has('browser')) {
-    // A lease is `(bench, browser)` together. There is one run at a time — the scheduler's
-    // single-flight and the runner's own guard both say so — so taking the first healthy
-    // sidecar *is* the lease, and no two assays can share a browser by construction.
+    // A lease is `(bench, browser)` together, reserved in `services/leases.ts` before the run
+    // gets here — so on a live run `world.browsers` is the one sidecar this run holds, and
+    // `[0]` is that one rather than "the first healthy one", which two concurrent runs would
+    // both have taken. Only a forecast (no lease) still reads the unreserved list.
     //
     // Note the deliberate asymmetry with the bench above: there is no `benchUnservable`
     // equivalent here, so a browser is leased whenever one is healthy, including on a run

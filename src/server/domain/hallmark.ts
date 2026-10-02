@@ -235,7 +235,13 @@ export function subjectHallmark(
   for (const id of ids) legs[id] = legState(mine, id);
 
   let risk = 0;
-  let newestDone: number | null = null;
+  /**
+   * Each platform's newest verdict. The row's age is the **oldest** of them: a fresh FOSS audit
+   * must not make a three-week-old Yundera verdict read as current, which is what "newest
+   * anywhere" did the moment two platforms both judged. A platform never audited at all is not
+   * in the map, so it cannot make the age undefined — the backlog and the empty cell say that.
+   */
+  const newestByTarget = new Map<string, number>();
   const current: Record<Section, AssayRecord | null> = {};
   const standardStates: StandardState[] = [];
   for (const id of ids) {
@@ -256,8 +262,10 @@ export function subjectHallmark(
     if (done.meta.scores === false) continue;
     risk += Number(done.meta.risk_score) || 0;
     const t = assayTime(done.meta);
-    if (newestDone === null || t > newestDone) newestDone = t;
+    const target = String(done.meta.target ?? DEFAULT_TARGET);
+    if (t > (newestByTarget.get(target) ?? Number.NEGATIVE_INFINITY)) newestByTarget.set(target, t);
   }
+  const oldestPlatform = newestByTarget.size > 0 ? Math.min(...newestByTarget.values()) : null;
 
   return {
     legs,
@@ -271,7 +279,8 @@ export function subjectHallmark(
       static: legs.static?.current ?? null,
       functional: legs.functional?.current ?? null,
       risk,
-      age_days: newestDone === null ? null : Math.max(0, Math.floor((now - newestDone) / DAY_MS)),
+      age_days:
+        oldestPlatform === null ? null : Math.max(0, Math.floor((now - oldestPlatform) / DAY_MS)),
       ...(rollUp(standardStates) ? { standard: rollUp(standardStates) } : {}),
       ...(options.versions
         ? (() => {

@@ -12,7 +12,7 @@ import path from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { RunStatus } from '../../shared/activity.js';
+import type { RunLive, RunStatus } from '../../shared/activity.js';
 import { EventLog } from '../services/events.js';
 import { RunLedger, type CanonicalRequirement } from '../services/ledger.js';
 import routes from './index.js';
@@ -34,21 +34,26 @@ let ledger: RunLedger;
 let app: FastifyInstance;
 
 /** Just enough of a runner for the route: `status()` and `enabled` are all it reads. */
-function fakeRunner(running: RunStatus['running']) {
+function fakeRunner(runs: RunLive[]) {
   return {
     enabled: true,
-    busy: Boolean(running),
-    status: () => ({ running, last: null }),
+    status: () => ({ runs, last: null }),
   } as never;
 }
 
-async function build(running: RunStatus['running'], targets?: unknown) {
+/** A run in flight, with the id the runner would give it. */
+function live(run: Omit<RunLive, 'id'> & { target?: string }): RunLive {
+  return { id: `${run.subject}@${run.target ?? 'yundera'}`, ...run };
+}
+
+async function build(running: RunLive | RunLive[] | null, targets?: unknown) {
+  const runs = running === null ? [] : Array.isArray(running) ? running : [running];
   const instance = Fastify();
   await instance.register(routes, {
     prefix: '/api/v1',
     ledger,
-    runner: fakeRunner(running),
-    ...(targets ? { targets: targets as never } : {}),
+    runner: fakeRunner(runs),
+    ...(targets ? { targets: { health: () => [], ...(targets as object) } as never } : {}),
   });
   await instance.ready();
   return instance;
@@ -76,26 +81,31 @@ describe('GET /assays/current', () => {
   it('reports nothing running as nothing running, not as an error', async () => {
     app = await build(null);
     const body = await read();
-    expect(body.running).toBeNull();
-    expect(body.progress).toBeNull();
+    expect(body.runs).toEqual([]);
     expect(body.enabled).toBe(true);
   });
 
   it('carries what the run is doing, not only how far along it is', async () => {
-    const ticket = ledger.open({ subject: 'SegmentPlayer', sections: SECTIONS, canonical: CANONICAL });
+    const ticket = ledger.open({
+      subject: 'SegmentPlayer',
+      run: 'SegmentPlayer@yundera',
+      sections: SECTIONS,
+      canonical: CANONICAL,
+    });
     ledger.recordRequirement(ticket.token, { id: 'cpu-shares', verdict: 'pass' });
     ledger.recordRequirement(ticket.token, { id: 'pinned-image-tag', verdict: 'fail', severity: 'major' });
     ledger.recordPhase(ticket.token, { phase: 'A', result: 'pass' });
 
-    app = await build({
+    app = await build(live({
       subject: 'SegmentPlayer',
       started_at: '2026-08-20T10:24:28.022Z',
       sections: ['static', 'functional'],
       bench: 'https://demostaging1.inojob.com',
       browser: 'http://touchstone-browser:9746/mcp',
-    });
+    }));
 
-    const body = await read();
+    const run = (await read()).runs[0];
+    const body = { running: run, progress: run?.progress };
     expect(body.running?.subject).toBe('SegmentPlayer');
     expect(body.running?.bench).toBe('https://demostaging1.inojob.com');
     expect(body.progress?.verified).toBe(2);
@@ -133,7 +143,7 @@ describe('GET /assays/current', () => {
 
   /** A run with a skipped section must not have the UI drawing a track nobody is running. */
   it('reports the sections actually running, and the ones it skipped', async () => {
-    app = await build({
+    app = await build(live({
       subject: 'SegmentPlayer',
       started_at: '2026-08-20T10:24:28.022Z',
       sections: ['static'],
@@ -141,8 +151,8 @@ describe('GET /assays/current', () => {
       degraded_reason: 'bench_unavailable',
       bench: null,
       browser: null,
-    });
-    const body = await read();
+    }));
+    const body = { running: (await read()).runs[0] };
     expect(body.running?.sections).toEqual(['static']);
     expect(body.running?.blocked).toEqual([{ section: 'functional', reason: 'bench_unavailable' }]);
     expect(body.running?.degraded_reason).toBe('bench_unavailable');
@@ -154,14 +164,38 @@ describe('GET /assays/current', () => {
       text: `rule ${i}`,
       section: 'static',
     }));
-    const ticket = ledger.open({ subject: 'Ntfy', sections: [SECTIONS[0]!], canonical: many });
+    const ticket = ledger.open({ subject: 'Ntfy', run: 'Ntfy@yundera', sections: [SECTIONS[0]!], canonical: many });
     for (const r of many) ledger.recordRequirement(ticket.token, { id: r.id, verdict: 'pass' });
 
-    app = await build({ subject: 'Ntfy', started_at: '2026-08-20T10:24:28.022Z', sections: ['static'] });
-    const body = await read();
+    app = await build(live({ subject: 'Ntfy', started_at: '2026-08-20T10:24:28.022Z', sections: ['static'] }));
+    const body = { progress: (await read()).runs[0]?.progress };
     expect(body.progress?.verified).toBe(12);
     expect(body.progress?.recent.length).toBeLessThanOrEqual(5);
     expect(body.progress?.recent[0]?.id).toBe('rule-11');
+  });
+
+  /**
+   * Two runs at once — one per platform, or two apps on two benches. Each carries its own
+   * ledger progress: a merged bar would be true of neither, and the same app running on both
+   * platforms must not show one run's requirements under the other.
+   */
+  it('reports every run in flight, each with its own progress', async () => {
+    const yundera = ledger.open({ subject: 'Ntfy', run: 'Ntfy@yundera', sections: [SECTIONS[0]!], canonical: CANONICAL });
+    ledger.recordRequirement(yundera.token, { id: 'cpu-shares', verdict: 'pass' });
+    ledger.open({ subject: 'Ntfy', run: 'Ntfy@foss', sections: [SECTIONS[1]!], canonical: CANONICAL });
+
+    app = await build(
+      [
+        live({ subject: 'Ntfy', started_at: '2026-10-02T09:00:00Z', sections: ['static'] }),
+        live({ subject: 'Ntfy', started_at: '2026-10-02T09:01:00Z', sections: ['functional@foss'], target: 'foss' }),
+      ],
+      { windows: () => [], health: () => [{ id: 'foss', label: 'FOSS stack' }] },
+    );
+    const body = await read();
+    expect(body.runs.map((r) => r.id)).toEqual(['Ntfy@yundera', 'Ntfy@foss']);
+    expect(body.runs[0]?.progress?.verified).toBe(1);
+    expect(body.runs[1]?.progress?.verified).toBe(0);
+    expect(body.runs[1]?.target_label).toBe('FOSS stack');
   });
 });
 

@@ -34,7 +34,7 @@ function schedule(): void {
   if (timer) clearTimeout(timer);
   timer = null;
   if (listeners.size === 0) return;
-  timer = setTimeout(() => void poll(), current?.running ? LIVE_MS : IDLE_MS);
+  timer = setTimeout(() => void poll(), (current?.runs.length ?? 0) > 0 ? LIVE_MS : IDLE_MS);
 }
 
 async function poll(): Promise<void> {

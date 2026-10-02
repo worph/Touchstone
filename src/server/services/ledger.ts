@@ -81,6 +81,8 @@ export interface RecordedPhase {
 export interface RunTicket {
   token: string;
   subject: string;
+  /** The runner's id for the run this ticket belongs to — `runIdOf()`. Several are open at once. */
+  run?: string;
   /** The sections this run is actually attempting, in protocol order. */
   sections: RunSection[];
   started_at: string;
@@ -131,6 +133,7 @@ export class RunLedger {
    */
   open(input: {
     subject: string;
+    run?: string;
     sections: RunSection[];
     canonical: CanonicalRequirement[];
   }): RunTicket {
@@ -138,6 +141,7 @@ export class RunLedger {
     const ticket: RunTicket = {
       token: randomBytes(24).toString('base64url'),
       subject: input.subject,
+      ...(input.run ? { run: input.run } : {}),
       sections: input.sections,
       started_at: now.toISOString(),
       expires_at: new Date(now.getTime() + (this.opts.ttlMs ?? DEFAULT_TTL_MS)).toISOString(),
@@ -155,9 +159,15 @@ export class RunLedger {
     return run;
   }
 
-  /** The run in flight, for the page that shows progress. */
+  /** The oldest run in flight. Kept for callers that only ever show one. */
   live(): RunState | null {
     for (const run of this.runs.values()) return run;
+    return null;
+  }
+
+  /** The open ticket of one runner run, for the page that shows each run's progress. */
+  liveFor(runId: string): RunState | null {
+    for (const run of this.runs.values()) if (run.run === runId) return run;
     return null;
   }
 

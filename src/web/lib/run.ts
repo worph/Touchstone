@@ -12,6 +12,7 @@ import {
   type LastRun,
   type RunLive,
   type RunProgress,
+  type RunStatus,
   type SectionProgress,
 } from '@shared/activity';
 import type { RecordedPhase, RecordedRequirement, Section } from '@shared/types';
@@ -40,6 +41,51 @@ export function elapsedSeconds(startedAt: string | undefined, now = Date.now()):
  */
 export function liveLegs(live: RunLive | null | undefined): Section[] {
   return live?.sections ?? [];
+}
+
+/** A run in flight as the tables overlay it — `lib/overview.ts`'s `LiveRun`. */
+export interface LiveOverlay {
+  subject: string;
+  legs: Section[];
+  started_at: string;
+  note?: string;
+}
+
+/**
+ * Every run in flight, as the tables overlay them. Several at once since 2026-10 — one per
+ * free (bench, browser) pair — so a table that took the one run would leave a running row
+ * reading as idle.
+ */
+export function liveRunsOf(status: RunStatus | null | undefined): LiveOverlay[] {
+  return (status?.runs ?? []).map((run) => {
+    const counted = progressLabel(run.progress);
+    return {
+      subject: run.subject,
+      legs: liveLegs(run),
+      started_at: run.started_at,
+      ...(counted ? { note: counted } : {}),
+    };
+  });
+}
+
+/**
+ * This subject's runs merged into one overlay — the same app may be running on both platforms
+ * at once, and its page shows both sections running. The note is the first run's count, and the
+ * clock starts at the earliest. Null when nothing of this subject is running.
+ */
+export function liveForSubject(
+  status: RunStatus | null | undefined,
+  subject: string,
+): Omit<LiveOverlay, 'subject'> | null {
+  const mine = liveRunsOf(status).filter((r) => r.subject === subject);
+  if (mine.length === 0) return null;
+  const started = mine.map((r) => r.started_at).sort()[0]!;
+  const note = mine.find((r) => r.note)?.note;
+  return {
+    legs: mine.flatMap((r) => r.legs),
+    started_at: started,
+    ...(note ? { note } : {}),
+  };
 }
 
 /** `7/24`, or empty when the protocol's list has not been counted yet. */
@@ -179,4 +225,17 @@ export function documentTitle(
   const done = progressLabel(progress);
   const parts = [live.subject, done, mmss(elapsedSeconds(live.started_at, now))].filter(Boolean);
   return `◴ ${parts.join(' · ')} — Touchstone`;
+}
+
+/**
+ * The tab title with several runs in flight: the oldest one, and how many others ride with it.
+ * A background tab is the case the title exists for, and "two audits" is the fact it must say.
+ */
+export function documentTitleOf(
+  runs: readonly (RunLive & { progress?: RunProgress | null })[],
+  now = Date.now(),
+): string {
+  const first = runs[0];
+  const title = documentTitle(first, first?.progress ?? null, now);
+  return runs.length > 1 ? `(${runs.length}) ${title}` : title;
 }

@@ -48,6 +48,7 @@ import benchRoutes from './benches.js';
 import eventRoutes from './events.js';
 import pushRoutes from './push.js';
 import assayRoutes from './assays.js';
+import type { Leases } from '../services/leases.js';
 import chatRoutes from './chat.js';
 import mcpRoutes from './mcp.js';
 import adminMcpRoutes, { type AdminMcpOptions } from './mcp-admin.js';
@@ -71,6 +72,8 @@ export interface RoutesOptions {
   protocols?: ProtocolStore;
   revisions?: RevisionStore;
   ledger?: RunLedger;
+  /** Who holds which bench and browser — what `/assays/current` and `/schedule` report as capacity. */
+  leases?: Leases;
   push?: PushService;
   scheduler?: Scheduler;
   runner?: Runner;
@@ -142,6 +145,8 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     scheduler: options.scheduler,
     registry: options.registry,
     runner: options.runner,
+    ...(options.leases ? { leases: options.leases } : {}),
+    ...(options.targets ? { targets: options.targets } : {}),
   });
   await app.register(mcpRoutes, { ledger: options.ledger });
   /**
@@ -180,7 +185,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
   await app.register(browserRoutes, options.browser ?? {});
   // The proxies last: their upstream is fixed at registration, and they are skipped entirely
   // when no sidecar is configured.
-  await registerBrowserProxy(app, options.browser?.browserUrl);
+  await registerBrowserProxy(app, options.browser?.browsers);
   /**
    * The one prefix meant to be read by somebody who does not operate this app — see
    * `routes/public.ts`. Registered from the same `store`, so the board and the operator
@@ -196,6 +201,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     scheduler: options.scheduler,
     ledger: options.ledger,
     targets: options.targets,
+    ...(options.leases ? { leases: options.leases } : {}),
   });
 
   /**
@@ -368,7 +374,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
 
     // The run in flight is the one thing that can put files back after this returns, and the
     // scheduler is what knows about it. Refusing here rather than racing it.
-    if (options.runner?.status().running?.subject === resolved.name) {
+    if (options.runner?.status().runs.some((r) => r.subject === resolved.name)) {
       return fail(reply, 409, `${resolved.name} is being audited right now`);
     }
 

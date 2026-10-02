@@ -20,7 +20,7 @@ import StatusCell from './StatusCell';
 import { ReadingBadge } from './Reading';
 import { sectionLabel } from '../lib/format';
 import { provisionalSections, readingOf, readingSections, verdictSectionsOf } from '../lib/reading';
-import { coverageOf, legState, type LegTally, type LiveRun, type Tallies } from '../lib/overview';
+import { coverageOf, legState, liveFor, type LegTally, type LiveRuns, type Tallies } from '../lib/overview';
 import { ageLabel, num } from '../lib/format';
 import type { LegFilter, ShowFilter, SortKey } from '../types';
 
@@ -31,8 +31,8 @@ export interface SubjectTableProps {
   onSort: (key: SortKey, dir: 'asc' | 'desc') => void;
   /** Where a row leads. The two callers publish different addresses for the same subject. */
   href: (s: SubjectState) => string;
-  /** The audit in flight, overlaid at render time. The board has none and passes nothing. */
-  live?: LiveRun | null;
+  /** The audits in flight, overlaid at render time. The board has none and passes nothing. */
+  live?: LiveRuns;
   /** A column that always reads the same word is furniture; only shown with two stores. */
   showOrigin: boolean;
   /**
@@ -48,7 +48,7 @@ export interface SubjectTableProps {
 }
 
 export default function SubjectTable({
-  rows, sort, dir, onSort, href, live = null, showOrigin, action,
+  rows, sort, dir, onSort, href, live, showOrigin, action,
 }: SubjectTableProps) {
   // Derived from what is in the archive rather than passed in: a section that measures gets
   // a column the moment one of its assays exists, and nothing here has to be told its name.
@@ -82,7 +82,9 @@ export default function SubjectTable({
               <Th key={id} label={sectionLabel(id)} k={`notice:${id}`} sort={sort} dir={dir} onSort={onSort} />
             ))}
             <Th label="Verified" k="coverage" sort={sort} dir={dir} onSort={onSort} align="right" />
-            <Th label="Risk" k="risk" sort={sort} dir={dir} onSort={onSort} align="right" />
+            {/* No Risk column since 2026-10: what a row has to say is compliant or not, per
+                platform, and the verdict columns say it. The score is still the default sort
+                (worst first) and still in each report and on the subject page. */}
             <Th label="Last" k="age" sort={sort} dir={dir} onSort={onSort} align="right" />
             {action ? <th aria-label="audit" /> : null}
             <th aria-label="open" />
@@ -111,15 +113,16 @@ function Row({
   s, live, showOrigin, href, verdicts, notices, action,
 }: {
   s: SubjectState;
-  live: LiveRun | null;
+  live: LiveRuns;
   showOrigin: boolean;
   href: (s: SubjectState) => string;
   verdicts: string[];
   notices: string[];
   action?: (s: SubjectState) => ReactNode;
 }) {
-  const never = !s.static && !s.functional;
-  const running = live?.subject === s.name;
+  // Any of this row's legs being produced right now — on either platform.
+  const liveIdx = verdicts.findIndex((id) => liveFor(s, id, live));
+  const running = liveIdx >= 0;
   const to = href(s);
   return (
     <tr data-running={running || undefined} data-delisted={s.delisted || undefined}>
@@ -143,7 +146,7 @@ function Row({
       {verdicts.map((id, i) => (
         <td key={id}>
           {/* The elapsed-time note rides the first column only: it is one fact about the row. */}
-          <StatusCell state={legState(s, id, live)} showNote={i === 0 && running} />
+          <StatusCell state={legState(s, id, live)} showNote={i === liveIdx} />
         </td>
       ))}
       {notices.map((id) => (
@@ -151,11 +154,6 @@ function Row({
       ))}
       <td className="col-num">
         <CoverageCell coverage={coverageOf(s)} />
-      </td>
-      <td className="col-num">
-        <span className="risk-val" data-zero={s.risk === 0 || never}>
-          {never ? '—' : num(s.risk)}
-        </span>
       </td>
       <td className="col-num dim">{ageLabel(s.age_days)}</td>
       {action ? <td className="col-action">{action(s)}</td> : null}
@@ -241,10 +239,6 @@ export function SubjectSummary({ t, show, leg, onPick }: SubjectSummaryProps) {
         {t.sections.map((s) => (
           <Fragment key={s.id}>{legRow(sectionLabel(s.id), s.id, s.tally)}</Fragment>
         ))}
-      </div>
-      <div className="summary-risk">
-        <span className="n">{num(t.risk)}</span>
-        <span className="section-title">total risk</span>
       </div>
     </div>
   );

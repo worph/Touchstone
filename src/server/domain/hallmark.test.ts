@@ -451,3 +451,37 @@ describe('the version of the app a verdict was reached about', () => {
     expect(state.subject_version).toBe('changed');
   });
 });
+
+/**
+ * Two platforms judging the same app. The age is the **older** platform's newest verdict:
+ * "newest anywhere" let a fresh FOSS audit make a three-week-old Yundera verdict look current.
+ */
+describe('the age of a verdict on two platforms', () => {
+  const foss = (at: string) => {
+    const r = makeRecord({ subject: 'App', leg: 'functional@foss', at });
+    return { ...r, meta: { ...r.meta, target: 'foss' } };
+  };
+
+  it('is the oldest platform, not the newest', () => {
+    const records = [
+      makeRecord({ subject: 'App', leg: 'functional', at: '2026-07-16T12:00:00Z' }),
+      foss('2026-08-06T12:00:00Z'),
+    ];
+    expect(subjectHallmark(APP, records, { now: NOW }).state.age_days).toBe(21);
+  });
+
+  it('counts a target-less section with the default platform', () => {
+    const records = [
+      makeRecord({ subject: 'App', leg: 'static', at: '2026-08-01T12:00:00Z' }),
+      makeRecord({ subject: 'App', leg: 'functional', at: '2026-07-27T12:00:00Z' }),
+      foss('2026-08-05T12:00:00Z'),
+    ];
+    // Yundera's newest is static on 08-01 (5 days); FOSS's is 08-05 (1 day). Oldest wins.
+    expect(subjectHallmark(APP, records, { now: NOW }).state.age_days).toBe(5);
+  });
+
+  it('is not undefined because one platform has never judged it', () => {
+    const records = [makeRecord({ subject: 'App', leg: 'functional', at: '2026-08-03T12:00:00Z' })];
+    expect(subjectHallmark(APP, records, { now: NOW }).state.age_days).toBe(3);
+  });
+});

@@ -26,7 +26,7 @@ import { num, stamp } from '../lib/format';
 import { download } from '../lib/download';
 import { hasFixWork } from '../lib/overview';
 import { useRunStatus } from '../data/runStatus';
-import { liveLegs, progressLabel } from '../lib/run';
+import { liveForSubject } from '../lib/run';
 
 export default function SubjectDetail() {
   const { name = '' } = useParams();
@@ -94,14 +94,7 @@ export default function SubjectDetail() {
   const fixable = hasFixWork(subject);
 
   /** The run in flight, when it is this subject's. See `lib/overview.ts` for why it is an overlay. */
-  const running = status?.running?.subject === subject.name ? status.running : null;
-  const live = running
-    ? {
-        legs: liveLegs(running),
-        started_at: running.started_at,
-        ...(progressLabel(status?.progress) ? { note: progressLabel(status?.progress) } : {}),
-      }
-    : null;
+  const live = liveForSubject(status, subject.name);
 
   return (
     <div className="page page--wide">

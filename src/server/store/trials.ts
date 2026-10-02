@@ -203,15 +203,19 @@ export class TrialStore {
   }
 
   /**
-   * The trial the agent is working on, if any.
-   *
-   * At most one, because there is one agent. Returns the oldest if a bug ever produced two, so
-   * that the queue view names something real rather than picking arbitrarily.
+   * Every trial in flight, oldest first. Several since 2026-10: a trial holds a (bench,
+   * browser) pair of its own platform like any audit, so a FOSS trial and a Yundera one — or
+   * a trial and an audit — run side by side when the pairs exist.
    */
-  running(): TrialRecord | undefined {
+  runningAll(): TrialRecord[] {
     return this.trials
       .filter((t) => t.began_at && !t.finished_at)
-      .sort((a, b) => a.started_at.localeCompare(b.started_at))[0];
+      .sort((a, b) => a.started_at.localeCompare(b.started_at));
+  }
+
+  /** The oldest trial in flight, if any. */
+  running(): TrialRecord | undefined {
+    return this.runningAll()[0];
   }
 
   /**
