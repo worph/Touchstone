@@ -23,12 +23,13 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 
-import { PHASE_LABEL, type RunStatus } from '../../shared/activity.js';
+import { PHASE_LABEL, type RunProgress, type RunStatus } from '../../shared/activity.js';
 import type { SubjectKey } from '../../shared/subject.js';
 import { ambiguousMessage, resolveSubjectKey } from '../domain/subjects.js';
 import { coverageOf } from '../services/ledger.js';
 import type { Targets } from '../services/bench.js';
-import type { RunLedger } from '../services/ledger.js';
+import type { RunLedger, RunState } from '../services/ledger.js';
+import type { Leases } from '../services/leases.js';
 import type { Runner } from '../runner/index.js';
 import type { Scheduler } from '../scheduler/index.js';
 
@@ -39,6 +40,8 @@ export interface AssayRoutesOptions {
   scheduler?: Scheduler;
   /** Every bench pool, reported on `/assays/current` — see the `benches` field there. */
   targets?: Targets;
+  /** Who holds which bench and browser — what `capacity` reports. */
+  leases?: Leases;
 }
 
 /** How many settled requirements ride along. Enough to see movement, not a second report. */
@@ -48,6 +51,42 @@ const RECENT_REQUIREMENTS = 5;
  * fallback for a plan that names an id the table predates. */
 function planOf(section: { phases: string[] }): { id: string; label: string }[] {
   return section.phases.map((id) => ({ id, label: PHASE_LABEL[id] ?? id }));
+}
+
+/**
+ * What one running audit has settled so far. This is the reason the agent reports
+ * incrementally at all — without it a six-minute run is a spinner, and a run that dies partway
+ * looks identical to one that never started.
+ *
+ * The rows go out, not just their counts. `7 of 24` says how far along it is; `E9 auth gate —
+ * pass` says what it is doing, and only the second one tells you a stuck run from a slow one.
+ */
+function progressOf(live: RunState): RunProgress {
+  return {
+    ...coverageOf(live.requirements),
+    of_canonical: live.canonical.length,
+    // The plan, so the page can draw the track before anything has been reported — and so it
+    // draws no track at all for a run whose sections have no phases.
+    phase_plan: live.sections.flatMap((s) => planOf(s)),
+    // The same work, split by the section that owns it. The merged fraction above is true of
+    // the run and of neither section — `static` can be nearly done while `functional` has not
+    // started, and one bar cannot say that.
+    sections: live.sections.map((s) => {
+      const mine = live.requirements.filter((r) => r.section === s.id);
+      const { verified, failed } = coverageOf(mine);
+      return {
+        id: s.id,
+        verified,
+        failed,
+        of_canonical: live.canonical.filter((c) => c.section === s.id).length,
+        phase_plan: planOf(s),
+      };
+    }),
+    phases: live.phases,
+    // Settled order, newest first. The ledger appends and revises in place, so the tail is the
+    // most recent work without sorting timestamps that may tie.
+    recent: [...live.requirements].slice(-RECENT_REQUIREMENTS).reverse(),
+  };
 }
 
 interface Body {
@@ -61,61 +100,25 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
    * cells, the Activity card and the audit buttons all read this one endpoint.
    */
   app.get('/assays/current', async (): Promise<RunStatus> => {
-    const live = options.ledger?.live() ?? null;
-    const status = options.runner?.status() ?? { running: null, last: null };
+    const status = options.runner?.status() ?? { runs: [], last: null };
+    const labels = new Map((options.targets?.health() ?? []).map((t) => [t.id, t.label]));
     return {
       enabled: options.runner?.enabled ?? false,
-      // The target's *label* is resolved here rather than in the runner: the runner knows
-      // which platform it leased, and only the config knows what that platform is called.
-      running: status.running
-        ? {
-            ...status.running,
-            ...(status.running.target
-              ? {
-                  target_label:
-                    options.targets?.health().find((t) => t.id === status.running!.target)?.label ??
-                    status.running.target,
-                }
-              : {}),
-          }
-        : null,
+      // One entry per run in flight, each with its own ledger progress — two runs share no
+      // ticket, and a merged bar would be true of neither. The target's *label* is resolved
+      // here: the runner knows which platform it leased, only the config knows its name.
+      runs: status.runs.map((run) => {
+        const ticket = options.ledger?.liveFor(run.id) ?? null;
+        return {
+          ...run,
+          ...(run.target ? { target_label: labels.get(run.target) ?? run.target } : {}),
+          progress: ticket ? progressOf(ticket) : null,
+        };
+      }),
       last: status.last,
-      /**
-       * What the running audit has settled so far. This is the reason the agent reports
-       * incrementally at all — without it a six-minute run is a spinner, and a run that dies
-       * partway looks identical to one that never started.
-       *
-       * The rows go out, not just their counts. `7 of 24` says how far along it is; `E9 auth
-       * gate — pass` says what it is doing, and only the second one tells you a stuck run
-       * from a slow one.
-       */
-      progress: live
-        ? {
-            ...coverageOf(live.requirements),
-            of_canonical: live.canonical.length,
-            // The plan, so the page can draw the track before anything has been reported —
-            // and so it draws no track at all for a run whose sections have no phases.
-            phase_plan: live.sections.flatMap((s) => planOf(s)),
-            // The same work, split by the section that owns it. The merged fraction above
-            // is true of the run and of neither section — `static` can be nearly done while
-            // `functional` has not started, and one bar cannot say that.
-            sections: live.sections.map((s) => {
-              const mine = live.requirements.filter((r) => r.section === s.id);
-              const { verified, failed } = coverageOf(mine);
-              return {
-                id: s.id,
-                verified,
-                failed,
-                of_canonical: live.canonical.filter((c) => c.section === s.id).length,
-                phase_plan: planOf(s),
-              };
-            }),
-            phases: live.phases,
-            // Settled order, newest first. The ledger appends and revises in place, so the
-            // tail is the most recent work without sorting timestamps that may tie.
-            recent: [...live.requirements].slice(-RECENT_REQUIREMENTS).reverse(),
-          }
-        : null,
+      ...(options.leases && options.targets
+        ? { capacity: options.leases.usage(options.targets.ids) }
+        : {}),
       /**
        * Every pool rides along, because every surface that offers to *start* a run is
        * already subscribed here — and one press now asks for an audit on each platform, so a
@@ -195,7 +198,7 @@ const routes: FastifyPluginAsync<AssayRoutesOptions> = async (app, options) => {
       already: !changed,
       subject,
       ...(at >= 0 ? { position: at + 1 } : {}),
-      ...(started ? {} : { running: runner.status().running }),
+      ...(started ? {} : { running: runner.status().runs }),
     });
   });
 };

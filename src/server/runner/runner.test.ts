@@ -13,6 +13,7 @@ import { Runner, type RunnerOptions } from './index.js';
 import { liveWorld, resolveCapabilities } from './capabilities.js';
 import type { ProtocolSection } from '../store/protocols.js';
 import { ProtocolStore } from '../store/protocols.js';
+import { Leases } from '../services/leases.js';
 import { KbStore } from '../store/kb.js';
 
 /** The app under test, as the runner now addresses it: `<origin>~<name>`. */
@@ -1357,5 +1358,116 @@ describe('the knowledge base', () => {
     });
     await runner.run({ subject: SUBJECT, try_n: 1 });
     expect(swept).toEqual(['swept']);
+  });
+});
+
+/**
+ * Several runs at once. The runner used to refuse a second job outright (`runner_busy`); now it
+ * refuses only the same app on the same platform, and every run holds its own (bench, browser)
+ * pair from `services/leases.ts` for exactly as long as it runs.
+ */
+describe('several runs at once', () => {
+  const BENCHES = ['https://demo1.example', 'https://demo2.example'];
+  const BROWSERS = ['http://browser-1:9746/mcp', 'http://browser-2:9747/mcp'];
+
+  function leasesOf(benches: string[], browsers: string[]): Leases {
+    return new Leases({
+      benches: () => benches.map((url, i) => ({ name: `demo${i + 1}`, url, status: 'healthy' }) as never),
+      browsers: () => browsers.map((url, i) => ({ name: `browser-${i + 1}`, kind: 'browser', url, status: 'healthy' }) as never),
+    });
+  }
+
+  /** An agent that answers only when told to, so two runs can be observed in flight together. */
+  function heldAgent() {
+    const waiting: (() => void)[] = [];
+    const fetchImpl = (async () => {
+      await new Promise<void>((resolve) => waiting.push(resolve));
+      return new Response(sse(agentJson()), { status: 200 });
+    }) as unknown as typeof fetch;
+    return { fetchImpl, release: () => waiting.splice(0).forEach((r) => r()), waiting };
+  }
+
+  async function until(check: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !check(); i++) await new Promise((r) => setTimeout(r, 5));
+  }
+
+  it('runs two apps side by side, each on its own bench and browser', async () => {
+    const leases = leasesOf(BENCHES, BROWSERS);
+    const agent = heldAgent();
+    const runner = make({
+      leases,
+      targets: poolsOf(BENCHES),
+      ports: portsOf(BROWSERS),
+      agent: { fetchImpl: agent.fetchImpl },
+    });
+
+    const a = runner.run({ subject: subjectKey(DEFAULT_ORIGIN, 'Ntfy'), try_n: 1 });
+    const b = runner.run({ subject: subjectKey(DEFAULT_ORIGIN, 'Radarr'), try_n: 1 });
+    await until(() => agent.waiting.length === 2);
+
+    const runs = runner.status().runs;
+    expect(runs.map((r) => r.subject).sort()).toEqual(
+      [subjectKey(DEFAULT_ORIGIN, 'Ntfy'), subjectKey(DEFAULT_ORIGIN, 'Radarr')].sort(),
+    );
+    expect(new Set(runs.map((r) => r.bench)).size).toBe(2);
+    expect(new Set(runs.map((r) => r.browser)).size).toBe(2);
+    expect(leases.list()).toHaveLength(2);
+
+    agent.release();
+    expect((await a).kind).toBe('verdict');
+    expect((await b).kind).toBe('verdict');
+    expect(runner.status().runs).toEqual([]);
+    expect(leases.list()).toEqual([]);
+  });
+
+  it('refuses the same app on the same platform twice, and nothing else', async () => {
+    const agent = heldAgent();
+    const runner = make({ leases: leasesOf(BENCHES, BROWSERS), agent: { fetchImpl: agent.fetchImpl } });
+    const first = runner.run({ subject: SUBJECT, try_n: 1 });
+    await until(() => agent.waiting.length === 1);
+
+    expect(await runner.run({ subject: SUBJECT, try_n: 1 })).toEqual({ kind: 'blocked', reason: 'runner_busy' });
+    expect(runner.isRunning(SUBJECT)).toBe(true);
+    expect(runner.isRunning(SUBJECT, 'foss')).toBe(false);
+
+    agent.release();
+    await first;
+  });
+
+  /** Busy is not broken: no file is written and nothing is charged — the job just waits. */
+  it('waits, writing nothing, when every browser is held by another run', async () => {
+    const leases = leasesOf(BENCHES, [BROWSERS[0]!]);
+    const held = leases.reserve(DEFAULT_TARGET, { bench: true, browser: true }, 'someone else');
+    expect(held.ok).toBe(true);
+    const runner = make({ leases, targets: poolsOf(BENCHES), ports: portsOf([BROWSERS[0]!]) });
+
+    expect(await runner.run({ subject: SUBJECT, try_n: 1 })).toEqual({ kind: 'blocked', reason: 'browser_busy' });
+    expect(await reportFiles()).toEqual([]);
+  });
+
+  it('uses the pair the scheduler reserved, and hands it back however the run ends', async () => {
+    const leases = leasesOf(BENCHES, BROWSERS);
+    const got = leases.reserve(DEFAULT_TARGET, { bench: true, browser: true }, SUBJECT);
+    if (!got.ok) throw new Error('expected a lease');
+    // Reserve the first pair elsewhere, so the scheduler's lease is the *second* pair: the run
+    // must use what it was handed rather than re-reading `[0]` of the healthy list.
+    const second = leases.reserve(DEFAULT_TARGET, { bench: true, browser: true }, 'other');
+    if (!second.ok) throw new Error('expected a second lease');
+    leases.release(got.lease.id);
+    const mine = leases.reserve(DEFAULT_TARGET, { bench: true, browser: true }, SUBJECT);
+    if (!mine.ok) throw new Error('expected a lease');
+
+    const runner = make({ leases, targets: poolsOf(BENCHES), ports: portsOf(BROWSERS) });
+    const outcome = await runner.run({ subject: SUBJECT, try_n: 1, lease: mine.lease });
+    expect(outcome.kind).toBe('verdict');
+    expect(runner.status().last?.outcome.kind).toBe('verdict');
+    expect(leases.list().map((l) => l.holder)).toEqual(['other']);
+
+    // A refused run returns its lease too.
+    const again = leases.reserve(DEFAULT_TARGET, { bench: true, browser: true }, SUBJECT);
+    if (!again.ok) throw new Error('expected a lease');
+    runner.setEnabled(false);
+    expect((await runner.run({ subject: SUBJECT, try_n: 1, lease: again.lease })).kind).toBe('blocked');
+    expect(leases.list().map((l) => l.holder)).toEqual(['other']);
   });
 });

@@ -563,6 +563,9 @@ runner:
 # The profile is EPHEMERAL by design — there is no volume in the compose file. A session
 # surviving from a previous assay makes an unprotected app look protected, which is a false
 # pass on the very check that catches auth bypass.
+#
+# One audit runs per free (bench, browser) pair, so this list is half of how many run at once:
+# two benches and one browser is one audit at a time. Add a sidecar to run another.
 browsers:
   - name: ${browser ? browser.name : 'browser-1'}
     url: ${browser ? browser.url : 'http://touchstone-browser-1:9746/mcp'}

@@ -524,6 +524,12 @@ and what does that make the queue.
 └──────────────────────────────────────────────────────────────┘
 ```
 
+**One row per platform under the facts** (since 2026-10): its benches free of total, its own
+cooldown, and why it is waiting — `every yundera bench is in use` (busy, plain text) is not
+`no usable bench for foss` (broken, `--major`). A last row gives the browsers, which every
+platform shares. Several runs can be in flight, so the shell shows a strip per run and Activity a
+card per run, each naming its platform.
+
 **The switch reads as a state first and a button second.** "Running" or "Stopped" is what the eye
 lands on; the button says what pressing it would change to. Stopped carries `--unknown`, never
 `--crit`: it is the shipped default and a perfectly good state, and painting it as a fault teaches

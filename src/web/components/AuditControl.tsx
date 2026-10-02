@@ -69,24 +69,24 @@ export default function AuditControl({
   const status = useRunStatus();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const wasRunning = useRef(false);
+  const wasRunning = useRef(0);
 
   // One press asks for an audit on every platform, so the note is about whichever pools
   // cannot currently take one — not about "the pool", which stopped having a referent.
   const pools = status?.benches;
   const empty = pools?.filter((p) => p.leasable === 0) ?? [];
   const poolUp = pools && pools.length > 0 ? empty.length === 0 : null;
-  const ours = status?.running?.subject === subject;
-  const elapsed = useElapsed(status?.running?.started_at);
+  // This app's runs — one per platform at most, and possibly both at once.
+  const mine = (status?.runs ?? []).filter((r) => r.subject === subject);
+  const ours = mine.length > 0;
+  const elapsed = useElapsed(mine.map((r) => r.started_at).sort()[0]);
 
-  // The moment a run of *ours* stops, pull the new report in.
+  // The moment one of *our* runs stops, pull the new report in — each platform's verdict lands
+  // on its own, and the page should not wait for the slower one to show the faster.
   useEffect(() => {
-    if (status?.running && ours) wasRunning.current = true;
-    if (!status?.running && wasRunning.current) {
-      wasRunning.current = false;
-      onChanged();
-    }
-  }, [status?.running, ours, onChanged]);
+    if (mine.length < wasRunning.current) onChanged();
+    wasRunning.current = mine.length;
+  }, [mine.length, onChanged]);
 
   const press = useCallback(async () => {
     setBusy(true);
@@ -125,7 +125,7 @@ export default function AuditControl({
       ? 'This app is being audited now.'
       : queued
         ? 'This app is in the queue. Press again to withdraw the request.'
-        : 'Audit this app. It starts as soon as the agent is free — immediately if nothing is waiting.';
+        : 'Audit this app on every platform. Each starts as soon as a bench and a browser of its platform are free — immediately if nothing is waiting.';
 
   if (variant === 'row') {
     return (

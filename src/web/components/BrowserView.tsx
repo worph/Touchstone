@@ -39,7 +39,14 @@ function hostOf(url: string): string {
   }
 }
 
-export default function BrowserView({ benchHost }: { benchHost?: string | null }) {
+export default function BrowserView({
+  benchHost,
+  browser,
+}: {
+  benchHost?: string | null;
+  /** Which sidecar this run holds. Several runs, several browsers — absent means the default. */
+  browser?: string | null;
+}) {
   const [data, setData] = useState<BrowserPages | null>(null);
   const [nonce, setNonce] = useState(() => Date.now());
   const [open, setOpen] = useState(false);
@@ -47,7 +54,7 @@ export default function BrowserView({ benchHost }: { benchHost?: string | null }
   useEffect(() => {
     let alive = true;
     const tick = () => {
-      void getBrowserPages()
+      void getBrowserPages(false, browser)
         .then((d) => alive && setData(d))
         .catch(() => alive && setData(null));
     };
@@ -57,7 +64,7 @@ export default function BrowserView({ benchHost }: { benchHost?: string | null }
       alive = false;
       clearInterval(t);
     };
-  }, []);
+  }, [browser]);
 
   // Only while the panel is open: an invisible panel polling a screenshot is a browser doing
   // work nobody asked for, on the box that is trying to run an audit.
@@ -110,7 +117,7 @@ export default function BrowserView({ benchHost }: { benchHost?: string | null }
             <>
               <img
                 className="bview-still"
-                src={browserStillUrl(nonce)}
+                src={browserStillUrl(nonce, browser)}
                 alt="the screen of the browser the audit is driving"
               />
               <div className="bview-note">

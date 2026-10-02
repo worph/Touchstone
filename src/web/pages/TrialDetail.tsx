@@ -44,7 +44,7 @@ import { useAsync } from '../hooks/useAsync';
 import { download } from '../lib/download';
 import { num, since, stamp } from '../lib/format';
 import { readingOf, readingSections } from '../lib/reading';
-import { liveLegs, progressLabel } from '../lib/run';
+import { liveForSubject } from '../lib/run';
 import { displayFacts } from '../lib/status';
 
 /**
@@ -134,14 +134,7 @@ export default function TrialDetail() {
   const never = reported.length === 0;
 
   /** The run in flight, when it is this trial's — its key is `<slug>~<subject>`. */
-  const running = status?.running?.subject === state.name ? status.running : null;
-  const live = running
-    ? {
-        legs: liveLegs(running),
-        started_at: running.started_at,
-        ...(progressLabel(status?.progress) ? { note: progressLabel(status?.progress) } : {}),
-      }
-    : null;
+  const live = liveForSubject(status, state.name);
 
   const remove = () => {
     setRemoving(true);

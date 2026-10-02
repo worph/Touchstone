@@ -32,6 +32,8 @@
 import type { Leg } from '../../shared/types.js';
 import { DEFAULT_TARGET } from '../../shared/target.js';
 import type {
+  Dispatch,
+  LineHold,
   LineKey,
   LineSchedule,
   QueueRow,
@@ -121,7 +123,7 @@ export interface PolicyInput {
    * The one part of the request queue that is genuinely *stored*, because a trial has no
    * subject row and no attempt record to spend a timestamp against. See invariant 8.
    */
-  queuedTrials?: { slug: string; subject: string; queued_at: string }[];
+  queuedTrials?: { slug: string; subject: string; queued_at: string; target?: string }[];
   /**
    * The trial holding the agent right now, if one is.
    *
@@ -131,6 +133,38 @@ export interface PolicyInput {
    * is a queue view that appears to have lost it.
    */
   runningTrial?: { slug: string; subject: string; queued_at: string };
+  /** Every trial in flight, when several can be. Supersedes `runningTrial` where present. */
+  runningTrials?: { slug: string; subject: string; queued_at: string; target?: string }[];
+  /**
+   * What the lease registry has free right now — `services/leases.ts`.
+   *
+   * **Present, the tick is concurrent**: it starts one run per free (bench, browser) pair,
+   * walking the queue in order, and a line stops only when its own resources run out. Absent,
+   * it is the single-flight scheduler it always was — any claim anywhere idles the tick — which
+   * is what a rig with no lease registry must stay, because nothing would stop two runs from
+   * taking the same bench.
+   *
+   * Counts rather than resources so this stays a pure function of a plain object. Browsers are
+   * one number because they are one pool, spent across lines in queue order.
+   */
+  free?: {
+    benches: Record<LineKey, number>;
+    browsers: number;
+    /** How many browsers are healthy at all. Zero is an outage (gate); free zero is busy (wait). */
+    browsersHealthy: number;
+  };
+  /**
+   * What a run on each line needs, from its sections' `requires:`. Absent for a line means both:
+   * every line today carries `functional`, and assuming less would let a run start with no
+   * browser to drive.
+   */
+  needs?: Record<LineKey, { bench: boolean; browser: boolean }>;
+  /**
+   * When each line last finished an audit — its own cooldown anchor. Falls back to
+   * `lastFinishedAt` for a line with no entry, which is what a state file written before lines
+   * had cooldowns of their own holds.
+   */
+  lastFinishedAtByLine?: Record<LineKey, string | undefined>;
   /**
    * Newest assay of **any status** per subject, ISO — a blocked or errored attempt counts.
    *
@@ -527,6 +561,12 @@ function plan(input: PolicyInput): {
  * exactly that reason.
  */
 export function decide(input: PolicyInput): TickDecision {
+  if (input.free) return decideConcurrent(input, input.free);
+  return decideSingle(input);
+}
+
+/** The single-flight pick: one run at a time, anywhere. See `PolicyInput.free`. */
+function decideSingle(input: PolicyInput): TickDecision {
   const { constants, now } = input;
   const { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged, parked } =
     plan(input);
@@ -681,6 +721,32 @@ export function decide(input: PolicyInput): TickDecision {
     };
   }
 
+  const scope = picked ? scopeOf(input, picked.line) : [];
+  const tryN =
+    action === 'audit' && picked
+      ? (cellOf(schedule[picked.subject], picked.line)?.try_n ?? 0) + 1
+      : undefined;
+  const dispatches: Dispatch[] =
+    action === 'audit' && picked
+      ? [{
+          action: 'audit',
+          subject: picked.subject,
+          line: picked.line,
+          ...(scope.length > 0 ? { sections: scope } : {}),
+          source: source!,
+          reason,
+          try_n: tryN!,
+        }]
+      : action === 'trial' && trial
+        ? [{
+            action: 'trial',
+            trial,
+            line: (input.queuedTrials ?? []).find((t) => t.slug === trial)?.target ?? DEFAULT_TARGET,
+            source: 'requested',
+            reason,
+          }]
+        : [];
+
   return {
     ...base,
     action,
@@ -688,6 +754,7 @@ export function decide(input: PolicyInput): TickDecision {
     trial,
     source,
     reason,
+    dispatches,
     // **Only when there is a scope to name.** An empty array here would reach the runner as
     // "audit these zero sections" — and the case that produces one is a protocol directory
     // that could not be read, where the honest answer is the one this had before scopes
@@ -707,11 +774,211 @@ export function decide(input: PolicyInput): TickDecision {
     // Only when nothing is moving. On a tick that dispatched, the head *is* the thing that
     // started, and repeating it as "waiting" would be a lie a page would render.
     ...(action === 'idle' && waitingOn ? { waiting_on: waitingOn } : {}),
-    try_n:
-      action === 'audit' && picked
-        ? (cellOf(schedule[picked.subject], picked.line)?.try_n ?? 0) + 1
-        : undefined,
+    try_n: tryN,
   };
+}
+
+/**
+ * The concurrent pick: as many runs as there are free (bench, browser) pairs.
+ *
+ * The queue is the same one `decideSingle` reads — requests (audits and trials, oldest ask
+ * first), then the backlog by staleness — and it is walked **in that order**, each candidate
+ * either starting or holding its line. Two rules carry the design:
+ *
+ * - **A line holds at its head.** Once one of a line's candidates cannot start — no healthy
+ *   bench, every bench busy, its cooldown — nothing further down that line starts this tick,
+ *   which is the D7 rule (`decideSingle`'s gate) applied per line rather than per tick. Other
+ *   lines go on: a dead FOSS pool, or a FOSS bench busy with a long audit, costs Yundera
+ *   nothing.
+ * - **Busy is not broken.** `full` waits quietly; `gated` is the pool being unusable, and is
+ *   what `gated` and the transition events report. A pool doing its job must never alert.
+ *
+ * Browsers are one shared pool and are spent in queue order, so with one browser this is the
+ * single-flight scheduler again, with the difference that the next run is whichever line's
+ * head is oldest rather than whatever claim happened to be first.
+ */
+function decideConcurrent(input: PolicyInput, free: NonNullable<PolicyInput['free']>): TickDecision {
+  const { constants, now } = input;
+  const { schedule, reclaimed, unparked, eligible, restandard, rechanged, reflagged, parked } =
+    plan(input);
+
+  const base = {
+    backlog: eligible.length,
+    reclaimed,
+    unparked,
+    parked: parked.length,
+  };
+
+  const available = (line: LineKey): boolean => input.capabilities[line]?.available ?? true;
+  const needs = (line: LineKey) => input.needs?.[line] ?? { bench: true, browser: true };
+  const requested = (c: Cell): boolean => reflagged.has(cellKey(c.subject, c.line));
+  const benches: Record<LineKey, number> = { ...free.benches };
+  let browsers = free.browsers;
+
+  const askedAt = (c: Cell): number => {
+    const t = Date.parse(schedule[c.subject]?.flagged_at ?? '');
+    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+  };
+
+  // ── the candidates, in the order they are served ──────────────────────────────────────
+  type Candidate =
+    | { kind: 'audit'; cell: Cell; line: LineKey; at: number; requested: boolean }
+    | { kind: 'trial'; slug: string; subject: string; line: LineKey; at: number; requested: true };
+  const asks: Candidate[] = [
+    ...eligible
+      .filter(requested)
+      .map((cell): Candidate => ({ kind: 'audit', cell, line: cell.line, at: askedAt(cell), requested: true })),
+    ...(input.queuedTrials ?? []).map((t): Candidate => {
+      const at = Date.parse(t.queued_at);
+      return {
+        kind: 'trial',
+        slug: t.slug,
+        subject: t.subject,
+        line: t.target ?? DEFAULT_TARGET,
+        at: Number.isNaN(at) ? Number.POSITIVE_INFINITY : at,
+        requested: true,
+      };
+    }),
+  ];
+  // Stable, so two cells of one request keep `plan()`'s line order; a trial asked at the same
+  // instant as an audit goes first, which is the tie `decideSingle` breaks the same way.
+  asks.sort((a, b) => (a.at !== b.at ? a.at - b.at : a.kind === b.kind ? 0 : a.kind === 'trial' ? -1 : 1));
+  const candidates: Candidate[] = [
+    ...asks,
+    ...eligible
+      .filter((c) => !requested(c))
+      .map((cell): Candidate => ({ kind: 'audit', cell, line: cell.line, at: Number.NaN, requested: false })),
+  ];
+
+  // ── the walk ────────────────────────────────────────────────────────────────────────────
+  const holds = new Map<LineKey, LineHold>();
+  const hold = (c: Candidate, why: LineHold['why'], reason: string): void => {
+    if (holds.has(c.line)) return;
+    const waiting = c.requested ? (c.kind === 'trial' ? `trial of ${c.subject}` : c.cell.subject) : undefined;
+    holds.set(c.line, { line: c.line, why, reason, ...(waiting ? { waiting_on: waiting } : {}) });
+  };
+  const dispatches: Dispatch[] = [];
+
+  for (const c of candidates) {
+    if (holds.has(c.line)) continue;
+    const want = needs(c.line);
+
+    if (!available(c.line)) {
+      const note = input.capabilities[c.line]?.note;
+      hold(c, 'gated', `${gateText([c.line])}${note ? ` — ${note}` : ''}`);
+      continue;
+    }
+    if (want.browser && free.browsersHealthy === 0) {
+      hold(c, 'gated', 'no usable browser');
+      continue;
+    }
+    // Only the backlog waits out a cooldown. A request is a person waiting for an answer.
+    if (!c.requested) {
+      // Per line once the file has per-line anchors; a line with none has never finished and
+      // owes no cooldown. Only a pre-2026-10 state file falls back to the one global anchor.
+      const anchor = input.lastFinishedAtByLine
+        ? input.lastFinishedAtByLine[c.line]
+        : input.lastFinishedAt;
+      const left = cooldownLeftMin({ now, cooldown_min: constants.cooldown_min, lastFinishedAt: anchor });
+      if (anchor && left > 0) {
+        const ago = Math.round(minutesSince(anchor, now));
+        hold(c, 'cooldown', `cooldown — last audit finished ${ago}m ago, ${left}m left`);
+        continue;
+      }
+    }
+    // A line no pool counts is not managed here (`resolveCapabilities` records it), so it is
+    // never "full" — the same "absent means available" this file's gate has always used.
+    if (want.bench && c.line in benches && benches[c.line]! <= 0) {
+      hold(c, 'full', `every ${c.line} bench is in use`);
+      continue;
+    }
+    if (want.browser && browsers <= 0) {
+      hold(c, 'full', 'every browser is in use');
+      continue;
+    }
+
+    if (want.bench && c.line in benches) benches[c.line]! -= 1;
+    if (want.browser) browsers -= 1;
+
+    if (c.kind === 'trial') {
+      dispatches.push({
+        action: 'trial',
+        trial: c.slug,
+        line: c.line,
+        source: 'requested',
+        reason: `requested — trial of ${c.subject}`,
+      });
+      continue;
+    }
+    const { subject, line } = c.cell;
+    const key = cellKey(subject, line);
+    let reason: string;
+    if (c.requested) {
+      reason = 'requested — somebody asked for this app';
+    } else {
+      const last = input.lastDoneAt[subject]?.[line];
+      const stale = daysSince(last, now);
+      reason = Number.isFinite(stale)
+        ? `last run ${String(last).slice(0, 10)}, ${Math.floor(stale)}d ago`
+        : 'never run';
+      if (restandard.has(key)) {
+        reason += ` · standard revised ${String(input.standardMovedAt?.[line]).slice(0, 10)}`;
+      }
+      if (rechanged.has(key)) reason += ' · app changed in the store';
+    }
+    const scope = scopeOf(input, line);
+    dispatches.push({
+      action: 'audit',
+      subject,
+      line,
+      ...(scope.length > 0 ? { sections: scope } : {}),
+      source: c.requested ? 'requested' : 'backlog',
+      reason,
+      try_n: (cellOf(schedule[subject], line)?.try_n ?? 0) + 1,
+    });
+  }
+
+  const held = [...holds.values()];
+  const gated = held.filter((h) => h.why === 'gated').map((h) => h.line);
+  const first = dispatches[0];
+  const waitingOn = held.find((h) => h.waiting_on)?.waiting_on;
+
+  let reason: string;
+  if (first) {
+    reason = first.reason;
+  } else if (candidates.length === 0) {
+    const fresh = input.subjects.length - parked.length;
+    reason =
+      parked.length > 0
+        ? `backlog empty — ${fresh} app(s) audited within ${constants.fresh_days}d, ${parked.length} parked`
+        : `backlog empty — all ${input.subjects.length} app(s) audited within ${constants.fresh_days}d`;
+  } else if (held.length === 1) {
+    reason = held[0]!.reason;
+  } else {
+    reason = held.map((h) => `${h.line}: ${h.reason}`).join(' · ');
+  }
+
+  return {
+    ...base,
+    action: first ? first.action : 'idle',
+    ...(first?.subject ? { subject: first.subject } : {}),
+    ...(first?.trial ? { trial: first.trial } : {}),
+    ...(first ? { source: first.source, line: first.line } : {}),
+    ...(first?.sections ? { sections: first.sections } : {}),
+    ...(first?.try_n !== undefined ? { try_n: first.try_n } : {}),
+    reason,
+    dispatches,
+    ...(held.length > 0 ? { held } : {}),
+    ...(gated.length > 0 ? { gated } : {}),
+    ...(!first && waitingOn ? { waiting_on: waitingOn } : {}),
+  };
+}
+
+/** The gate's wording, kept as the single-flight path words it so the transition log reads alike. */
+function gateText(lines: LineKey[]): string {
+  return lines.length === 1 && lines[0] === DEFAULT_TARGET
+    ? 'no usable demo bench'
+    : `no usable bench for ${lines.join(', ')}`;
 }
 
 /**
@@ -881,12 +1148,12 @@ export function requests(input: PolicyInput): RequestRow[] {
       state: 'waiting',
     });
   }
-  if (input.runningTrial) {
+  for (const t of input.runningTrials ?? (input.runningTrial ? [input.runningTrial] : [])) {
     rows.push({
       kind: 'trial',
-      id: input.runningTrial.slug,
-      label: input.runningTrial.subject,
-      requested_at: input.runningTrial.queued_at,
+      id: t.slug,
+      label: t.subject,
+      requested_at: t.queued_at,
       position: 0,
       state: 'running',
     });
@@ -923,6 +1190,11 @@ export function cooldownLeftMin(input: {
 
 /** The State line, worded as n8n words it, so the two can be compared by eye. */
 export function stateLine(decision: TickDecision): string {
+  // Several started: name each with its platform, because two runs of one app are legitimate.
+  if ((decision.dispatches?.length ?? 0) > 1) {
+    const names = decision.dispatches!.map((d) => `${d.subject ?? `trial ${d.trial}`} (${d.line})`);
+    return `⏳ starting ${names.join(', ')}`;
+  }
   if (decision.action === 'audit') return `⏳ auditing ${decision.subject} — ${decision.reason}`;
   if (decision.action === 'trial') return `⏳ trialling ${decision.trial} — ${decision.reason}`;
   // An idle tick that has somebody in the queue says so. "idle — no usable demo bench" and

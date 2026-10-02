@@ -850,10 +850,10 @@ rules to remember:
 - **A separate root and a separate index.** The scheduler and the subject registry are never
   handed the trials index, so a trial cannot move a hallmark, cannot age a subject's freshness
   and cannot become a schedulable subject via `archived: () => store.subjects()`.
-- **The same `Runner` instance.** It is single-flight process-wide and `RunLedger.live()`
-  assumes one open run, so a trial and an audit cannot collide — a trial asked for during an
-  audit gets a 409. A second runner would also have falsified the browser lease, whose safety
-  rests on "there is one run at a time".
+- **The same `Runner` instance, and the same leases.** Since 2026-10 the runner holds several
+  runs at once, one per free (bench, browser) pair (`services/leases.ts`, requirements §23). A
+  trial takes a pair of its own platform exactly as an audit does, so the two cannot share a
+  bench or a browser; a second runner would bypass that registry and falsify it.
 
 **A trial takes one input: a store zip and an app inside it.** Until 2026-08-22 it took two —
 a `repo@ref` the static section fetched with `gh`, and an upload session whose bytes were

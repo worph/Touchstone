@@ -69,8 +69,13 @@ outranks it. And since 2026-09-01 it **goes to the front**: requests are worked 
 backlog, in the order they were asked for, bypassing the cooldown but not the bench gate. The
 field is still called `flagged_at` on disk and the events are still `SUBJECT_FLAGGED` —
 identifiers are stable, vocabulary moved), **queue** (the requests, oldest ask first, audits and
-trials in one line because they share one agent — `policy.requests()`, `GET /schedule`'s
-`requests`. Derived, except for its trial half; see invariant 8).
+trials in one line, served in ask order as (bench, browser) pairs come free — `policy.requests()`,
+`GET /schedule`'s `requests`. Derived, except for its trial half; see invariant 8), **lease** (a
+*(bench, browser)* pair one run holds for its whole duration — `services/leases.ts`. Since
+2026-10 runs are concurrent and **capacity is whatever pairs are free**: two Yundera benches and
+one browser is one run at a time, add a sidecar and it is two. Never a configured number. A pool
+whose benches are all *held* is `full`, not `gated` — busy is not broken, and only `gated` feeds
+the bench alert. Requirements §23).
 
 **One verb, one word: `Audit`.** `AuditControl`, `POST /assays`. It writes a request and asks
 the scheduler to look; the tick decides whether that means now or third in line, and the row
@@ -134,8 +139,12 @@ docker compose -f docker-compose.dev.yml logs -f
 
 - **Vite 5173, API 8081.** 8080 is the production default but is taken by ttyd here; Vite proxies
   `/api` → 8081 to match.
-- The compose file also runs Touchstone's **own** `browser-mcp` sidecar on 9746 — not the shared
-  box-wide `browsermcp`, and deliberately **without a profile volume** (see Invariants).
+- The compose file also runs Touchstone's **own** `browser-mcp` sidecars — `browser` on 9746 and
+  `browser-2` on 9747 — not the shared box-wide `browsermcp`, and deliberately **without a
+  profile volume** (see Invariants). Two sidecars are what let two audits run at once.
+  `browser-2` is on its **own network**, not `service:dev`: the image hard-codes Xvfb `:99`,
+  VNC 5900, websockify 6080 and CDP 9222, and a second instance in dev's namespace collides on
+  all of them.
 - `docker-compose.dev.yml` is development only. Production packaging is the AppShield sidecar
   stack in ARCHITECTURE.md §8 and is a separate file that does not exist yet.
 
@@ -197,6 +206,15 @@ because its data access was smeared through two 200-line n8n Code nodes.
   (`busy → forced → cooldown → backlog empty → pick the stalest`; the bench gate sits *after* that
   chain, where the port put it so the pick could be diffed against the workflow it replaced). `record.ts` is the pure port of `Record result`.
   `index.ts` does all the world-reading and owns `state/schedule.json` and the timer.
+  **Two picks live in `policy.ts`.** With `PolicyInput.free` (a lease registry wired, which
+  production always has) `decideConcurrent` walks the queue — requests by ask time, then the
+  backlog — starting one run per free pair, each **line holding at its own head** and waiting
+  out its **own** cooldown (`last_finished_by_line`). Without it, `decideSingle` is the old
+  single-flight pick, kept so a rig with no lease registry cannot start two runs onto one bench.
+  The tick **reserves** each pair synchronously before handing the job over (the runner's
+  `execute()` awaits before it resolves capabilities, and a tick in that gap would double-book),
+  and `Runner.run()` **releases** it on every exit path. `record()` takes the line from the job:
+  one subject may hold claims on both platforms at once.
 - **`store/revisions.ts`** — the protocol's history. Identity is the **sha256 of the file**,
   for a rubric and its script alike; this is what makes that hash resolve to bytes. The sweep
   reads what is on disk rather than hooking the save, which is the only way an edit made over
@@ -608,8 +626,9 @@ audits now, so a switch flipped in passing is not a dry run any more — it is t
 - **The index is built at boot.** Anything that changes report files from another process needs an
   API restart to be visible.
 - **`yarn dev` runs the API under `tsx watch`, so any edit under `src/server/` restarts it and
-  kills the audit in flight** — no report, no completion event, and the agent goes on recording
-  against a ledger token that no longer exists. Finish server edits before dispatching a run.
+  kills every audit in flight** — several now — no report, no completion event, and the agent
+  goes on recording against a ledger token that no longer exists. Finish server edits before
+  dispatching a run.
 - The repo layout listed in IMPLEMENTATION.md §3 predates P2–P4 and names files that no longer
   exist (`scheduler/tick.ts`, `eligibility.ts`, `lease.ts`, `services/browser.ts`, `tools/import.ts`).
   The tree on disk is the truth; the doc's *rules* still hold.

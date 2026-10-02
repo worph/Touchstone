@@ -120,6 +120,41 @@ export interface Reclaim {
   try_n: number;
 }
 
+/**
+ * One run a tick started. A tick now starts as many as there are free (bench, browser) pairs,
+ * one per request or backlog cell, in queue order.
+ */
+export interface Dispatch {
+  action: 'audit' | 'trial';
+  /** The subject key, for an audit. */
+  subject?: string;
+  /** The trial slug, for a trial. */
+  trial?: string;
+  /** The platform this run is on, and therefore which pool its bench comes from. */
+  line: LineKey;
+  /** The scope, for an audit — the scheduler's answer, never a caller's. */
+  sections?: string[];
+  source: 'requested' | 'backlog';
+  reason: string;
+  /** The try this attempt would be, for an audit. */
+  try_n?: number;
+}
+
+/**
+ * Why one line did not start (more) work this tick.
+ *
+ * `full` and `gated` are the distinction the whole lease design exists to keep: a pool whose
+ * benches are all busy auditing is working, a pool with no healthy bench is broken, and an
+ * Automation page that rendered them alike would send somebody to fix a pool that is fine.
+ */
+export interface LineHold {
+  line: LineKey;
+  why: 'gated' | 'full' | 'cooldown';
+  reason: string;
+  /** The request at the head of this line, when one is waiting. */
+  waiting_on?: string;
+}
+
 export interface TickDecision {
   /**
    * What the tick decided to do.
@@ -183,6 +218,14 @@ export interface TickDecision {
   parked?: number;
   /** The try this attempt would be, when `action` is `audit`. */
   try_n?: number;
+  /**
+   * **Every** run this tick started, in queue order — the top-level fields above describe the
+   * first of them. Absent on a scheduler with no lease registry, which is single-flight and
+   * starts at most the one the top-level fields name.
+   */
+  dispatches?: Dispatch[];
+  /** Lines that started nothing (more) this tick, and why. Absent when none was held. */
+  held?: LineHold[];
   /**
    * This is the *previous* tick's decision, handed back because a tick was already running.
    *
@@ -335,6 +378,20 @@ export interface ScheduleResponse {
   last_finished_at: string | null;
   /** Minutes of cooldown left before another audit may start. 0 when clear. */
   cooldown_left_min: number;
+  /**
+   * The same, per platform. Each line has its own cooldown since 2026-10 — a Yundera audit
+   * finishing does not make the FOSS line wait. `cooldown_left_min` above is the smallest.
+   */
+  lines?: {
+    line: LineKey;
+    label: string;
+    last_finished_at: string | null;
+    cooldown_left_min: number;
+    /** Benches of this platform nobody holds, of how many healthy ones. */
+    benches?: { free: number; total: number };
+  }[];
+  /** Browser sidecars nobody holds, of how many healthy ones — shared by every line. */
+  browsers?: { free: number; total: number };
   constants: ScheduleConstants;
   /**
    * What somebody asked for, oldest ask first — audits and trials in one line.

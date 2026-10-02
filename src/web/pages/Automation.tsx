@@ -132,7 +132,8 @@ export default function Automation() {
   const armed = data.armed === true;
   const wired = data.armed !== null;
   const runnerOff = data.runner_enabled === false;
-  const running = data.queue.find((r) => r.state === 'running');
+  const runningRows = data.queue.filter((r) => r.state === 'running');
+  const running = runningRows[0];
   const backlog = data.queue.filter((r) => r.position !== undefined);
   const next = backlog.find((r) => r.state !== 'running');
   const requested = data.requests;
@@ -172,7 +173,7 @@ export default function Automation() {
               <div className="auto-state-word">{armed ? 'Running' : 'Stopped'}</div>
               <div className="auto-state-sub">
                 {armed
-                  ? `Working through the backlog, one app at a time, waiting ${data.constants.cooldown_min} minutes between them.`
+                  ? `Working through the backlog on every platform at once — as many apps as there are free benches and browsers — each platform waiting ${data.constants.cooldown_min} minutes between its audits.`
                   : requested.length > 0
                     ? `The backlog is not being worked. ${plural(requested.length, 'requested audit')} will still run — this switch stops the loop helping itself, not audits somebody asked for.`
                     : 'The backlog is not being worked. Audits you ask for still run.'}
@@ -195,8 +196,10 @@ export default function Automation() {
           <div className="backlog-note">
             <span aria-hidden="true">◴</span>
             <span>
-              {running.subject} is being audited now. Stopping lets it finish and record —
-              nothing new starts after it.
+              {runningRows.map((r) => subjectName(r.subject)).join(', ')}{' '}
+              {runningRows.length === 1 ? 'is' : 'are'} being audited now. Stopping lets{' '}
+              {runningRows.length === 1 ? 'it' : 'them'} finish and record — nothing new starts
+              after.
             </span>
           </div>
         ) : null}
@@ -267,6 +270,41 @@ export default function Automation() {
           <Fact label="Re-audits after" value={`${data.constants.fresh_days}d`} />
           <Fact label="Gives up after" value={`${data.constants.max_tries} failed tries`} />
         </div>
+
+        {/* One row per platform: each has its own line, its own cooldown and its own benches,
+            and shares the browsers with the others. "Full" and "no usable bench" are different
+            facts — a busy pool is working — so the row says which. */}
+        {data.lines && data.lines.length > 0 ? (
+          <div className="auto-lines">
+            {data.lines.map((l) => {
+              const hold = data.last_tick?.decision.held?.find((h) => h.line === l.line);
+              return (
+                <div className="auto-line" key={l.line} data-why={hold?.why}>
+                  <span className="auto-line__name">{l.label}</span>
+                  {l.benches ? (
+                    <span className="auto-line__cap num">
+                      {l.benches.free} of {l.benches.total} {l.benches.total === 1 ? 'bench' : 'benches'} free
+                    </span>
+                  ) : null}
+                  <span className="auto-line__cool">
+                    {l.cooldown_left_min > 0 ? `cooldown ${l.cooldown_left_min}m` : 'no cooldown'}
+                  </span>
+                  <span className="auto-line__why dim">{hold ? hold.reason : ''}</span>
+                </div>
+              );
+            })}
+            {data.browsers ? (
+              <div className="auto-line">
+                <span className="auto-line__name">Browsers</span>
+                <span className="auto-line__cap num">
+                  {data.browsers.free} of {data.browsers.total} free
+                </span>
+                <span className="auto-line__cool dim">shared by every platform</span>
+                <span className="auto-line__why" />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* The freshness rule is the one number that decides whether "continuous" means a
             carousel or a weekly sweep, and it is not obvious from the number alone. */}

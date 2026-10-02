@@ -218,9 +218,12 @@ interface EventDetails {
    */
   SCHEDULER_ARMED: { armed: boolean; by: string; config_default: boolean };
   SCHEDULER_DISARMED: { armed: boolean; by: string; config_default: boolean };
-  TICK_SELECTED: { subject: string; reason: string; backlog: number; try_n: number; dry_run: boolean };
-  TICK_IDLE: { reason: string; backlog: number };
-  TICK_TRIAL_SELECTED: { slug: string; reason: string; backlog: number; dry_run: boolean };
+  TICK_SELECTED: { subject: string; line?: string; reason: string; backlog: number; try_n: number; dry_run: boolean };
+  TICK_IDLE:
+    | { reason: string; backlog: number }
+    /** A pair the tick counted on was taken before the run could reserve it. */
+    | { line: string; holder: string; full: 'bench' | 'browser' };
+  TICK_TRIAL_SELECTED: { slug: string; line?: string; reason: string; backlog: number; dry_run: boolean };
   TICK_BENCH_GATED: { line?: string; reason: string; backlog: number };
   TICK_BENCH_UNGATED: { line?: string; reason: string; backlog: number };
   TICK_FAILED: { error: string };

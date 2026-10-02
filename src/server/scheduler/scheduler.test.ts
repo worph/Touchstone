@@ -7,6 +7,9 @@ import type { ReportIndex } from '../store/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import type { Targets } from '../services/bench.js';
 import { EventLog } from '../services/events.js';
+import { Leases } from '../services/leases.js';
+import type { PortHealth } from '../services/ports.js';
+import type { BenchHealth } from '../../shared/activity.js';
 import { DEFAULT_TARGET } from '../../shared/target.js';
 import { migrateLines, Scheduler, type SchedulerOptions } from './index.js';
 
@@ -177,7 +180,7 @@ describe('armed', () => {
     const jobs: Parameters<NonNullable<SchedulerOptions['dispatch']>>[0][] = [];
     const s = make({ armed: true, dispatch: (job) => { jobs.push(job); } });
     await s.tick();
-    expect(jobs).toEqual([{ subject: 'Alpha', try_n: 1 }]);
+    expect(jobs).toEqual([{ subject: 'Alpha', try_n: 1, target: DEFAULT_TARGET }]);
   });
 
   /** An armed scheduler with no runner yet is a legitimate state during P4's bring-up. */
@@ -907,7 +910,7 @@ describe('the request queue', () => {
         queued: () => [
           { slug: 'FileBrowser@aaaa1111-x', subject: 'FileBrowser', queued_at: daysAgo(1) },
         ],
-        running: () => undefined,
+        running: () => [],
         dispatch: (slug) => void started.push(slug),
       },
       dispatch: (job) => void started.push(job.subject),
@@ -1056,5 +1059,132 @@ describe('a schedule file written before platforms existed', () => {
   /** A brand-new file is not a v1 row: nothing to fan, nothing to keep. */
   it('invents no state for a subject that has none', () => {
     expect(migrateLines({ Alpha: {} }, [LINE, FOSS]).Alpha).toEqual({});
+  });
+});
+
+/**
+ * The concurrent scheduler — a lease registry wired in.
+ *
+ * What the policy tests cannot see: that each run the tick starts actually holds its own pair
+ * before the job leaves, so a second tick in the gap cannot start a run onto the same bench.
+ */
+describe('several runs at once', () => {
+  const FOSS = 'foss';
+
+  function platforms(yundera: string[], foss: string[]): Targets {
+    const pool = (id: string) => (id === FOSS ? foss : yundera);
+    return {
+      ids: [LINE, FOSS],
+      has: (id: string) => id === LINE || id === FOSS,
+      leasable: (id: string) =>
+        pool(id).map((name) => ({ name, target: id, url: `https://${name}`, status: 'healthy' }) as BenchHealth),
+      list: () => [],
+      health: () => [{ id: LINE }, { id: FOSS }],
+    } as unknown as Targets;
+  }
+
+  function leasesFor(targets: Targets, browsers: string[]): Leases {
+    return new Leases({
+      benches: (t) => targets.leasable(t),
+      browsers: () =>
+        browsers.map((name) => ({ name, kind: 'browser', url: `http://${name}/mcp`, status: 'healthy' }) as PortHealth),
+    });
+  }
+
+  const SECTIONS = async () => [
+    { id: 'static', line: LINE, scores: true, requires: [] },
+    { id: 'functional', line: LINE, scores: true, requires: ['bench', 'browser'] },
+    { id: 'functional@foss', line: FOSS, scores: true, requires: ['bench', 'browser'] },
+  ];
+
+  it('starts a run per free pair, each holding a different bench and browser', async () => {
+    const targets = platforms(['demo1', 'demo2'], ['demofoss1']);
+    const leases = leasesFor(targets, ['b1', 'b2']);
+    const jobs: { subject: string; target?: string; lease?: { bench?: { name: string }; browser?: { name: string } } }[] = [];
+    const s = make({
+      armed: true,
+      targets,
+      leases,
+      sections: SECTIONS,
+      dispatch: (job) => {
+        jobs.push(job as never);
+      },
+    });
+    await s.load();
+    const d = await s.tick();
+
+    expect(d.dispatches?.length).toBe(2);
+    expect(jobs.map((j) => `${j.subject}@${j.target}`)).toEqual([`Alpha@${LINE}`, `Alpha@${FOSS}`]);
+    expect(jobs.map((j) => j.lease?.bench?.name)).toEqual(['demo1', 'demofoss1']);
+    expect(new Set(jobs.map((j) => j.lease?.browser?.name)).size).toBe(2);
+    expect(leases.list()).toHaveLength(2);
+    // Both of Alpha's lines are claimed, independently.
+    expect(Object.keys(s.snapshot().subjects.Alpha?.lines ?? {}).sort()).toEqual([FOSS, LINE].sort());
+  });
+
+  it('starts nothing more while every browser is held, and resumes when one is released', async () => {
+    const targets = platforms(['demo1', 'demo2'], ['demofoss1']);
+    const leases = leasesFor(targets, ['b1']);
+    const jobs: { subject: string; target?: string; lease?: { id: string } }[] = [];
+    const s = make({ armed: true, targets, leases, sections: SECTIONS, dispatch: (job) => void jobs.push(job as never) });
+    await s.load();
+
+    await s.tick();
+    expect(jobs).toHaveLength(1);
+    const again = await s.tick();
+    expect(jobs).toHaveLength(1);
+    expect(again.held?.some((h) => h.why === 'full')).toBe(true);
+    expect(again.gated).toBeUndefined();
+
+    // The run ends: the runner releases its pair, the scheduler records the line it was on.
+    leases.release(jobs[0]!.lease!.id);
+    await s.record(jobs[0]!.subject, { kind: 'verdict' }, new Date(), jobs[0]!.target);
+    await s.tick();
+    expect(jobs).toHaveLength(2);
+    expect(jobs[1]!.target).toBe(FOSS);
+  });
+
+  /** A Yundera finish starts Yundera's cooldown and nobody else's. */
+  it('keeps a cooldown per line', async () => {
+    const targets = platforms(['demo1'], ['demofoss1']);
+    const s = make({ armed: true, targets, leases: leasesFor(targets, ['b1', 'b2']), sections: SECTIONS });
+    await s.load();
+    await s.record('Beta', { kind: 'verdict' }, new Date(), LINE);
+    const lines = s.snapshot().lines;
+    expect(lines.find((l) => l.line === LINE)?.cooldown_left_min).toBeGreaterThan(0);
+    expect(lines.find((l) => l.line === FOSS)?.cooldown_left_min).toBe(0);
+  });
+
+  it('settles the claim of the line the run was on, not whichever line it finds first', async () => {
+    const targets = platforms(['demo1'], ['demofoss1']);
+    const s = make({ armed: true, targets, leases: leasesFor(targets, ['b1', 'b2']), sections: SECTIONS, dispatch: () => undefined });
+    await s.load();
+    await s.tick();
+    await s.record('Alpha', { kind: 'verdict' }, new Date(), FOSS);
+    const lines = s.snapshot().subjects.Alpha?.lines ?? {};
+    expect(lines[FOSS]?.claim).toBeUndefined();
+    expect(lines[LINE]?.claim).toBeDefined();
+  });
+
+  it('hands a trial the pair of its own platform', async () => {
+    const targets = platforms([], ['demofoss1']);
+    const leases = leasesFor(targets, ['b1']);
+    const started: { slug: string; lease?: { bench?: { name: string } } }[] = [];
+    const s = make({
+      armed: false,
+      registry: registryOf([]),
+      targets,
+      leases,
+      sections: SECTIONS,
+      trials: {
+        queued: () => [{ slug: 't1', subject: 'Ntfy', queued_at: new Date().toISOString(), target: FOSS }],
+        running: () => [],
+        dispatch: (slug, lease) => void started.push({ slug, lease: lease as never }),
+      },
+    });
+    await s.load();
+    await s.tick();
+    expect(started).toEqual([{ slug: 't1', lease: expect.objectContaining({ target: FOSS }) }]);
+    expect(started[0]?.lease?.bench?.name).toBe('demofoss1');
   });
 });

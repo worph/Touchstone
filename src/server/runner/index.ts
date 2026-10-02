@@ -39,6 +39,7 @@ import type { AlertStore } from '../services/alerts.js';
 import { DEFAULT_TARGET } from '../../shared/target.js';
 import type { Targets } from '../services/bench.js';
 import type { PortProber } from '../services/ports.js';
+import type { Lease, Leases } from '../services/leases.js';
 import { sectionsOf, type ExecutorRef, type ProtocolSection, type ProtocolStore } from '../store/protocols.js';
 import type { KbStore } from '../store/kb.js';
 import type { RevisionStore } from '../store/revisions.js';
@@ -110,6 +111,16 @@ export interface RunnerJob {
    */
   target?: string;
   /**
+   * The (bench, browser) pair the scheduler reserved for this run when it dispatched it.
+   *
+   * Reserved **at the tick**, not here, because `execute()` awaits a revision sweep and a
+   * protocol read before it reaches the capability check — and a tick that ran in that gap
+   * would see the same resources free and dispatch a second run onto them. The runner releases
+   * it when the run ends, however it ends. Absent (a test, a caller with no scheduler), the
+   * runner reserves for itself at the moment it resolves capabilities.
+   */
+  lease?: Lease;
+  /**
    * Present, this is a **trial**: the same run written where the report index does not look.
    *
    * It overrides the store's repo and ref, redirects the write root, and skips the index
@@ -173,8 +184,8 @@ export interface RunnerOptions {
   /**
    * How long a section's script may take before it is stopped.
    *
-   * The runner is single-flight, so a script that hangs does not fail one section — it parks
-   * the entire loop behind itself. Generous, because a check with fifty images to resolve is
+   * A script that hangs does not fail one section — it holds that run's bench and browser,
+   * and so that platform's line, behind itself. Generous, because a check with fifty images to resolve is
    * doing fifty round-trips, and still bounded.
    */
   scriptTimeoutMs?: number;
@@ -229,6 +240,12 @@ export interface RunnerOptions {
   targets?: Targets;
   /** The agent and browser endpoints, so a section that needs a browser can lease one. */
   ports?: PortProber;
+  /**
+   * Who holds which bench and browser. Absent, a run reads the unreserved lists as it always
+   * did — which is only safe with one run in flight, and is what the tests that predate
+   * concurrency rely on.
+   */
+  leases?: Leases;
   /** The rubric, read fresh per run so an edit takes effect on the next audit, not the next boot. */
   protocols?: ProtocolStore;
   /**
@@ -260,10 +277,22 @@ export interface RunnerOptions {
 
 const DEFAULT_BACKOFF_MS = 10 * 60_000;
 
-/** What the UI needs to show a run in progress, and what became of the last one. */
+/** What the UI needs to show the runs in progress, and what became of the last one. */
 export interface RunnerStatus {
-  running: RunLive | null;
+  /** Every run in flight, oldest first. One per (subject, platform) at most. */
+  runs: RunLive[];
   last: LastRun | null;
+}
+
+/**
+ * A run's identity while it is in flight: one subject on one platform.
+ *
+ * Two runs of the same app on two platforms are legitimate and concurrent — they use different
+ * benches and say different things — while two of the same app on the same platform would be
+ * one audit twice, and the second would contend for its own report files.
+ */
+export function runIdOf(subject: string, target: string | undefined): string {
+  return `${subject}@${target ?? DEFAULT_TARGET}`;
 }
 
 /** What a run started now would cover. See `Runner.forecast()`. */
@@ -278,8 +307,7 @@ export interface Forecast {
 
 export class Runner {
   private readonly opts: RunnerOptions;
-  private running = false;
-  private current: RunnerStatus['running'] = null;
+  private readonly live = new Map<string, RunLive>();
   private previous: RunnerStatus['last'] = null;
   /** Set when someone switched the runner on or off at runtime. Absent, the config stands. */
   private enabledOverride?: boolean;
@@ -333,20 +361,26 @@ export class Runner {
     this.backoffOverrideMs = undefined;
   }
 
-  /** Whether a job is in flight. The scheduler's single-flight is the real guard; this is a belt. */
-  get busy(): boolean {
-    return this.running;
+  /** How many runs are in flight, on every platform together. */
+  get active(): number {
+    return this.live.size;
+  }
+
+  /** Whether this subject is being audited on this platform right now. */
+  isRunning(subject: string, target?: string): boolean {
+    return this.live.has(runIdOf(subject, target));
   }
 
   /**
-   * Add to what `status()` says about the run already in flight.
+   * Add to what `status()` says about one run already in flight.
    *
    * The bench, the browser and the set of sections are all resolved inside `execute`, after
    * the run is announced. Without this the UI would spend the whole audit describing the job
    * as it was requested rather than as it is being run.
    */
-  private note(patch: Partial<RunLive>): void {
-    if (this.current) this.current = { ...this.current, ...patch };
+  private note(id: string, patch: Partial<RunLive>): void {
+    const run = this.live.get(id);
+    if (run) this.live.set(id, { ...run, ...patch });
   }
 
   /**
@@ -356,7 +390,7 @@ export class Runner {
    * happened, rather than seeing "nothing running" and having to guess.
    */
   status(): RunnerStatus {
-    return { running: this.current, last: this.previous };
+    return { runs: [...this.live.values()], last: this.previous };
   }
 
   /**
@@ -401,30 +435,47 @@ export class Runner {
   }
 
   async run(job: RunnerJob): Promise<RunOutcome> {
-    if (!this.enabled) {
-      return { kind: 'blocked', reason: 'runner_disabled' };
-    }
-    if (this.running) {
-      // Two assays at once would contend for the one agent and the one bench, and the
-      // second would lose in a way that looks like the subject's fault.
-      return { kind: 'blocked', reason: 'runner_busy' };
-    }
-    this.running = true;
-    const startedAt = this.now().toISOString();
-    this.current = { subject: job.subject, started_at: startedAt };
+    // Whatever happens below — refused, blocked, thrown — the pair the scheduler reserved is
+    // handed back. A lease leaked on an early return would quietly shrink capacity by one run
+    // until the next restart, which reads on the Automation page as a line that is simply slow.
+    let selfLease: string | undefined;
     try {
-      const outcome = await this.execute(job);
-      this.previous = {
+      if (!this.enabled) {
+        return { kind: 'blocked', reason: 'runner_disabled' };
+      }
+      const id = runIdOf(job.subject, job.target);
+      if (this.live.has(id)) {
+        // The same app on the same platform twice would be one audit run twice, contending for
+        // its own report files. Two platforms, or two apps, are what concurrency is for.
+        return { kind: 'blocked', reason: 'runner_busy' };
+      }
+      const startedAt = this.now().toISOString();
+      this.live.set(id, {
+        id,
         subject: job.subject,
-        ...(this.current?.sections ? { sections: this.current.sections } : {}),
         started_at: startedAt,
-        finished_at: this.now().toISOString(),
-        outcome,
-      };
-      return outcome;
+        target: job.target ?? DEFAULT_TARGET,
+      });
+      try {
+        const outcome = await this.execute(job, id, (leaseId) => {
+          selfLease = leaseId;
+        });
+        const sections = this.live.get(id)?.sections;
+        this.previous = {
+          subject: job.subject,
+          ...(sections ? { sections } : {}),
+          target: job.target ?? DEFAULT_TARGET,
+          started_at: startedAt,
+          finished_at: this.now().toISOString(),
+          outcome,
+        };
+        return outcome;
+      } finally {
+        this.live.delete(id);
+      }
     } finally {
-      this.running = false;
-      this.current = null;
+      this.opts.leases?.release(job.lease?.id);
+      this.opts.leases?.release(selfLease);
     }
   }
 
@@ -446,7 +497,11 @@ export class Runner {
     );
   }
 
-  private async execute(job: RunnerJob): Promise<RunOutcome> {
+  private async execute(
+    job: RunnerJob,
+    runId: string,
+    onSelfLease: (leaseId: string) => void,
+  ): Promise<RunOutcome> {
     const events = this.opts.events;
     const startedAt = this.now().toISOString();
     const { origin, name: appName } = splitSubjectKey(job.subject);
@@ -528,6 +583,34 @@ export class Runner {
     // what a run would cover without a second copy of this decision. Destructured back into
     // the same names the rest of this method already used: the point of the move is that
     // nothing below it changed.
+    //
+    // The pair this run will use. The scheduler normally reserved it at dispatch; a run that
+    // arrived without one reserves here, with no `await` between the reservation and the
+    // resolution below, so two such runs cannot both read the same free sidecar.
+    let lease = job.lease;
+    if (!lease && this.opts.leases) {
+      const wanted = new Set(sections.flatMap((s) => s.requires));
+      const got = this.opts.leases.reserve(
+        job.target ?? DEFAULT_TARGET,
+        { bench: wanted.has('bench'), browser: wanted.has('browser') },
+        runId,
+      );
+      if (!got.ok) {
+        // Busy, not broken: every healthy one is in another run's hands. Free (invariant 3),
+        // and not written down — "no bench" would be a false account of a pool that is working.
+        events.log({
+          level: 'info',
+          code: 'ASSAY_BLOCKED',
+          message: `Every ${got.full} was in use by another audit, so ${appName} will wait for one`,
+          subject: job.subject,
+          detail: { subject: job.subject, reason: `${got.full}_busy` },
+        });
+        return { kind: 'blocked', reason: `${got.full}_busy` };
+      }
+      lease = got.lease;
+      onSelfLease(lease.id);
+    }
+
     const {
       run: runSections,
       blocked: skipped,
@@ -538,15 +621,17 @@ export class Runner {
         ...this.opts,
         ...(job.target ? { target: job.target } : {}),
         ...(job.trial ? { trial: job.trial } : {}),
+        ...(lease ? { lease } : {}),
       }),
     );
 
-    this.note({
+    this.note(runId, {
       sections: runSections.map((s) => s.id),
       blocked: skipped.map((s) => ({ section: s.section.id, reason: s.reason })),
       degraded_reason: skipped[0]?.reason ?? null,
       bench: benchHost ?? null,
       browser: browserEndpoint ?? null,
+      browser_name: lease?.browser?.name ?? null,
       // The platform, not just the host it happened to land on.
       target: benchTarget ?? null,
     });
@@ -636,6 +721,7 @@ export class Runner {
       this.opts.ledger && this.opts.callbackUrl
         ? this.opts.ledger.open({
             subject: job.subject,
+            run: runId,
             sections: agentSections.map((s) => ({
               id: s.id,
               name: s.name,
@@ -1079,7 +1165,12 @@ export class Runner {
    * section the run would have covered. Never throws: the caller is already handling a
    * failure, and a second one must not replace the first.
    */
-  async recordFailedDispatch(subject: SubjectKey, reason: string, scope?: string[]): Promise<void> {
+  async recordFailedDispatch(
+    subject: SubjectKey,
+    reason: string,
+    scope?: string[],
+    target?: string,
+  ): Promise<void> {
     const startedAt = this.now().toISOString();
     try {
       const { origin, name: appName } = splitSubjectKey(subject);
@@ -1092,7 +1183,7 @@ export class Runner {
       // writes one blocked assay per section of the *whole* protocol, so a Yundera run that
       // failed to dispatch would stamp a `functional-foss` attempt — silently spending the
       // FOSS line's request and resetting its due-ness, for a run that never touched it.
-      const sections = scopedTo(plan.sections, scope, undefined);
+      const sections = scopedTo(plan.sections, scope, target);
       if (sections.length === 0) return;
       await this.recordAttempt({ subject, try_n: 0 }, reason, {
         sections,

@@ -297,7 +297,7 @@ describe('reading what was written down', () => {
   it('answers about a finished audit that the live status has forgotten', async () => {
     const forgetful = {
       ...archive,
-      runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }) },
+      runner: { enabled: true, busy: false, status: () => ({ runs: [], last: null }) },
     } as never;
 
     const status = await dispatch({ tool: 'get_status', input: {} }, forgetful);
@@ -529,7 +529,7 @@ describe('a run started here reports back into the conversation', () => {
       message: 'review OpenClaw',
       ctx: {
         registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}), delisted: () => [], isDelisted: () => false } as never,
-        runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }) } as never,
+        runner: { enabled: true, busy: false, status: () => ({ runs: [], last: null }) } as never,
         startAssay: (job, opts) => {
           started.push({ subject: job.subject, threadId: opts?.threadId });
           return { started: true };
@@ -562,7 +562,7 @@ describe('a run started here reports back into the conversation', () => {
       message: 'review OpenClaw',
       ctx: {
         registry: { list: () => ['yundera~OpenClaw'], versions: () => ({}), delisted: () => [], isDelisted: () => false } as never,
-        runner: { enabled: true, busy: false, status: () => ({ running: null, last: null }), ...runner } as never,
+        runner: { enabled: true, busy: false, status: () => ({ runs: [], last: null }), ...runner } as never,
         // One entry per pool, as `BenchPools.windows()` returns. The window of an *empty*
         // pool is what the reply quotes, so the fixture has to say this one is empty.
         targets: {
@@ -754,7 +754,7 @@ describe('trialling supplied files', () => {
     enabled: true,
     busy,
     status: () => ({
-      running: busy ? { subject: 'yundera~Radarr', started_at: '2026-08-22T09:00:00Z' } : null,
+      runs: busy ? [{ id: 'yundera~Radarr@yundera', subject: 'yundera~Radarr', started_at: '2026-08-22T09:00:00Z' }] : [],
       last: null,
     }),
     run: async () => ({ kind: 'blocked' as const, reason: 'store_url_unconfigured' }),

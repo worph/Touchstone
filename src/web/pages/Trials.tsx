@@ -51,7 +51,7 @@ import { useAsync } from '../hooks/useAsync';
 import { num, since } from '../lib/format';
 import { coverageOf, legState, type LiveRun } from '../lib/overview';
 import { readingOf, readingSections } from '../lib/reading';
-import { liveLegs, progressLabel } from '../lib/run';
+import { liveRunsOf } from '../lib/run';
 
 /** `currency` → `Currency`. The section id is the only name a reading column has. */
 function label(id: string): string {
@@ -73,12 +73,12 @@ function sourceOf(t: TrialSummary): string {
  * the same problem in the other direction — the API restarted under it and nothing will ever
  * come back to finish it.
  */
-function trialNote(t: TrialSummary, live: LiveRun | null): string | null {
+function trialNote(t: TrialSummary, live: readonly LiveRun[]): string | null {
   // Queued is not unfinished. Since the request queue a trial waits its turn rather than being
   // refused when the agent is busy, and `began_at` is what tells the two apart — without it a
   // row waiting perfectly normally would read as one that died.
   if (!t.began_at && !t.finished_at) return 'queued — waiting for the agent';
-  if (!t.finished_at) return live?.subject === t.state.name ? null : 'started, and never finished';
+  if (!t.finished_at) return live.some((r) => r.subject === t.state.name) ? null : 'started, and never finished';
   switch (t.outcome) {
     case 'agent_busy':
       return 'not run — the agent was busy';
@@ -109,17 +109,7 @@ export default function Trials() {
    * this needs no special case: the row whose state carries that key gets `◴ running` cells
    * while the audit is on, and the same cells hold its verdict when it lands.
    */
-  const live: LiveRun | null = useMemo(() => {
-    const running = status?.running;
-    if (!running) return null;
-    const counted = progressLabel(status?.progress);
-    return {
-      subject: running.subject,
-      legs: liveLegs(running),
-      started_at: running.started_at,
-      ...(counted ? { note: counted } : {}),
-    };
-  }, [status?.running, status?.progress]);
+  const live: LiveRun[] = useMemo(() => liveRunsOf(status), [status]);
 
   // Derived from the rows, blind to what is being measured: a reading column appears the
   // moment one trial has an assay from a section that measures. Same rule as the Store table.
@@ -217,9 +207,9 @@ export default function Trials() {
   );
 }
 
-function Row({ t, live, notices }: { t: TrialSummary; live: LiveRun | null; notices: string[] }) {
+function Row({ t, live, notices }: { t: TrialSummary; live: readonly LiveRun[]; notices: string[] }) {
   const to = `/trials/${encodeURIComponent(t.slug)}`;
-  const running = live?.subject === t.state.name;
+  const running = live.some((r) => r.subject === t.state.name);
   const note = trialNote(t, live);
   const never = !t.state.static && !t.state.functional;
   const source = sourceOf(t);

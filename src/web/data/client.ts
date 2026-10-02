@@ -532,16 +532,21 @@ export interface BrowserPages {
   unreachable?: string;
 }
 
-export function getBrowserPages(all = false): Promise<BrowserPages> {
-  return get<BrowserPages>(`/browser/pages${all ? '?all=1' : ''}`);
+/** One sidecar's tabs. `browser` names it; absent means the default (first) one. */
+export function getBrowserPages(all = false, browser?: string | null): Promise<BrowserPages> {
+  const q = new URLSearchParams();
+  if (all) q.set('all', '1');
+  if (browser) q.set('browser', browser);
+  const qs = q.toString();
+  return get<BrowserPages>(`/browser/pages${qs ? `?${qs}` : ''}`);
 }
 
 /**
  * A still of the whole browser. Cache-busted on purpose: the point is that it changes.
  * Used where the per-tab screencast is unavailable (browser-mcp before 1.1.6).
  */
-export function browserStillUrl(nonce: number): string {
-  return `${BASE}/browser/screenshot?t=${nonce}`;
+export function browserStillUrl(nonce: number, browser?: string | null): string {
+  return `${BASE}/browser/screenshot?t=${nonce}${browser ? `&browser=${encodeURIComponent(browser)}` : ''}`;
 }
 
 export function getPushStatus(): Promise<PushStatus> {

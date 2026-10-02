@@ -336,7 +336,11 @@ export function blockedReasonClause(reason: string): string {
     case 'runner_disabled':
       return 'the runner is switched off';
     case 'runner_busy':
-      return 'another audit is already running';
+      return 'this app is already being audited on that platform';
+    case 'bench_busy':
+      return 'every demo bench was in use by another audit';
+    case 'browser_busy':
+      return 'every browser was in use by another audit';
     default:
       return reason.replace(/_/g, ' ');
   }
@@ -366,6 +370,12 @@ export function outcomeClause(outcome: RunOutcome): string {
  * not and why — the UI needs both, or it draws a phase track for a section nobody is running.
  */
 export interface RunLive {
+  /**
+   * `<subject>@<target>` — `runIdOf()`. Several runs are in flight at once now, one per free
+   * (bench, browser) pair, and the same app may be running on both platforms; this is what
+   * tells those two apart.
+   */
+  id: string;
   subject: string;
   started_at: string;
   /** The sections being attempted, in protocol order. Filled in once the run has probed. */
@@ -377,6 +387,8 @@ export interface RunLive {
   /** The demo instance this run leased, and the browser sidecar leased with it. */
   bench?: string | null;
   browser?: string | null;
+  /** The sidecar's `config.browsers` name — what the browser panel is addressed by. */
+  browser_name?: string | null;
   /**
    * **Which platform this run is about** — the target it leased its bench from.
    *
@@ -392,6 +404,7 @@ export interface RunLive {
 export interface LastRun {
   subject: string;
   sections?: Section[];
+  target?: string;
   started_at: string;
   finished_at: string;
   outcome: RunOutcome;
@@ -432,13 +445,32 @@ export interface RunProgress {
   recent: RecordedRequirement[];
 }
 
+/** One run in flight, with what it has established so far. */
+export interface LiveRun extends RunLive {
+  /** Null until the run has a ledger ticket, and for a run with no agent sections. */
+  progress: RunProgress | null;
+}
+
+/** What one pool of resources looks like right now: how many exist, how many nobody holds. */
+export interface Capacity {
+  free: number;
+  total: number;
+}
+
 /** `GET /api/v1/assays/current`. */
 export interface RunStatus {
   enabled: boolean;
-  running: RunLive | null;
+  /**
+   * Every run in flight, oldest first. Was a single `running` until 2026-10: each platform now
+   * has its own line and as many runs go at once as there are free (bench, browser) pairs.
+   */
+  runs: LiveRun[];
   last: LastRun | null;
-  /** Null when nothing is running, or when the run predates the ledger. */
-  progress: RunProgress | null;
+  /**
+   * What is free, so a page can say *why* the next audit is waiting: a busy pool and a broken
+   * one must not read alike. Benches are per target; browsers are one shared pool.
+   */
+  capacity?: { benches: Record<string, Capacity>; browsers: Capacity };
   /**
    * The demo pool, so anything that offers to start a run can say what it would cover.
    *

@@ -31,6 +31,7 @@ import type { TrialRecord } from '../../shared/trials.js';
 import { resolveSubjectKey } from '../domain/subjects.js';
 import type { Runner } from '../runner/index.js';
 import type { EventLog } from './events.js';
+import type { Lease, Leases } from './leases.js';
 import { TrialInputError, trialSlug, validateTrial, type TrialStore } from '../store/trials.js';
 import { buildIndex, type ReportIndex } from '../store/index.js';
 import type { UploadStore } from '../store/uploads.js';
@@ -83,6 +84,8 @@ export interface TrialSpec {
 
 export interface TrialRunDeps {
   runner?: Runner;
+  /** So a trial that will not start can hand back the pair the tick reserved for it. */
+  leases?: Leases;
   trials?: TrialStore;
   uploads?: UploadStore;
   trialsRoot?: string;
@@ -110,6 +113,12 @@ export interface TrialRunDeps {
    * before it is asked.
    */
   kick?: () => void;
+  /**
+   * A trial finished and handed back its bench and browser. The scheduler looks again: with
+   * several lines that pair may be exactly what the next request was waiting for, and a trial
+   * never reaches `Scheduler.record()`, whose kick covers every audit.
+   */
+  finished?: () => void;
 }
 
 export type Refusal = { ok: false; code: number; error: string };
@@ -375,17 +384,20 @@ export async function enqueueTrial(
  * also the same bytes the bench installs, which is the property `enqueueTrial` was already
  * built around — there is one copy of this app anywhere in the system.
  */
-export async function startTrial(deps: TrialRunDeps, slug: string): Promise<void> {
+export async function startTrial(deps: TrialRunDeps, slug: string, lease?: Lease): Promise<void> {
   const { trials, runner, trialsRoot } = deps;
   if (!trials || !runner || !trialsRoot) {
     throw new Error('startTrial called without trials, a runner or a trials root');
   }
   const record = trials.get(slug);
   if (!record) throw new Error(`no such trial: ${slug}`);
-  // Already taken. The scheduler's own `agentBusy` read should have prevented this, so it is a
-  // bug rather than a race worth tolerating quietly — but throwing would mark the row failed,
-  // which is a worse answer than leaving the run that is genuinely in flight alone.
-  if (record.began_at) return;
+  // Already taken. The scheduler only dispatches queued rows, so it is a bug rather than a race
+  // worth tolerating quietly — but throwing would mark the row failed, which is a worse answer
+  // than leaving the run that is genuinely in flight alone. The pair it was handed goes back.
+  if (record.began_at) {
+    deps.leases?.release(lease?.id);
+    return;
+  }
 
   const root = path.join(trialsRoot, slug);
   const zip = await readStoreZip(trials.storeZipPath(slug));
@@ -416,6 +428,8 @@ export async function startTrial(deps: TrialRunDeps, slug: string): Promise<void
       // The platform this trial is about. A trial audits bytes rather than a subject the
       // scheduler tracks, so nothing else can infer it — see `TrialRequest.target`.
       ...(record.target ? { target: record.target } : {}),
+      // Reserved by the tick that started this trial; the runner releases it when it ends.
+      ...(lease ? { lease } : {}),
       trial: {
         repo: record.repo,
         apps_path: record.apps_path,
@@ -478,7 +492,8 @@ export async function startTrial(deps: TrialRunDeps, slug: string): Promise<void
         })
         .catch(() => undefined);
       deps.onError?.(err, spec.slug);
-    });
+    })
+    .finally(() => deps.finished?.());
 }
 
 /**

@@ -108,3 +108,30 @@ services:
     network_mode: "service:dev"
     depends_on:
       - dev
+
+  # ── a second browser, so two audits can run at once ─────────────────────────
+  # Touchstone runs one audit per free (bench, browser) pair (`services/leases.ts`), so with
+  # one sidecar it is single-flight whatever the bench pools hold. This is the second pair's
+  # browser: one Yundera run and one FOSS run side by side.
+  #
+  # **Its own network, not `service:dev`.** The image hard-codes Xvfb `:99`, x11vnc 5900,
+  # websockify 6080 and Chrome's CDP 9222 — and on Linux an X display's socket is an abstract
+  # one, scoped to the network namespace — so a second instance in dev's namespace collides
+  # with the first on every one of them. The cost is the secure-context trick above: this
+  # browser cannot test web push. It never needs to; audits drive demo benches on the
+  # internet, which it reaches the same way either browser does.
+  #
+  # Same rule as `browser`: no profile volume, ever.
+  browser-2:
+    image: ghcr.io/worph/browser-mcp:1.1.5
+    container_name: touchstone-browser-2
+    restart: unless-stopped
+    shm_size: "2gb"
+    environment:
+      VNC_RESOLUTION: "1440x900x24"
+      MCP_PORT: "9746"
+      IDLE_TTL_MS: "900000"
+      PAGE_COLLECTOR: "on"
+      PAGE_TTL_MS: "1800000"
+    ports:
+      - "9747:9746" # browser-mcp, reached from dev as host.docker.internal:9747

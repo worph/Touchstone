@@ -29,12 +29,17 @@ import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 
 export interface BrowserRoutesOptions {
   /**
-   * The sidecar's MCP endpoint, e.g. `http://touchstone-browser-1:9746/mcp`. The viewer
-   * surfaces sit beside it on the same origin, so the `/mcp` suffix is trimmed off.
+   * Every sidecar, by name — `config.browsers`. Each MCP endpoint is e.g.
+   * `http://touchstone-browser-1:9746/mcp`; the viewer surfaces sit beside it on the same
+   * origin, so the `/mcp` suffix is trimmed off.
+   *
+   * Several, since 2026-10: one run per free (bench, browser) pair, so a panel showing "the"
+   * browser would be showing whichever run happened to hold the first one. The first entry is
+   * the default, which keeps a request naming no browser meaning what it always meant.
    */
-  browserUrl?: string;
-  /** The run in flight, so the tab list can be narrowed to the audit's own context. */
-  runningSubject?: () => string | null;
+  browsers?: { name: string; url: string }[];
+  /** The run holding this browser, so its tab list can be narrowed to that audit's context. */
+  runningSubject?: (browserUrl: string) => string | null;
 }
 
 /** `http://host:9746/mcp` → `http://host:9746`. */
@@ -56,8 +61,21 @@ export function contextForSubject(appName: string): string {
 const LIVE_PREFIX = '/browser/live';
 const VNC_PREFIX = '/browser/vnc';
 
+/** Where one sidecar's viewers are proxied. The default keeps the bare prefixes. */
+function prefixesFor(name: string, isDefault: boolean): { live: string; vnc: string } {
+  return isDefault
+    ? { live: LIVE_PREFIX, vnc: VNC_PREFIX }
+    : { live: `/browser/b/${encodeURIComponent(name)}/live`, vnc: `/browser/b/${encodeURIComponent(name)}/vnc` };
+}
+
 const routes: FastifyPluginAsync<BrowserRoutesOptions> = async (app, options) => {
-  const base = options.browserUrl ? browserBase(options.browserUrl) : null;
+  const browsers = options.browsers ?? [];
+  /** The named sidecar, or the default when no name was given. Unknown names resolve to none. */
+  const pick = (name: string | undefined) => {
+    const i = name ? browsers.findIndex((b) => b.name === name) : 0;
+    const b = i >= 0 ? browsers[i] : undefined;
+    return b ? { ...b, base: browserBase(b.url), prefixes: prefixesFor(b.name, i === 0) } : null;
+  };
 
   /**
    * The tabs the sidecar is holding.
@@ -66,8 +84,10 @@ const routes: FastifyPluginAsync<BrowserRoutesOptions> = async (app, options) =>
    * driving other tabs, and a panel that showed them would be answering a different question
    * than the one the operator asked.
    */
-  app.get<{ Querystring: { all?: string } }>('/browser/pages', async (request, reply) => {
-    if (!base) return reply.code(503).send({ error: 'no browser sidecar configured' });
+  app.get<{ Querystring: { all?: string; browser?: string } }>('/browser/pages', async (request, reply) => {
+    const chosen = pick(request.query.browser);
+    if (!chosen) return reply.code(503).send({ error: 'no browser sidecar configured' });
+    const base = chosen.base;
 
     let pages: BrowserPage[];
     try {
@@ -83,7 +103,7 @@ const routes: FastifyPluginAsync<BrowserRoutesOptions> = async (app, options) =>
       });
     }
 
-    const subject = options.runningSubject?.() ?? null;
+    const subject = options.runningSubject?.(chosen.url) ?? null;
     const context = subject ? contextForSubject(subject) : null;
     const mine = context ? pages.filter((p) => (p.owner ?? '') === context) : [];
 
@@ -92,8 +112,9 @@ const routes: FastifyPluginAsync<BrowserRoutesOptions> = async (app, options) =>
       context,
       /** Whether the list was narrowed, so the UI can say "all tabs" honestly. */
       filtered: mine.length > 0 && request.query.all !== '1',
-      live_prefix: LIVE_PREFIX,
-      vnc_url: `${VNC_PREFIX}/vnc.html?autoconnect=1&resize=scale&reconnect=1`,
+      browser: chosen.name,
+      live_prefix: chosen.prefixes.live,
+      vnc_url: `${chosen.prefixes.vnc}/vnc.html?autoconnect=1&resize=scale&reconnect=1`,
     };
   });
 
@@ -109,10 +130,11 @@ const routes: FastifyPluginAsync<BrowserRoutesOptions> = async (app, options) =>
    * - It is **slow** — 11 s on an idle sidecar. Hence the 20 s ceiling below, and why the UI
    *   polls it far apart rather than pretending to stream.
    */
-  app.get('/browser/screenshot', async (_request, reply) => {
-    if (!base) return reply.code(503).send({ error: 'no browser sidecar configured' });
+  app.get<{ Querystring: { browser?: string } }>('/browser/screenshot', async (request, reply) => {
+    const chosen = pick(request.query.browser);
+    if (!chosen) return reply.code(503).send({ error: 'no browser sidecar configured' });
     try {
-      const res = await fetch(`${base}/api/screenshot`, { signal: AbortSignal.timeout(20_000) });
+      const res = await fetch(`${chosen.base}/api/screenshot`, { signal: AbortSignal.timeout(20_000) });
       if (!res.ok) return reply.code(502).send({ error: `the browser answered ${res.status}` });
       return reply
         .type(res.headers.get('content-type') ?? 'image/png')
@@ -143,28 +165,32 @@ interface BrowserPage {
  */
 export async function registerBrowserProxy(
   app: FastifyInstance,
-  browserUrl: string | undefined,
+  browsers: { name: string; url: string }[] | undefined,
 ): Promise<void> {
-  if (!browserUrl) return;
-  const upstream = browserBase(browserUrl);
+  if (!browsers || browsers.length === 0) return;
 
   const { default: httpProxy } = await import('@fastify/http-proxy');
 
-  // The live view: one socket per tab, frames out and input in. The upgrade goes through
-  // Fastify's router, so it sits behind the same gate as everything else on this origin.
-  await app.register(httpProxy, {
-    upstream,
-    prefix: LIVE_PREFIX,
-    rewritePrefix: '/api/pages',
-    websocket: true,
-  });
+  for (const [i, browser] of browsers.entries()) {
+    const upstream = browserBase(browser.url);
+    const prefixes = prefixesFor(browser.name, i === 0);
 
-  await app.register(httpProxy, {
-    upstream,
-    prefix: VNC_PREFIX,
-    rewritePrefix: '/vnc',
-    websocket: true,
-  });
+    // The live view: one socket per tab, frames out and input in. The upgrade goes through
+    // Fastify's router, so it sits behind the same gate as everything else on this origin.
+    await app.register(httpProxy, {
+      upstream,
+      prefix: prefixes.live,
+      rewritePrefix: '/api/pages',
+      websocket: true,
+    });
+
+    await app.register(httpProxy, {
+      upstream,
+      prefix: prefixes.vnc,
+      rewritePrefix: '/vnc',
+      websocket: true,
+    });
+  }
 }
 
 export default routes;

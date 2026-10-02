@@ -920,3 +920,161 @@ describe('more than one platform', () => {
     expect(d.sections).toBeUndefined();
   });
 });
+
+/**
+ * The concurrent pick — `PolicyInput.free` present.
+ *
+ * Capacity is whatever is free: one run per (bench, browser) pair, in queue order, each line
+ * holding at its own head. These pin the three things that make that safe — a busy pool is not
+ * a broken one, a line's shortage costs only that line, and nothing starts twice.
+ */
+describe('several runs at once', () => {
+  const FOSS = 'foss';
+
+  function concurrent(over: Partial<PolicyInput> = {}): PolicyInput {
+    return {
+      ...input({ subjects: ['Alpha', 'Beta', 'Gamma'] }),
+      sections: [
+        { id: 'static', line: LINE, scores: true },
+        { id: 'functional', line: LINE, scores: true },
+        { id: 'functional@foss', line: FOSS, scores: true },
+      ],
+      capabilities: { [LINE]: { available: true }, [FOSS]: { available: true } },
+      free: { benches: { [LINE]: 2, [FOSS]: 1 }, browsers: 3, browsersHealthy: 3 },
+      ...over,
+    };
+  }
+
+  const started = (d: ReturnType<typeof decide>) =>
+    (d.dispatches ?? []).map((x) => `${x.subject ?? x.trial}@${x.line}`);
+
+  it('starts one run per free pair, across both platforms', () => {
+    const d = decide(concurrent());
+    // Two Yundera benches, one FOSS bench, three browsers: three runs. Queue order is the
+    // registry's for never-run cells, so Alpha's two lines go first.
+    expect(started(d)).toEqual([`Alpha@${LINE}`, `Alpha@${FOSS}`, `Beta@${LINE}`]);
+    expect(d.action).toBe('audit');
+    expect(d.subject).toBe('Alpha');
+    // Each run is scoped to its own line — FOSS never carries `static`.
+    expect(d.dispatches?.[1]?.sections).toEqual(['functional@foss']);
+  });
+
+  /** Two benches and one browser is one run: the pair is the unit. */
+  it('is bounded by browsers as much as by benches', () => {
+    const d = decide(concurrent({ free: { benches: { [LINE]: 2, [FOSS]: 1 }, browsers: 1, browsersHealthy: 1 } }));
+    expect(started(d)).toEqual([`Alpha@${LINE}`]);
+    expect(d.held).toEqual(
+      expect.arrayContaining([expect.objectContaining({ line: FOSS, why: 'full', reason: 'every browser is in use' })]),
+    );
+    expect(d.gated).toBeUndefined();
+  });
+
+  /**
+   * A pool whose benches are all busy auditing is working. Reporting it as gated would fire the
+   * bench alert every time the loop did its job.
+   */
+  it('reads a pool with every bench busy as full, never as gated', () => {
+    const d = decide(concurrent({ free: { benches: { [LINE]: 0, [FOSS]: 1 }, browsers: 3, browsersHealthy: 3 } }));
+    expect(started(d)).toEqual([`Alpha@${FOSS}`]);
+    expect(d.held).toEqual([
+      expect.objectContaining({ line: LINE, why: 'full' }),
+      // FOSS's one bench went to Alpha, so its next cell is full too — busy, not broken.
+      expect.objectContaining({ line: FOSS, why: 'full' }),
+    ]);
+    expect(d.gated).toBeUndefined();
+  });
+
+  it('keeps one platform running while the other has no healthy bench', () => {
+    const d = decide(
+      concurrent({
+        capabilities: { [LINE]: { available: true }, [FOSS]: { available: false, note: 'demofoss1 unreachable' } },
+        free: { benches: { [LINE]: 2, [FOSS]: 0 }, browsers: 3, browsersHealthy: 3 },
+      }),
+    );
+    expect(started(d)).toEqual([`Alpha@${LINE}`, `Beta@${LINE}`]);
+    expect(d.gated).toEqual([FOSS]);
+    expect(d.held?.[0]?.reason).toContain('demofoss1 unreachable');
+  });
+
+  it('gates every line that needs a browser when no browser is healthy', () => {
+    const d = decide(concurrent({ free: { benches: { [LINE]: 2, [FOSS]: 1 }, browsers: 0, browsersHealthy: 0 } }));
+    expect(d.action).toBe('idle');
+    expect(d.gated).toEqual([LINE, FOSS]);
+    expect(d.reason).toContain('no usable browser');
+  });
+
+  /** A line whose runs need no browser is not held waiting for one. */
+  it('reads what each line needs from its sections', () => {
+    const d = decide(
+      concurrent({
+        free: { benches: { [LINE]: 2, [FOSS]: 1 }, browsers: 0, browsersHealthy: 1 },
+        needs: { [LINE]: { bench: false, browser: false }, [FOSS]: { bench: true, browser: true } },
+      }),
+    );
+    expect(started(d)).toEqual([`Alpha@${LINE}`, `Beta@${LINE}`, `Gamma@${LINE}`]);
+    expect(d.held).toEqual([expect.objectContaining({ line: FOSS, why: 'full' })]);
+  });
+
+  it('serves requests first, in the order they were asked, before any backlog', () => {
+    const d = decide(
+      concurrent({
+        schedule: migrateLines(
+          {
+            Gamma: { try_n: 0, flagged_at: minutesAgo(10) },
+            Beta: { try_n: 0, flagged_at: minutesAgo(5) },
+          },
+          [LINE, FOSS],
+        ),
+        free: { benches: { [LINE]: 2, [FOSS]: 1 }, browsers: 2, browsersHealthy: 2 },
+      }),
+    );
+    expect(started(d)).toEqual([`Gamma@${LINE}`, `Gamma@${FOSS}`]);
+    expect(d.dispatches?.every((x) => x.source === 'requested')).toBe(true);
+  });
+
+  /** Each line waits out its own cooldown: a Yundera finish does not hold the FOSS line. */
+  it('applies the cooldown per line, to the backlog only', () => {
+    const d = decide(
+      concurrent({
+        lastFinishedAtByLine: { [LINE]: minutesAgo(5) },
+        lastDoneAt: {},
+      }),
+    );
+    expect(started(d)).toEqual([`Alpha@${FOSS}`]);
+    expect(d.held).toEqual(
+      expect.arrayContaining([expect.objectContaining({ line: LINE, why: 'cooldown' })]),
+    );
+  });
+
+  it('never starts a cell that already holds a claim, and lets the same app run on the other line', () => {
+    const schedule = migrateLines({}, [LINE, FOSS]);
+    schedule.Alpha = { lines: { [LINE]: { try_n: 1, claim: { since: minutesAgo(3), try_n: 1 } } } };
+    const d = decide(concurrent({ schedule, free: { benches: { [LINE]: 1, [FOSS]: 1 }, browsers: 2, browsersHealthy: 2 } }));
+    expect(started(d)).toEqual([`Alpha@${FOSS}`, `Beta@${LINE}`]);
+  });
+
+  it('routes a trial to its own platform and gates it on that platform alone', () => {
+    const d = decide(
+      concurrent({
+        subjects: [],
+        capabilities: { [LINE]: { available: false }, [FOSS]: { available: true } },
+        queuedTrials: [{ slug: 't1', subject: 'Ntfy', queued_at: minutesAgo(2), target: FOSS }],
+      }),
+    );
+    expect(d.action).toBe('trial');
+    expect(d.dispatches).toEqual([expect.objectContaining({ trial: 't1', line: FOSS, action: 'trial' })]);
+  });
+
+  it('holds a line at its head instead of skipping down it', () => {
+    const d = decide(concurrent({ free: { benches: { [LINE]: 1, [FOSS]: 0 }, browsers: 3, browsersHealthy: 3 } }));
+    // FOSS is full at Alpha; Beta@foss and Gamma@foss must not jump it.
+    expect(started(d)).toEqual([`Alpha@${LINE}`]);
+    expect(d.held?.map((h) => h.line).sort()).toEqual([FOSS, LINE].sort());
+  });
+
+  it('names every run it started in the state line', () => {
+    expect(stateLine(decide(concurrent()))).toBe(
+      `⏳ starting Alpha (${LINE}), Alpha (${FOSS}), Beta (${LINE})`,
+    );
+  });
+});

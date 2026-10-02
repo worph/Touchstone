@@ -51,7 +51,7 @@ describe('GET /browser/pages', () => {
   it('reports an unreachable browser as a state, not an error', async () => {
     // Invariant 7. A 500 here would make "the sidecar is down" indistinguishable from "the app
     // is broken", on the one page an operator opens to find out which.
-    app = await serve({ browserUrl: 'http://127.0.0.1:1/mcp' });
+    app = await serve({ browsers: [{ name: 'browser-1', url: 'http://127.0.0.1:1/mcp' }] });
     const res = await app.inject({ method: 'GET', url: '/browser/pages' });
 
     expect(res.statusCode).toBe(200);
@@ -73,7 +73,7 @@ describe('GET /browser/pages', () => {
 
     try {
       app = await serve({
-        browserUrl: `http://127.0.0.1:${port}/mcp`,
+        browsers: [{ name: 'browser-1', url: `http://127.0.0.1:${port}/mcp` }],
         runningSubject: () => 'FileBrowser',
       });
 
@@ -106,7 +106,7 @@ describe('GET /browser/pages', () => {
     const port = (upstream.server.address() as { port: number }).port;
 
     try {
-      app = await serve({ browserUrl: `http://127.0.0.1:${port}/mcp`, runningSubject: () => null });
+      app = await serve({ browsers: [{ name: 'browser-1', url: `http://127.0.0.1:${port}/mcp` }], runningSubject: () => null });
       const body = (await app.inject({ method: 'GET', url: '/browser/pages' })).json() as {
         pages: unknown[];
         filtered: boolean;
@@ -130,7 +130,7 @@ describe('GET /browser/screenshot', () => {
     const port = (upstream.server.address() as { port: number }).port;
 
     try {
-      app = await serve({ browserUrl: `http://127.0.0.1:${port}/mcp` });
+      app = await serve({ browsers: [{ name: 'browser-1', url: `http://127.0.0.1:${port}/mcp` }] });
       const res = await app.inject({ method: 'GET', url: '/browser/screenshot' });
       expect(res.statusCode).toBe(200);
       expect(res.headers['content-type']).toContain('image/png');
@@ -141,7 +141,7 @@ describe('GET /browser/screenshot', () => {
   });
 
   it('502s a broken sidecar rather than serving a blank image', async () => {
-    app = await serve({ browserUrl: 'http://127.0.0.1:1/mcp' });
+    app = await serve({ browsers: [{ name: 'browser-1', url: 'http://127.0.0.1:1/mcp' }] });
     expect((await app.inject({ method: 'GET', url: '/browser/screenshot' })).statusCode).toBe(502);
   });
 });

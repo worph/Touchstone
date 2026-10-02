@@ -34,6 +34,8 @@ import type { ScheduleResponse } from '../../shared/schedule.js';
 import type { Scheduler } from '../scheduler/index.js';
 import type { Runner } from '../runner/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
+import type { Leases } from '../services/leases.js';
+import type { Targets } from '../services/bench.js';
 
 export interface ScheduleRoutesOptions {
   scheduler?: Scheduler;
@@ -44,9 +46,30 @@ export interface ScheduleRoutesOptions {
    * hand — puts the precondition and the switch on different clocks.
    */
   runner?: Runner;
+  /** Per-platform capacity — how many benches and browsers nobody holds. */
+  leases?: Leases;
+  /** The platforms' display names. */
+  targets?: Targets;
 }
 
 const routes: FastifyPluginAsync<ScheduleRoutesOptions> = async (app, options) => {
+  /** Each platform's cooldown beside what it has free, so a page can say why a line waits. */
+  const lineFacts = (
+    lines: { line: string; last_finished_at: string | null; cooldown_left_min: number }[],
+  ): Pick<ScheduleResponse, 'lines' | 'browsers'> => {
+    const ids = lines.map((l) => l.line);
+    const usage = options.leases?.usage(ids);
+    const labels = new Map((options.targets?.health() ?? []).map((t) => [t.id, t.label]));
+    return {
+      lines: lines.map((l) => ({
+        ...l,
+        label: labels.get(l.line) ?? l.line,
+        ...(usage?.benches[l.line] ? { benches: usage.benches[l.line] } : {}),
+      })),
+      ...(usage ? { browsers: usage.browsers } : {}),
+    };
+  };
+
   const answer = async (): Promise<ScheduleResponse> => {
     const snap = options.scheduler?.snapshot();
     return {
@@ -66,6 +89,7 @@ const routes: FastifyPluginAsync<ScheduleRoutesOptions> = async (app, options) =
       next_tick_at: snap?.next_tick_at ?? null,
       last_finished_at: snap?.last_finished_at ?? null,
       cooldown_left_min: snap?.cooldown_left_min ?? 0,
+      ...(snap ? lineFacts(snap.lines) : {}),
       constants: snap?.constants ?? {
         tick_min: 0,
         fresh_days: 0,

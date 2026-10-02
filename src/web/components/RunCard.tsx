@@ -16,6 +16,7 @@
  * page, which is where the strip in the shell points.
  */
 
+import type { LiveRun } from '@shared/activity';
 import BrowserView from './BrowserView';
 import { subjectName } from '@shared/subject';
 import { Link } from 'react-router-dom';
@@ -56,14 +57,13 @@ export default function RunCard({
   heading = 'Running now',
 }: RunCardProps = {}) {
   const status = useRunStatus();
-  const all = status?.running ?? null;
-  const live = all && (!subject || all.subject === subject) ? all : null;
-  const seconds = useElapsed(live?.started_at);
+  // Every run in flight, or this subject's — which may be two, one per platform.
+  const lives = (status?.runs ?? []).filter((r) => !subject || r.subject === subject);
 
   // Nothing running: say what the last one did rather than nothing at all. An empty block
   // and a broken block look the same, and this page's job is to be readable when things are
   // broken. On a subject page there is a whole report below saying it, so it draws nothing.
-  if (!live) {
+  if (lives.length === 0) {
     if (!showIdle) return null;
     const last = status?.last ?? null;
     return (
@@ -86,20 +86,34 @@ export default function RunCard({
     );
   }
 
-  const progress = status?.progress ?? null;
+  return (
+    <section className="act-section">
+      <h2 className="act-h">
+        {heading}
+        <span className="act-count" aria-hidden="true">
+          ◴{lives.length > 1 ? <span className="num"> {lives.length}</span> : null}
+        </span>
+      </h2>
+      {lives.map((live) => (
+        <OneRunCard key={live.id} live={live} showSubject={showSubject} />
+      ))}
+    </section>
+  );
+}
+
+/** One run's card. Several sit under one heading when several runs are in flight. */
+function OneRunCard({ live, showSubject }: { live: LiveRun; showSubject: boolean }) {
+  const seconds = useElapsed(live.started_at);
+  const progress = live.progress;
   const counted = progressLabel(progress);
   const rows = sectionRows(progress);
   const failure = headlineFailure(progress);
   const sections = live.sections ?? [];
   const blocked = live.blocked ?? [];
 
-  return (
-    <section className="act-section">
-      <h2 className="act-h">
-        {heading}
-        <span className="act-count" aria-hidden="true">◴</span>
-      </h2>
+  const platform = live.target_label ?? live.target ?? null;
 
+  return (
       <div className="run-card">
         <div className="run-card__head">
           {showSubject ? (
@@ -107,6 +121,7 @@ export default function RunCard({
               {subjectName(live.subject)}
             </Link>
           ) : null}
+          {platform ? <span className="run-card__platform">{platform}</span> : null}
           <span className="run-card__depth">
             {sections.length > 0 ? sections.map(sectionLabel).join(' + ') : 'choosing sections…'}
           </span>
@@ -201,7 +216,7 @@ export default function RunCard({
         {/* What it is looking at, and the bench it is looking at it on. Placed after the
             requirement feed because that is the answer most of the time — this is for the
             minutes where the feed stops moving and you want to know whether it is stuck. */}
-        <BrowserView benchHost={live.bench ?? null} />
+        <BrowserView benchHost={live.bench ?? null} browser={live.browser_name ?? null} />
 
         <div className="run-card__where">
           started <span className="num">{stamp(live.started_at)}</span>
@@ -213,7 +228,6 @@ export default function RunCard({
           ) : null}
         </div>
       </div>
-    </section>
   );
 }
 

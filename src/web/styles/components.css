@@ -1201,6 +1201,11 @@
 /* How many are behind this one. Muted rather than coloured: the clock is the live thing and a
    second bright number beside it would compete with it for the same glance. */
 .run-strip__queued { color: var(--fg-3); font-variant-numeric: tabular-nums; font-size: 11.5px; }
+/* Which platform this run is on — two strips for one app are told apart by this alone. */
+/* The platform a run card is about, beside its sections. */
+.run-card__platform { color: var(--fg-2); font-size: 12px; white-space: nowrap; }
+.run-card + .run-card { margin-block-start: 12px; }
+.run-strip__platform { color: var(--fg-2); font-size: 11.5px; white-space: nowrap; }
 .run-strip__meta { color: var(--fg-1); }
 .run-strip__doing {
   overflow: hidden;
@@ -1500,6 +1505,32 @@
 .auto-fact-value { margin-top: 2px; font-size: 13px; color: var(--fg); }
 
 .auto-foot { margin-top: 10px; font-size: 12px; color: var(--fg-1); max-width: 78ch; }
+
+/* One row per platform: its benches, its cooldown, and why it is waiting. Busy (`full`) is
+ * deliberately not styled as a fault — a pool doing its job is not a warning. */
+.auto-lines {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-1);
+}
+.auto-line {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) auto auto minmax(0, 2fr);
+  gap: 4px 14px;
+  align-items: baseline;
+  padding: 8px 12px;
+  font-size: 12.5px;
+}
+.auto-line + .auto-line { border-top: 1px solid var(--border); }
+.auto-line__name { font-weight: 600; color: var(--fg); }
+.auto-line__cap, .auto-line__cool { color: var(--fg-1); white-space: nowrap; }
+.auto-line__why { color: var(--fg-2); overflow-wrap: anywhere; }
+.auto-line[data-why='gated'] .auto-line__why { color: var(--major); }
+@media (max-width: 560px) {
+  .auto-line { grid-template-columns: 1fr auto; }
+  .auto-line__why { grid-column: 1 / -1; }
+}
 
 /* -- the settings ---------------------------------------------------------
  *

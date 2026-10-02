@@ -15,6 +15,7 @@ import {
 } from './run';
 
 const live = (over: Partial<RunLive> = {}): RunLive => ({
+  id: 'SegmentPlayer@yundera',
   subject: 'SegmentPlayer',
   sections: ['static', 'functional'],
   started_at: '2026-08-20T10:00:00.000Z',
