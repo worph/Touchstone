@@ -13,14 +13,12 @@ order: 2
 # own place in the backlog and its own bench — one rubric, because what makes an app work is the
 # same question on both and a second copy of this file would drift within a month.
 #
-# The FOSS target ships `scores: false`: measured before it judges. It therefore mints no
-# scheduler line and enters no backlog, its verdicts stay out of the hallmark, and it is
-# exercised by trials until somebody promotes it — which is a one-line edit here, recorded as a
-# revision with a reason, and re-eligibles the archive as it should.
+# Both judge. FOSS shipped `scores: false` (measured before it judged) and was promoted on
+# 2026-10-02, once each platform had a queue of its own (requirements §23). Demoting it again is
+# `- id: foss` / `scores: false` here, which takes it out of the backlog and the hallmark.
 targets:
   - yundera
-  - id: foss
-    scores: false
+  - foss
 
 requires:
   - bench

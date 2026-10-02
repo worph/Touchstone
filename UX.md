@@ -233,9 +233,14 @@ column of its own between the verdict cells and `Verified`:
 - **Sorting is `bad → warn → unknown → ok`.** `unknown` sits above `ok` and below `warn`: it is
   not good news, and it must not outrank a measurement that actually found something.
 
-#### The `Verified` column
+#### The `Verified` figure
 
-`14/16` — how much of the checklist actually got checked. It sits beside Risk and **is not a
+**Not a column on the Store table or the board since 2026-10**, nor is Risk: at the overview level
+a row has to say compliant or not, per platform, and those columns need the room. The figure lives
+on the subject page, the public app page and the Trials table, where it is read beside the
+findings it qualifies.
+
+`14/16` — how much of the checklist actually got checked. It **is not a
 second verdict**: the gate is severity-based, so a subject can be 16/16 and non-compliant, or
 3/16 with nothing wrong yet. It is therefore rendered in the neutral text colour whatever the
 numbers say; the only thing that changes appearance is *incompleteness*, because an assay that
