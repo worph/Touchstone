@@ -1078,3 +1078,57 @@ describe('several runs at once', () => {
     );
   });
 });
+
+/**
+ * A request predating a platform is not a request for it. On 2026-10-02 promoting FOSS
+ * resurrected 32 long-answered Yundera requests on the new line — none of them had a FOSS
+ * attempt to be spent against — and they jumped a trial asked for that morning.
+ */
+describe('a request older than its line', () => {
+  const FOSS = 'foss';
+
+  function promoted(over: Partial<PolicyInput> = {}): PolicyInput {
+    return {
+      ...input({ subjects: ['Alpha'] }),
+      sections: [
+        { id: 'functional', line: LINE, scores: true },
+        { id: 'functional@foss', line: FOSS, scores: true },
+      ],
+      capabilities: { [LINE]: { available: true }, [FOSS]: { available: true } },
+      lastDoneAt: { Alpha: { [LINE]: daysAgo(1) } },
+      lastAttemptAt: { Alpha: { [LINE]: daysAgo(1) } },
+      schedule: migrateLines({ Alpha: { try_n: 0, flagged_at: daysAgo(3) } }, [LINE, FOSS]),
+      lineSince: { [LINE]: new Date(0).toISOString(), [FOSS]: minutesAgo(30) },
+      ...over,
+    };
+  }
+
+  it('does not count on a line that did not exist when it was made', () => {
+    expect(requests(promoted())).toEqual([]);
+    // Still due on FOSS — never audited there — but as backlog, not as a request.
+    const d = decide(promoted());
+    expect(d.action).toBe('audit');
+    expect(d.line).toBe(FOSS);
+    expect(d.source).toBe('backlog');
+  });
+
+  it('counts on that line once it was made after the line existed', () => {
+    const fresh = promoted({
+      schedule: migrateLines({ Alpha: { try_n: 0, flagged_at: minutesAgo(5) } }, [LINE, FOSS]),
+    });
+    expect(requests(fresh).map((r) => r.lines ?? [LINE])).toEqual([[LINE, FOSS]]);
+    expect(decide(fresh).source).toBe('requested');
+  });
+
+  /** The default line has always existed, so an outstanding ask for a never-audited app stands. */
+  it('keeps a pending request for an app the default line has never audited', () => {
+    const never = promoted({ lastDoneAt: {}, lastAttemptAt: {} });
+    expect(requests(never)).toEqual([
+      expect.objectContaining({ id: 'Alpha', lines: [LINE] }),
+    ]);
+  });
+
+  it('changes nothing when the line has no recorded start', () => {
+    expect(requests(promoted({ lineSince: undefined })).length).toBe(1);
+  });
+});
