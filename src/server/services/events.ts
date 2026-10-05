@@ -142,6 +142,8 @@ export const EVENT_CODES = {
   WORKSHOP_ARMED: { category: 'workshop', label: 'workshop armed' },
   WORKSHOP_DISARMED: { category: 'workshop', label: 'workshop disarmed' },
   WORKSHOP_MEMORY_CLEARED: { category: 'workshop', label: 'task memory cleared' },
+  GITHUB_TOKEN_SET: { category: 'workshop', label: 'GitHub token set' },
+  GITHUB_TOKEN_CLEARED: { category: 'workshop', label: 'GitHub token cleared' },
   UPLOAD_WRITTEN: { category: 'assay', label: 'trial file uploaded' },
 
   // ── the archive ───────────────────────────────────────────────────────────
@@ -286,6 +288,8 @@ interface EventDetails {
   WORKSHOP_ARMED: { armed: boolean; by: string };
   WORKSHOP_DISARMED: { armed: boolean; by: string };
   WORKSHOP_MEMORY_CLEARED: { task: string; by: string };
+  GITHUB_TOKEN_SET: { by: string; source: string };
+  GITHUB_TOKEN_CLEARED: { by: string; source: string };
   UPLOAD_WRITTEN: { upload: string; path: string; bytes: number };
   ARCHIVE_MIGRATED: {
     origin: string;

@@ -709,7 +709,8 @@ uploads:
 # The token is a fine-grained PAT, resource owner = the origin's organisation, repository =
 # the AppStore only, permissions Contents RW + Pull requests RW + Metadata R. It pushes only
 # \`touchstone/…\` branches; the code refuses any other ref. It is never shown to an agent.
-# Prefer TOUCHSTONE_GITHUB_TOKEN in the environment over writing it here.
+# Prefer setting it on the Workshop page (kept in data/github-token, which wins over this),
+# or TOUCHSTONE_GITHUB_TOKEN in the environment, over writing it here.
 github:
   # token: ""
   login: "${cfg.github.login}"

@@ -182,6 +182,15 @@ workshop:
 The branch is created on the configured origin's `repo`, and the PR targets its `ref`. Nothing
 else is configured.
 
+**The token can also be set on the Workshop page** (added 2026-10-05), and that one wins: it is
+kept in `data/github-token` (`0600`, beside `config.yaml` because a person typed it) and
+overrides `github.token` / `TOUCHSTONE_GITHUB_TOKEN` the way `state/controls.json` overrides
+the config file. Setting it swaps the client and runs the §4.4 probe in the same response, so
+a token that cannot push is stored and said to be failing rather than refused. Clear puts the
+boot token back. It is **write-only** — `PUT|DELETE /workshop/github`, nothing returns it, and
+it is not a control or a chat tool, so the admin MCP cannot set it (§10). `GITHUB_TOKEN_SET` /
+`GITHUB_TOKEN_CLEARED` record who, never what.
+
 ### 4.4 Health and budget
 
 **Its health is a probe, like the agent's.** `GET /user` (login matches, token valid) and

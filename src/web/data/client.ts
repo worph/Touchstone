@@ -680,6 +680,26 @@ export function armWorkshop(armed: boolean | null): Promise<{ armed: boolean; ar
   return post('/workshop/arm', { armed });
 }
 
+type GitHubTokenResult = Pick<WorkshopView, 'github' | 'github_token'>;
+
+/** Set the workshop's GitHub token. Write-only: the response says whether it works, never what it is. */
+export function setGitHubToken(token: string): Promise<GitHubTokenResult> {
+  return put('/workshop/github', { token });
+}
+
+/** Clear the page's token, back to `github.token` / `TOUCHSTONE_GITHUB_TOKEN`. */
+export async function clearGitHubToken(): Promise<GitHubTokenResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/workshop/github`, { method: 'DELETE', headers: { accept: 'application/json' } });
+  } catch {
+    throw new ApiError(0, 'The API is not reachable.');
+  }
+  const parsed = (await res.json().catch(() => null)) as { error?: string } | null;
+  if (!res.ok) throw new ApiError(res.status, parsed?.error ?? `Could not clear the token (${res.status}).`);
+  return parsed as GitHubTokenResult;
+}
+
 export async function forgetTask(task: string): Promise<void> {
   let res: Response;
   try {
