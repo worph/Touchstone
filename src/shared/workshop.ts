@@ -197,7 +197,7 @@ export interface WorkshopView {
   unconfigured_reason?: string;
   github: GitHubStatus;
   /**
-   * Where the token in use came from: `page` (set on the Workshop page, `data/github-token`),
+   * Where the token in use came from: `page` (set on the Settings page, `data/github-token`),
    * `boot` (`github.token` / `TOUCHSTONE_GITHUB_TOKEN`), or null for none. Never the token.
    */
   github_token: {
@@ -207,6 +207,10 @@ export interface WorkshopView {
     settable: boolean;
     /** Whether clearing the page's token falls back to a config/env one. */
     boot_token: boolean;
+    /** `owner/name` the token must be able to push to — the workshop origin's repo. */
+    repo?: string;
+    /** `github.login`, when set: a token for any other account is an alert. */
+    expected_login?: string;
   };
   origin: string;
   armed: boolean;

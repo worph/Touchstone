@@ -25,13 +25,11 @@ import type { CandidateRow, ProposalDetail, ProposalSummary, WorkshopView } from
 import { ErrorState, Loading, Notice } from '../components/Ui';
 import {
   armWorkshop,
-  clearGitHubToken,
   discardProposal,
   forgetTask,
   getProposal,
   getWorkshop,
   proposeWork,
-  setGitHubToken,
   submitProposal,
 } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
@@ -99,6 +97,12 @@ export default function Workshop() {
       {!v.configured ? (
         <Notice tone="warn" title="The workshop is not configured">
           {v.unconfigured_reason}
+          {v.github.state === 'unconfigured' ? (
+            <>
+              {' '}
+              — <Link to="/settings/workshop">set the GitHub token in Settings</Link>.
+            </>
+          ) : null}
         </Notice>
       ) : null}
       {error ? <Notice tone="warn" title="That did not work">{error}</Notice> : null}
@@ -115,10 +119,11 @@ export default function Workshop() {
             </span>
             <span className="env-note">
               {v.github.repo ? `${v.github.repo} · ` : ''}
-              {v.github.problems.join('; ') || (v.github.label === false ? 'the "touchstone" label is missing — create it once by hand' : 'can push touchstone/… branches and open pull requests')}
+              {v.github.problems.join('; ') || (v.github.label === false ? 'the "touchstone" label is missing — create it once by hand' : v.github.state === 'unconfigured' ? 'no token yet' : 'can push touchstone/… branches and open pull requests')}
+              {' · '}
+              <Link to="/settings/workshop">{v.github.state === 'ok' ? 'token in Settings' : 'set it in Settings'}</Link>
             </span>
           </div>
-          <GitHubTokenRow v={v} act={act} />
           <div className="env-row" data-status={v.armed ? 'healthy' : 'unconfigured'}>
             <span className="env-name">Automatic</span>
             <span className="env-status">{v.armed ? 'armed' : 'off'}</span>
@@ -144,6 +149,8 @@ export default function Workshop() {
                 : v.quota.allowed
                   ? 'A slot is free.'
                   : `Next slot ${until(v.quota.next_slot_at)}.`}
+              {' · '}
+              <Link to="/settings/workshop">change in Settings</Link>
             </span>
           </div>
           {v.live ? (
@@ -475,69 +482,3 @@ function ProposalPanel({
   );
 }
 
-/**
- * Set or replace the GitHub token without touching the volume. Write-only: the field never
- * shows the token in use — only where it came from — and is emptied once it is saved.
- */
-function GitHubTokenRow({ v, act }: { v: WorkshopView; act: (work: () => Promise<unknown>) => Promise<void> }) {
-  const [token, setToken] = useState('');
-  const [busy, setBusy] = useState(false);
-  const info = v.github_token;
-  if (!info.settable) return null;
-
-  const save = async () => {
-    setBusy(true);
-    await act(async () => {
-      await setGitHubToken(token);
-      setToken('');
-    });
-    setBusy(false);
-  };
-
-  const source =
-    info.source === 'page'
-      ? `set on this page${info.set_at ? ` ${since(info.set_at)}` : ''}`
-      : info.source === 'boot'
-        ? 'from config.yaml / TOUCHSTONE_GITHUB_TOKEN'
-        : 'none';
-
-  return (
-    <div className="env-row" data-status={info.source ? 'healthy' : 'unconfigured'}>
-      <span className="env-name">Token</span>
-      <span className="env-status">{source}</span>
-      <span className="env-note ctl-row" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <input
-          className="control"
-          type="password"
-          autoComplete="off"
-          spellCheck={false}
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && token.trim() && !busy) void save();
-          }}
-          placeholder={info.source ? 'paste a new token to replace it' : 'github_pat_…'}
-          style={{ flex: '1 1 16rem', minWidth: 0 }}
-        />
-        <button className="btn btn--sm" type="button" disabled={busy || !token.trim()} onClick={() => void save()}>
-          {busy ? 'Checking…' : info.source ? 'Replace' : 'Save'}
-        </button>
-        {info.source === 'page' ? (
-          <button
-            className="btn btn--sm"
-            type="button"
-            disabled={busy}
-            title={info.boot_token ? 'Falls back to the token from config.yaml / the environment' : 'The workshop will have no token'}
-            onClick={() => {
-              if (window.confirm(info.boot_token ? 'Clear this token and fall back to the one from config.yaml / the environment?' : 'Clear this token? The workshop will have none.')) {
-                void act(() => clearGitHubToken());
-              }
-            }}
-          >
-            Clear
-          </button>
-        ) : null}
-      </span>
-    </div>
-  );
-}

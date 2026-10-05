@@ -4,8 +4,9 @@
  *
  * The loop is not new here. `scheduler/` has driven it since P3; what this page adds is a
  * switch that does not require editing `config.yaml` and a restart, and a view of the queue
- * the pick comes out of. Three blocks, in the order the questions arrive: the switch and why
- * it is or is not currently doing anything, the cadence it runs at, and the queue.
+ * the pick comes out of. Blocks in the order the questions arrive: the switch and why it is or
+ * is not currently doing anything, what it last decided, and the queue. The numbers it runs by
+ * are tuned on Settings → Automation (they were a block here until 2026-10-05).
  *
  * It degrades like Activity does — every block falls back to a sentence rather than an
  * error, because a page about whether the machine is running must render when it is not.
@@ -14,18 +15,13 @@ import { subjectName } from '@shared/subject';
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import type { ControlsResponse } from '@shared/controls';
 import type { QueueRow, QueueState, RequestRow, ScheduleResponse } from '@shared/schedule';
-import ControlList from '../components/ControlList';
 import AuditControl from '../components/AuditControl';
 import { ErrorState, Loading, Notice } from '../components/Ui';
 import {
   flagSubject,
-  getControls,
   getSchedule,
-  resetControl,
   setArmed,
-  setControl,
   tickNow,
 } from '../data/client';
 import { plural, since, stamp, until } from '../lib/format';
@@ -47,10 +43,9 @@ const STATE_LABEL: Record<QueueState, string> = {
 
 export default function Automation() {
   const [data, setData] = useState<ScheduleResponse | null>(null);
-  const [controls, setControls] = useState<ControlsResponse | null>(null);
   const [error, setError] = useState<Error | null>(null);
   /** Set while a button is in flight, so the switch cannot be pressed twice. */
-  const [busy, setBusy] = useState<'arm' | 'tick' | 'control' | null>(null);
+  const [busy, setBusy] = useState<'arm' | 'tick' | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -58,14 +53,6 @@ export default function Automation() {
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err : new Error(String(err)));
-    }
-    // Its own request and its own failure: the settings are worth showing when the queue
-    // cannot be read, and a settings endpoint that is not wired up must not blank the page
-    // about whether the loop is running.
-    try {
-      setControls(await getControls());
-    } catch {
-      setControls(null);
     }
   }, []);
 
@@ -87,28 +74,6 @@ export default function Automation() {
       setBusy(null);
     }
   }, []);
-
-  /**
-   * A setting is written, and then the schedule is re-read.
-   *
-   * Both halves matter: the response carries the new settings, and the queue is derived from
-   * them — change the re-audit window and rows move in or out of the backlog immediately, so
-   * a page that only updated the number would be showing a backlog computed against the old
-   * one until the next poll.
-   */
-  const writeControl = useCallback(
-    async (run: () => Promise<ControlsResponse>) => {
-      setBusy('control');
-      try {
-        setControls(await run());
-        setData(await getSchedule());
-        setError(null);
-      } finally {
-        setBusy(null);
-      }
-    },
-    [],
-  );
 
   /**
    * Repaint from the schedule a flag write returned.
@@ -207,8 +172,8 @@ export default function Automation() {
         {runnerOff ? (
           <Notice tone="warn" title="The runner is switched off">
             The scheduler will pick an app and then be told the runner is disabled, so no
-            audit happens. Turn it on under Settings below — it is a separate switch on
-            purpose, because it also gates audits you start by hand.
+            audit happens. Turn it on in <Link to="/settings/automation">Settings</Link> — it is
+            a separate switch on purpose, because it also gates audits you start by hand.
           </Notice>
         ) : null}
 
@@ -312,50 +277,9 @@ export default function Automation() {
           A full pass is {data.queue.length} apps at roughly{' '}
           {Math.round((data.constants.cooldown_min / 60) * 10) / 10}h apart. Apps re-enter the
           backlog {data.constants.fresh_days} days after their last result, so the loop idles
-          once everything is fresh — lower <code>scheduler.fresh_days</code> to keep it
-          cycling.
+          once everything is fresh — lower the re-audit window to keep it cycling. The cadence,
+          retries and bench guard are set in <Link to="/settings/automation">Settings</Link>.
         </div>
-      </section>
-
-      {/* ── what it has been told ─────────────────────────────────────────── */}
-      {/*
-        The numbers the block above reports as facts, made editable. They sit between the
-        decision and the queue because that is the order the questions arrive in: what did it
-        decide, what is it deciding by, and what does that make the queue.
-
-        `scheduler.armed` is deliberately not in this list even though it is a control like
-        the others — it is the switch at the top of the page, and a second copy of it here
-        would be two places to press with one of them further from the sentence explaining
-        what stopping does.
-      */}
-      <section className="act-section">
-        <h2 className="act-h">Settings</h2>
-
-        {controls ? (
-          <>
-            <ControlList
-              rows={controls.controls.filter((row) => row.key !== 'scheduler.armed')}
-              busy={busy !== null}
-              onSet={async (key, value) => {
-                await writeControl(() => setControl(key, value));
-              }}
-              onReset={async (key) => {
-                await writeControl(() => resetControl(key));
-              }}
-            />
-            <div className="auto-foot">
-              These take effect without a restart. <code>config.yaml</code> stays the value a
-              fresh install boots into; a change is kept in{' '}
-              <code>{controls.file ?? 'state/controls.json'}</code>, and deleting that file
-              puts every one of them back.
-            </div>
-          </>
-        ) : (
-          <div className="act-quiet">
-            Settings are not available from this build, so the numbers above are whatever{' '}
-            <code>config.yaml</code> asked for.
-          </div>
-        )}
       </section>
 
       {/* ── what somebody asked for ───────────────────────────────────────── */}

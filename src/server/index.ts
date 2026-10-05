@@ -444,7 +444,7 @@ for (const id of interruptedProposals) {
   });
 }
 const workshopOrigin = cfg.origins.find((o) => o.id === cfg.workshop.origin);
-// A token set on the Workshop page outranks config.yaml / the environment, the way
+// A token set on the Settings page outranks config.yaml / the environment, the way
 // `state/controls.json` outranks the config file; clearing it falls back to the boot value.
 const githubTokens = new GitHubTokenStore(cfg.dataDir);
 const storedToken = await githubTokens.read();
