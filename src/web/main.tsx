@@ -60,13 +60,14 @@ createRoot(root).render(
               booted on. One page since 2026-10-05 — two kinds of thing, kept apart on the
               page, but two nav rows sent operators to the half they were not looking for. */}
           <Route path="/settings" element={<Settings />} />
+          <Route path="/settings/:tab" element={<Settings />} />
           {/* Addresses that used to be somewhere else. `/chat` was the administrator's own
               page before it became the front door; `/overview` is the page this one grew out
               of, and the other two predate even that. Kept rather than dropped because they
               are in the operator's history, in the chat's own notes, and in HANDOFF.md. */}
           <Route path="/chat" element={<Navigate to="/" replace />} />
           <Route path="/overview" element={<Navigate to="/store" replace />} />
-          <Route path="/config" element={<Navigate to="/settings" replace />} />
+          <Route path="/config" element={<Navigate to="/settings/config" replace />} />
           <Route path="/subjects" element={<Navigate to="/store" replace />} />
           <Route path="/findings" element={<Navigate to="/store" replace />} />
           <Route

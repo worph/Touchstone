@@ -555,8 +555,9 @@ false of the page. To stop everything: press Stop and withdraw the requests.
 claims a subject and is told the runner is off — a real state, and the page names it rather than
 letting someone press Start and watch nothing happen. Start does not turn the runner on, because
 that switch also gates hand-run audits and a start button that quietly enabled the manual path
-would be doing something nobody asked for. It is settable in the Settings block below, next to the
-sentence saying what it gates — which is the point of it being there rather than beside Start.
+would be doing something nobody asked for. It is settable on Settings → Automation, next to the
+sentence saying what it gates — which is the point of it being there rather than beside Start; the
+notice on this page links there.
 
 **The queue lists every app, not just the backlog.** "Why is my app not being tested" is the
 question this page exists to answer, and an app missing from the list answers nothing: a subject
@@ -597,21 +598,25 @@ control that does not exist; quiet is a matter of weight, not of visibility.
 **Pressing Start decides immediately** rather than waiting for the top of the hour, so the button
 either produces a claim or says in one clause why it did not. An hour of silence is not an answer.
 
-**Cadence is shown as facts and changed underneath.** The six facts read at a glance; the
-**Settings** block below them is the same numbers with a box beside each one. The note under the
+**Cadence is shown as facts here and changed on Settings.** (2026-10-05.) The six facts read at a
+glance; the same numbers with a box beside each one are the **Automation tab of Settings**
+(`/settings/automation`). They were a Settings block on this page until then, and it made a page
+about what the loop is doing into a page about how it is tuned — the operating switch (Start/Stop)
+stays here, the tuning moved. The note under the
 facts still says the thing the numbers do not: a full pass is *n* apps at `cooldown_min` apart, and
 the loop idles once everything is fresher than `fresh_days`. Wanting a perpetual carousel means
 lowering `fresh_days`, not adding a mode — the pick stays the pure n8n port it is diffed against.
 
-**The Settings block is rendered from what the API returned**, never from a list in the page: the
+**The controls are rendered from what the API returned**, never from a list in the page: the
 label, the unit, the range and the sentence explaining what changing it does all arrive on the row,
 because `domain/controls.ts` is the only place allowed to know them. A number commits on **Save**
 rather than on each keystroke — typing `14` over `7` passes through `1`, and applying that would
 put the timer on a cadence nobody asked for. A row differing from `config.yaml` is marked on its
 left edge, says what the file asks for, and offers the way back; the alternative is an instance
-quietly running on something the file does not mention. `scheduler.armed` is deliberately absent
-from the list — it is the switch at the top of this page, and a second copy of it would be two
-places to press, one of them further from the sentence explaining what stopping does.
+quietly running on something the file does not mention. `scheduler.armed` and `workshop.armed`
+are deliberately absent from Settings — they are the switches on Automation and Workshop, and a
+second copy would be two places to press, one of them further from the sentence explaining what
+pressing does. Settings → Workshop carries `workshop.prs_per_day` beside the GitHub token.
 
 ---
 
@@ -763,9 +768,20 @@ which is what a hallmark *is*.
 
 ### 2.7 Settings — this instance: what the app owns, above what it booted on
 
-Two sections on one page, kept visibly apart because they are different kinds of thing: the
-**context prompt**, which is written here, and **`config.yaml`** (§2.8), which is read here and
-written on the volume.
+Four tabs, each with its own address so another page can send an operator to the right one:
+**Assistant** (`/settings`, the context prompt, written here); **Automation**
+(`/settings/automation`, the loop's controls — cadence, runner, bench guard); **Workshop**
+(`/settings/workshop`, the GitHub token, written here and never read back, and the PR quota); and
+**config.yaml** (`/settings/config`, §2.8, read here and written on the volume). The switches that
+*operate* — Start/Stop, Arm/Disarm — are not tabs here: they stay on the page whose state they
+change. The old `#github` / `#config` anchors redirect to their tabs.
+
+The token section says **which kind of token to make** — fine-grained, not classic, scoped to the
+organisation and the store repository only, Contents and Pull requests read/write — with a link
+to `github.com/settings/tokens`, because GitHub offers both and the classic one works while
+reaching every repository the account can. It shows where the token in use came from (set here,
+or config/env) and what the probe made of it, never the token. It moved here from Workshop on
+2026-10-05 so that page stays about operating; Workshop's GitHub and Quota rows link to it.
 
 One editable thing: the **context prompt**, `data/context.md`. It is prepended to the
 administrator chat's prompt on every turn — which box this is, which stores matter here, what
@@ -797,7 +813,7 @@ paragraph at the top of every conversation.
 
 ### 2.8 Settings § config.yaml — what this process booted on
 
-The lower section of Settings (`/settings#config`; `/config` redirects). The effective config as JSON: the defaults with `config.yaml` merged over them, which is what the
+The config.yaml tab of Settings (`/settings/config`; `/config` and the old `/settings#config` redirect). The effective config as JSON: the defaults with `config.yaml` merged over them, which is what the
 app is *running on* rather than what the file says on its own.
 
 - **Read-only, and not as a limitation.** `config.yaml` is loaded once at boot and handed to the

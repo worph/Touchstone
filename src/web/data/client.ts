@@ -682,6 +682,11 @@ export function armWorkshop(armed: boolean | null): Promise<{ armed: boolean; ar
 
 type GitHubTokenResult = Pick<WorkshopView, 'github' | 'github_token'>;
 
+/** Where the workshop's token came from and whether it works — the Settings page's read. */
+export function getGitHubToken(): Promise<GitHubTokenResult> {
+  return get<GitHubTokenResult>('/workshop/github');
+}
+
 /** Set the workshop's GitHub token. Write-only: the response says whether it works, never what it is. */
 export function setGitHubToken(token: string): Promise<GitHubTokenResult> {
   return put('/workshop/github', { token });

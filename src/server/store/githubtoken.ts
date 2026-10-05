@@ -1,5 +1,5 @@
 /**
- * The workshop's GitHub token, as set from the Workshop page: `data/github-token`.
+ * The workshop's GitHub token, as set from the Settings page: `data/github-token`.
  *
  * It **overrides** what the process booted with (`github.token` in `config.yaml`, or
  * `TOUCHSTONE_GITHUB_TOKEN`), the same way `state/controls.json` overrides the config file:

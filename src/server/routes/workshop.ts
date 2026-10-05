@@ -11,6 +11,8 @@
  * - `POST /workshop/proposals/:id/discard` — throw a proposal away; charges the task nothing.
  * - `POST /workshop/arm` — `{ armed: boolean | null }`; null returns to what config.yaml says.
  * - `DELETE /workshop/memory/:task` — forget what a task taught us, so it may be picked again.
+ * - `GET    /workshop/github` — where the token came from and what the probe made of it; the
+ *   Settings page's read, which needs none of the candidate list `GET /workshop` computes.
  * - `PUT    /workshop/github` — `{ token }`: set the GitHub token, probed in the same response.
  * - `DELETE /workshop/github` — clear it, back to `github.token` / `TOUCHSTONE_GITHUB_TOKEN`.
  *
@@ -94,6 +96,11 @@ const routes: FastifyPluginAsync<WorkshopRoutesOptions> = async (app, options) =
     if (!ws) return fail(reply, 503, 'the workshop is not wired on this installation');
     const forgotten = await ws.forget(decodeURIComponent(req.params.task), 'operator');
     return forgotten ? { forgotten } : fail(reply, 404, 'nothing remembered about that task');
+  });
+
+  app.get('/workshop/github', async (_req, reply) => {
+    if (!ws) return fail(reply, 503, 'the workshop is not wired on this installation');
+    return { github: ws.github(), github_token: ws.tokenInfo() };
   });
 
   app.put<{ Body?: { token?: unknown } }>('/workshop/github', async (req, reply) => {

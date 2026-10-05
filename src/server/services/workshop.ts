@@ -100,7 +100,7 @@ export interface WorkshopOptions {
   github?: GitHubClient;
   probe: GitHubProbe;
   /**
-   * Where a token set from the Workshop page is kept. Absent, `setToken` refuses and the only
+   * Where a token set from the Settings page is kept. Absent, `setToken` refuses and the only
    * way to configure GitHub is the one the process booted with.
    */
   tokens?: GitHubTokenStore;
@@ -185,7 +185,7 @@ export class Workshop {
   /** Why the workshop cannot work, or null when it can. */
   unconfigured(): string | null {
     if (!this.origin) return `workshop.origin "${this.opts.settings.origin}" is not a configured origin`;
-    if (!this.gh) return 'no GitHub token — set one on this page (or TOUCHSTONE_GITHUB_TOKEN / github.token)';
+    if (!this.gh) return 'no GitHub token — set one in Settings (or TOUCHSTONE_GITHUB_TOKEN / github.token)';
     if (!this.opts.publicBaseUrl) return 'trials.public_base_url is empty, so no bench can install a proposal';
     return null;
   }
@@ -247,17 +247,21 @@ export class Workshop {
   }
 
   /** Where the token in use came from — never the token. */
-  tokenInfo(): { source: 'page' | 'boot' | null; set_at?: string; settable: boolean; boot_token: boolean } {
+  tokenInfo(): WorkshopView['github_token'] {
+    const repo = this.origin?.repo;
+    const login = this.opts.settings.login;
     return {
       source: this.tokenSource,
       ...(this.tokenSetAt ? { set_at: this.tokenSetAt } : {}),
       settable: !!this.opts.tokens,
       boot_token: !!this.opts.bootToken,
+      ...(repo ? { repo } : {}),
+      ...(login ? { expected_login: login } : {}),
     };
   }
 
   /**
-   * Set the token from the Workshop page, or clear it (`null`) back to whatever the process
+   * Set the token from the Settings page, or clear it (`null`) back to whatever the process
    * booted with. Takes effect at once: the client is swapped and the probe asked, so the
    * answer to "does this token work" comes back in the same response.
    *
@@ -289,9 +293,9 @@ export class Workshop {
       message:
         token === null
           ? this.gh
-            ? 'The GitHub token set on the Workshop page was cleared; the one from config.yaml / the environment applies again'
-            : 'The GitHub token set on the Workshop page was cleared; the workshop has no token now'
-          : 'A GitHub token was set on the Workshop page; pull requests are now opened as its account',
+            ? 'The GitHub token set on the Settings page was cleared; the one from config.yaml / the environment applies again'
+            : 'The GitHub token set on the Settings page was cleared; the workshop has no token now'
+          : 'A GitHub token was set on the Settings page; pull requests are now opened as its account',
       detail: { by, source: this.tokenSource ?? 'none' },
     });
     const status = this.gh ? await this.opts.probe.probe() : this.opts.probe.status();
