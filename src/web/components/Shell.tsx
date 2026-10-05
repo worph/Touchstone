@@ -18,8 +18,7 @@ const BADGE_MS = 30_000;
  * Grouped in the sidebar the way the app divides: the standard and what it is measured
  * against on top, what the machine is doing under that, and what this particular instance is
  * set up as at the bottom. The phone gets the same list as tabs, minus the ones marked
- * `tab: false` — the tab bar is a hand's width and Configuration is a page you read once,
- * reached from Settings, rather than one you switch to.
+ * `tab: false` — the tab bar is a hand's width.
  */
 const NAV: { group: string; items: NavItem[] }[] = [
   {
@@ -54,11 +53,10 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: 'Instance',
     items: [
-      // The one setting the app itself owns: what the administrator is told before it
-      // answers. Everything else about this box is the file below it.
+      // What the administrator is told before it answers, above the config.yaml this box
+      // booted on. One row: Configuration had its own until 2026-10-05, and two rows for
+      // "settings" sent operators to the half they were not looking for.
       { to: '/settings', label: 'Settings' },
-      // Read-only, and read rarely — so it keeps its sidebar row and gives up its tab.
-      { to: '/config', label: 'Configuration', tab: false },
     ],
   },
 ];

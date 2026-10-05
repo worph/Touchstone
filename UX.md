@@ -61,7 +61,6 @@ the link back to it.
 │              │                                               │
 │ INSTANCE     │                                               │
 │  Settings    │                                               │
-│  Configurat. │                                               │
 │              │                                               │
 │ ┌──────────┐ │                                               │
 │ │◴ SegmentP│ │                                               │
@@ -71,10 +70,10 @@ the link back to it.
 └──────────────┴───────────────────────────────────────────────┘
 ```
 
-Seven destinations in three groups, plus subject detail reached by clicking. Everything else is a
-filtered view of one of these — resist adding an eighth. Six of the seven are tabs on a phone;
-**Configuration** is not, because it is a page you read once and reach from Settings rather than
-one you switch between.
+Destinations in three groups, plus subject detail reached by clicking. Everything else is a
+filtered view of one of these — resist adding another. **Configuration** was its own row until
+2026-10-05 and is now the lower half of Settings (§2.7): two rows that both read as "settings" sent
+operators to the half they were not looking for. `/config` redirects.
 
 The **public board** (§2.6) is not one of them and is not in this nav. It is a separate frame at
 `/public`, reached from the sidebar footer rather than from the tab bar: it is addressed to app
@@ -762,7 +761,11 @@ which is what a hallmark *is*.
 
 ---
 
-### 2.7 Settings — what the administrator is told before it answers
+### 2.7 Settings — this instance: what the app owns, above what it booted on
+
+Two sections on one page, kept visibly apart because they are different kinds of thing: the
+**context prompt**, which is written here, and **`config.yaml`** (§2.8), which is read here and
+written on the volume.
 
 One editable thing: the **context prompt**, `data/context.md`. It is prepended to the
 administrator chat's prompt on every turn — which box this is, which stores matter here, what
@@ -792,9 +795,9 @@ paragraph at the top of every conversation.
 - **Empty is normal.** A fresh instance has no standing instructions and does not look broken for
   it; the placeholder is an example, not a default.
 
-### 2.8 Configuration — what this process booted on
+### 2.8 Settings § config.yaml — what this process booted on
 
-The effective config as JSON: the defaults with `config.yaml` merged over them, which is what the
+The lower section of Settings (`/settings#config`; `/config` redirects). The effective config as JSON: the defaults with `config.yaml` merged over them, which is what the
 app is *running on* rather than what the file says on its own.
 
 - **Read-only, and not as a limitation.** `config.yaml` is loaded once at boot and handed to the
@@ -804,8 +807,8 @@ app is *running on* rather than what the file says on its own.
   because `config.yaml` merges over the defaults with an index signature — whatever an operator
   put in it would otherwise come straight back out. A credential that is *set* reads as `••••••••`
   and one that is not reads as empty: they are different problems.
-- **It is a page you read, not one you switch to**, so it keeps its sidebar row and gives up its
-  tab on the phone. Settings links to it.
+- **It sits under the context prompt, not on a page of its own.** It is read rarely, and as its
+  own nav row beside Settings it was where operators went looking for the thing they could edit.
 
 ---
 
@@ -900,7 +903,7 @@ These matter more than usual, because the system's normal condition includes "la
 | Automation not refreshing | A notice, and the page keeps its last state: this is the view, not the driver, and the loop carries on. |
 | No context prompt written | Settings shows an empty box with an example placeholder, and the administrator's prompt carries no context section at all — a heading over nothing invites the model to wonder what it was supposed to have been told. |
 | Context unreadable mid-turn | The turn answers without it. The operator asked a question and is owed an answer; losing it to a permission bit on a file of background prose would be the worse failure. |
-| API running without a config | Configuration says the page was handed nothing, which is not the same as nothing being configured. |
+| API running without a config | Settings' config.yaml section says the page was handed nothing, which is not the same as nothing being configured. |
 
 ---
 

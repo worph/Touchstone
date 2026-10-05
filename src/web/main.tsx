@@ -11,7 +11,6 @@ import Shell from './components/Shell';
 import { EmptyState } from './components/Ui';
 import Activity from './pages/Activity';
 import Automation from './pages/Automation';
-import Configuration from './pages/Configuration';
 import Protocols from './pages/Protocols';
 import Settings from './pages/Settings';
 import Trials from './pages/Trials';
@@ -57,17 +56,17 @@ createRoot(root).render(
           <Route path="/trials/:slug" element={<TrialDetail />} />
           <Route path="/workshop" element={<Workshop />} />
           <Route path="/workshop/:id" element={<Workshop />} />
-          {/* This instance about itself: the one setting the app owns, and the file it
-              booted on. Separate pages because they are separate kinds of thing — one is
-              written here, the other is read here and written on the volume. */}
+          {/* This instance about itself: the one setting the app owns above the file it
+              booted on. One page since 2026-10-05 — two kinds of thing, kept apart on the
+              page, but two nav rows sent operators to the half they were not looking for. */}
           <Route path="/settings" element={<Settings />} />
-          <Route path="/config" element={<Configuration />} />
           {/* Addresses that used to be somewhere else. `/chat` was the administrator's own
               page before it became the front door; `/overview` is the page this one grew out
               of, and the other two predate even that. Kept rather than dropped because they
               are in the operator's history, in the chat's own notes, and in HANDOFF.md. */}
           <Route path="/chat" element={<Navigate to="/" replace />} />
           <Route path="/overview" element={<Navigate to="/store" replace />} />
+          <Route path="/config" element={<Navigate to="/settings" replace />} />
           <Route path="/subjects" element={<Navigate to="/store" replace />} />
           <Route path="/findings" element={<Navigate to="/store" replace />} />
           <Route
