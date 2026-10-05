@@ -180,7 +180,7 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 
 | Path | What |
 | --- | --- |
-| `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile`. Displayed — redacted, never posted — by the Configuration page |
+| `config.yaml` | hand-edited; seeded inert on first boot by `ensureConfigFile`. Displayed — redacted, never posted — by the lower section of the Settings page |
 | `context.md` | the **administrator's standing instructions**, prepended to the chat's prompt every turn. Beside `config.yaml` rather than under `state/` because everything in there is regenerable and this is the one operator-authored string with no other copy. Written by the Settings page, gitignored |
 | `github-token` | the workshop's GitHub token **as set on the Workshop page** — `store/githubtoken.ts`, `0600`. Overrides `github.token` / `TOUCHSTONE_GITHUB_TOKEN`; deleting it (or Clear) falls back to them. Beside `config.yaml` for `context.md`'s reason. Write-only over HTTP (`PUT|DELETE /workshop/github`) and deliberately not a control or chat tool, so the admin MCP cannot choose whose name PRs are opened under |
 | `kb/KB.md`, `kb/*.md` | **the knowledge base** — what an auditor needs in order to *operate* the platform rather than to judge an app: routes, what a dialog does, where an app documents its first credentials. `KB.md` is the hand-written index; a page declaring `sections:` is given only to a run auditing one of them, and a run no page applies to is given nothing at all — an index describing pages the agent does not have is worse than silence. Appended to the prompt after the rubric, under a fence saying the rubric governs on conflict. It is **not** the standard: `domain/standards.ts` never reads it, so an edit puts no chip on a row and makes nobody eligible for re-audit — and it is still recorded, because it can change what an audit concludes |
@@ -469,9 +469,9 @@ because its data access was smeared through two 200-line n8n Code nodes.
   substituted **last** — a context containing `{{HISTORY}}` must reach the model as those
   characters rather than as the conversation. No tool reads or writes it: standing instructions
   a model can rewrite are not standing instructions.
-- **`src/web/`** — React + Vite SPA in **two frames**. The operator frame is `Shell` and nine pages (Workshop at `/workshop` is the ninth)
+- **`src/web/`** — React + Vite SPA in **two frames**. The operator frame is `Shell` and eight pages (Workshop at `/workshop` is the eighth; Configuration folded into Settings)
   (Administrator chat at `/`, **Store** at `/store`, Subject detail, Automation, Activity,
-  Trials, Settings at `/settings`, Configuration at `/config`) plus Protocols — the chat is the front page and therefore has no nav row of its own,
+  Trials, Settings at `/settings` — the context prompt above the read-only `config.yaml`, which was its own Configuration page until 2026-10-05; `/config` redirects) plus Protocols — the chat is the front page and therefore has no nav row of its own,
   the brand being the way back to it; `/chat` redirects to `/`. The
   **public frame** is `PublicFrame` and two read-only pages under `/public` (the board and one
   app), addressed to app authors rather than to the operator. `main.tsx` splits them with two

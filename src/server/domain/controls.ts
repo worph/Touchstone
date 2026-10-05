@@ -3,7 +3,7 @@
  * and the only place that knows what each one means.
  *
  * `config.yaml` is loaded once at boot and handed to the services as values, so the
- * Configuration page shows it and refuses to write it (`routes/settings.ts` explains why: a
+ * Settings page shows it and refuses to write it (`routes/settings.ts` explains why: a
  * save button there would change a file without changing behaviour). That was the right
  * answer for the file and the wrong answer for the operator, who reasonably wants to say
  * "re-audit every fortnight instead of every week" without an SSH session and a restart.
