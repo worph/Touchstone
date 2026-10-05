@@ -26,11 +26,28 @@ export interface GitHubProbeOptions {
 export class GitHubProbe {
   private last: GitHubStatus;
   private timer: NodeJS.Timeout | null = null;
+  private client: GitHubClient | undefined;
 
   constructor(private readonly opts: GitHubProbeOptions) {
-    this.last = opts.client
-      ? { state: 'unknown', repo: opts.client.repo, expected_login: opts.expectedLogin, problems: [] }
+    this.client = opts.client;
+    this.last = this.initial();
+  }
+
+  private initial(): GitHubStatus {
+    return this.client
+      ? { state: 'unknown', repo: this.client.repo, expected_login: this.opts.expectedLogin, problems: [] }
       : { state: 'unconfigured', problems: [] };
+  }
+
+  /**
+   * A token was set or cleared from the Workshop page. The status forgets what the old token
+   * established, and clearing closes `github.auth` — no token is not a fault.
+   */
+  setClient(client: GitHubClient | undefined): void {
+    this.client = client;
+    this.userId = undefined;
+    this.last = this.initial();
+    if (!client) this.opts.alerts?.resolve('github.auth', 'The workshop no longer has a GitHub token');
   }
 
   status(): GitHubStatus {
@@ -41,7 +58,7 @@ export class GitHubProbe {
   userId?: number;
 
   async probe(): Promise<GitHubStatus> {
-    const client = this.opts.client;
+    const client = this.client;
     if (!client) return this.last;
     const problems: string[] = [];
     const status: GitHubStatus = {
@@ -66,6 +83,8 @@ export class GitHubProbe {
       problems.push(err instanceof GitHubError ? err.message : `GitHub could not be reached: ${(err as Error).message}`);
     }
 
+    // A token swapped while this probe was in flight: its answer is about a token nobody has.
+    if (client !== this.client) return this.last;
     const blocking = problems.length > 0;
     if (blocking) status.state = 'failing';
     this.last = status;
@@ -95,8 +114,9 @@ export class GitHubProbe {
     return this.last.state === 'ok';
   }
 
+  /** Runs with or without a client: a token set later from the page is probed on the same timer. */
   start(intervalMs: number): void {
-    if (!this.opts.client || this.timer) return;
+    if (this.timer) return;
     this.timer = setInterval(() => void this.probe(), intervalMs);
     this.timer.unref?.();
   }

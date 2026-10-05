@@ -11,11 +11,17 @@
  * - `POST /workshop/proposals/:id/discard` — throw a proposal away; charges the task nothing.
  * - `POST /workshop/arm` — `{ armed: boolean | null }`; null returns to what config.yaml says.
  * - `DELETE /workshop/memory/:task` — forget what a task taught us, so it may be picked again.
+ * - `PUT    /workshop/github` — `{ token }`: set the GitHub token, probed in the same response.
+ * - `DELETE /workshop/github` — clear it, back to `github.token` / `TOUCHSTONE_GITHUB_TOKEN`.
+ *
+ * The token is **write-only**: nothing here or anywhere else returns it, only where it came
+ * from and what the probe made of it.
  */
 
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 
 import type { ProposalKind } from '../../shared/workshop.js';
+import { GitHubTokenInvalid, normalizeToken } from '../store/githubtoken.js';
 import { WorkshopRefusal, type Workshop } from '../services/workshop.js';
 
 export interface WorkshopRoutesOptions {
@@ -88,6 +94,23 @@ const routes: FastifyPluginAsync<WorkshopRoutesOptions> = async (app, options) =
     if (!ws) return fail(reply, 503, 'the workshop is not wired on this installation');
     const forgotten = await ws.forget(decodeURIComponent(req.params.task), 'operator');
     return forgotten ? { forgotten } : fail(reply, 404, 'nothing remembered about that task');
+  });
+
+  app.put<{ Body?: { token?: unknown } }>('/workshop/github', async (req, reply) => {
+    if (!ws) return fail(reply, 503, 'the workshop is not wired on this installation');
+    let token: string;
+    try {
+      token = normalizeToken(req.body?.token);
+    } catch (err) {
+      if (err instanceof GitHubTokenInvalid) return fail(reply, 400, err.message);
+      throw err;
+    }
+    return guard(reply, async () => ({ github: await ws.setToken(token, 'operator'), github_token: ws.tokenInfo() }));
+  });
+
+  app.delete('/workshop/github', async (_req, reply) => {
+    if (!ws) return fail(reply, 503, 'the workshop is not wired on this installation');
+    return guard(reply, async () => ({ github: await ws.setToken(null, 'operator'), github_token: ws.tokenInfo() }));
   });
 };
 

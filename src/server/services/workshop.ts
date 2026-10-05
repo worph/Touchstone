@@ -66,8 +66,9 @@ import { ACTIVE_STATES, WorkshopError, type WorkshopStore } from '../store/works
 import { buildAuthorPrompt } from '../workshop/prompt.js';
 import type { AlertStore } from './alerts.js';
 import type { EventLog } from './events.js';
-import { branchOf, GitHubError, type GitHubClient, type TreeEntry } from './github.js';
+import { branchOf, GitHubClient, GitHubError, type TreeEntry } from './github.js';
 import { WORKSHOP_LABEL, type GitHubProbe } from './githubprobe.js';
+import type { GitHubTokenStore } from '../store/githubtoken.js';
 import type { Lease, Leases } from './leases.js';
 import type { StoreDocReader } from './storedoc.js';
 import { enqueueTrial, specFromFiles, trialIndex, trialsReady, type TrialRunDeps } from './trialrun.js';
@@ -98,6 +99,17 @@ export interface WorkshopOptions {
   origins: OriginEntry[];
   github?: GitHubClient;
   probe: GitHubProbe;
+  /**
+   * Where a token set from the Workshop page is kept. Absent, `setToken` refuses and the only
+   * way to configure GitHub is the one the process booted with.
+   */
+  tokens?: GitHubTokenStore;
+  /** Whether `github` came from the page's stored token or from config/env at boot. */
+  tokenSource?: 'page' | 'boot';
+  /** The config/env token, which clearing the page's token falls back to. Empty for none. */
+  bootToken?: string;
+  /** Injected in tests. */
+  makeGitHub?: (token: string, repo: string) => GitHubClient;
   /** Touchstone's public address — where a bench fetches a staged or validated store. */
   publicBaseUrl: string;
   /** The workshop MCP surface the agent calls back on. */
@@ -150,7 +162,15 @@ export class Workshop {
    */
   private candidateCache?: { at: number; rows: CandidateRow[] };
 
-  constructor(private readonly opts: WorkshopOptions) {}
+  /** The client every GitHub call goes through — replaced when the page sets a token. */
+  private gh: GitHubClient | undefined;
+  private tokenSource: 'page' | 'boot' | null;
+  private tokenSetAt?: string;
+
+  constructor(private readonly opts: WorkshopOptions) {
+    this.gh = opts.github;
+    this.tokenSource = opts.github ? (opts.tokenSource ?? 'boot') : null;
+  }
 
   private now(): Date {
     return this.opts.now?.() ?? new Date();
@@ -165,7 +185,7 @@ export class Workshop {
   /** Why the workshop cannot work, or null when it can. */
   unconfigured(): string | null {
     if (!this.origin) return `workshop.origin "${this.opts.settings.origin}" is not a configured origin`;
-    if (!this.opts.github) return 'no GitHub token — set TOUCHSTONE_GITHUB_TOKEN (or github.token)';
+    if (!this.gh) return 'no GitHub token — set one on this page (or TOUCHSTONE_GITHUB_TOKEN / github.token)';
     if (!this.opts.publicBaseUrl) return 'trials.public_base_url is empty, so no bench can install a proposal';
     return null;
   }
@@ -226,6 +246,68 @@ export class Workshop {
     return this.opts.probe.status();
   }
 
+  /** Where the token in use came from — never the token. */
+  tokenInfo(): { source: 'page' | 'boot' | null; set_at?: string; settable: boolean; boot_token: boolean } {
+    return {
+      source: this.tokenSource,
+      ...(this.tokenSetAt ? { set_at: this.tokenSetAt } : {}),
+      settable: !!this.opts.tokens,
+      boot_token: !!this.opts.bootToken,
+    };
+  }
+
+  /**
+   * Set the token from the Workshop page, or clear it (`null`) back to whatever the process
+   * booted with. Takes effect at once: the client is swapped and the probe asked, so the
+   * answer to "does this token work" comes back in the same response.
+   *
+   * An authoring session already running keeps going; its submit reads the new client. The
+   * token itself is never logged — the event names who did it and which source is now live.
+   */
+  async setToken(token: string | null, by: string): Promise<GitHubStatus> {
+    const tokens = this.opts.tokens;
+    if (!tokens) throw new WorkshopRefusal(503, 'no data directory to keep a GitHub token in');
+    const origin = this.origin;
+    if (token === null) {
+      await tokens.clear();
+      const boot = this.opts.bootToken;
+      this.tokenSetAt = undefined;
+      this.tokenSource = boot && origin ? 'boot' : null;
+      this.gh = boot && origin ? this.client(boot, origin.repo) : undefined;
+    } else {
+      if (!origin) throw new WorkshopRefusal(409, this.unconfigured() ?? 'the workshop has no origin');
+      await tokens.write(token);
+      this.tokenSetAt = this.now().toISOString();
+      this.tokenSource = 'page';
+      this.gh = this.client(token, origin.repo);
+    }
+    this.openPrs = { apps: null, at: 0 };
+    this.opts.probe.setClient(this.gh);
+    this.opts.events.log({
+      level: 'warn',
+      code: token === null ? 'GITHUB_TOKEN_CLEARED' : 'GITHUB_TOKEN_SET',
+      message:
+        token === null
+          ? this.gh
+            ? 'The GitHub token set on the Workshop page was cleared; the one from config.yaml / the environment applies again'
+            : 'The GitHub token set on the Workshop page was cleared; the workshop has no token now'
+          : 'A GitHub token was set on the Workshop page; pull requests are now opened as its account',
+      detail: { by, source: this.tokenSource ?? 'none' },
+    });
+    const status = this.gh ? await this.opts.probe.probe() : this.opts.probe.status();
+    this.opts.kick?.();
+    return status;
+  }
+
+  /** At boot, when the page's stored token is what the composition root chose. */
+  noteStoredToken(setAt: string): void {
+    if (this.tokenSource === 'page') this.tokenSetAt = setAt;
+  }
+
+  private client(token: string, repo: string): GitHubClient {
+    return this.opts.makeGitHub ? this.opts.makeGitHub(token, repo) : new GitHubClient({ token, repo });
+  }
+
   // ── the world ────────────────────────────────────────────────────────────────────────
 
   private async sections(): Promise<ProtocolSection[]> {
@@ -257,7 +339,7 @@ export class Workshop {
 
   /** Apps with an open PR by anybody. Refreshed at most every 30 minutes, or on demand. */
   async openPrApps(force = false): Promise<Set<string> | null> {
-    const gh = this.opts.github;
+    const gh = this.gh;
     const origin = this.origin;
     if (!gh || !origin) return null;
     if (!force && this.now().getTime() - this.openPrs.at < 30 * 60_000) return this.openPrs.apps;
@@ -572,7 +654,7 @@ export class Workshop {
 
   /** Record the commit the proposal is built on, and lay the app out as it was there. */
   private async pinBase(p: Proposal): Promise<Proposal> {
-    const gh = this.opts.github!;
+    const gh = this.gh!;
     const origin = this.origin!;
     const base = await gh.headOf(origin.ref);
     const appTree = await gh.appTreeSha(origin.apps_path, p.app, base);
@@ -922,7 +1004,7 @@ export class Workshop {
 
   /** Open the pull request. The only path to GitHub's write API in the whole app. */
   async submitPr(id: string, by: string): Promise<Proposal> {
-    const gh = this.opts.github;
+    const gh = this.gh;
     const origin = this.origin;
     if (!gh || !origin) throw new WorkshopRefusal(503, this.unconfigured() ?? 'the workshop is not configured');
     const p = this.opts.store.get(id);
@@ -1072,7 +1154,7 @@ export class Workshop {
 
   /** Follow open PRs: merged or closed, the branch is ours to delete (D12). */
   async pollPrs(): Promise<void> {
-    const gh = this.opts.github;
+    const gh = this.gh;
     if (!gh) return;
     for (const p of this.opts.store.list()) {
       if (p.state !== 'submitted' || !p.pr) continue;
@@ -1217,6 +1299,7 @@ export class Workshop {
       configured: !problem,
       ...(problem ? { unconfigured_reason: problem } : {}),
       github: this.github(),
+      github_token: this.tokenInfo(),
       origin: this.opts.settings.origin,
       armed: this.armed,
       prs_per_day: this.prsPerDay,

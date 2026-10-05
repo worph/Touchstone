@@ -45,6 +45,7 @@ import { GitHubClient } from './services/github.js';
 import { GitHubProbe } from './services/githubprobe.js';
 import { Workshop } from './services/workshop.js';
 import { WorkshopStore } from './store/workshop.js';
+import { GitHubTokenStore } from './store/githubtoken.js';
 import { WishlistStore, WISHLIST_SEED_DIR, WORKSHOP_SEED_DIR } from './store/wishlist.js';
 
 const PORT = Number(process.env.TOUCHSTONE_PORT ?? 8080);
@@ -443,10 +444,13 @@ for (const id of interruptedProposals) {
   });
 }
 const workshopOrigin = cfg.origins.find((o) => o.id === cfg.workshop.origin);
+// A token set on the Workshop page outranks config.yaml / the environment, the way
+// `state/controls.json` outranks the config file; clearing it falls back to the boot value.
+const githubTokens = new GitHubTokenStore(cfg.dataDir);
+const storedToken = await githubTokens.read();
+const githubToken = storedToken?.token || cfg.github.token;
 const github =
-  cfg.github.token && workshopOrigin
-    ? new GitHubClient({ token: cfg.github.token, repo: workshopOrigin.repo })
-    : undefined;
+  githubToken && workshopOrigin ? new GitHubClient({ token: githubToken, repo: workshopOrigin.repo }) : undefined;
 const githubProbe = new GitHubProbe({ ...(github ? { client: github } : {}), expectedLogin: cfg.github.login, alerts });
 const workshop: Workshop = new Workshop({
   store: workshopStore,
@@ -464,6 +468,9 @@ const workshop: Workshop = new Workshop({
   origins: cfg.origins,
   ...(github ? { github } : {}),
   probe: githubProbe,
+  tokens: githubTokens,
+  tokenSource: storedToken ? 'page' : 'boot',
+  bootToken: cfg.github.token,
   publicBaseUrl: cfg.trials.public_base_url,
   // The authoring surface sits beside the ledger's: `/api/v1/mcp` → `/api/v1/mcp/workshop`.
   callbackUrl: cfg.runner.callback_url.replace(/\/mcp\/?$/, '/mcp/workshop'),
@@ -489,6 +496,7 @@ const workshop: Workshop = new Workshop({
   events,
   kick: () => void scheduler.tick().catch((err) => app.log.error({ err }, 'workshop kick failed')),
 });
+if (storedToken) workshop.noteStoredToken(storedToken.set_at);
 
 /**
  * The operator's standing instructions for the administrator chat — `data/context.md`.

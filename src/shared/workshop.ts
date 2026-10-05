@@ -196,6 +196,18 @@ export interface WorkshopView {
   /** Why not, when not. */
   unconfigured_reason?: string;
   github: GitHubStatus;
+  /**
+   * Where the token in use came from: `page` (set on the Workshop page, `data/github-token`),
+   * `boot` (`github.token` / `TOUCHSTONE_GITHUB_TOKEN`), or null for none. Never the token.
+   */
+  github_token: {
+    source: 'page' | 'boot' | null;
+    set_at?: string;
+    /** Whether the page may set one at all. */
+    settable: boolean;
+    /** Whether clearing the page's token falls back to a config/env one. */
+    boot_token: boolean;
+  };
   origin: string;
   armed: boolean;
   prs_per_day: number;
