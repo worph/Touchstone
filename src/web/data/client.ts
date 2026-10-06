@@ -146,12 +146,31 @@ export function getReport(subject: string, file: string): Promise<ReportResponse
  * A POST with no body to read. The three that exist — probe, subscribe, unsubscribe — are
  * all actions whose result is the new state, so they return the same shape as the GET.
  */
+/**
+ * The sentence to show for a failed call. Our routes answer `{ error: <sentence> }`; Fastify's
+ * own refusals answer `{ error: 'Bad Request', message: <the reason> }`, where `error` is only
+ * the status phrase — so a `message` beside a `statusCode` is the one worth showing.
+ */
+function errorText(body: unknown, status: number): string {
+  if (body && typeof body === 'object') {
+    const b = body as { error?: unknown; message?: unknown; statusCode?: unknown };
+    if (b.statusCode !== undefined && typeof b.message === 'string' && b.message) return b.message;
+    if (b.error !== undefined) return String(b.error);
+  }
+  return `Request failed with ${status}.`;
+}
+
 async function post<T>(path: string, body?: unknown): Promise<T> {
   let res: Response;
   try {
+    // No content-type without a body: Fastify refuses an empty JSON body with a 400 before the
+    // route runs, which is how Open PR, Discard and "decide now" all failed as "Bad Request".
     res = await fetch(`${BASE}${path}`, {
       method: 'POST',
-      headers: { accept: 'application/json', 'content-type': 'application/json' },
+      headers:
+        body === undefined
+          ? { accept: 'application/json' }
+          : { accept: 'application/json', 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
@@ -162,13 +181,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     throw new ApiError(res.status, `The API returned ${res.status} (${ct || 'no content type'}).`);
   }
   const parsed = (await res.json()) as unknown;
-  if (!res.ok) {
-    const msg =
-      parsed && typeof parsed === 'object' && 'error' in parsed
-        ? String((parsed as { error: unknown }).error)
-        : `Request failed with ${res.status}.`;
-    throw new ApiError(res.status, msg);
-  }
+  if (!res.ok) throw new ApiError(res.status, errorText(parsed, res.status));
   return parsed as T;
 }
 
