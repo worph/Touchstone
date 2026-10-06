@@ -1029,8 +1029,29 @@ export class Workshop {
     }
 
     const now = this.now();
-    const head = await gh.headOf(origin.ref);
-    const appTree = await gh.appTreeSha(origin.apps_path, p.app, head);
+    // Every GitHub call below can fail, and each failure has to reach the operator as GitHub's
+    // own sentence and leave a row in Activity. Only the last step used to be caught: a 403 on
+    // the first blob escaped as a bare 500, so Open PR said "Internal Server Error" and the log
+    // said nothing at all.
+    const failed = (err: unknown): never => {
+      const error = err instanceof GitHubError ? err.message : String((err as Error)?.message ?? err);
+      this.opts.events.log({
+        level: 'error',
+        code: 'PROPOSAL_SUBMIT_FAILED',
+        message: `Could not open the pull request for ${p.app}`,
+        detail: { proposal: p.id, app: p.app, error },
+      });
+      throw new WorkshopRefusal(502, error);
+    };
+
+    let head: string;
+    let appTree: string | null;
+    try {
+      head = await gh.headOf(origin.ref);
+      appTree = await gh.appTreeSha(origin.apps_path, p.app, head);
+    } catch (err) {
+      return failed(err);
+    }
     if ((p.app_tree_sha ?? null) !== appTree) {
       const reason = `${p.app} changed in ${origin.repo} since this proposal was built on it`;
       await this.opts.store.update(p.id, { state: 'discarded', reason });
@@ -1047,29 +1068,34 @@ export class Workshop {
     const diff = await this.opts.store.diff(p.id);
     const work = await this.opts.store.workFiles(p.id);
     const prefix = `${origin.apps_path.replace(/^\/+|\/+$/g, '')}/${p.app}/`;
-    const entries: TreeEntry[] = [];
-    for (const rel of [...diff.added, ...diff.modified]) {
-      entries.push({ path: prefix + rel, sha: await gh.createBlob(work.get(rel)!) });
+    if (diff.added.length + diff.modified.length + diff.deleted.length === 0) {
+      throw new WorkshopRefusal(409, 'the working copy changes nothing');
     }
-    for (const rel of diff.deleted) entries.push({ path: prefix + rel, sha: null });
-    if (entries.length === 0) throw new WorkshopRefusal(409, 'the working copy changes nothing');
-
-    const tree = await gh.createTree(await gh.commitTree(head), entries);
     const title = prTitle(p);
-    const email =
-      this.opts.settings.commit_email ||
-      `${this.opts.probe.userId ?? 0}+${this.opts.probe.status().login ?? this.opts.settings.login}@users.noreply.github.com`;
-    const commit = await gh.createCommit(
-      `${title.replace(/^\[touchstone\] /, '')}\n\nPrepared by Touchstone's workshop, proposal ${p.id}.`,
-      tree,
-      head,
-      { name: this.opts.settings.commit_name, email },
-    );
     const ref = refFor(p, now);
-    await gh.createBranch(ref, commit);
 
+    let branched = false;
     let pr: { number: number; url: string };
     try {
+      const entries: TreeEntry[] = [];
+      for (const rel of [...diff.added, ...diff.modified]) {
+        entries.push({ path: prefix + rel, sha: await gh.createBlob(work.get(rel)!) });
+      }
+      for (const rel of diff.deleted) entries.push({ path: prefix + rel, sha: null });
+
+      const tree = await gh.createTree(await gh.commitTree(head), entries);
+      const email =
+        this.opts.settings.commit_email ||
+        `${this.opts.probe.userId ?? 0}+${this.opts.probe.status().login ?? this.opts.settings.login}@users.noreply.github.com`;
+      const commit = await gh.createCommit(
+        `${title.replace(/^\[touchstone\] /, '')}\n\nPrepared by Touchstone's workshop, proposal ${p.id}.`,
+        tree,
+        head,
+        { name: this.opts.settings.commit_name, email },
+      );
+      await gh.createBranch(ref, commit);
+      branched = true;
+
       const reports: { section: string; text: string }[] = [];
       for (const r of p.validation ?? []) {
         const text = r.evidence ? await this.opts.store.readEvidence(p.id, r.evidence) : null;
@@ -1088,15 +1114,8 @@ export class Workshop {
         }),
       });
     } catch (err) {
-      await gh.deleteBranch(ref).catch(() => undefined);
-      const error = err instanceof GitHubError ? err.message : String(err);
-      this.opts.events.log({
-        level: 'error',
-        code: 'PROPOSAL_SUBMIT_FAILED',
-        message: `Could not open the pull request for ${p.app}`,
-        detail: { proposal: p.id, app: p.app, error },
-      });
-      throw new WorkshopRefusal(502, error);
+      if (branched) await gh.deleteBranch(ref).catch(() => undefined);
+      return failed(err);
     }
     // The label is best effort (D13): a PR without it is still a PR.
     await gh.addLabel(pr.number, WORKSHOP_LABEL).catch(() => undefined);

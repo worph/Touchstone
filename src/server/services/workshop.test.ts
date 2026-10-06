@@ -33,6 +33,8 @@ let trials: TrialStore;
 let store: WorkshopStore;
 let ghCalls: { method: string; path: string; body?: unknown }[];
 let appTree: string;
+/** Set to make GitHub refuse blob creation, the way a token without Contents: write does. */
+let blobRefused: boolean;
 
 const enc = new TextEncoder();
 
@@ -66,7 +68,9 @@ function fakeFetch(): typeof fetch {
     if (p.startsWith('/repos/Yundera/AppStore/contents/Apps?ref=')) return json(200, [{ name: 'X', type: 'dir', sha: appTree }]);
     if (p.startsWith('/repos/Yundera/AppStore/pulls?state=open')) return json(200, []);
     if (p === `/repos/Yundera/AppStore/git/commits/${SHA('a')}`) return json(200, { tree: { sha: SHA('1') } });
-    if (method === 'POST' && p === '/repos/Yundera/AppStore/git/blobs') return json(201, { sha: SHA('b') });
+    if (method === 'POST' && p === '/repos/Yundera/AppStore/git/blobs') {
+      return blobRefused ? json(403, { message: 'Resource not accessible by personal access token' }) : json(201, { sha: SHA('b') });
+    }
     if (method === 'POST' && p === '/repos/Yundera/AppStore/git/trees') return json(201, { sha: SHA('c') });
     if (method === 'POST' && p === '/repos/Yundera/AppStore/git/commits') return json(201, { sha: SHA('d') });
     if (method === 'POST' && p === '/repos/Yundera/AppStore/git/refs') return json(201, {});
@@ -116,6 +120,7 @@ beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'touchstone-wsvc-'));
   ghCalls = [];
   appTree = SHA('e');
+  blobRefused = false;
   released = [];
   events = new EventLog(path.join(dir, 'state'));
   await events.load();
@@ -332,6 +337,25 @@ describe('the rules around it', () => {
     expect(store.get(p.id)!.state).toBe('discarded');
     expect(store.memory()).toEqual({});
     expect(ghCalls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('a GitHub refusal before the pull request is a 502 with GitHub\'s words, logged, and leaves it ready', async () => {
+    agentScript = async (prompt, ws) => {
+      await ws.writeFile(tokenOf(prompt), 'docker-compose.yml', 'services: {}\n');
+      ws.submit(tokenOf(prompt), 'x');
+      return { ok: true, text: '', payload: '' };
+    };
+    const p = await workshop.propose({ subject: 'X', kind: 'fix' }, 'operator');
+    await workshop.dispatch(p.id, lease);
+    await finishTrials({});
+    blobRefused = true;
+    const refusal = await workshop.submitPr(p.id, 'operator').catch((err: unknown) => err);
+    expect(refusal).toBeInstanceOf(WorkshopRefusal);
+    expect((refusal as WorkshopRefusal).code).toBe(502);
+    expect((refusal as Error).message).toMatch(/Resource not accessible by personal access token/);
+    expect(events.query({}).some((e) => e.code === 'PROPOSAL_SUBMIT_FAILED')).toBe(true);
+    expect(store.get(p.id)!.state).toBe('ready');
+    expect(ghCalls.some((c) => c.path.endsWith('/git/refs'))).toBe(false);
   });
 
   it('a session token dies with its session', async () => {
