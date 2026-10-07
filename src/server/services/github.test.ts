@@ -9,7 +9,16 @@
 import { describe, expect, it } from 'vitest';
 
 import { AlertStore } from './alerts.js';
-import { assertOwnRef, branchOf, GitHubClient, GitHubError, GitHubRefRefused, mergeableOf } from './github.js';
+import {
+  assertOwnRef,
+  branchOf,
+  GitHubClient,
+  GitHubError,
+  GitHubNotFastForward,
+  GitHubRefRefused,
+  isValidDirectBranch,
+  mergeableOf,
+} from './github.js';
 import { GitHubProbe } from './githubprobe.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -114,6 +123,68 @@ describe('the ref guard', () => {
   it('a branch already gone is not an error', async () => {
     const { c } = client({});
     await expect(c.deleteBranch('refs/heads/touchstone/fix/App-1')).resolves.toBeUndefined();
+  });
+});
+
+describe('direct delivery: one branch, fast-forward only (D16)', () => {
+  const direct = (routes: Record<string, [number, unknown]> = {}, directBranch = 'main') => {
+    const gh = fakeGitHub(routes);
+    return { c: new GitHubClient({ token: TOKEN, repo: 'Yundera/AppStore', fetchImpl: gh.impl, directBranch }), calls: gh.calls };
+  };
+  const HEAD = 'GET /repos/Yundera/AppStore/git/ref/heads/main';
+  const PATCH = 'PATCH /repos/Yundera/AppStore/git/refs/heads/main';
+
+  it('without a direct branch, advanceBranch makes zero requests', async () => {
+    const { c, calls } = client();
+    await expect(c.advanceBranch(SHA, SHA2)).rejects.toThrow(GitHubRefRefused);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('moves the configured branch with force:false, after checking its head', async () => {
+    const { c, calls } = direct({ [HEAD]: [200, { object: { sha: SHA } }], [PATCH]: [200, {}] });
+    await c.advanceBranch(SHA, SHA2);
+    expect(calls.map((x) => x.method)).toEqual(['GET', 'PATCH']);
+    expect(calls[1]!.body).toEqual({ sha: SHA2, force: false });
+  });
+
+  it('a head that moved is refused before the PATCH', async () => {
+    const { c, calls } = direct({ [HEAD]: [200, { object: { sha: 'c'.repeat(40) } }] });
+    await expect(c.advanceBranch(SHA, SHA2)).rejects.toThrow(GitHubNotFastForward);
+    expect(calls.map((x) => x.method)).toEqual(['GET']);
+  });
+
+  it("GitHub's 422 is a not-fast-forward, scrubbed of the token", async () => {
+    const { c } = direct({ [HEAD]: [200, { object: { sha: SHA } }], [PATCH]: [422, { message: `Update is not a fast forward ${TOKEN}` }] });
+    const err = await c.advanceBranch(SHA, SHA2).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GitHubNotFastForward);
+    expect(String((err as Error).message)).not.toContain(TOKEN);
+  });
+
+  it('even with a direct branch, no other door moves a ref, and never with force', async () => {
+    const { c, calls } = direct();
+    const req = (c as unknown as { request: (m: string, p: string, b?: unknown, d?: string) => Promise<unknown> }).request.bind(c);
+    await expect(req('PATCH', '/repos/Yundera/AppStore/git/refs/heads/main', { sha: SHA, force: false })).rejects.toThrow(GitHubRefRefused);
+    await expect(req('PATCH', '/repos/Yundera/AppStore/git/refs/heads/main', { sha: SHA, force: true }, 'advance')).rejects.toThrow(GitHubRefRefused);
+    await expect(req('PATCH', '/repos/Yundera/AppStore/git/refs/heads/dev', { sha: SHA, force: false }, 'advance')).rejects.toThrow(GitHubRefRefused);
+    await expect(req('PUT', '/repos/Yundera/AppStore/git/refs/heads/main', { sha: SHA })).rejects.toThrow(GitHubRefRefused);
+    await expect(c.createBranch('refs/heads/main', SHA)).rejects.toThrow(GitHubRefRefused);
+    await expect(c.deleteBranch('refs/heads/main')).rejects.toThrow(GitHubRefRefused);
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each(['touchstone/fix/X', '../main', '-main', 'main.lock', 'a//b', '', 'main/'])('refuses %j as the direct branch', (b) => {
+    expect(isValidDirectBranch(b)).toBe(false);
+    expect(() => new GitHubClient({ token: TOKEN, repo: 'r/r', directBranch: b })).toThrow(GitHubRefRefused);
+  });
+
+  it('admits ordinary branch names', () => {
+    for (const b of ['main', 'staging', 'release/2026']) expect(isValidDirectBranch(b)).toBe(true);
+  });
+
+  it('a tree entry can restore a whole directory', async () => {
+    const { c, calls } = client({ 'POST /repos/Yundera/AppStore/git/trees': [201, { sha: SHA2 }] });
+    await c.createTree(SHA, [{ path: 'Apps/X', sha: SHA, type: 'tree' }]);
+    expect((calls[0]!.body as { tree: unknown[] }).tree).toEqual([{ path: 'Apps/X', mode: '040000', type: 'tree', sha: SHA }]);
   });
 });
 

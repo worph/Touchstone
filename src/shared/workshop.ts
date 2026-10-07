@@ -22,6 +22,7 @@ export type ProposalKind = 'fix' | 'currency' | 'wish';
  * nothing.
  */
 export type ProposalState =
+  | 'reverted'
   | 'queued'
   | 'authoring'
   | 'validating'
@@ -175,7 +176,7 @@ export interface Proposal {
 }
 
 /** What `memory` remembers about a task. **Infra is never stored** — invariant 3. */
-export type TaskOutcome = 'pr_opened' | 'pr_closed' | 'cannot' | 'failed_validation';
+export type TaskOutcome = 'pr_opened' | 'pr_closed' | 'pushed' | 'reverted' | 'cannot' | 'failed_validation';
 
 export interface TaskMemory {
   input_sha: string;
@@ -195,6 +196,8 @@ export interface GitHubStatus {
   expected_login?: string;
   push?: boolean;
   label?: boolean;
+  /** With direct delivery: the branch pushes go to. Absent with pull-request delivery. */
+  direct_branch?: string;
   problems: string[];
   checked_at?: string;
 }
@@ -266,6 +269,8 @@ export interface WorkshopView {
     expected_login?: string;
   };
   origin: string;
+  /** How a submission lands (D16): a pull request, or a fast-forward of `branch`. From config.yaml. */
+  delivery: { mode: 'pr' | 'push'; branch: string };
   armed: boolean;
   /** Whether a ready proposal is submitted without a person pressing the button (D15). */
   auto_submit: boolean;

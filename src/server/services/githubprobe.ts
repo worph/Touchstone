@@ -6,6 +6,10 @@
  * open `github.auth`; a missing label opens it too, but only as a warning — a PR without its
  * label is still a PR (D13), so it never blocks a submission.
  *
+ * With direct delivery (`workshop.delivery: push`) the label is not asked about — nothing is
+ * labelled — and a fourth question is: is the direct branch protected? A protected branch would
+ * refuse every push, so that is a blocking problem, said before anybody presses Push.
+ *
  * No token is not a fault: the workshop is simply unconfigured, there is nothing to alert on,
  * and the probe does nothing.
  */
@@ -78,7 +82,15 @@ export class GitHubProbe {
       const repo = await client.repoInfo();
       status.push = repo.push;
       if (!repo.push) problems.push(`the token cannot push to ${client.repo} (needs Contents: read and write)`);
-      status.label = await client.labelExists(WORKSHOP_LABEL);
+      const direct = client.directBranch;
+      if (direct) {
+        status.direct_branch = direct;
+        if ((await client.branchInfo(direct)).protected) {
+          problems.push(`push delivery is unavailable: ${direct} is protected on ${client.repo}`);
+        }
+      } else {
+        status.label = await client.labelExists(WORKSHOP_LABEL);
+      }
     } catch (err) {
       problems.push(err instanceof GitHubError ? err.message : `GitHub could not be reached: ${(err as Error).message}`);
     }
@@ -94,7 +106,7 @@ export class GitHubProbe {
         key: 'github.auth',
         title: 'The workshop cannot use its GitHub token',
         detail: problems.join('; '),
-        impact: 'Nothing can be submitted as a pull request. Authoring and validation still run.',
+        impact: 'Nothing can be submitted. Authoring and validation still run.',
       });
     } else if (status.label === false) {
       this.opts.alerts?.open({

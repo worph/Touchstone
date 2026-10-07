@@ -9,6 +9,8 @@
  * - `POST /workshop/proposals` — Propose: `{ subject, kind }` or `{ wish, kind: 'wish' }`.
  * - `POST /workshop/proposals/:id/submit` — submit it (Open PR, or push), within the quota.
  * - `POST /workshop/proposals/:id/discard` — throw a proposal away; charges the task nothing.
+ * - `POST /workshop/proposals/:id/revert` — undo a push (direct delivery): `Apps/<App>/` goes
+ *   back to the proposal's base in one fast-forward, refused if anybody changed it since.
  * - `POST /workshop/arm` — `{ armed: boolean | null }`; null returns to what config.yaml says.
  * - `DELETE /workshop/memory/:task` — forget what a task taught us, so it may be picked again.
  * - `GET    /workshop/github` — where the token came from and what the probe made of it; the
@@ -76,6 +78,11 @@ const routes: FastifyPluginAsync<WorkshopRoutesOptions> = async (app, options) =
   app.post<{ Params: { id: string } }>('/workshop/proposals/:id/submit', async (req, reply) => {
     if (!ws) return fail(reply, 503, 'the workshop is not wired on this installation');
     return guard(reply, async () => ({ proposal: await ws.submitProposal(req.params.id, 'operator') }));
+  });
+
+  app.post<{ Params: { id: string } }>('/workshop/proposals/:id/revert', async (req, reply) => {
+    if (!ws) return fail(reply, 503, 'the workshop is not wired on this installation');
+    return guard(reply, async () => ({ proposal: await ws.revert(req.params.id, 'operator') }));
   });
 
   app.post<{ Params: { id: string } }>('/workshop/proposals/:id/discard', async (req, reply) => {

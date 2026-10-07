@@ -679,9 +679,14 @@ export function proposeWork(body: { subject?: string; wish?: string; kind: 'fix'
   return post('/workshop/proposals', body);
 }
 
-/** Open the pull request. Refused when the daily quota is spent. */
+/** Submit it — open the pull request, or push. Refused when the daily quota is spent. */
 export function submitProposal(id: string): Promise<{ proposal: Proposal }> {
   return post(`/workshop/proposals/${encodeURIComponent(id)}/submit`);
+}
+
+/** Undo a push: the app goes back to the proposal's base, refused if it changed since. */
+export function revertProposal(id: string): Promise<{ proposal: Proposal }> {
+  return post(`/workshop/proposals/${encodeURIComponent(id)}/revert`);
 }
 
 export function discardProposal(id: string): Promise<{ proposal: Proposal }> {

@@ -9,15 +9,22 @@
  *
  * The token can move any branch of the origin repo, and `main` is not protected (D14 in
  * docs/auto-app-pr.md). So nothing on GitHub's side stops a bad call from rewriting the store.
- * Three rules keep that from being spellable rather than merely unused:
+ * There are exactly two ref writes this client can spell, and each has one door:
  *
- * - **Every ref write goes through `refWrite`,** which runs `assertOwnRef` before a request
- *   is built. `OWN_REF` admits `refs/heads/touchstone/<kind>/<name>` and nothing else — no
+ * - **`touchstone/…` branches, created once and deleted once** (`createBranch`,
+ *   `deleteBranch` → `refWrite`), for pull-request delivery. `assertOwnRef` runs before a
+ *   request is built and admits `refs/heads/touchstone/<kind>/<name>` and nothing else — no
  *   slash in the name, no `..`, no leading dot or dash.
- * - **There is no update.** A branch is created once and deleted once. `request()` refuses
- *   PATCH and PUT on any `git/refs` path, so a force-push cannot be written even by accident.
- * - **The token never leaves.** It is in a header and nowhere else, and every error message is
- *   scrubbed of it before it is thrown — an error ends up in the event log and on a page.
+ * - **One configured branch, fast-forward only** (`advanceBranch`), for direct delivery (D16).
+ *   It takes **no branch argument**: the branch is `directBranch`, fixed when the client is
+ *   built and absent unless `workshop.delivery` is `push`, so with PR delivery it cannot be
+ *   spelled at all. `force: false` is a literal in the body, never a parameter, so GitHub
+ *   refuses anything that is not a fast-forward of the head it already has.
+ *
+ * `request()` refuses PUT on any `git/refs` path, and PATCH except through `advanceBranch`'s
+ * own door to its own branch. **The token never leaves**: it is in a header and nowhere else,
+ * and every error message is scrubbed of it before it is thrown — an error ends up in the
+ * event log and on a page.
  *
  * Commits are made through the Git Data API (blobs → tree → commit → ref), so there is no
  * clone, no `git` binary and no token-bearing remote on disk.
@@ -37,6 +44,25 @@ export class GitHubError extends Error {
 
 /** A ref outside `refs/heads/touchstone/` was asked for. Thrown before any request. */
 export class GitHubRefRefused extends Error {}
+
+/** GitHub refused to move the direct branch because the new commit is not a fast-forward of it. */
+export class GitHubNotFastForward extends GitHubError {}
+
+/**
+ * Whether `branch` may be the direct-delivery branch: a plain git branch name, and never a
+ * `touchstone/…` one, which belong to pull-request delivery and are deleted after merge.
+ */
+export function isValidDirectBranch(branch: string): boolean {
+  return (
+    /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch) &&
+    !branch.includes('..') &&
+    !branch.includes('//') &&
+    !branch.endsWith('/') &&
+    !branch.endsWith('.') &&
+    !branch.endsWith('.lock') &&
+    !branch.startsWith('touchstone/')
+  );
+}
 
 export const OWN_REF = /^refs\/heads\/touchstone\/(fix|currency|wish)\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -59,12 +85,19 @@ export interface GitHubOptions {
   repo: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * The one branch `advanceBranch` may fast-forward — set only when `workshop.delivery` is
+   * `push`. Absent, no call this client can make moves an existing branch.
+   */
+  directBranch?: string;
 }
 
 export interface TreeEntry {
   path: string;
-  /** A blob sha, or `null` to delete the path. */
+  /** A blob (or, with `type: 'tree'`, a tree) sha, or `null` to delete the path. */
   sha: string | null;
+  /** `tree` puts a whole directory back in one entry — how a revert restores an app. */
+  type?: 'blob' | 'tree';
 }
 
 export interface CommitAuthor {
@@ -78,10 +111,25 @@ const SHA_RE = /^[0-9a-f]{40}$/;
 export class GitHubClient {
   private readonly pullFiles = new Map<string, string[]>();
 
-  constructor(private readonly opts: GitHubOptions) {}
+  constructor(private readonly opts: GitHubOptions) {
+    if (opts.directBranch !== undefined && !isValidDirectBranch(opts.directBranch)) {
+      throw new GitHubRefRefused(`refusing ${JSON.stringify(opts.directBranch)} as the direct-delivery branch`);
+    }
+  }
 
   get repo(): string {
     return this.opts.repo;
+  }
+
+  /** The branch `advanceBranch` moves, or undefined when this client cannot move one. */
+  get directBranch(): string | undefined {
+    return this.opts.directBranch;
+  }
+
+  /** Whether a branch is protected — a push to a protected branch would be refused (§14). */
+  async branchInfo(branch: string): Promise<{ protected: boolean }> {
+    const r = await this.request<{ protected?: boolean }>('GET', this.repoPath(`/branches/${encodeBranch(branch)}`));
+    return { protected: r.protected === true };
   }
 
   async user(): Promise<{ login: string; id: number }> {
@@ -162,7 +210,11 @@ export class GitHubClient {
   async createTree(baseTree: string, entries: TreeEntry[]): Promise<string> {
     const r = await this.request<{ sha?: string }>('POST', this.repoPath('/git/trees'), {
       base_tree: checkSha(baseTree, 'base tree'),
-      tree: entries.map((e) => ({ path: e.path, mode: '100644', type: 'blob', sha: e.sha })),
+      tree: entries.map((e) =>
+        e.type === 'tree'
+          ? { path: e.path, mode: '040000', type: 'tree', sha: e.sha }
+          : { path: e.path, mode: '100644', type: 'blob', sha: e.sha },
+      ),
     });
     return checkSha(r.sha, 'tree');
   }
@@ -181,6 +233,26 @@ export class GitHubClient {
   /** Create `ref` at `sha`. Never moves an existing ref — GitHub answers 422 if it exists. */
   async createBranch(ref: string, sha: string): Promise<void> {
     await this.refWrite('create', ref, sha);
+  }
+
+  /**
+   * Fast-forward the direct branch from `expected` to `sha` — direct delivery's one door.
+   *
+   * There is no branch parameter; see the header. The head is read first and a mismatch is
+   * refused before the PATCH (cheap, and it names what moved), but the real compare-and-swap
+   * is GitHub's: with `force: false` a commit that does not descend from the current head is a
+   * 422, surfaced as `GitHubNotFastForward` so the caller can rebuild on the new head.
+   */
+  async advanceBranch(expected: string, sha: string): Promise<void> {
+    const branch = this.opts.directBranch;
+    if (!branch) throw new GitHubRefRefused('this client has no direct-delivery branch; it can only open pull requests');
+    checkSha(expected, 'expected head');
+    checkSha(sha, 'new head');
+    const head = await this.headOf(branch);
+    if (head !== expected) {
+      throw new GitHubNotFastForward(`${branch} moved: it is at ${head.slice(0, 7)}, not ${expected.slice(0, 7)}`, 409);
+    }
+    await this.refWrite('advance', `refs/heads/${branch}`, sha);
   }
 
   /** Delete `ref`. A ref already gone is not an error: the end state is the one asked for. */
@@ -268,12 +340,29 @@ export class GitHubClient {
   }
 
   /** The one door a ref write goes through. The guard runs before anything is built. */
-  private async refWrite(op: 'create' | 'delete', ref: string, sha?: string): Promise<void> {
+  private async refWrite(op: 'create' | 'delete' | 'advance', ref: string, sha?: string): Promise<void> {
+    if (op === 'advance') {
+      if (!this.opts.directBranch || ref !== `refs/heads/${this.opts.directBranch}`) {
+        throw new GitHubRefRefused(`refusing to move ${JSON.stringify(ref)}: only the direct-delivery branch moves`);
+      }
+      try {
+        await this.request(
+          'PATCH',
+          this.repoPath(`/git/refs/heads/${encodeBranch(this.opts.directBranch)}`),
+          { sha: checkSha(sha, 'ref target'), force: false },
+          'advance',
+        );
+      } catch (err) {
+        if (err instanceof GitHubError && err.status === 422) throw new GitHubNotFastForward(err.message, 422);
+        throw err;
+      }
+      return;
+    }
     assertOwnRef(ref);
     if (op === 'create') {
-      await this.request('POST', this.repoPath('/git/refs'), { ref, sha: checkSha(sha, 'ref target') }, true);
+      await this.request('POST', this.repoPath('/git/refs'), { ref, sha: checkSha(sha, 'ref target') }, 'own');
     } else {
-      await this.request('DELETE', this.repoPath(`/git/${ref}`), undefined, true);
+      await this.request('DELETE', this.repoPath(`/git/${ref}`), undefined, 'own');
     }
   }
 
@@ -281,13 +370,19 @@ export class GitHubClient {
     method: 'GET' | 'POST' | 'DELETE' | 'PATCH' | 'PUT',
     path: string,
     body?: unknown,
-    viaRefWrite = false,
+    door?: 'own' | 'advance',
   ): Promise<T> {
     if (/\/git\/refs?\b/.test(path) && method !== 'GET') {
-      if (method === 'PATCH' || method === 'PUT') {
-        throw new GitHubRefRefused('refusing to update a ref: this client creates and deletes, never moves');
+      if (method === 'PUT') throw new GitHubRefRefused('refusing to put a ref: this client never does');
+      if (method === 'PATCH') {
+        const own = this.opts.directBranch ? this.repoPath(`/git/refs/heads/${encodeBranch(this.opts.directBranch)}`) : null;
+        const b = body as { force?: unknown } | undefined;
+        if (door !== 'advance' || path !== own || b?.force !== false) {
+          throw new GitHubRefRefused('refusing to update a ref: only advanceBranch moves one, and only by fast-forward');
+        }
+      } else if (door !== 'own') {
+        throw new GitHubRefRefused('ref writes go through refWrite');
       }
-      if (!viaRefWrite) throw new GitHubRefRefused('ref writes go through refWrite');
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.opts.timeoutMs ?? 30_000);

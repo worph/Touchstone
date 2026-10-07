@@ -70,7 +70,14 @@ import { ACTIVE_STATES, WorkshopError, type WorkshopStore } from '../store/works
 import { buildAuthorPrompt } from '../workshop/prompt.js';
 import type { AlertStore } from './alerts.js';
 import type { EventLog } from './events.js';
-import { branchOf, GitHubClient, GitHubError, type TreeEntry } from './github.js';
+import {
+  branchOf,
+  GitHubClient,
+  GitHubError,
+  GitHubNotFastForward,
+  isValidDirectBranch,
+  type TreeEntry,
+} from './github.js';
 import { WORKSHOP_LABEL, type GitHubProbe } from './githubprobe.js';
 import type { GitHubTokenStore } from '../store/githubtoken.js';
 import type { Lease, Leases } from './leases.js';
@@ -81,6 +88,12 @@ import { archiveUrlForCommit, extractApp, fetchStoreZip, packAppStore } from './
 /** How old the PR poll may be before a view of the workshop starts another. */
 const PR_FRESH_MS = 60_000;
 
+/** Fast-forward attempts before a push gives up because the branch keeps moving. */
+const MAX_PUSH_ATTEMPTS = 3;
+
+/** Thrown inside a push when the app itself changed on the branch; never leaves this file. */
+class StoreMoved extends Error {}
+
 /** Free re-enqueues of a validation trial after an infra outcome. */
 const MAX_TRIAL_RETRIES = 3;
 /** Free re-queues of an authoring session after an infra outcome, before it is given up. */
@@ -90,6 +103,9 @@ const STAGE_TTL_MS = 3 * 60 * 60_000;
 
 export interface WorkshopSettings {
   origin: string;
+  /** D16: how a submission lands. `push` fast-forwards `push_branch`; anything else is a PR. */
+  delivery?: 'pr' | 'push';
+  push_branch?: string;
   armed: boolean;
   auto_submit: boolean;
   prs_per_day: number;
@@ -196,6 +212,11 @@ export class Workshop {
     if (!this.origin) return `workshop.origin "${this.opts.settings.origin}" is not a configured origin`;
     if (!this.gh) return 'no GitHub token — set one in Settings (or TOUCHSTONE_GITHUB_TOKEN / github.token)';
     if (!this.opts.publicBaseUrl) return 'trials.public_base_url is empty, so no bench can install a proposal';
+    if (this.delivery === 'push') {
+      const b = this.opts.settings.push_branch ?? 'main';
+      if (!isValidDirectBranch(b)) return `workshop.push_branch "${b}" is not a branch push delivery may move`;
+      if (this.gh.directBranch !== b) return `the GitHub client was built without push delivery to ${b} — restart to apply`;
+    }
     return null;
   }
 
@@ -357,7 +378,21 @@ export class Workshop {
   }
 
   private client(token: string, repo: string): GitHubClient {
-    return this.opts.makeGitHub ? this.opts.makeGitHub(token, repo) : new GitHubClient({ token, repo });
+    const directBranch = this.directBranch();
+    return this.opts.makeGitHub
+      ? this.opts.makeGitHub(token, repo)
+      : new GitHubClient({ token, repo, ...(directBranch ? { directBranch } : {}) });
+  }
+
+  /** The branch push delivery moves, when push delivery is configured with a usable name. */
+  private directBranch(): string | undefined {
+    if (this.delivery !== 'push') return undefined;
+    const b = this.opts.settings.push_branch ?? 'main';
+    return isValidDirectBranch(b) ? b : undefined;
+  }
+
+  get delivery(): 'pr' | 'push' {
+    return this.opts.settings.delivery === 'push' ? 'push' : 'pr';
   }
 
   // ── the world ────────────────────────────────────────────────────────────────────────
@@ -708,7 +743,7 @@ export class Workshop {
   private async pinBase(p: Proposal): Promise<Proposal> {
     const gh = this.gh!;
     const origin = this.origin!;
-    const base = await gh.headOf(origin.ref);
+    const base = await gh.headOf(this.targetBranch());
     const appTree = await gh.appTreeSha(origin.apps_path, p.app, base);
     if (p.kind === 'wish' && appTree) throw new Error(`${p.app} already exists in ${origin.repo}`);
     if (p.kind !== 'wish' && !appTree) throw new Error(`${p.app} is not in ${origin.repo} at ${base.slice(0, 7)}`);
@@ -1086,7 +1121,13 @@ export class Workshop {
    * Submit a ready proposal: the shared preconditions, then its delivery. The only path to
    * GitHub's write API in the whole app (revert aside, which undoes a delivery).
    */
-  async submitProposal(id: string, by: string): Promise<Proposal> {
+  submitProposal(id: string, by: string): Promise<Proposal> {
+    // One at a time: the button and auto-submit can ask for the same proposal at once, and a
+    // state check outside the lock would let both through to GitHub.
+    return this.serially(() => this.submitNow(id, by));
+  }
+
+  private async submitNow(id: string, by: string): Promise<Proposal> {
     const gh = this.gh;
     const origin = this.origin;
     if (!gh || !origin) throw new WorkshopRefusal(503, this.unconfigured() ?? 'the workshop is not configured');
@@ -1119,12 +1160,20 @@ export class Workshop {
     if (diff.added.length + diff.modified.length + diff.deleted.length === 0) {
       throw new WorkshopRefusal(409, 'the working copy changes nothing');
     }
-    return this.deliverPr(p, head, by);
+    return this.delivery === 'push' ? this.deliverPush(p, head, by) : this.deliverPr(p, head, by);
   }
 
-  /** The branch a proposal is built on and delivered to. */
+  /**
+   * The branch a proposal is built on and delivered to: the pull request's base, or the branch a
+   * push moves. `pinBase` reads it too, so a proposal is validated against the bytes it lands on.
+   */
   private targetBranch(): string {
-    return this.origin!.ref;
+    return this.delivery === 'push' ? (this.opts.settings.push_branch ?? 'main') : this.origin!.ref;
+  }
+
+  /** `targetBranch` for the view, which may be drawn while no origin is configured. */
+  private viewBranch(): string {
+    return this.delivery === 'push' ? (this.opts.settings.push_branch ?? 'main') : (this.origin?.ref ?? '');
   }
 
   /** Has `Apps/<App>/` changed on the target since the proposal was built on it? */
@@ -1260,12 +1309,162 @@ export class Workshop {
     return updated;
   }
 
+  /** Submissions and reverts run one at a time, in the order they were asked for. */
+  private pushLock: Promise<unknown> = Promise.resolve();
+
+  private serially<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.pushLock.then(work, work);
+    this.pushLock = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Fast-forward `head` → `commit`, rebuilding on the newer head when somebody else moved the
+   * branch in between. `rebuild` re-checks the app and makes the commit; it is called for every
+   * attempt, so another app landing first costs one more commit object and nothing else.
+   */
+  private async fastForward(
+    head0: string,
+    rebuild: (head: string) => Promise<string>,
+  ): Promise<{ head: string; commit: string }> {
+    const gh = this.gh!;
+    let head = head0;
+    for (let attempt = 1; ; attempt++) {
+      const commit = await rebuild(head);
+      try {
+        await gh.advanceBranch(head, commit);
+        return { head, commit };
+      } catch (err) {
+        if (!(err instanceof GitHubNotFastForward) || attempt >= MAX_PUSH_ATTEMPTS) throw err;
+        head = await gh.headOf(this.targetBranch());
+      }
+    }
+  }
+
+  /**
+   * Delivery `push` (D16): one commit, fast-forwarded onto the target branch. No branch, no PR,
+   * no label, no reviewer — validation, D7′ and `assertAppScope` are the whole guard, which is
+   * why this is chosen in config.yaml rather than anywhere a model can reach.
+   */
+  private async deliverPush(p: Proposal, head0: string, by: string): Promise<Proposal> {
+    const gh = this.gh!;
+    const origin = this.origin!;
+    const branch = this.targetBranch();
+    const blobs = new Map<string, string>();
+    let landed: { head: string; commit: string };
+    let appTree: string | null;
+    try {
+      landed = await this.fastForward(head0, async (head) => {
+        if (head !== head0 && (await this.storeMoved(p, head))) throw new StoreMoved();
+        return this.buildCommit(p, head, blobs);
+      });
+      appTree = await gh.appTreeSha(origin.apps_path, p.app, landed.commit);
+    } catch (err) {
+      if (err instanceof StoreMoved) return this.discardMoved(p, by);
+      return this.submitFailed(p, err);
+    }
+    const at = this.now().toISOString();
+    const url = `https://github.com/${origin.repo}/commit/${landed.commit}`;
+    const updated = await this.opts.store.update(p.id, {
+      state: 'merged',
+      delivered: { mode: 'push', branch, commit: landed.commit, parent: landed.head, app_tree_sha: appTree, url, at, by },
+    });
+    await this.opts.store.remember(p.task_key, {
+      input_sha: p.input_sha,
+      last_attempt_at: at,
+      outcome: 'pushed',
+      proposal_id: p.id,
+    });
+    this.opts.events.log({
+      level: 'info',
+      code: 'PROPOSAL_PUSHED',
+      message: `Pushed ${p.app} to ${branch}: ${prTitle(p).replace(/^\[touchstone\] /, '')}`,
+      detail: { proposal: p.id, app: p.app, branch, commit: landed.commit, url, by },
+    });
+    await this.opts.store.pruneFiles(p.id);
+    return updated;
+  }
+
+  /**
+   * Undo a push: put `Apps/<App>/` back as it was at the proposal's base, in one fast-forward.
+   *
+   * Refused when anybody changed the app since — the app's tree on the branch must still be
+   * the one Touchstone pushed — because restoring the old tree then would also erase their
+   * work. That case is a revert by hand. Needs no local files: the base tree sha is on the
+   * proposal, so it works after `pruneFiles` has emptied the working copy.
+   */
+  revert(id: string, by: string): Promise<Proposal> {
+    return this.serially(async () => {
+      const gh = this.gh;
+      const origin = this.origin;
+      if (!gh || !origin) throw new WorkshopRefusal(503, this.unconfigured() ?? 'the workshop is not configured');
+      const p = this.opts.store.get(id);
+      if (!p) throw new WorkshopRefusal(404, `no such proposal: ${id}`);
+      const d = p.delivered;
+      if (!d || p.state !== 'merged') throw new WorkshopRefusal(409, `${p.app} was not pushed by Touchstone, so there is nothing to revert`);
+      if (d.reverted) throw new WorkshopRefusal(409, `${p.app} was already reverted`);
+      if (gh.directBranch !== d.branch) {
+        throw new WorkshopRefusal(409, `${p.app} was pushed to ${d.branch}, which this instance no longer pushes to — revert it by hand`);
+      }
+      const root = `${origin.apps_path.replace(/^\/+|\/+$/g, '')}/${p.app}`;
+      const title = prTitle(p).replace(/^\[touchstone\] /, '');
+      const message = `Revert "${title}"\n\nThis reverts commit ${d.commit}, which Touchstone's workshop pushed.\n\nTouchstone-Proposal: ${p.id}\nTouchstone-Kind: revert`;
+      let landed: { head: string; commit: string };
+      try {
+        const head0 = await gh.headOf(d.branch);
+        landed = await this.fastForward(head0, async (head) => {
+          const now = await gh.appTreeSha(origin.apps_path, p.app, head);
+          if (now !== d.app_tree_sha) throw new StoreMoved();
+          assertAppScope([root], origin.apps_path, p.app);
+          const tree = await gh.createTree(await gh.commitTree(head), [
+            { path: root, sha: p.app_tree_sha ?? null, type: 'tree' },
+          ]);
+          return gh.createCommit(message, tree, head, this.commitAuthor());
+        });
+      } catch (err) {
+        if (err instanceof StoreMoved) {
+          throw new WorkshopRefusal(409, `${p.app} changed on ${d.branch} after Touchstone pushed it — revert it by hand`);
+        }
+        const error = err instanceof GitHubError ? err.message : String((err as Error)?.message ?? err);
+        this.opts.events.log({
+          level: 'error',
+          code: 'PROPOSAL_SUBMIT_FAILED',
+          message: `Could not revert ${p.app}`,
+          detail: { proposal: p.id, app: p.app, error },
+        });
+        throw new WorkshopRefusal(502, error);
+      }
+      const at = this.now().toISOString();
+      const updated = await this.opts.store.update(p.id, {
+        state: 'reverted',
+        delivered: { ...d, reverted: { commit: landed.commit, at, by } },
+      });
+      await this.opts.store.remember(p.task_key, {
+        input_sha: p.input_sha,
+        last_attempt_at: at,
+        outcome: 'reverted',
+        reason: `reverted by ${by}`,
+        proposal_id: p.id,
+      });
+      this.opts.events.log({
+        level: 'warn',
+        code: 'PROPOSAL_REVERTED',
+        message: `Reverted ${p.app} on ${d.branch}; the task waits for its input to change`,
+        detail: { proposal: p.id, app: p.app, branch: d.branch, commit: landed.commit, reverted: d.commit, by },
+      });
+      return updated;
+    });
+  }
+
   async discard(id: string, by: string): Promise<Proposal> {
     const p = this.opts.store.get(id);
     if (!p) throw new WorkshopRefusal(404, `no such proposal: ${id}`);
     if (p.state === 'authoring') throw new WorkshopRefusal(409, 'an authoring session is running on it');
-    if (p.state === 'submitted' || p.state === 'merged' || p.state === 'closed') {
-      throw new WorkshopRefusal(409, 'its pull request is already open — close it on GitHub instead');
+    if (p.state === 'submitted' || p.state === 'merged' || p.state === 'closed' || p.state === 'reverted') {
+      throw new WorkshopRefusal(
+        409,
+        p.delivered ? 'it was already pushed — Revert it instead' : 'its pull request is already open — close it on GitHub instead',
+      );
     }
     if (!ACTIVE_STATES.includes(p.state)) return p;
     const out = await this.opts.store.update(p.id, { state: 'discarded', reason: `discarded by ${by}` });
@@ -1474,6 +1673,7 @@ export class Workshop {
       github: this.github(),
       github_token: this.tokenInfo(),
       origin: this.opts.settings.origin,
+      delivery: { mode: this.delivery, branch: this.viewBranch() },
       armed: this.armed,
       auto_submit: this.autoSubmit,
       prs_per_day: this.prsPerDay,

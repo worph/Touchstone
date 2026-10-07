@@ -3,7 +3,8 @@
  *
  * A proposal is a change to one app's store listing that Touchstone authors against a leased
  * bench, validates with trials on every platform the standard covers, and — within a daily
- * quota — opens as a pull request under the configured GitHub account (docs/auto-app-pr.md).
+ * quota — submits under the configured GitHub account: as a pull request, or, with
+ * `workshop.delivery: push`, as a fast-forward of the store's branch (docs/auto-app-pr.md §14).
  *
  * Every verb on this page is the operator's and appears nowhere else: the chat and the admin
  * MCP can read the workshop but cannot propose, open a PR, discard, arm it or clear what it
@@ -12,7 +13,10 @@
  * Things the page must be honest about:
  *
  * - **A ready proposal has passed, it has not merged.** Nothing here moves a hallmark; that
- *   happens when a person merges the PR and the ordinary loop audits what the store offers.
+ *   happens when the change is on the store's branch — merged, or pushed — and the ordinary
+ *   loop audits what the store offers.
+ * - **A push is not reviewed.** The button says where it goes and asks first, and Revert is
+ *   beside every push so undoing one is as cheap as making it.
  * - **Memory is not a queue.** A task the workshop tried and gave up on waits for its input
  *   to change — the app, the standard, the wish file — and Clear is how a person says "try
  *   again anyway".
@@ -28,6 +32,7 @@ import {
   discardProposal,
   forgetTask,
   getProposal,
+  revertProposal,
   getWorkshop,
   proposeWork,
   setControl,
@@ -43,9 +48,10 @@ const STATE_WORD: Record<string, string> = {
   authoring: 'authoring now',
   validating: 'validating',
   revising: 'back for another round',
-  ready: 'ready to open',
+  ready: 'ready to submit',
   submitted: 'pull request open',
   merged: 'merged',
+  reverted: 'pushed, then reverted',
   closed: 'closed unmerged',
   failed: 'given up',
   cannot: 'cannot be done',
@@ -53,6 +59,41 @@ const STATE_WORD: Record<string, string> = {
 };
 
 const KIND_WORD = { fix: 'fix', currency: 'update', wish: 'add' } as const;
+
+type Delivery = WorkshopView['delivery'];
+
+/** What the submit button says: where the change goes. */
+const submitWord = (d: Delivery) => (d.mode === 'push' ? `Push to ${d.branch}` : 'Open PR');
+
+/** A push lands unreviewed, so it asks first. A pull request is reviewed on GitHub. */
+function submit(id: string, app: string, d: Delivery): Promise<unknown> {
+  if (d.mode === 'push' && !window.confirm(`Push ${app} to ${d.branch}? Nobody reviews a push — it lands as soon as you confirm.`)) {
+    return Promise.resolve();
+  }
+  return submitProposal(id);
+}
+
+function revert(id: string, app: string, branch: string): Promise<unknown> {
+  if (!window.confirm(`Revert ${app} on ${branch}? Its directory goes back to what it was before Touchstone's push.`)) {
+    return Promise.resolve();
+  }
+  return revertProposal(id);
+}
+
+/** The pushed commit, linked, and whether it was reverted. */
+function PushedChip({ p }: { p: ProposalSummary | ProposalDetail['proposal'] }) {
+  const d = p.delivered;
+  if (!d) return null;
+  return (
+    <>
+      {' '}
+      <a className="dim" href={d.url} target="_blank" rel="noreferrer" title={`pushed to ${d.branch} ${since(d.at)}`}>
+        <code>{d.commit.slice(0, 7)}</code>
+      </a>
+      {d.reverted ? <span className="dim"> · reverted {since(d.reverted.at)}</span> : null}
+    </>
+  );
+}
 
 export default function Workshop() {
   const { id } = useParams<{ id: string }>();
@@ -90,9 +131,19 @@ export default function Workshop() {
     <div className="page page--wide">
       <h1>Workshop</h1>
       <p className="dim" style={{ marginTop: -6 }}>
-        Proposals Touchstone authors against a bench, validates on every platform and opens as pull
-        requests on <strong>{v.origin}</strong> — at most {v.prs_per_day} a day, never merged by itself.
-        Nothing here moves a verdict until a person merges.
+        Proposals Touchstone authors against a bench, validates on every platform and submits to{' '}
+        <strong>{v.origin}</strong>{' '}
+        {v.delivery.mode === 'push' ? (
+          <>
+            by pushing to <code>{v.delivery.branch}</code> — at most {v.prs_per_day} a day, with nobody reviewing.
+            Nothing here moves a verdict until the next audit of what was pushed.
+          </>
+        ) : (
+          <>
+            as pull requests — at most {v.prs_per_day} a day, never merged by itself. Nothing here moves a verdict until a
+            person merges.
+          </>
+        )}
       </p>
 
       {!v.configured ? (
@@ -108,7 +159,7 @@ export default function Workshop() {
       ) : null}
       {error ? <Notice tone="warn" title="That did not work">{error}</Notice> : null}
 
-      {id ? <ProposalPanel id={id} onAct={act} quota={v.quota} /> : null}
+      {id ? <ProposalPanel id={id} onAct={act} quota={v.quota} delivery={v.delivery} /> : null}
 
       <section className="act-section">
         <h2 className="act-h">State</h2>
@@ -120,9 +171,26 @@ export default function Workshop() {
             </span>
             <span className="env-note">
               {v.github.repo ? `${v.github.repo} · ` : ''}
-              {v.github.problems.join('; ') || (v.github.label === false ? 'the "touchstone" label is missing — create it once by hand' : v.github.state === 'unconfigured' ? 'no token yet' : 'can push touchstone/… branches and open pull requests')}
+              {v.github.problems.join('; ') ||
+                (v.github.label === false
+                  ? 'the "touchstone" label is missing — create it once by hand'
+                  : v.github.state === 'unconfigured'
+                    ? 'no token yet'
+                    : v.delivery.mode === 'push'
+                      ? `can push to ${v.delivery.branch}`
+                      : 'can push touchstone/… branches and open pull requests')}
               {' · '}
               <Link to="/settings/workshop">{v.github.state === 'ok' ? 'token in Settings' : 'set it in Settings'}</Link>
+            </span>
+          </div>
+          <div className="env-row" data-status="unconfigured">
+            <span className="env-name">Delivers</span>
+            <span className="env-status">{v.delivery.mode === 'push' ? `push to ${v.delivery.branch}` : 'pull request'}</span>
+            <span className="env-note">
+              {v.delivery.mode === 'push'
+                ? 'Fast-forward only, inside the app\'s directory only, and nobody reviews it — Revert is on every push.'
+                : 'A touchstone/… branch and a labelled pull request that a person merges.'}{' '}
+              Set by <code>workshop.delivery</code> in config.yaml.
             </span>
           </div>
           <div className="env-row" data-status={v.armed ? 'healthy' : 'unconfigured'}>
@@ -193,7 +261,7 @@ export default function Workshop() {
         {live.length === 0 ? (
           <div className="act-quiet">Nothing is being worked on. Press <strong>Propose</strong> on a candidate below, or on an app's page.</div>
         ) : (
-          <ProposalTable rows={live} onAct={act} quotaAllowed={v.quota.allowed} />
+          <ProposalTable rows={live} onAct={act} quotaAllowed={v.quota.allowed} delivery={v.delivery} />
         )}
       </section>
 
@@ -258,7 +326,7 @@ export default function Workshop() {
         {done.length === 0 ? (
           <div className="act-quiet">No finished proposals yet.</div>
         ) : (
-          <ProposalTable rows={done.slice(0, 50)} onAct={act} quotaAllowed={false} />
+          <ProposalTable rows={done.slice(0, 50)} onAct={act} quotaAllowed={false} delivery={v.delivery} />
         )}
       </section>
     </div>
@@ -269,10 +337,12 @@ function ProposalTable({
   rows,
   onAct,
   quotaAllowed,
+  delivery,
 }: {
   rows: ProposalSummary[];
   onAct: (w: () => Promise<unknown>) => Promise<void>;
   quotaAllowed: boolean;
+  delivery: Delivery;
 }) {
   return (
     <div className="panel">
@@ -312,7 +382,10 @@ function ProposalTable({
                       {p.state === 'submitted' ? <MergeableChip pr={p.pr} /> : null}
                     </>
                   ) : (
-                    STATE_WORD[p.state]
+                    <>
+                      {STATE_WORD[p.state]}
+                      <PushedChip p={p} />
+                    </>
                   )}
                 </td>
                 <td className="col-num">
@@ -326,10 +399,26 @@ function ProposalTable({
                       className="btn btn--sm"
                       type="button"
                       disabled={!quotaAllowed}
-                      title={quotaAllowed ? 'Open the pull request on GitHub' : 'The daily quota is spent'}
-                      onClick={() => void onAct(() => submitProposal(p.id))}
+                      title={
+                        !quotaAllowed
+                          ? 'The daily quota is spent'
+                          : delivery.mode === 'push'
+                            ? `Push it to ${delivery.branch}, unreviewed`
+                            : 'Open the pull request on GitHub'
+                      }
+                      onClick={() => void onAct(() => submit(p.id, p.app, delivery))}
                     >
-                      Open PR
+                      {submitWord(delivery)}
+                    </button>
+                  ) : null}{' '}
+                  {p.state === 'merged' && p.delivered && !p.delivered.reverted ? (
+                    <button
+                      className="btn btn--sm"
+                      type="button"
+                      title={`Put ${p.app} back as it was before this push`}
+                      onClick={() => void onAct(() => revert(p.id, p.app, p.delivered!.branch))}
+                    >
+                      Revert
                     </button>
                   ) : null}{' '}
                   {['queued', 'revising', 'validating', 'ready'].includes(p.state) ? (
@@ -386,10 +475,12 @@ function ProposalPanel({
   id,
   onAct,
   quota,
+  delivery,
 }: {
   id: string;
   onAct: (w: () => Promise<unknown>) => Promise<void>;
   quota: WorkshopView['quota'];
+  delivery: Delivery;
 }) {
   const detail = useAsync<ProposalDetail>(() => getProposal(id), [id]);
   if (detail.error) return <Notice tone="warn" title="No such proposal">{detail.error.message}</Notice>;
@@ -419,14 +510,29 @@ function ProposalPanel({
               {p.state === 'submitted' ? <MergeableChip pr={p.pr} /> : null}
             </>
           ) : null}
+          {p.delivered ? (
+            <>
+              {' '}
+              · pushed to <code>{p.delivered.branch}</code>
+              <PushedChip p={p} />
+            </>
+          ) : null}
         </p>
         {p.reason ? <Notice tone="info" title="Why it is where it is">{p.reason}</Notice> : null}
         {p.state === 'ready' ? (
           <p>
-            <button className="btn" type="button" disabled={!quota.allowed} onClick={() => void onAct(() => submitProposal(p.id))}>
-              Open the pull request
+            <button className="btn" type="button" disabled={!quota.allowed} onClick={() => void onAct(() => submit(p.id, p.app, delivery))}>
+              {delivery.mode === 'push' ? `Push to ${delivery.branch}` : 'Open the pull request'}
             </button>{' '}
             <span className="dim">{quota.allowed ? '' : `The quota is spent; next slot ${until(quota.next_slot_at)}.`}</span>
+          </p>
+        ) : null}
+        {p.state === 'merged' && p.delivered && !p.delivered.reverted ? (
+          <p>
+            <button className="btn" type="button" onClick={() => void onAct(() => revert(p.id, p.app, p.delivered!.branch))}>
+              Revert this push
+            </button>{' '}
+            <span className="dim">Refused if anybody changed {p.app} on {p.delivered.branch} since.</span>
           </p>
         ) : null}
         {p.summary ? (

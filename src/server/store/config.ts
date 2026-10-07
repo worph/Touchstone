@@ -334,6 +334,15 @@ export interface TouchstoneConfig {
     /** The origin that receives pull requests. No other origin is ever proposed against. */
     origin: string;
     /**
+     * D16: how a submission lands. `pr` opens a pull request from a `touchstone/…` branch;
+     * `push` fast-forwards `push_branch` with nobody reviewing — validation, D7′ and the
+     * `Apps/<App>/` scope are the whole guard. Config only, never a control: whether commits land
+     * on the store's branch under a person's name is not something a model may change.
+     */
+    delivery: 'pr' | 'push';
+    /** With `delivery: push`, the one branch that is fast-forwarded. */
+    push_branch: string;
+    /**
      * Safety switch, default off — the workshop picks its own work when the line is idle.
      * Since 2026-10-07 it no longer submits anything: that is `auto_submit` (D15).
      */
@@ -439,6 +448,8 @@ function defaults(dataDir: string): TouchstoneConfig {
     },
     workshop: {
       origin: DEFAULT_ORIGIN,
+      delivery: 'pr',
+      push_branch: 'main',
       armed: false,
       auto_submit: false,
       prs_per_day: 1,
@@ -496,6 +507,9 @@ export async function loadConfig(dataDir?: string): Promise<TouchstoneConfig> {
   cfg.wishlistDir = path.resolve(dir, cfg.wishlistDir);
   cfg.stateDir = path.resolve(dir, cfg.stateDir);
   cfg.origins = resolveOrigins(cfg.origins);
+  // Anything but the literal 'push' is a pull request: the unreviewed mode is never a default.
+  cfg.workshop.delivery = cfg.workshop.delivery === 'push' ? 'push' : 'pr';
+  cfg.workshop.push_branch = String(cfg.workshop.push_branch ?? 'main');
   return cfg;
 }
 
@@ -732,6 +746,13 @@ github:
 
 workshop:
   origin: ${cfg.workshop.origin}
+  # How a submission lands. "pr": a touchstone/… branch and a pull request a person merges.
+  # "push": push_branch is fast-forwarded with nobody reviewing — validation, the
+  # no-regression rule and the Apps/<App>/ scope are the whole guard. Revert is on the Workshop
+  # page. Push also needs the token to be allowed to push to that branch (it must not be
+  # protected). Changing this needs a restart.
+  delivery: ${cfg.workshop.delivery}
+  push_branch: ${cfg.workshop.push_branch}
   # Safety switch. On: the workshop picks its own work when the queue is quiet. Off: only what
   # an operator proposes is worked on. It submits nothing either way — see auto_submit.
   # Settable at runtime from the Workshop page only.
