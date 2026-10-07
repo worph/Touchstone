@@ -13,6 +13,28 @@ metadata) and functionally (a real install on a demo instance, driven through a 
 
 ---
 
+## Installing — this repo is its own app store
+
+`Apps/Touchstone/` holds the store entry (`docker-compose.yml` with its `x-casaos` block, icon,
+thumbnail, screenshots), laid out like any CasaOS / Maison store, with `store.json` at the root naming it.
+So the repo's own archive *is* a one-app store. Add it as a store source in Maison
+(Settings → app-store sources, or `APPSTORE_URL`):
+
+```
+https://github.com/worph/Touchstone/archive/refs/heads/main.zip
+```
+
+or deep-link straight to the app without adding the source:
+
+```
+/store/github.com/worph/Touchstone/archive/refs/heads/main.zip/-/Apps/Touchstone
+```
+
+Artwork is served from this repo through jsDelivr (`@main`), so it only resolves once pushed.
+Releases still go **tag, then bump the image in `Apps/Touchstone/docker-compose.yml`**.
+
+---
+
 ## What it replaces
 
 Touchstone was not a new idea. The job was already being done, correctly, by two workflows on
@@ -155,7 +177,7 @@ Five things to know about a box in this state:
   the box for running a shipped version. Never test under `latest`.
 - **CasaOS owns that file.** Reinstalling or updating the app from the store rewrites it, which is
   also the clean way back: restore the released tag and `up -d` again.
-- **Nothing about this reaches the store.** `Apps/Touchstone/docker-compose.yml` in AppStoreLab
+- **Nothing about this reaches the store.** `Apps/Touchstone/docker-compose.yml` (here, and its copy in AppStoreLab)
   keeps pointing at the released version throughout; the `-rc` tag lives on one box and is
   deliberately not installable anywhere else.
 

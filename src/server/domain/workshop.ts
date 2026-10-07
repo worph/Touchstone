@@ -59,6 +59,29 @@ export function quota(
   return { allowed: false, next_slot_at: new Date(oldest + DAY_MS).toISOString(), opened_last_24h: recent.length };
 }
 
+// ── the commit's scope ──────────────────────────────────────────────────────────────────
+
+/**
+ * Every path a workshop commit writes must be inside `<apps_path>/<App>/` — or be that
+ * directory itself, which is how a revert puts the old tree back in one entry.
+ *
+ * Without a pull request nobody reads the diff before it lands, so this is what keeps a
+ * proposal for one app from touching `.github/`, another app, or the store's own files. It
+ * runs in both delivery modes; in PR mode it costs nothing and closes the same hole.
+ */
+export function assertAppScope(paths: readonly string[], appsPath: string, app: string): void {
+  if (!isAppDirName(app)) throw new Error(`not an app directory name: ${app}`);
+  const root = `${appsPath.replace(/^\/+|\/+$/g, '')}/${app}`;
+  if (paths.length === 0) throw new Error('a commit that writes nothing');
+  for (const p of paths) {
+    const segments = p.split('/');
+    const bad = segments.some((x) => x === '' || x === '.' || x === '..');
+    if (bad || (p !== root && !p.startsWith(`${root}/`))) {
+      throw new Error(`refusing to write ${JSON.stringify(p)}: a proposal for ${app} may only write ${root}/`);
+    }
+  }
+}
+
 // ── the branch ──────────────────────────────────────────────────────────────────────────
 
 /**

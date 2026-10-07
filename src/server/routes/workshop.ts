@@ -7,7 +7,7 @@
  * - `GET  /workshop` — everything the page draws.
  * - `GET  /workshop/proposals/:id` — one proposal, with its diff and the last round's feedback.
  * - `POST /workshop/proposals` — Propose: `{ subject, kind }` or `{ wish, kind: 'wish' }`.
- * - `POST /workshop/proposals/:id/submit` — Open PR, within the quota.
+ * - `POST /workshop/proposals/:id/submit` — submit it (Open PR, or push), within the quota.
  * - `POST /workshop/proposals/:id/discard` — throw a proposal away; charges the task nothing.
  * - `POST /workshop/arm` — `{ armed: boolean | null }`; null returns to what config.yaml says.
  * - `DELETE /workshop/memory/:task` — forget what a task taught us, so it may be picked again.
@@ -75,7 +75,7 @@ const routes: FastifyPluginAsync<WorkshopRoutesOptions> = async (app, options) =
 
   app.post<{ Params: { id: string } }>('/workshop/proposals/:id/submit', async (req, reply) => {
     if (!ws) return fail(reply, 503, 'the workshop is not wired on this installation');
-    return guard(reply, async () => ({ proposal: await ws.submitPr(req.params.id, 'operator') }));
+    return guard(reply, async () => ({ proposal: await ws.submitProposal(req.params.id, 'operator') }));
   });
 
   app.post<{ Params: { id: string } }>('/workshop/proposals/:id/discard', async (req, reply) => {

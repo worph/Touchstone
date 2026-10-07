@@ -130,8 +130,8 @@ describe('proposals', () => {
   it('counts pull requests opened since a time', async () => {
     const p = await proposal();
     await store.update(p.id, { pr: { number: 1, url: 'u', state: 'open', opened_at: '2026-10-02T10:00:00Z' } });
-    expect(store.prsOpenedSince('2026-10-02T09:00:00Z')).toHaveLength(1);
-    expect(store.prsOpenedSince('2026-10-02T11:00:00Z')).toHaveLength(0);
+    expect(store.submittedSince('2026-10-02T09:00:00Z')).toHaveLength(1);
+    expect(store.submittedSince('2026-10-02T11:00:00Z')).toHaveLength(0);
   });
 });
 

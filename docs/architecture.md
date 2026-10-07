@@ -562,7 +562,7 @@ browser by construction.
 #### The browser sidecar, copied from Newsdesk with one divergence
 
 Confirmed in scope on 2026-08-19: Touchstone embeds its own `browser-mcp` in its stack, the way
-[Newsdesk](/d/workspace/sandbox/Newsdesk) does in `deploy/docker-compose.yundera.yml`.
+[Newsdesk](/d/workspace/sandbox/Newsdesk) does in `Apps/Newsdesk/docker-compose.yml`.
 
 Newsdesk runs its own `browser-mcp` container rather than using the shared box-wide `browsermcp`,
 for exactly the reason §2.4 describes — *"that browser is busy with other work, and a publish that

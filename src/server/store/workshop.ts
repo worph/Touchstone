@@ -159,11 +159,11 @@ export class WorkshopStore {
     return touched;
   }
 
-  /** Every PR opened at or after `iso` — what the quota counts. */
-  prsOpenedSince(iso: string): string[] {
+  /** Every submission at or after `iso` — a PR opened or a push — which is what the quota counts. */
+  submittedSince(iso: string): string[] {
     const since = Date.parse(iso);
     return this.proposals
-      .map((p) => p.pr?.opened_at)
+      .map((p) => p.pr?.opened_at ?? p.delivered?.at)
       .filter((at): at is string => !!at && Date.parse(at) >= since);
   }
 
