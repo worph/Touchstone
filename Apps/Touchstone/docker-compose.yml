@@ -6,7 +6,7 @@ services:
   # sidecar below. The agent's callback comes in here directly (see TOUCHSTONE_CALLBACK_URL)
   # because it is a service-to-service call that must not meet an interactive SSO redirect.
   touchstone-backend:
-    image: ghcr.io/worph/touchstone:1.1.0
+    image: ghcr.io/worph/touchstone:1.2.6
     container_name: touchstone-backend
     hostname: touchstone-backend
     restart: unless-stopped
@@ -94,7 +94,7 @@ services:
   # makes an unprotected app look protected on the very check that catches auth bypass — so
   # the profile is ephemeral by design. Do not "fix" this by adding a volume.
   touchstone-browser-1:
-    image: ghcr.io/worph/browser-mcp:1.1.7
+    image: ghcr.io/worph/browser-mcp:1.1.8
     container_name: touchstone-browser-1
     hostname: touchstone-browser-1
     restart: unless-stopped
