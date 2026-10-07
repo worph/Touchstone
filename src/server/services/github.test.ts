@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { AlertStore } from './alerts.js';
-import { assertOwnRef, branchOf, GitHubClient, GitHubError, GitHubRefRefused } from './github.js';
+import { assertOwnRef, branchOf, GitHubClient, GitHubError, GitHubRefRefused, mergeableOf } from './github.js';
 import { GitHubProbe } from './githubprobe.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -230,5 +230,20 @@ describe('the probe', () => {
     const { c } = client({ ...healthy, 'GET /repos/Yundera/AppStore': [200, { permissions: { push: false } }] });
     const p = new GitHubProbe({ client: c, expectedLogin: 'Mael', alerts });
     expect((await p.probe()).problems.join()).toContain('cannot push');
+  });
+});
+
+describe('whether an open PR would merge', () => {
+  it('folds mergeable_state into the chip, with mergeable: false winning', () => {
+    expect(mergeableOf(true, 'clean')).toBe('clean');
+    expect(mergeableOf(true, 'has_hooks')).toBe('clean');
+    expect(mergeableOf(true, 'unstable')).toBe('unstable');
+    expect(mergeableOf(true, 'behind')).toBe('behind');
+    expect(mergeableOf(true, 'blocked')).toBe('blocked');
+    expect(mergeableOf(false, 'blocked')).toBe('conflicts');
+    expect(mergeableOf(null, 'dirty')).toBe('conflicts');
+    expect(mergeableOf(null, 'unknown')).toBe('unknown');
+    expect(mergeableOf(true, 'draft')).toBe('unknown');
+    expect(mergeableOf(undefined, undefined)).toBe('unknown');
   });
 });

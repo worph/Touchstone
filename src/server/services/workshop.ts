@@ -74,6 +74,9 @@ import type { StoreDocReader } from './storedoc.js';
 import { enqueueTrial, specFromFiles, trialIndex, trialsReady, type TrialRunDeps } from './trialrun.js';
 import { archiveUrlForCommit, extractApp, fetchStoreZip, packAppStore } from './trialstore.js';
 
+/** How old the PR poll may be before a view of the workshop starts another. */
+const PR_FRESH_MS = 60_000;
+
 /** Free re-enqueues of a validation trial after an infra outcome. */
 const MAX_TRIAL_RETRIES = 3;
 /** Free re-queues of an authoring session after an infra outcome, before it is given up. */
@@ -1175,8 +1178,25 @@ export class Workshop {
     return done;
   }
 
-  /** Follow open PRs: merged or closed, the branch is ours to delete (D12). */
+  /**
+   * Follow open PRs: merged or closed, the branch is ours to delete (D12); still open, record
+   * whether GitHub would merge it as it stands, which is what the row's chip reads.
+   *
+   * One poll at a time — the hourly timer and a page view can both ask.
+   */
   async pollPrs(): Promise<void> {
+    if (this.prPoll) return this.prPoll;
+    this.prPoll = this.pollPrsOnce().finally(() => {
+      this.prPoll = null;
+      this.prPolledAt = this.now().getTime();
+    });
+    return this.prPoll;
+  }
+
+  private prPoll: Promise<void> | null = null;
+  private prPolledAt = 0;
+
+  private async pollPrsOnce(): Promise<void> {
     const gh = this.gh;
     if (!gh) return;
     for (const p of this.opts.store.list()) {
@@ -1187,7 +1207,14 @@ export class Workshop {
       } catch {
         continue;
       }
-      if (state.state === 'open') continue;
+      if (state.state === 'open') {
+        if (p.pr.mergeable !== state.mergeable) {
+          await this.opts.store.update(p.id, {
+            pr: { ...p.pr, mergeable: state.mergeable, mergeable_at: this.now().toISOString() },
+          });
+        }
+        continue;
+      }
       if (p.ref) await gh.deleteBranch(p.ref).catch(() => undefined);
       const at = this.now().toISOString();
       if (state.merged) {
@@ -1301,6 +1328,14 @@ export class Workshop {
   // ── reading ──────────────────────────────────────────────────────────────────────────
 
   async view(): Promise<WorkshopView> {
+    // The hourly poll is too slow for a chip somebody is watching: a page open on Workshop
+    // refreshes it at most once a minute, in the background, so the view never waits on GitHub.
+    if (
+      this.now().getTime() - this.prPolledAt > PR_FRESH_MS &&
+      this.opts.store.list().some((p) => p.state === 'submitted' && p.pr)
+    ) {
+      void this.pollPrs().catch(() => undefined);
+    }
     const proposals: ProposalSummary[] = [];
     for (const p of this.opts.store.list()) {
       const live = ACTIVE_STATES.includes(p.state) || p.state === 'failed';
