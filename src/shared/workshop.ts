@@ -68,12 +68,21 @@ export interface FindingRow {
   requirement?: string;
 }
 
+/**
+ * Whether GitHub would merge an open PR as it stands, from its `mergeable_state`.
+ * `unknown` is GitHub's own answer while it is still computing, and a draft.
+ */
+export type PrMergeable = 'clean' | 'unstable' | 'behind' | 'blocked' | 'conflicts' | 'unknown';
+
 export interface ProposalPr {
   number: number;
   url: string;
   state: 'open' | 'merged' | 'closed';
   opened_at: string;
   closed_at?: string;
+  /** Read on every PR poll while it is open; absent until the first one. */
+  mergeable?: PrMergeable;
+  mergeable_at?: string;
 }
 
 export interface Proposal {

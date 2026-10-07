@@ -24,6 +24,7 @@
  */
 
 import { isAppDirName } from '../store/trials.js';
+import type { PrMergeable } from '../../shared/workshop.js';
 
 export class GitHubError extends Error {
   constructor(
@@ -208,12 +209,19 @@ export class GitHubClient {
     await this.request('POST', this.repoPath(`/issues/${pull}/labels`), { labels: [label] });
   }
 
-  async pull(n: number): Promise<{ state: 'open' | 'closed'; merged: boolean }> {
-    const r = await this.request<{ state?: string; merged?: boolean; merged_at?: string | null }>(
-      'GET',
-      this.repoPath(`/pulls/${n}`),
-    );
-    return { state: r.state === 'closed' ? 'closed' : 'open', merged: r.merged === true || !!r.merged_at };
+  async pull(n: number): Promise<{ state: 'open' | 'closed'; merged: boolean; mergeable: PrMergeable }> {
+    const r = await this.request<{
+      state?: string;
+      merged?: boolean;
+      merged_at?: string | null;
+      mergeable?: boolean | null;
+      mergeable_state?: string;
+    }>('GET', this.repoPath(`/pulls/${n}`));
+    return {
+      state: r.state === 'closed' ? 'closed' : 'open',
+      merged: r.merged === true || !!r.merged_at,
+      mergeable: mergeableOf(r.mergeable, r.mergeable_state),
+    };
   }
 
   /**
@@ -320,6 +328,30 @@ export class GitHubClient {
 
   private scrub(text: string): string {
     return this.opts.token ? text.split(this.opts.token).join('••••') : text;
+  }
+}
+
+/**
+ * GitHub's `mergeable_state` folded into what the row says. `mergeable: false` wins over the
+ * state, because GitHub reports conflicts there first; `has_hooks` is a clean merge with a
+ * pre-receive hook, which is still a clean merge.
+ */
+export function mergeableOf(mergeable: boolean | null | undefined, state: string | undefined): PrMergeable {
+  if (mergeable === false) return 'conflicts';
+  switch (state) {
+    case 'clean':
+    case 'has_hooks':
+      return 'clean';
+    case 'unstable':
+      return 'unstable';
+    case 'behind':
+      return 'behind';
+    case 'blocked':
+      return 'blocked';
+    case 'dirty':
+      return 'conflicts';
+    default:
+      return 'unknown';
   }
 }
 

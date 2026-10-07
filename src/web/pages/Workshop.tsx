@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import type { CandidateRow, ProposalDetail, ProposalSummary, WorkshopView } from '@shared/workshop';
+import type { CandidateRow, PrMergeable, ProposalDetail, ProposalPr, ProposalSummary, WorkshopView } from '@shared/workshop';
 import { ErrorState, Loading, Notice } from '../components/Ui';
 import {
   armWorkshop,
@@ -286,9 +286,12 @@ function ProposalTable({
                 </td>
                 <td>
                   {p.pr ? (
-                    <a href={p.pr.url} target="_blank" rel="noreferrer">
-                      #{p.pr.number} {STATE_WORD[p.state]}
-                    </a>
+                    <>
+                      <a href={p.pr.url} target="_blank" rel="noreferrer">
+                        #{p.pr.number} {STATE_WORD[p.state]}
+                      </a>
+                      {p.state === 'submitted' ? <MergeableChip pr={p.pr} /> : null}
+                    </>
                   ) : (
                     STATE_WORD[p.state]
                   )}
@@ -394,6 +397,7 @@ function ProposalPanel({
               <a href={p.pr.url} target="_blank" rel="noreferrer">
                 pull request #{p.pr.number}
               </a>
+              {p.state === 'submitted' ? <MergeableChip pr={p.pr} /> : null}
             </>
           ) : null}
         </p>
@@ -482,3 +486,30 @@ function ProposalPanel({
   );
 }
 
+
+/**
+ * Whether GitHub would merge the open PR as it stands — GitHub's own `mergeable_state`, read
+ * by the workshop's PR poll. Words, never colour alone; the title says what to do about it.
+ */
+const MERGEABLE: Record<PrMergeable, { word: string; tone: 'ok' | 'warn' | 'bad' | 'quiet'; why: string }> = {
+  clean: { word: 'mergeable', tone: 'ok', why: 'No conflicts, and every required check and review is satisfied.' },
+  unstable: { word: 'mergeable · checks failing', tone: 'warn', why: 'It would merge, but a non-required check is failing.' },
+  behind: { word: 'behind base', tone: 'warn', why: 'The base branch has moved on; GitHub wants it brought up to date before merging.' },
+  blocked: { word: 'blocked', tone: 'quiet', why: 'A required review or check has not passed yet.' },
+  conflicts: { word: 'conflicts', tone: 'bad', why: 'It no longer merges cleanly into the base branch.' },
+  unknown: { word: 'checking…', tone: 'quiet', why: 'GitHub has not finished working out whether it merges.' },
+};
+
+function MergeableChip({ pr }: { pr: ProposalPr }) {
+  if (!pr.mergeable) return null;
+  const m = MERGEABLE[pr.mergeable];
+  return (
+    <span
+      className="tag merge-tag"
+      data-tone={m.tone}
+      title={`${m.why}${pr.mergeable_at ? ` Checked ${since(pr.mergeable_at)}.` : ''}`}
+    >
+      {m.word}
+    </span>
+  );
+}

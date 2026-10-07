@@ -839,7 +839,12 @@ and opened as pull requests within a daily quota (docs/auto-app-pr.md).
 - **In flight** — every live proposal: its kind, state in words (*waiting for quiet*,
   *authoring now*, *validating*, *back for another round*, *ready to open*, *pull request
   open*), round, the size of its change, and **Open PR** on a ready one — disabled, with the
-  next slot, when the quota is spent. **Discard** charges the task nothing.
+  next slot, when the quota is spent. **Discard** charges the task nothing. An open pull
+  request carries a **merge chip** (2026-10-07) — *mergeable*, *mergeable · checks failing*,
+  *behind base*, *blocked*, *conflicts* or *checking…* — which is GitHub's own
+  `mergeable_state`, read by the PR poll. That poll is hourly, so a view of the page also
+  refreshes it at most once a minute, in the background; the chip's tooltip says when it was
+  checked. The same chip is on `/workshop/:id`'s pull-request line.
 - **Candidates** — what it would pick next, eligible first, each ineligible one with its
   reasons. **Propose** queues one now; **Clear** forgets a parked attempt.
 - **Wishlist** — one row per `data/wishlist/*.md`, with what is wrong with the file or what

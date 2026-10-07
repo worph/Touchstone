@@ -382,6 +382,20 @@
   background: var(--bg-2);
 }
 
+/* Whether an open workshop PR would merge as it stands — the same small tag as the standard
+   caveat beside it, toned by what it asks of the operator. */
+.merge-tag {
+  margin-left: 7px;
+  font: 500 10px/1.5 var(--sans);
+  letter-spacing: 0.03em;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.merge-tag[data-tone='ok']    { color: var(--ok);    border-color: var(--ok-dim);    background: var(--ok-dim); }
+.merge-tag[data-tone='warn']  { color: var(--major); border-color: var(--major-dim); background: var(--major-dim); }
+.merge-tag[data-tone='bad']   { color: var(--crit);  border-color: var(--crit-dim);  background: var(--crit-dim); }
+.merge-tag[data-tone='quiet'] { color: var(--fg-2);  border-color: var(--border);    background: var(--bg-2); }
+
 /* The second caveat: the app's compose moved, not the rubric. Distinct from `older standard`
    by colour as well as wording — a row can carry both, and two identical-looking chips would
    read as one warning stuttered rather than as two different things having happened. Blue

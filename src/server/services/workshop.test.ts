@@ -35,6 +35,8 @@ let ghCalls: { method: string; path: string; body?: unknown }[];
 let appTree: string;
 /** Set to make GitHub refuse blob creation, the way a token without Contents: write does. */
 let blobRefused: boolean;
+/** What GitHub says about PR #42 when it is polled. */
+let pull42: Record<string, unknown>;
 
 const enc = new TextEncoder();
 
@@ -76,7 +78,7 @@ function fakeFetch(): typeof fetch {
     if (method === 'POST' && p === '/repos/Yundera/AppStore/git/refs') return json(201, {});
     if (method === 'POST' && p === '/repos/Yundera/AppStore/pulls') return json(201, { number: 42, html_url: 'https://github.com/Yundera/AppStore/pull/42' });
     if (method === 'POST' && p === '/repos/Yundera/AppStore/issues/42/labels') return json(200, []);
-    if (p === '/repos/Yundera/AppStore/pulls/42') return json(200, { state: 'closed', merged: false });
+    if (p === '/repos/Yundera/AppStore/pulls/42') return json(200, pull42);
     if (method === 'DELETE') return json(204, undefined);
     return json(404, { message: 'Not Found' });
   }) as typeof fetch;
@@ -121,6 +123,7 @@ beforeEach(async () => {
   ghCalls = [];
   appTree = SHA('e');
   blobRefused = false;
+  pull42 = { state: 'closed', merged: false };
   released = [];
   events = new EventLog(path.join(dir, 'state'));
   await events.load();
@@ -252,6 +255,16 @@ describe('a proposal, the whole way', () => {
 
     // The quota: one a day.
     await expect(workshop.submitPr(p.id, 'operator')).rejects.toThrow(WorkshopRefusal);
+
+    // Still open: the poll records whether it would merge, and only writes when that moves.
+    pull42 = { state: 'open', merged: false, mergeable: true, mergeable_state: 'clean' };
+    await workshop.pollPrs();
+    expect(store.get(p.id)!.state).toBe('submitted');
+    expect(store.get(p.id)!.pr?.mergeable).toBe('clean');
+    pull42 = { state: 'open', merged: false, mergeable: false, mergeable_state: 'dirty' };
+    await workshop.pollPrs();
+    expect(store.get(p.id)!.pr?.mergeable).toBe('conflicts');
+    pull42 = { state: 'closed', merged: false };
 
     // Closed unmerged: the branch is deleted and the task parks.
     ghCalls = [];
