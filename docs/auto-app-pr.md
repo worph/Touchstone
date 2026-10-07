@@ -1,6 +1,7 @@
 # Touchstone — Automatic app pull requests (draft)
 
-**Raised by the operator on 2026-10-02. Status: ✅ built the same day, all four phases — see requirements §24.**
+**Raised by the operator on 2026-10-02. Status: ✅ built the same day, all four phases — see requirements §24.
+Direct delivery, the auto-submit switch and the no-regression rule (D15–D18, §14) were added on 2026-10-07.**
 
 Touchstone judges apps. This proposes that it also **repairs and adds** them: when it has
 nothing to audit, it picks one piece of work (fix a non-compliant app, bring an outdated one
@@ -33,6 +34,10 @@ built, it gets a number in `requirements.md` (R17) and §1.4 G gets a note.
 | D12 | Branch cleanup | **Touchstone deletes its own branches**, whether merged or closed. The repo-wide *Automatically delete head branches* setting is not turned on, because it would change behaviour for everyone's PRs to serve one bot's. |
 | D13 | Label | **Every Touchstone PR carries `touchstone`**, and only Touchstone PRs do. |
 | D14 | Org facts | Fine-grained tokens are **allowed**. `main` is **not protected** (§4.1 says what that means). |
+| D15 | Switches *(2026-10-07)* | **Three, independent.** *Delivery* — a pull request, or a push (D16). *Auto-submit* — whether a person approves each submission, or passing validation is the approval. *Armed* — whether the workshop starts work by itself. Until now `armed` meant both of the last two. It no longer submits, and a box that was armed is told so once in Activity (§10). |
+| D16 | Direct delivery | **Supported, off by default.** `workshop.delivery: push` fast-forwards a configured branch (`workshop.push_branch`, default `main`) instead of opening a PR. Fast-forward only, `Apps/<App>/` only, one branch only, and Revert beside every push (§14). Config only, never a control. |
+| D17 | No regression | **D7 is tightened for every delivery mode** (D7′, §7): a change may not make a requirement fail that did not fail before, or fail more severely. There is no case for a proposal that raises risk. |
+| D18 | n8n second opinion | **Dropped for pushes.** A push never becomes a PR, so `AppStore PR Review` (D10) does not see it. Accepted: that workflow is on its way out anyway. |
 
 ---
 
@@ -133,6 +138,11 @@ depend on it.
 
 **Branches are Touchstone's to clean (D12).** Merged or closed, the PR poll that notices it
 also deletes the branch, through the same guarded wrapper.
+
+**Direct delivery (D16) adds exactly one more ref write, and it is not a pattern.**
+`advanceBranch(expected, sha)` moves the one branch the client was built with, fast-forward
+only, and the client has no such branch unless `workshop.delivery` is `push`. Everything above
+still holds for every other ref. §14 has the detail.
 
 **Fallback**, if the org cannot allow fine-grained tokens: a classic token with `public_repo`,
 still pushing to a branch on the origin repo. That needs no code change, only a wider credential.
@@ -370,12 +380,42 @@ requests, in ask order like every other trial:
 - If it was blocked by `agent_error` / `parse_failed`, it counts as a failed round. It
   established nothing, and "nothing" cannot be put in a PR as evidence.
 
+**D7′ — and nothing got worse (D17, 2026-10-07).** Compliant everywhere is necessary, not
+sufficient. When the base is pinned, the subject's scoring sections are recorded on the proposal
+as its **baseline** (`Proposal.baseline`: per section, the standard revision, the risk score and
+how each requirement was judged). Once every section is compliant, the trials are compared with
+it, and a requirement **regresses** when:
+
+- validation fails it and the baseline did not (`pass`, `n-a`, `unverified`), or
+- both fail it and validation's severity is higher.
+
+A requirement the baseline never judged counts only when both ran under the **same standard
+revision**. Otherwise it may simply be new in the rubric, so the section is recorded in
+`baseline_stale` and the PR body and commit say the comparison was partial. A wish, or a section
+never audited, has no baseline and nothing to regress from. A regression is a failed round, and
+the feedback names the requirements.
+
+`risk_score` is **shown** (store → change, in the PR body and the commit) and **not gated**. The
+agent declares it, and it moves between two runs of the same bytes, so gating on it would fail
+real fixes on noise. The requirement-level comparison is the mechanical one, and it is still
+the workshop reading frontmatter, not judging (§3).
+
 ---
 
 ## 8. Submission
 
-A `ready` proposal is submitted when **the quota allows**: no Touchstone PR opened in the last
-24 hours (a rolling window, so there is no time zone to argue about). Submission:
+A `ready` proposal is submitted when **the quota allows**: fewer than `prs_per_day` submissions
+(PRs opened *or* pushes) in the last 24 hours (a rolling window, so there is no time zone to
+argue about). It is submitted by a person pressing the button, or by itself under
+`auto_submit` (D15). Submissions are serialised, so the button and auto-submit cannot both
+deliver one proposal.
+
+The shared half — the steps below up to the commit — is `submitProposal` → `buildCommit`.
+`assertAppScope` refuses any tree path outside `<apps_path>/<App>/` before a tree exists, and
+the commit message carries the validation in short plus the trailers `Touchstone-Proposal: <id>`
+and `Touchstone-Kind: <kind>`, so the evidence travels with the change in either mode. The rest
+is the **delivery**: a pull request (below, `deliverPr`) or a push (§14, `deliverPush`).
+Submission by pull request:
 
 1. Read the origin's ref. If `Apps/<App>/` changed **since the proposal's base sha**,
    discard the proposal and mark the task `infra`, not charged. It was validated against bytes
@@ -440,26 +480,46 @@ last processed this file" requirement.
 
 ## 10. Switches and controls
 
+Three switches, independent of each other (D15):
+
+| Switch | Values | Decides | Where |
+| --- | --- | --- | --- |
+| `workshop.delivery` (+ `push_branch`) | `pr` \| `push` | how an approved change lands | `config.yaml` only, restart |
+| `workshop.auto_submit` | off \| on | whether a person approves each submission | control, operator-only |
+| `workshop.armed` | off \| on | whether the workshop starts work by itself | Workshop page, `state/workshop.json` |
+
 - **`workshop.armed: false`** is a third safety switch with the same semantics as
   `scheduler.armed`: the tick still decides and logs what it *would* work on, and works nothing.
   It is settable at runtime and persists as an override. Disarming leaves a session in flight
-  alone. As with the other two: **do not arm it without the operator's say-so.**
-- **`workshop.prs_per_day`** is a *control* (`domain/controls.ts`). It passes the mechanical bar
-  because submission re-reads it. Setting it to 0 means "build and validate, but never submit",
-  which is the dry run (§12, phase 1).
+  alone. As with the other two: **do not arm it without the operator's say-so.** Since
+  2026-10-07 it **submits nothing**. A box whose workshop was armed is told so once
+  (`WORKSHOP_SUBMIT_SPLIT`, remembered in `state/workshop.json`) instead of silently stopping.
+- **`workshop.auto_submit: false`** is a *control*, operator-only like the other two workshop
+  controls. On, a proposal is submitted as soon as it passes validation, within the quota; off, a
+  person presses Open PR / Push. It combines freely with `armed`. Armed with auto-submit off, the
+  workshop builds proposals and waits. Auto-submit on and disarmed, what a person proposes
+  lands without a second click.
+- **`workshop.delivery`** is **not** a control. It describes the repo, and whether commits land
+  on the store's branch unreviewed under a person's name is not something any surface a model can
+  reach may change. Anything but the literal `push` is `pr`.
+- **`workshop.prs_per_day`** is a *control* (`domain/controls.ts`), labelled "Submissions a day"
+  since direct delivery: it counts PRs opened and pushes alike, and the key is kept for
+  stability. It passes the mechanical bar because submission re-reads it. Setting it to 0 means
+  "build and validate, but never submit", which is the dry run (§12, phase 1).
 - **The Workshop page** (D11), operator frame, beside Trials. It shows:
   - the GitHub identity and its probe;
   - the switch and the quota (with the time of the next slot);
   - the candidates in priority order, with why each is or is not eligible;
   - the proposal in flight: its round, its bench and the live browser;
   - `ready` proposals with their diff and validation trials;
-  - the history of PRs and their states;
+  - how it delivers (read-only, from `config.yaml`) and the auto-submit switch;
+  - the history of PRs and pushes and their states, with **Revert** on a push;
   - the wishlist with each file's memory.
 
   Clearing a task's memory is a button here and nowhere else.
 - **The chat and the admin MCP** get **read** tools only: `get_workshop` (candidates, memory,
-  the proposal in flight, ready proposals, open PRs). There is no tool to submit, approve or
-  clear a task's memory. A PR under a real person's GitHub identity is an outward-facing,
+  the proposal in flight, ready proposals, open PRs). There is no tool to submit, approve,
+  revert or clear a task's memory. A PR under a real person's GitHub identity is an outward-facing,
   hard-to-reverse action, and the admin MCP authenticates nobody. This is the same argument as
   the second invariant 14 makes about delete.
 
@@ -477,6 +537,7 @@ last processed this file" requirement.
 | 13: the KB never judges | Unchanged. The author reads it, and the gate is the rubric |
 | 14 (second): charging a try writes an attempt record | Every charged outcome writes its memory row. `infra` writes none |
 | *Nothing outside `store/` touches the filesystem* | `store/workshop.ts` (memory) and `store/wishlist.ts` sit beside `store/uploads.ts` |
+| *The guard is `github.ts`* (D14) | Two ref shapes and no third: `touchstone/…` created and deleted, and — with push delivery only — one configured branch fast-forwarded. Every commit, in both modes, passes `assertAppScope` first (§14) |
 
 ---
 
@@ -498,6 +559,9 @@ Build trust before autonomy. Each phase is useful on its own.
    line is idle.
 4. **The wishlist.** It is the hardest of the three: a whole listing with icon, screenshots and
    multi-language descriptions. It needs phases 1–3 to have shown the authoring is good enough.
+5. **Direct delivery** *(2026-10-07)*: auto-submit split from `armed`, D7′ for every mode, and
+   `workshop.delivery: push` with Revert (§14). Built but **not turned on** anywhere: a fresh
+   install and every existing box stay on pull requests until somebody edits `config.yaml`.
 
 ---
 
@@ -505,3 +569,73 @@ Build trust before autonomy. Each phase is useful on its own.
 
 None blocking. The one thing left to the store team is whether to put a ruleset on `main`
 (§4.1). The design does not rely on it.
+
+---
+
+## 14. Direct delivery (D16)
+
+*Added 2026-10-07.* The store team reviewing every change is the right default and stays the
+default. Direct delivery is for when it is not, which is the case once the trials and D7′ are
+trusted more than a skim of the diff: a ready proposal lands as **one commit, fast-forwarded onto
+the store's branch**, with no PR.
+
+### 14.1 What replaces the reviewer
+
+Without a PR, nobody reads the diff before it lands, so what a reviewer would have caught has to
+be impossible to send:
+
+- **Only `Apps/<App>/`.** `assertAppScope` (`domain/workshop.ts`) refuses any tree path outside
+  `<apps_path>/<App>/` (or that directory itself, for a revert), any `..`, `.` or empty segment,
+  before the tree is created. It runs in PR mode as well.
+- **Only one branch.** `GitHubClient.advanceBranch(expected, sha)` takes **no branch argument**.
+  It moves `directBranch`, which is fixed when the client is built and absent unless
+  `workshop.delivery` is `push`. The name must be an ordinary branch and never `touchstone/…`.
+  `request()` refuses PATCH on `git/refs` except through that door to that branch, and PUT on
+  any. In PR mode there is no call that moves an existing ref, exactly as before.
+- **Only fast-forward.** The body is `{ sha, force: false }`, with `force` a literal. GitHub
+  refuses anything that does not descend from the head it holds, which makes the PATCH a
+  compare-and-swap. The client also reads the head first and refuses a mismatch before the
+  PATCH.
+- **Only what was validated, and no worse than before.** D7 and D7′ (§7) are the gate. That is
+  why D7′ applies to every mode rather than to push alone.
+
+### 14.2 The push
+
+Under the submission lock:
+
+1. Read the branch head. If `Apps/<App>/` changed since the base, discard (uncharged, as §8).
+2. Build the commit on that head (`buildCommit`) and `advanceBranch(head, commit)`.
+3. If GitHub answers *not a fast-forward*, another push landed first. Re-read the head. If the
+   app moved with it, discard. Otherwise rebuild on the new head (the blobs are reused) and try
+   again, up to three attempts, then fail as `PROPOSAL_SUBMIT_FAILED` with the proposal left
+   `ready`.
+4. On success the proposal is `merged` (it is on the branch), `delivered` records the branch,
+   commit, parent and the app's new tree sha, the task's memory is `pushed`, and
+   `PROPOSAL_PUSHED` goes to the outlets and push like `PROPOSAL_SUBMITTED` does.
+
+Nothing else changes downstream. The app's compose sha moved, so the ordinary loop re-audits
+it, and that audit is the feedback that a review used to be.
+
+### 14.3 Revert
+
+`POST /workshop/proposals/:id/revert`, a button beside every push, Workshop page only (§10's
+argument: no tool reverts). It puts `Apps/<App>/` back as it was at the proposal's base in one
+`tree` entry (the base tree sha is on the proposal, so it works after the working copy is pruned).
+A wish's revert deletes the directory. It goes through the same fast-forward and lock.
+
+It is **refused** when the app's tree on the branch is no longer the one Touchstone pushed:
+restoring the old tree would erase whoever changed it since, so that case is a revert by hand.
+A reverted proposal is `reverted`, and its memory is `reverted`, which parks the task until its
+input changes, like a closed PR.
+
+### 14.4 What is given up
+
+- **The PR body.** Its validation table, standard hashes and D7′ line travel in the commit
+  message instead. The full reports stay in the proposal's `evidence/` and on the trials.
+- **The label** (D13). The trailers `Touchstone-Proposal` / `Touchstone-Kind` are what
+  `git log --grep` finds instead.
+- **The n8n second opinion** (D18). Accepted.
+- **Branch protection compatibility.** A protected push branch refuses every push. The probe
+  asks (`GET /branches/{b}`) and reports it as a blocking problem, so it shows up on the
+  Workshop page before anybody presses Push, not as a 422 after.
+

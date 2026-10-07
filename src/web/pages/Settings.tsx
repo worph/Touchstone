@@ -123,7 +123,7 @@ export default function Settings() {
           <GitHubSection />
           <ControlsSection
             // Arm/Disarm stays on Workshop, for the same reason Start/Stop stays on Automation.
-            pick={(row) => row.key.startsWith('workshop.') && row.key !== 'workshop.armed'}
+            pick={(row) => row.key.startsWith('workshop.') && row.key !== 'workshop.armed' && row.key !== 'workshop.auto_submit'}
             intro={
               <>
                 Arming the workshop is on <Link to="/workshop">Workshop</Link>.
