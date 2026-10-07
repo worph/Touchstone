@@ -223,6 +223,9 @@ export interface WorkshopView {
   };
   origin: string;
   armed: boolean;
+  /** Whether a ready proposal is submitted without a person pressing the button (D15). */
+  auto_submit: boolean;
+  /** Submissions (PRs opened or pushes) allowed in a rolling 24 h; the name predates push. */
   prs_per_day: number;
   quota: { allowed: boolean; next_slot_at?: string; opened_last_24h: number };
   live?: WorkshopLive;

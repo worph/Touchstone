@@ -109,9 +109,14 @@ const ROUTES: Record<string, { beacon: boolean; push: boolean }> = {
    * the outlets too; `CANNOT` is the agent saying a task is impossible as written, which is
    * the only way a wish file's author learns to rewrite it. Rounds, infra holds and the rest
    * are logged: a proposal moving through its states is not news.
+   *
+   * `PUSHED` and `REVERTED` are the direct-delivery equivalents of `SUBMITTED`: a change on the
+   * store's branch that nobody reviewed is exactly what the store team must hear about.
    */
   PROPOSAL_READY: { beacon: false, push: true },
   PROPOSAL_SUBMITTED: { beacon: true, push: true },
+  PROPOSAL_PUSHED: { beacon: true, push: true },
+  PROPOSAL_REVERTED: { beacon: true, push: true },
   PROPOSAL_CANNOT: { beacon: false, push: true },
 };
 

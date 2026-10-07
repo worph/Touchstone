@@ -8,7 +8,7 @@
  *     → dispatch: pin the base, open a session, hand the agent its prompt
  *     → the agent edits the working copy through `routes/mcp-workshop.ts`, ends with submit
  *     → validation: one trial per platform the standard covers, queued like any trial
- *     → ready → submitPr (a person, or automatically when armed) → merged | closed
+ *     → ready → submitPr (a person, or automatically under auto_submit) → merged | closed
  *
  * Three rules hold throughout, and each is structural here rather than remembered:
  *
@@ -87,6 +87,7 @@ const STAGE_TTL_MS = 3 * 60 * 60_000;
 export interface WorkshopSettings {
   origin: string;
   armed: boolean;
+  auto_submit: boolean;
   prs_per_day: number;
   max_rounds: number;
   session_minutes: number;
@@ -156,6 +157,7 @@ export class Workshop {
   private readonly stages = new Map<string, Stage>();
   private live?: { id: string; label: string; started_at: string; token: string; browser?: string; app?: string };
   private prsPerDayOverride?: number;
+  private autoSubmitOverride?: boolean;
   private openPrs: { apps: Set<string> | null; at: number } = { apps: null, at: 0 };
   private evaluating = new Set<string>();
   /**
@@ -207,8 +209,8 @@ export class Workshop {
       level: 'warn',
       code: armed ? 'WORKSHOP_ARMED' : 'WORKSHOP_DISARMED',
       message: armed
-        ? 'The workshop was armed — it will pick its own work and open pull requests within the quota'
-        : 'The workshop was disarmed — nothing is picked or submitted automatically',
+        ? 'The workshop was armed — it will pick its own work when the queue is quiet'
+        : 'The workshop was disarmed — it works only on what a person proposes',
       detail: { armed, by },
     });
     this.opts.kick?.();
@@ -221,6 +223,45 @@ export class Workshop {
       code: this.armed ? 'WORKSHOP_ARMED' : 'WORKSHOP_DISARMED',
       message: 'The workshop switch went back to what config.yaml says',
       detail: { armed: this.armed, by },
+    });
+  }
+
+  /** Whether a ready proposal is submitted without a person pressing the button (D15). */
+  get autoSubmit(): boolean {
+    return this.autoSubmitOverride ?? this.opts.settings.auto_submit;
+  }
+
+  get autoSubmitDefault(): boolean {
+    return this.opts.settings.auto_submit;
+  }
+
+  setAutoSubmit(on: boolean): void {
+    this.autoSubmitOverride = on;
+    if (on) void this.maybeSubmit().catch(() => undefined);
+  }
+
+  clearAutoSubmit(): void {
+    this.autoSubmitOverride = undefined;
+  }
+
+  /**
+   * Until 2026-10-07 `armed` also submitted ready proposals. It no longer does, and an armed
+   * box that boots into the new default stops submitting — the safe direction, but it must be
+   * a row in Activity rather than a silence. Called by the composition root after the controls
+   * have been re-applied, so an `auto_submit` override already counts; said once per data
+   * directory, because armed-without-auto-submit is a legitimate setting from then on.
+   */
+  async noteSubmitSplit(): Promise<void> {
+    const key = 'submit-split-2026-10-07';
+    if (this.opts.store.noticed(key)) return;
+    await this.opts.store.notice(key);
+    if (!this.armed || this.autoSubmit) return;
+    this.opts.events.log({
+      level: 'warn',
+      code: 'WORKSHOP_SUBMIT_SPLIT',
+      message:
+        'The workshop is armed, which no longer submits ready proposals by itself — turn on auto-submit to keep the old behaviour',
+      detail: { armed: true, auto_submit: false },
     });
   }
 
@@ -998,9 +1039,9 @@ export class Workshop {
 
   // ── submission ───────────────────────────────────────────────────────────────────────
 
-  /** Automatic submission (phase 2): when armed and the quota allows, the oldest ready. */
+  /** Automatic submission: under auto_submit and when the quota allows, the oldest ready. */
   async maybeSubmit(): Promise<void> {
-    if (!this.armed || !this.quotaNow().allowed) return;
+    if (!this.autoSubmit || !this.quotaNow().allowed) return;
     const ready = this.opts.store
       .list()
       .filter((p) => p.state === 'ready')
@@ -1360,6 +1401,7 @@ export class Workshop {
       github_token: this.tokenInfo(),
       origin: this.opts.settings.origin,
       armed: this.armed,
+      auto_submit: this.autoSubmit,
       prs_per_day: this.prsPerDay,
       quota: this.quotaNow(),
       ...(this.liveView() ? { live: this.liveView()! } : {}),

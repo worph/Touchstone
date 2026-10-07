@@ -139,6 +139,9 @@ export const EVENT_CODES = {
   PROPOSAL_SUBMIT_FAILED: { category: 'workshop', label: 'pull request could not be opened' },
   PROPOSAL_MERGED: { category: 'workshop', label: 'pull request merged' },
   PROPOSAL_CLOSED: { category: 'workshop', label: 'pull request closed unmerged' },
+  PROPOSAL_PUSHED: { category: 'workshop', label: 'change pushed' },
+  PROPOSAL_REVERTED: { category: 'workshop', label: 'pushed change reverted' },
+  WORKSHOP_SUBMIT_SPLIT: { category: 'workshop', label: 'armed no longer submits' },
   WORKSHOP_ARMED: { category: 'workshop', label: 'workshop armed' },
   WORKSHOP_DISARMED: { category: 'workshop', label: 'workshop disarmed' },
   WORKSHOP_MEMORY_CLEARED: { category: 'workshop', label: 'task memory cleared' },
@@ -285,6 +288,9 @@ interface EventDetails {
   PROPOSAL_SUBMIT_FAILED: { proposal: string; app: string; error: string };
   PROPOSAL_MERGED: { proposal: string; app: string; pr: number };
   PROPOSAL_CLOSED: { proposal: string; app: string; pr: number };
+  PROPOSAL_PUSHED: { proposal: string; app: string; branch: string; commit: string; url: string; by: string };
+  PROPOSAL_REVERTED: { proposal: string; app: string; branch: string; commit: string; reverted: string; by: string };
+  WORKSHOP_SUBMIT_SPLIT: { armed: boolean; auto_submit: boolean };
   WORKSHOP_ARMED: { armed: boolean; by: string };
   WORKSHOP_DISARMED: { armed: boolean; by: string };
   WORKSHOP_MEMORY_CLEARED: { task: string; by: string };

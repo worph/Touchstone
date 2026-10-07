@@ -333,9 +333,20 @@ export interface TouchstoneConfig {
   workshop: {
     /** The origin that receives pull requests. No other origin is ever proposed against. */
     origin: string;
-    /** Safety switch, default off — automatic selection and submission. */
+    /**
+     * Safety switch, default off — the workshop picks its own work when the line is idle.
+     * Since 2026-10-07 it no longer submits anything: that is `auto_submit` (D15).
+     */
     armed: boolean;
-    /** D2: at most this many PRs opened in any rolling 24 hours. 0 is a dry run. */
+    /**
+     * Safety switch, default off — a proposal that passes validation is submitted without
+     * anybody pressing the button. Independent of `armed`, which is about who *starts* work.
+     */
+    auto_submit: boolean;
+    /**
+     * D2: at most this many submissions — pull requests opened or pushes — in any rolling 24
+     * hours. 0 is a dry run. The key predates direct delivery and is kept for stability.
+     */
     prs_per_day: number;
     /** Authoring + validation rounds before a proposal is given up. */
     max_rounds: number;
@@ -429,6 +440,7 @@ function defaults(dataDir: string): TouchstoneConfig {
     workshop: {
       origin: DEFAULT_ORIGIN,
       armed: false,
+      auto_submit: false,
       prs_per_day: 1,
       max_rounds: 3,
       session_minutes: 90,
@@ -720,10 +732,14 @@ github:
 
 workshop:
   origin: ${cfg.workshop.origin}
-  # Safety switch. Off: nothing is picked or submitted automatically; an operator can still
-  # press Propose and Open PR. Settable at runtime from the Workshop page only.
+  # Safety switch. On: the workshop picks its own work when the queue is quiet. Off: only what
+  # an operator proposes is worked on. It submits nothing either way — see auto_submit.
+  # Settable at runtime from the Workshop page only.
   armed: false
-  # At most this many PRs in any rolling 24 hours. 0 = build and validate, never submit.
+  # Safety switch. On: a proposal that passes validation is submitted (PR opened or pushed)
+  # without anybody pressing the button, within the quota. Off: a person presses it.
+  auto_submit: false
+  # At most this many submissions in any rolling 24 hours. 0 = build and validate, never submit.
   prs_per_day: ${cfg.workshop.prs_per_day}
   max_rounds: ${cfg.workshop.max_rounds}
   session_minutes: ${cfg.workshop.session_minutes}

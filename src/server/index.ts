@@ -457,6 +457,7 @@ const workshop: Workshop = new Workshop({
   settings: {
     origin: cfg.workshop.origin,
     armed: cfg.workshop.armed,
+    auto_submit: cfg.workshop.auto_submit,
     prs_per_day: cfg.workshop.prs_per_day,
     max_rounds: cfg.workshop.max_rounds,
     session_minutes: cfg.workshop.session_minutes,
@@ -681,6 +682,7 @@ const restored = await applyStoredControls(controlPorts);
 if (restored.applied.length > 0) {
   app.log.info({ controls: restored.applied }, 'restored settings changed since boot config');
 }
+await workshop.noteSubmitSplit();
 
 /**
  * Liveness, for the container healthcheck and nothing else.

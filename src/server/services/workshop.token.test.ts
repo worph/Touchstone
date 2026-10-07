@@ -45,7 +45,7 @@ async function workshop(bootToken: string): Promise<Workshop> {
   const github = bootToken ? make(bootToken) : undefined;
   return new Workshop({
     store,
-    settings: { origin: 'yundera', armed: false, prs_per_day: 1, max_rounds: 2, session_minutes: 10, currency_section: 'currency', login: '', commit_name: 'x', commit_email: '' },
+    settings: { origin: 'yundera', armed: false, auto_submit: false, prs_per_day: 1, max_rounds: 2, session_minutes: 10, currency_section: 'currency', login: '', commit_name: 'x', commit_email: '' },
     origins: [ORIGIN],
     ...(github ? { github } : {}),
     probe: new GitHubProbe({ ...(github ? { client: github } : {}), expectedLogin: '' }),

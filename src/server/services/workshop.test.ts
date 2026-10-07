@@ -144,6 +144,7 @@ beforeEach(async () => {
     settings: {
       origin: 'yundera',
       armed: false,
+      auto_submit: false,
       prs_per_day: 1,
       max_rounds: 2,
       session_minutes: 10,
@@ -394,5 +395,51 @@ describe('the rules around it', () => {
     const slot = await workshop.slot();
     expect(slot).toMatchObject({ id: 'cand:fix:yundera~X', class: 'idle' });
     expect(store.list()).toHaveLength(0);
+  });
+});
+
+/** Author a one-line fix and run it through validation; returns the proposal id. */
+async function toReady(verdicts: Record<string, string> = {}): Promise<string> {
+  agentScript = async (prompt, ws) => {
+    const token = tokenOf(prompt);
+    await ws.writeFile(token, 'docker-compose.yml', 'services:\n  x:\n    image: x:1.2.3\n');
+    ws.submit(token, 'Pinned the image.');
+    return { ok: true, text: 'ok', payload: '' };
+  };
+  const p = await workshop.propose({ subject: 'X', kind: 'fix' }, 'operator');
+  await workshop.dispatch(p.id, lease);
+  await finishTrials(verdicts);
+  return p.id;
+}
+
+describe('the three switches (D15)', () => {
+  it('armed picks work but submits nothing by itself', async () => {
+    await workshop.setArmed(true, 'test');
+    const id = await toReady();
+    expect(store.get(id)!.state).toBe('ready');
+    await workshop.maybeSubmit();
+    expect(store.get(id)!.state).toBe('ready');
+  });
+
+  it('auto-submit submits what a person proposed, with the workshop disarmed', async () => {
+    workshop.setAutoSubmit(true);
+    expect(workshop.armed).toBe(false);
+    const id = await toReady();
+    expect(store.get(id)!.state).toBe('submitted');
+    expect(store.get(id)!.pr?.number).toBe(42);
+  });
+
+  it('says once that armed no longer submits, and never again', async () => {
+    await workshop.setArmed(true, 'test');
+    await workshop.noteSubmitSplit();
+    await workshop.noteSubmitSplit();
+    await events.flush();
+    expect(events.query({}).filter((e) => e.code === 'WORKSHOP_SUBMIT_SPLIT')).toHaveLength(1);
+  });
+
+  it('says nothing to a box that was not armed', async () => {
+    await workshop.noteSubmitSplit();
+    await events.flush();
+    expect(events.query({}).filter((e) => e.code === 'WORKSHOP_SUBMIT_SPLIT')).toHaveLength(0);
   });
 });
