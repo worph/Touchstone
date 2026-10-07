@@ -69,6 +69,26 @@ export interface FindingRow {
 }
 
 /**
+ * One scoring section of the subject as it stood when a proposal was built on it — what D7′
+ * compares the validation trials against. Compact on purpose: it lives in `state/workshop.json`.
+ */
+export interface BaselineSection {
+  standard_sha256?: string;
+  risk_score: number | null;
+  /** Requirement id → how the baseline judged it. */
+  requirements: Record<string, { verdict: string; severity?: string }>;
+}
+
+/**
+ * A requirement the change made worse (D7′): it fails in validation where the baseline did not
+ * fail it, or it fails more severely. `was` is the baseline's verdict, its severity when both
+ * failed, or `absent` when the baseline did not judge it under the same standard.
+ */
+export interface Regression extends FindingRow {
+  was: string;
+}
+
+/**
  * Whether GitHub would merge an open PR as it stands, from its `mergeable_state`.
  * `unknown` is GitHub's own answer while it is still computing, and a draft.
  */
@@ -113,6 +133,13 @@ export interface Proposal {
   trials: ProposalTrial[];
   validation?: SectionResult[];
   before_findings?: FindingRow[];
+  /** The subject's scoring sections when the base was pinned — D7′'s reference. Absent for a wish. */
+  baseline?: Record<string, BaselineSection>;
+  /**
+   * Sections whose baseline was judged under another standard revision, so only the
+   * requirements both runs judged were compared. Said in the PR body and the commit.
+   */
+  baseline_stale?: string[];
   /** `major` when a currency proposal crosses a major version (best effort). */
   major?: boolean;
   /** For a currency proposal: the version it moves to, when one could be named. */

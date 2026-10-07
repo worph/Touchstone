@@ -46,6 +46,7 @@ import { readStandards } from '../domain/standards.js';
 import { resolveSubjectKey } from '../domain/subjects.js';
 import type { AssayStore } from '../domain/store.js';
 import {
+  baselineOf,
   candidates as candidateRows,
   crossesMajor,
   currencyOf,
@@ -53,6 +54,7 @@ import {
   judgeValidation,
   quota,
   refFor,
+  regressionsOf,
   resultOf,
   taskKey,
 } from '../domain/workshop.js';
@@ -718,10 +720,15 @@ export class Workshop {
     }
     await this.opts.store.setBase(p.id, files);
     const patch: Partial<Proposal> = { base_sha: base, app_tree_sha: appTree };
-    if (p.kind === 'fix' && p.subject) {
+    if (p.kind !== 'wish' && p.subject) {
+      // What D7′ compares validation against: the subject as it stood when the base was pinned,
+      // so a verdict that lands mid-flight cannot move the bar the change is held to.
       const state = await this.stateOf(p.subject);
       const scoring = new Set((await this.sections()).filter((s) => s.scores).map((s) => s.id));
-      if (state) patch.before_findings = findingsOf(state.sections, scoring);
+      if (state) {
+        patch.baseline = baselineOf(state.sections, scoring);
+        if (p.kind === 'fix') patch.before_findings = findingsOf(state.sections, scoring);
+      }
     }
     if (p.kind === 'currency' && p.subject) {
       const state = await this.stateOf(p.subject);
@@ -957,6 +964,7 @@ export class Workshop {
       const results: SectionResult[] = [];
       const reports: { section: string; text: string; slug: string }[] = [];
       const failingRecs: { meta: AssayRecord['meta']; path: string }[] = [];
+      const trialRecs: Record<string, AssayRecord | null> = {};
       for (const { target, sections } of plan) {
         const slug = current.get(target);
         if (!slug) {
@@ -967,6 +975,7 @@ export class Workshop {
         const state = idx ? subjectHallmark(asSubjectKey(`${slug}~${p.app}`), idx.all()).state : undefined;
         for (const s of sections) {
           const rec = state?.sections[s] ?? null;
+          trialRecs[s] = rec;
           results.push(resultOf(s, slug, rec));
           if (rec && idx) {
             const file = await idx.read(rec.path).catch(() => null);
@@ -979,13 +988,34 @@ export class Workshop {
         plan.flatMap((x) => x.sections),
         results,
       );
+      const { regressions, stale } = regressionsOf(p.baseline, trialRecs);
+      if (verdict.kind === 'pass' && regressions.length > 0) {
+        // D7′: every section compliant is not enough if the change made something worse.
+        await this.opts.store.update(p.id, { validation: results, baseline_stale: stale });
+        const lines = regressions.map(
+          (r) =>
+            `- \`${r.id}\` (${r.section}) now fails${r.severity ? ` as ${r.severity}` : ''} — it was ${r.was === 'absent' ? 'not failing' : r.was} before this change${r.requirement ? `: ${r.requirement}` : ''}`,
+        );
+        const feedback = [
+          'Every section came back compliant, but the change made these requirements worse than the app as it is in the store. A proposal may not add a finding or raise its severity:',
+          '',
+          ...lines,
+        ].join('\n');
+        await this.failRound(p, feedback, [...new Set(regressions.map((r) => r.section))]);
+        return;
+      }
       if (verdict.kind === 'pass') {
         for (const r of reports) {
           const name = await this.opts.store.writeEvidence(p.id, `${r.section}.md`, r.text);
           const row = results.find((x) => x.section === r.section);
           if (row) row.evidence = name;
         }
-        await this.opts.store.update(p.id, { state: 'ready', validation: results, reason: undefined });
+        await this.opts.store.update(p.id, {
+          state: 'ready',
+          validation: results,
+          reason: undefined,
+          ...(p.baseline ? { baseline_stale: stale } : {}),
+        });
         this.opts.events.log({
           level: 'info',
           code: 'PROPOSAL_READY',

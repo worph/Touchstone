@@ -106,7 +106,7 @@ function archiveRecords(): AssayRecord[] {
       subject: asSubjectKey('yundera~X'),
       section: 'static',
     },
-    { meta: meta('functional', 'compliant'), path: 'yundera/X/a-functional.md', subject: asSubjectKey('yundera~X'), section: 'functional' },
+    { meta: meta('functional', 'compliant', { requirements: [{ id: 'first-login', verdict: 'pass' }] }), path: 'yundera/X/a-functional.md', subject: asSubjectKey('yundera~X'), section: 'functional' },
     { meta: meta('functional@foss', 'compliant', { target: 'foss' }), path: 'yundera/X/a-ff.md', subject: asSubjectKey('yundera~X'), section: 'functional@foss' },
   ] as unknown as AssayRecord[];
 }
@@ -181,7 +181,7 @@ const tokenOf = (prompt: string) => /session_token is (\S+?) -/.exec(prompt)![1]
 const lease = { id: 'L1', target: 'yundera', bench: { name: 'b', url: 'https://bench.example', status: 'healthy' }, browser: { name: 'br', kind: 'browser', url: 'http://browser/mcp', status: 'healthy' }, holder: 'w', since: '' } as never;
 
 /** Finish every queued trial of a proposal with these verdicts per section. */
-async function finishTrials(verdicts: Record<string, string>) {
+async function finishTrials(verdicts: Record<string, string>, extra: Record<string, Record<string, unknown>> = {}) {
   for (const t of trials.queued()) {
     const sections = (t.target ?? 'yundera') === 'foss' ? ['functional@foss'] : ['static', 'functional'];
     for (const section of sections) {
@@ -200,6 +200,7 @@ async function finishTrials(verdicts: Record<string, string>) {
           started_at: '2026-10-02T10:00:00Z',
           finished_at: '2026-10-02T10:20:00Z',
           ...(verdicts[section] === 'non-compliant' ? { requirements: [{ id: 'auth', verdict: 'fail', severity: 'critical' }] } : {}),
+          ...(extra[section] ?? {}),
         } as never,
         '# report\n',
       );
@@ -399,7 +400,7 @@ describe('the rules around it', () => {
 });
 
 /** Author a one-line fix and run it through validation; returns the proposal id. */
-async function toReady(verdicts: Record<string, string> = {}): Promise<string> {
+async function toReady(verdicts: Record<string, string> = {}, extra: Record<string, Record<string, unknown>> = {}): Promise<string> {
   agentScript = async (prompt, ws) => {
     const token = tokenOf(prompt);
     await ws.writeFile(token, 'docker-compose.yml', 'services:\n  x:\n    image: x:1.2.3\n');
@@ -408,7 +409,7 @@ async function toReady(verdicts: Record<string, string> = {}): Promise<string> {
   };
   const p = await workshop.propose({ subject: 'X', kind: 'fix' }, 'operator');
   await workshop.dispatch(p.id, lease);
-  await finishTrials(verdicts);
+  await finishTrials(verdicts, extra);
   return p.id;
 }
 
@@ -441,5 +442,26 @@ describe('the three switches (D15)', () => {
     await workshop.noteSubmitSplit();
     await events.flush();
     expect(events.query({}).filter((e) => e.code === 'WORKSHOP_SUBMIT_SPLIT')).toHaveLength(0);
+  });
+});
+
+describe('D7′ in validation', () => {
+  it('a compliant round that makes a requirement worse goes back, naming it', async () => {
+    const id = await toReady(
+      {},
+      { functional: { standard_sha256: shas.functional, requirements: [{ id: 'first-login', verdict: 'fail', severity: 'minor', requirement: 'credentials documented' }] } },
+    );
+    const p = store.get(id)!;
+    expect(p.baseline?.functional?.requirements['first-login']).toEqual({ verdict: 'pass' });
+    expect(p.state).toBe('revising');
+    const detail = await workshop.detail(id);
+    expect(JSON.stringify(detail)).toContain('first-login');
+  });
+
+  it('passes, and says the comparison was partial, when the baseline ran under another standard', async () => {
+    const id = await toReady({}, { functional: { requirements: [{ id: 'brand-new', verdict: 'fail', severity: 'minor' }] } });
+    const p = store.get(id)!;
+    expect(p.state).toBe('ready');
+    expect(p.baseline_stale).toContain('functional');
   });
 });

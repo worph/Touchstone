@@ -11,10 +11,12 @@ import { createHash } from 'node:crypto';
 
 import type { AssayMeta, AssayRecord, SubjectState } from '../../shared/types.js';
 import type {
+  BaselineSection,
   CandidateRow,
   FindingRow,
   Proposal,
   ProposalKind,
+  Regression,
   SectionResult,
   TaskMemory,
   Wish,
@@ -133,9 +135,12 @@ export function resultOf(section: string, slug: string, rec: AssayRecord | null 
 
 // ── findings ────────────────────────────────────────────────────────────────────────────
 
+const RANK: Record<string, number> = { critical: 3, major: 2, minor: 1 };
+const rankOf = (severity: string | null | undefined) => RANK[severity ?? ''] ?? 0;
+
 /** Every failing requirement across a subject's current sections, most severe first. */
 export function findingsOf(sections: Record<string, AssayRecord | null>, scoring: ReadonlySet<string>): FindingRow[] {
-  const rank: Record<string, number> = { critical: 3, major: 2, minor: 1 };
+  const rank = RANK;
   const out: FindingRow[] = [];
   for (const [section, rec] of Object.entries(sections)) {
     if (!rec || !scoring.has(section)) continue;
@@ -150,6 +155,72 @@ export function findingsOf(sections: Record<string, AssayRecord | null>, scoring
     }
   }
   return out.sort((a, b) => (rank[b.severity ?? ''] ?? 0) - (rank[a.severity ?? ''] ?? 0) || a.id.localeCompare(b.id));
+}
+
+// ── D7′: never add a finding ────────────────────────────────────────────────────────────
+
+/** The subject's scoring sections, reduced to what D7′ compares. Sections never audited are left out. */
+export function baselineOf(
+  sections: Record<string, AssayRecord | null>,
+  scoring: ReadonlySet<string>,
+): Record<string, BaselineSection> {
+  const out: Record<string, BaselineSection> = {};
+  for (const [section, rec] of Object.entries(sections)) {
+    if (!rec || !scoring.has(section) || rec.meta.status !== 'done') continue;
+    const requirements: BaselineSection['requirements'] = {};
+    for (const r of rec.meta.requirements ?? []) {
+      requirements[r.id] = { verdict: r.verdict, ...(r.severity ? { severity: r.severity } : {}) };
+    }
+    out[section] = {
+      ...(typeof rec.meta.standard_sha256 === 'string' ? { standard_sha256: rec.meta.standard_sha256 } : {}),
+      risk_score: typeof rec.meta.risk_score === 'number' ? rec.meta.risk_score : null,
+      requirements,
+    };
+  }
+  return out;
+}
+
+/**
+ * What the change made worse, against the baseline it was built on (D7′). Every delivery
+ * mode applies it: there is no case for a proposal that raises risk.
+ *
+ * A requirement regresses when validation fails it and the baseline did not, or fails it more
+ * severely. One the baseline never judged counts only when both ran under the same standard
+ * revision — otherwise it may simply be new in the rubric, and that section is reported as
+ * `stale` instead. `risk_score` is not compared: the agent declares it, and it moves between
+ * two runs of the same bytes. A section with no baseline (a wish, a section never audited)
+ * has nothing to regress from.
+ */
+export function regressionsOf(
+  baseline: Record<string, BaselineSection> | undefined,
+  trial: Record<string, AssayRecord | null>,
+): { regressions: Regression[]; stale: string[] } {
+  const regressions: Regression[] = [];
+  const stale: string[] = [];
+  for (const [section, base] of Object.entries(baseline ?? {})) {
+    const rec = trial[section];
+    if (!rec) continue;
+    const sameStandard = !!base.standard_sha256 && base.standard_sha256 === rec.meta.standard_sha256;
+    if (!sameStandard) stale.push(section);
+    for (const r of rec.meta.requirements ?? []) {
+      if (r.verdict !== 'fail') continue;
+      const was = base.requirements[r.id];
+      let from: string | null = null;
+      if (!was) from = sameStandard ? 'absent' : null;
+      else if (was.verdict !== 'fail') from = was.verdict;
+      else if (rankOf(r.severity) > rankOf(was.severity)) from = was.severity ?? 'fail';
+      if (from === null) continue;
+      regressions.push({
+        section,
+        id: r.id,
+        severity: r.severity ?? null,
+        ...(r.requirement ? { requirement: r.requirement } : {}),
+        was: from,
+      });
+    }
+  }
+  regressions.sort((a, b) => rankOf(b.severity) - rankOf(a.severity) || a.id.localeCompare(b.id));
+  return { regressions, stale: stale.sort() };
 }
 
 // ── currency ────────────────────────────────────────────────────────────────────────────
