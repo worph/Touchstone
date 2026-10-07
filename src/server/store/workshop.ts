@@ -53,6 +53,8 @@ interface WorkshopFile {
   proposals: Proposal[];
   memory: Record<string, TaskMemory>;
   armed?: boolean;
+  /** One-time notices already given — keys, so a restart does not repeat one. */
+  notices?: string[];
 }
 
 type FileMap = Record<string, string>;
@@ -62,6 +64,7 @@ export class WorkshopStore {
   private proposals: Proposal[] = [];
   private memoryRows: Record<string, TaskMemory> = {};
   private armedOverride?: boolean;
+  private notices = new Set<string>();
 
   constructor(
     stateDir: string,
@@ -77,6 +80,7 @@ export class WorkshopStore {
     this.proposals = Array.isArray(stored?.proposals) ? stored.proposals : [];
     this.memoryRows = stored?.memory && typeof stored.memory === 'object' ? stored.memory : {};
     this.armedOverride = typeof stored?.armed === 'boolean' ? stored.armed : undefined;
+    this.notices = new Set(Array.isArray(stored?.notices) ? stored.notices.filter((n) => typeof n === 'string') : []);
   }
 
   private async persist(): Promise<void> {
@@ -84,6 +88,7 @@ export class WorkshopStore {
       proposals: this.proposals,
       memory: this.memoryRows,
       ...(this.armedOverride === undefined ? {} : { armed: this.armedOverride }),
+      ...(this.notices.size > 0 ? { notices: [...this.notices].sort() } : {}),
     };
     await writeJsonAtomic(this.file, out);
   }
@@ -376,6 +381,18 @@ export class WorkshopStore {
 
   async setArmed(value: boolean | undefined): Promise<void> {
     this.armedOverride = value;
+    await this.persist();
+  }
+
+  // ── one-time notices ─────────────────────────────────────────────────────────────────
+
+  noticed(key: string): boolean {
+    return this.notices.has(key);
+  }
+
+  async notice(key: string): Promise<void> {
+    if (this.notices.has(key)) return;
+    this.notices.add(key);
     await this.persist();
   }
 

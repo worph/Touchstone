@@ -92,9 +92,9 @@ interface ControlDef {
    * Settable from the Automation and Workshop pages and nowhere else — not by the chat's
    * `set_control`, and therefore not over the admin MCP, which authenticates nobody.
    *
-   * The workshop's two controls carry it: arming it, or raising its quota, is how pull
-   * requests under a person's GitHub identity start being opened, and no model may cause
-   * that (docs/auto-app-pr.md §10).
+   * The workshop's controls carry it: arming it, letting it submit by itself, or raising its
+   * quota, is how pull requests and pushes under a person's GitHub identity start happening,
+   * and no model may cause that (docs/auto-app-pr.md §10).
    */
   operatorOnly?: true;
 }
@@ -258,7 +258,7 @@ export const CONTROLS: ControlDef[] = [
     group: WORKSHOP,
     kind: 'boolean',
     description:
-      'Whether the workshop picks its own work when the queue is quiet and opens pull requests within the quota. Off, a person can still press Propose and Open PR.',
+      'Whether the workshop picks its own work when the queue is quiet. Off, it works only on what a person proposes. It submits nothing either way — that is auto-submit.',
     effect: 'Takes effect on the next decision. A session already authoring finishes.',
     ownPersistence: true,
     operatorOnly: true,
@@ -272,15 +272,29 @@ export const CONTROLS: ControlDef[] = [
     },
   },
   {
+    key: 'workshop.auto_submit',
+    label: 'Workshop auto-submit',
+    group: WORKSHOP,
+    kind: 'boolean',
+    description:
+      'Whether a proposal that passes validation is submitted — its pull request opened, or its commit pushed — without anybody pressing the button, within the quota. Off, a person approves every submission.',
+    effect: 'Read when a proposal becomes ready and on the hourly pass.',
+    operatorOnly: true,
+    read: (p) => p.workshop?.autoSubmit,
+    fallback: (p) => p.defaults?.workshop?.auto_submit ?? p.workshop?.autoSubmitDefault,
+    apply: (p, v) => p.workshop?.setAutoSubmit(v === true),
+    revert: (p) => p.workshop?.clearAutoSubmit(),
+  },
+  {
     key: 'workshop.prs_per_day',
-    label: 'Pull requests a day',
+    label: 'Submissions a day',
     group: WORKSHOP,
     kind: 'number',
     min: 0,
     max: 10,
     operatorOnly: true,
     description:
-      'At most this many pull requests opened in any rolling 24 hours — what the reviewers can take. 0 builds and validates proposals but never opens one.',
+      'At most this many submissions — pull requests opened or commits pushed — in any rolling 24 hours. 0 builds and validates proposals but never submits one.',
     effect: 'Read at the next submission.',
     read: (p) => p.workshop?.prsPerDay,
     fallback: (p) => p.defaults?.workshop?.prs_per_day ?? p.workshop?.prsPerDayDefault,

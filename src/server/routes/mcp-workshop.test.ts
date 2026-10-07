@@ -67,11 +67,14 @@ describe('the authoring surface', () => {
 });
 
 describe('who may move the workshop', () => {
-  it('its switch and its quota are operator-only', () => {
+  it('its switches and its quota are operator-only — every workshop control is', () => {
     expect(isOperatorOnly('workshop.armed')).toBe(true);
+    expect(isOperatorOnly('workshop.auto_submit')).toBe(true);
     expect(isOperatorOnly('workshop.prs_per_day')).toBe(true);
     expect(isOperatorOnly('scheduler.armed')).toBe(false);
-    expect(CONTROLS.filter((c) => c.key.startsWith('workshop.')).length).toBe(2);
+    const ws = CONTROLS.filter((c) => c.key.startsWith('workshop.'));
+    expect(ws.map((c) => c.key).sort()).toEqual(['workshop.armed', 'workshop.auto_submit', 'workshop.prs_per_day']);
+    expect(ws.every((c) => c.operatorOnly === true)).toBe(true);
   });
 
   it('the chat refuses them, so the admin MCP does too', async () => {

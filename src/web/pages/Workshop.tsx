@@ -30,6 +30,7 @@ import {
   getProposal,
   getWorkshop,
   proposeWork,
+  setControl,
   submitProposal,
 } from '../data/client';
 import { useAsync } from '../hooks/useAsync';
@@ -125,16 +126,34 @@ export default function Workshop() {
             </span>
           </div>
           <div className="env-row" data-status={v.armed ? 'healthy' : 'unconfigured'}>
-            <span className="env-name">Automatic</span>
+            <span className="env-name">Picks work</span>
             <span className="env-status">{v.armed ? 'armed' : 'off'}</span>
             <span className="env-note ctl-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <span>
                 {v.armed
-                  ? 'Picks its own work when the queue is quiet, and opens ready proposals within the quota.'
-                  : 'Only what a person proposes is authored, and only a person opens a pull request.'}
+                  ? 'Picks its own work when the queue is quiet.'
+                  : 'Only what a person proposes is authored.'}
               </span>
               <button className="btn btn--sm" type="button" onClick={() => void act(() => armWorkshop(!v.armed))}>
                 {v.armed ? 'Disarm' : 'Arm'}
+              </button>
+            </span>
+          </div>
+          <div className="env-row" data-status={v.auto_submit ? 'healthy' : 'unconfigured'}>
+            <span className="env-name">Submits</span>
+            <span className="env-status">{v.auto_submit ? 'automatically' : 'on approval'}</span>
+            <span className="env-note ctl-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span>
+                {v.auto_submit
+                  ? 'A proposal that passes validation is submitted by itself, within the quota.'
+                  : 'A person presses the button on every ready proposal.'}
+              </span>
+              <button
+                className="btn btn--sm"
+                type="button"
+                onClick={() => void act(() => setControl('workshop.auto_submit', !v.auto_submit))}
+              >
+                {v.auto_submit ? 'Require approval' : 'Submit automatically'}
               </button>
             </span>
           </div>
@@ -337,7 +356,7 @@ function CandidateLine({ c, onAct }: { c: CandidateRow; onAct: (w: () => Promise
         {c.subject ? <Link to={`/s/${encodeURIComponent(c.subject)}`}>{c.app}</Link> : c.app}
       </span>
       <span className="env-status">{c.label}</span>
-      <span className="env-note">{c.eligible ? 'eligible — next when the workshop is armed and the queue is quiet' : c.reasons.join('; ')}</span>
+      <span className="env-note">{c.eligible ? 'eligible — picked when the workshop is armed and the queue is quiet' : c.reasons.join('; ')}</span>
       <span className="auto-flag" style={{ display: 'flex', gap: 4 }}>
         {remembered ? (
           <button className="btn btn--sm" type="button" title="Forget the last attempt" onClick={() => void onAct(() => forgetTask(c.task_key))}>
