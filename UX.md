@@ -613,10 +613,10 @@ because `domain/controls.ts` is the only place allowed to know them. A number co
 rather than on each keystroke — typing `14` over `7` passes through `1`, and applying that would
 put the timer on a cadence nobody asked for. A row differing from `config.yaml` is marked on its
 left edge, says what the file asks for, and offers the way back; the alternative is an instance
-quietly running on something the file does not mention. `scheduler.armed` and `workshop.armed`
-are deliberately absent from Settings — they are the switches on Automation and Workshop, and a
+quietly running on something the file does not mention. `scheduler.armed`, `workshop.armed` and
+`workshop.auto_submit` are deliberately absent from Settings — they are the switches on Automation and Workshop, and a
 second copy would be two places to press, one of them further from the sentence explaining what
-pressing does. Settings → Workshop carries `workshop.prs_per_day` beside the GitHub token.
+pressing does. Settings → Workshop carries `workshop.prs_per_day` ("Submissions a day") beside the GitHub token.
 
 ---
 
@@ -771,7 +771,7 @@ which is what a hallmark *is*.
 Four tabs, each with its own address so another page can send an operator to the right one:
 **Assistant** (`/settings`, the context prompt, written here); **Automation**
 (`/settings/automation`, the loop's controls — cadence, runner, bench guard); **Workshop**
-(`/settings/workshop`, the GitHub token, written here and never read back, and the PR quota); and
+(`/settings/workshop`, the GitHub token, written here and never read back, and the submission quota); and
 **config.yaml** (`/settings/config`, §2.8, read here and written on the volume). The switches that
 *operate* — Start/Stop, Arm/Disarm — are not tabs here: they stay on the page whose state they
 change. The old `#github` / `#config` anchors redirect to their tabs.
@@ -832,14 +832,19 @@ app is *running on* rather than what the file says on its own.
 
 `/workshop`, beside Trials. The one page where Touchstone *makes* rather than judges: proposals
 to fix, update or add an app, authored against a bench, validated by trials on every platform,
-and opened as pull requests within a daily quota (docs/auto-app-pr.md).
+and submitted within a daily quota — as pull requests, or, with `workshop.delivery: push`, by
+fast-forwarding the store's branch (docs/auto-app-pr.md §14).
 
-- **State** — the GitHub identity and what the probe found, the automatic switch (Arm /
-  Disarm), the quota with the time the next slot opens, and the session being authored now.
+- **State** — the GitHub identity and what the probe found (in push mode: whether the push
+  branch is protected), **Delivers** (*pull request* or *push to `main`*, read-only, from
+  `config.yaml`), **Picks work** (Arm / Disarm), **Submits** (*on approval* / *automatically*,
+  the auto-submit control — 2026-10-07), the quota with the time the next slot opens, and the
+  session being authored now. The three switches are independent: arming no longer submits.
 - **In flight** — every live proposal: its kind, state in words (*waiting for quiet*,
-  *authoring now*, *validating*, *back for another round*, *ready to open*, *pull request
-  open*), round, the size of its change, and **Open PR** on a ready one — disabled, with the
-  next slot, when the quota is spent. **Discard** charges the task nothing. An open pull
+  *authoring now*, *validating*, *back for another round*, *ready to submit*, *pull request
+  open*), round, the size of its change, and **Open PR** — or **Push to `main`**, which asks
+  for confirmation because nobody reviews it — on a ready one, disabled, with the next slot,
+  when the quota is spent. **Discard** charges the task nothing. An open pull
   request carries a **merge chip** (2026-10-07) — *mergeable*, *mergeable · checks failing*,
   *behind base*, *blocked*, *conflicts* or *checking…* — which is GitHub's own
   `mergeable_state`, read by the PR poll. That poll is hourly, so a view of the page also
@@ -849,7 +854,10 @@ and opened as pull requests within a daily quota (docs/auto-app-pr.md).
   reasons. **Propose** queues one now; **Clear** forgets a parked attempt.
 - **Wishlist** — one row per `data/wishlist/*.md`, with what is wrong with the file or what
   became of its last attempt. The page never writes a wish.
-- **History** — finished proposals, with the reason a failed one stopped.
+- **History** — finished proposals, with the reason a failed one stopped. A pushed one links
+  its commit and carries **Revert** (with confirmation), which puts the app's directory back as
+  it was before the push and is refused if anybody changed it since. A reverted one reads
+  *pushed, then reverted*.
 - `/workshop/:id` opens one proposal above the rest: the author's summary, the validation
   table linking each trial, the last failing round's feedback, and the change file by file.
 

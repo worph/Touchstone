@@ -43,7 +43,7 @@ surprise.
 | — | The rubric is seeded from `seed/`, not committed as if it were the live standard | ✅ done 2026-08-28 — §19 |
 | — | An app the store has stopped offering is marked, unscheduled, and deletable — *delisted* | ✅ done 2026-08-31 — §20 |
 | **R16** | Every way of asking for the single agent is one queue, drained in order — and one verb | ✅ built 2026-09-01 — §21 |
-| **R17** | Touchstone proposes fixes, updates and new apps as pull requests — the *workshop* | ✅ built 2026-10-02 — §24, design in [auto-app-pr.md](auto-app-pr.md) |
+| **R17** | Touchstone proposes fixes, updates and new apps as pull requests — the *workshop* | ✅ built 2026-10-02; direct delivery, auto-submit and no-regression 2026-10-07 — §24, design in [auto-app-pr.md](auto-app-pr.md) |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -1803,4 +1803,33 @@ pull requests but never merges them. A hallmark moves the ordinary way, after a 
   make a bot-account problem stop auditing; not without a decision.
 - **Pausing an authoring session for a request.** A session holds its pair up to
   `session_minutes`; the queue row says so.
+
+### 24.5 Addendum — three switches, no regression, direct delivery — 2026-10-07
+
+The operator wanted to keep pull requests for now and leave room for pushing straight to a
+branch later. Brainstormed into three switches that do not depend on each other, and one rule
+for every mode. Design: [auto-app-pr.md](auto-app-pr.md) D15–D18, §7, §10, §14.
+
+- **`workshop.auto_submit`** (operator-only control, default off) took the "submit ready
+  proposals" half of `workshop.armed`, which now only starts work. An armed box is told once
+  (`WORKSHOP_SUBMIT_SPLIT`) that it no longer submits. *Cost:* a control, a notice key in
+  `state/workshop.json`, a row on the Workshop page.
+- **D7′** — `baselineOf` / `regressionsOf` in `domain/workshop.ts`. A proposal records the
+  subject's scoring sections when its base is pinned, and a compliant round that makes a
+  requirement newly fail, or fail more severely, goes back. It compares across standard revisions
+  only where both judged the requirement (`baseline_stale`). `risk_score` is shown, not
+  gated. *Cost:* `Proposal.baseline`, one more failed-round path.
+- **Submission split from delivery** — `submitProposal` → `buildCommit` → `deliverPr` /
+  `deliverPush`, serialised. `assertAppScope` guards every commit in both modes, and the commit
+  message carries the validation and `Touchstone-Proposal` / `Touchstone-Kind` trailers.
+  The quota counts submissions, and `prs_per_day` keeps its key.
+- **`workshop.delivery: push`** (config only, default `pr`; `push_branch` default `main`).
+  `GitHubClient.advanceBranch` is the one new ref write: it has no branch parameter and sends
+  `force: false`, the client has a branch to move only in push mode, and a lost race is rebuilt
+  on the new head up to three times. **Revert** restores the app's base tree in one
+  fast-forward and is refused if the app changed since. The probe reports a protected push
+  branch. *Cost:* the client's write surface grew by one door, `Proposal.delivered`, the
+  `reverted` state, two events routed to outlets, and a route.
+- **Not done, deliberately:** a per-kind delivery (say, currency patches pushed and everything
+  else as PRs) — easy on top of this, and not asked for. Push mode is not enabled on any box.
 
