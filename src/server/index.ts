@@ -41,7 +41,7 @@ import { ContextStore } from './store/context.js';
 import { ControlStore } from './store/controls.js';
 import { applyStoredControls, type ControlPorts } from './domain/controls.js';
 import { CHAT_TOOLS } from './chat/registry.js';
-import { GitHubClient } from './services/github.js';
+import { GitHubClient, isValidDirectBranch } from './services/github.js';
 import { GitHubProbe } from './services/githubprobe.js';
 import { Workshop } from './services/workshop.js';
 import { WorkshopStore } from './store/workshop.js';
@@ -449,13 +449,21 @@ const workshopOrigin = cfg.origins.find((o) => o.id === cfg.workshop.origin);
 const githubTokens = new GitHubTokenStore(cfg.dataDir);
 const storedToken = await githubTokens.read();
 const githubToken = storedToken?.token || cfg.github.token;
+// Push delivery (D16) is the only thing that gives the client a branch it may move; with PR
+// delivery, or a push_branch that is not a usable name, it has none and cannot move one.
+const directBranch =
+  cfg.workshop.delivery === 'push' && isValidDirectBranch(cfg.workshop.push_branch) ? cfg.workshop.push_branch : undefined;
 const github =
-  githubToken && workshopOrigin ? new GitHubClient({ token: githubToken, repo: workshopOrigin.repo }) : undefined;
+  githubToken && workshopOrigin
+    ? new GitHubClient({ token: githubToken, repo: workshopOrigin.repo, ...(directBranch ? { directBranch } : {}) })
+    : undefined;
 const githubProbe = new GitHubProbe({ ...(github ? { client: github } : {}), expectedLogin: cfg.github.login, alerts });
 const workshop: Workshop = new Workshop({
   store: workshopStore,
   settings: {
     origin: cfg.workshop.origin,
+    delivery: cfg.workshop.delivery,
+    push_branch: cfg.workshop.push_branch,
     armed: cfg.workshop.armed,
     auto_submit: cfg.workshop.auto_submit,
     prs_per_day: cfg.workshop.prs_per_day,

@@ -22,7 +22,7 @@ import { WorkshopStore } from '../store/workshop.js';
 import { EventLog } from './events.js';
 import { GitHubClient } from './github.js';
 import { GitHubProbe } from './githubprobe.js';
-import { Workshop, WorkshopRefusal } from './workshop.js';
+import { Workshop, WorkshopRefusal, type WorkshopSettings } from './workshop.js';
 
 const SHA = (c: string) => c.repeat(40);
 const ORIGIN = { id: 'yundera', repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' };
@@ -37,6 +37,15 @@ let appTree: string;
 let blobRefused: boolean;
 /** What GitHub says about PR #42 when it is polled. */
 let pull42: Record<string, unknown>;
+/** Where `main` points; a PATCH that GitHub accepts moves it. */
+let mainHead: string;
+/** `Apps/X`'s tree sha per ref, falling back to `appTree`. */
+let appTreeAt: Record<string, string>;
+/** Answers queued for the next PATCHes of main (a function runs first); empty means accept. */
+let patchAnswers: ([number, unknown] | (() => [number, unknown]))[];
+/** Commit shas handed out in order, so a push and its revert are told apart. */
+let commitShas: string[];
+let mainProtected: boolean;
 
 const enc = new TextEncoder();
 
@@ -66,15 +75,26 @@ function fakeFetch(): typeof fetch {
     if (p === '/user') return json(200, { login: 'Mael', id: 7 });
     if (p === '/repos/Yundera/AppStore') return json(200, { permissions: { push: true } });
     if (p === '/repos/Yundera/AppStore/labels/touchstone') return json(200, { name: 'touchstone' });
-    if (p === '/repos/Yundera/AppStore/git/ref/heads/main') return json(200, { object: { sha: SHA('a') } });
-    if (p.startsWith('/repos/Yundera/AppStore/contents/Apps?ref=')) return json(200, [{ name: 'X', type: 'dir', sha: appTree }]);
+    if (p === '/repos/Yundera/AppStore/git/ref/heads/main') return json(200, { object: { sha: mainHead } });
+    if (p.startsWith('/repos/Yundera/AppStore/contents/Apps?ref=')) {
+      const ref = decodeURIComponent(p.slice(p.indexOf('?ref=') + 5));
+      return json(200, [{ name: 'X', type: 'dir', sha: appTreeAt[ref] ?? appTree }]);
+    }
+    if (p === '/repos/Yundera/AppStore/branches/main') return json(200, { name: 'main', protected: mainProtected });
+    if (method === 'PATCH' && p === '/repos/Yundera/AppStore/git/refs/heads/main') {
+      const next = patchAnswers.shift();
+      const answer = typeof next === 'function' ? next() : next;
+      if (answer) return json(answer[0], answer[1]);
+      mainHead = (init!.body ? JSON.parse(String(init!.body)) : {}).sha;
+      return json(200, { object: { sha: mainHead } });
+    }
     if (p.startsWith('/repos/Yundera/AppStore/pulls?state=open')) return json(200, []);
-    if (p === `/repos/Yundera/AppStore/git/commits/${SHA('a')}`) return json(200, { tree: { sha: SHA('1') } });
+    if (method === 'GET' && p.startsWith('/repos/Yundera/AppStore/git/commits/')) return json(200, { tree: { sha: SHA('1') } });
     if (method === 'POST' && p === '/repos/Yundera/AppStore/git/blobs') {
       return blobRefused ? json(403, { message: 'Resource not accessible by personal access token' }) : json(201, { sha: SHA('b') });
     }
     if (method === 'POST' && p === '/repos/Yundera/AppStore/git/trees') return json(201, { sha: SHA('c') });
-    if (method === 'POST' && p === '/repos/Yundera/AppStore/git/commits') return json(201, { sha: SHA('d') });
+    if (method === 'POST' && p === '/repos/Yundera/AppStore/git/commits') return json(201, { sha: commitShas.shift() ?? SHA('d') });
     if (method === 'POST' && p === '/repos/Yundera/AppStore/git/refs') return json(201, {});
     if (method === 'POST' && p === '/repos/Yundera/AppStore/pulls') return json(201, { number: 42, html_url: 'https://github.com/Yundera/AppStore/pull/42' });
     if (method === 'POST' && p === '/repos/Yundera/AppStore/issues/42/labels') return json(200, []);
@@ -124,6 +144,11 @@ beforeEach(async () => {
   appTree = SHA('e');
   blobRefused = false;
   pull42 = { state: 'closed', merged: false };
+  mainHead = SHA('a');
+  appTreeAt = {};
+  patchAnswers = [];
+  commitShas = [];
+  mainProtected = false;
   released = [];
   events = new EventLog(path.join(dir, 'state'));
   await events.load();
@@ -134,12 +159,18 @@ beforeEach(async () => {
   const protocolsDir = path.join(dir, 'protocols');
   await ensureProtocolFiles(protocolsDir);
   shas = Object.fromEntries(sectionsOf(await new ProtocolStore(protocolsDir).list()).map((x) => [x.id, x.sha256]));
+  workshop = await build();
+});
+
+/** A workshop over the fakes; `settings` overrides the defaults (delivery, push_branch, …). */
+async function build(settings: Partial<WorkshopSettings> = {}): Promise<Workshop> {
   const fetchImpl = fakeFetch();
-  const github = new GitHubClient({ token: 'ghp_SECRET_TOKEN', repo: ORIGIN.repo, fetchImpl });
+  const directBranch = settings.delivery === 'push' ? 'main' : undefined;
+  const github = new GitHubClient({ token: 'ghp_SECRET_TOKEN', repo: ORIGIN.repo, fetchImpl, ...(directBranch ? { directBranch } : {}) });
   const probe = new GitHubProbe({ client: github, expectedLogin: 'Mael' });
   await probe.probe();
   agentScript = async () => ({ ok: true, text: 'done', payload: '' });
-  workshop = new Workshop({
+  const ws: Workshop = new Workshop({
     store,
     settings: {
       origin: 'yundera',
@@ -152,6 +183,7 @@ beforeEach(async () => {
       login: 'Mael',
       commit_name: 'Mael (Touchstone)',
       commit_email: '',
+      ...settings,
     },
     origins: [ORIGIN],
     github,
@@ -162,15 +194,16 @@ beforeEach(async () => {
     runner: { enabled: true, busyBackoffMin: 10 },
     index: { all: () => archiveRecords(), read: () => null },
     registry: { list: () => [asSubjectKey('yundera~X')], delisted: () => [], versions: () => ({ 'yundera~X': 'v1' }), versionOf: () => 'v1' },
-    protocols: new ProtocolStore(protocolsDir),
+    protocols: new ProtocolStore(path.join(dir, 'protocols')),
     trialDeps: () => ({ runner: { enabled: true } as never, trials, trialsRoot: path.join(dir, 'trials'), events, origins: [ORIGIN], publicBaseUrl: 'https://touchstone.example' }),
     trialsRoot: path.join(dir, 'trials'),
     leases: { release: (id?: string) => id && released.push(id) } as never,
     events,
     fetchImpl,
-    postAgent: async (prompt) => agentScript(prompt, workshop),
+    postAgent: async (prompt) => agentScript(prompt, ws),
   });
-});
+  return ws;
+}
 
 afterEach(async () => {
   await events.flush();
@@ -464,5 +497,143 @@ describe('D7′ in validation', () => {
     const p = store.get(id)!;
     expect(p.state).toBe('ready');
     expect(p.baseline_stale).toContain('functional');
+  });
+});
+
+describe('push delivery (D16)', () => {
+  const writes = () => ghCalls.filter((c) => c.method !== 'GET').map((c) => `${c.method} ${c.path.replace('/repos/Yundera/AppStore', '')}`);
+
+  beforeEach(async () => {
+    ghCalls = [];
+    workshop = await build({ delivery: 'push', push_branch: 'main' });
+  });
+
+  it('fast-forwards main with one commit, no branch and no PR, and counts against the quota', async () => {
+    const id = await toReady();
+    appTreeAt[SHA('d')] = SHA('f');
+    ghCalls = [];
+    const out = await workshop.submitProposal(id, 'operator');
+    expect(out.state).toBe('merged');
+    expect(writes()).toEqual(['POST /git/blobs', 'POST /git/trees', 'POST /git/commits', 'PATCH /git/refs/heads/main']);
+    expect(ghCalls.find((c) => c.method === 'PATCH')!.body).toEqual({ sha: SHA('d'), force: false });
+    expect(out.delivered).toMatchObject({ mode: 'push', branch: 'main', commit: SHA('d'), parent: SHA('a'), app_tree_sha: SHA('f'), by: 'operator' });
+    expect(out.pr).toBeUndefined();
+    expect(store.memoryOf(out.task_key)?.outcome).toBe('pushed');
+    expect(workshop.quotaNow().allowed).toBe(false);
+    await events.flush();
+    expect(events.query({}).some((e) => e.code === 'PROPOSAL_PUSHED')).toBe(true);
+  });
+
+  it('the view says how it delivers, and the probe asks about protection instead of the label', async () => {
+    const v = await workshop.view();
+    expect(v.delivery).toEqual({ mode: 'push', branch: 'main' });
+    expect(v.github.direct_branch).toBe('main');
+    expect(ghCalls.some((c) => c.path.endsWith('/labels/touchstone'))).toBe(false);
+  });
+
+  it('a protected branch is a blocking problem before anybody presses Push', async () => {
+    mainProtected = true;
+    workshop = await build({ delivery: 'push', push_branch: 'main' });
+    const id = await toReady();
+    await expect(workshop.submitProposal(id, 'operator')).rejects.toThrow(/main is protected/);
+    expect(store.get(id)!.state).toBe('ready');
+  });
+
+  it('another app landing first: rebuilt on the new head, blobs not uploaded twice', async () => {
+    const id = await toReady();
+    commitShas = [SHA('d'), SHA('9')];
+    // GitHub refuses the first PATCH because another push moved main to 8…; X is the same there.
+    patchAnswers = [
+      () => {
+        mainHead = SHA('8');
+        return [422, { message: 'Update is not a fast forward' }];
+      },
+    ];
+    ghCalls = [];
+    const out = await workshop.submitProposal(id, 'operator');
+    expect(out.state).toBe('merged');
+    expect(writes().filter((w) => w === 'POST /git/blobs')).toHaveLength(1);
+    expect(writes().filter((w) => w.startsWith('PATCH'))).toHaveLength(2);
+    const commits = ghCalls.filter((c) => c.method === 'POST' && c.path.endsWith('/git/commits')).map((c) => (c.body as { parents: string[] }).parents);
+    expect(commits).toEqual([[SHA('a')], [SHA('8')]]);
+    expect(out.delivered).toMatchObject({ commit: SHA('9'), parent: SHA('8') });
+  });
+
+  it('when the head moved and X moved with it, the push is discarded rather than rebuilt', async () => {
+    const id = await toReady();
+    patchAnswers = [
+      () => {
+        mainHead = SHA('8');
+        appTreeAt[SHA('8')] = SHA('7');
+        return [422, { message: 'Update is not a fast forward' }];
+      },
+    ];
+    await expect(workshop.submitProposal(id, 'operator')).rejects.toThrow(/changed/);
+    expect(store.get(id)!.state).toBe('discarded');
+  });
+
+  it('the app itself changed on main: discarded, nothing charged', async () => {
+    const id = await toReady();
+    appTree = SHA('7');
+    await expect(workshop.submitProposal(id, 'operator')).rejects.toThrow(/changed/);
+    expect(store.get(id)!.state).toBe('discarded');
+    expect(ghCalls.some((c) => c.method === 'PATCH')).toBe(false);
+  });
+
+  it('a branch that keeps moving gives up after three tries, logged, and stays ready', async () => {
+    const id = await toReady();
+    patchAnswers = [
+      [422, { message: 'Update is not a fast forward' }],
+      [422, { message: 'Update is not a fast forward' }],
+      [422, { message: 'Update is not a fast forward' }],
+    ];
+    await expect(workshop.submitProposal(id, 'operator')).rejects.toThrow(WorkshopRefusal);
+    expect(store.get(id)!.state).toBe('ready');
+    await events.flush();
+    expect(events.query({}).some((e) => e.code === 'PROPOSAL_SUBMIT_FAILED')).toBe(true);
+  });
+
+  it('revert puts the app tree back in one fast-forward', async () => {
+    const id = await toReady();
+    commitShas = [SHA('d'), SHA('9')];
+    appTreeAt[SHA('d')] = SHA('f');
+    await workshop.submitProposal(id, 'operator');
+    ghCalls = [];
+    const out = await workshop.revert(id, 'operator');
+    expect(out.state).toBe('reverted');
+    expect(out.delivered?.reverted?.commit).toBe(SHA('9'));
+    const tree = ghCalls.find((c) => c.path.endsWith('/git/trees'))!.body as { tree: unknown[] };
+    expect(tree.tree).toEqual([{ path: 'Apps/X', mode: '040000', type: 'tree', sha: SHA('e') }]);
+    const commit = ghCalls.find((c) => c.path.endsWith('/git/commits') && c.method === 'POST')!.body as { message: string; parents: string[] };
+    expect(commit.parents).toEqual([SHA('d')]);
+    expect(commit.message).toContain(`This reverts commit ${SHA('d')}`);
+    expect(store.memoryOf(out.task_key)?.outcome).toBe('reverted');
+    await expect(workshop.revert(id, 'operator')).rejects.toThrow(/not pushed|already/);
+  });
+
+  it('revert is refused when somebody changed the app after the push', async () => {
+    const id = await toReady();
+    appTreeAt[SHA('d')] = SHA('f');
+    await workshop.submitProposal(id, 'operator');
+    mainHead = SHA('6');
+    appTreeAt[SHA('6')] = SHA('5');
+    ghCalls = [];
+    await expect(workshop.revert(id, 'operator')).rejects.toThrow(/revert it by hand/);
+    expect(ghCalls.some((c) => c.method !== 'GET')).toBe(false);
+  });
+
+  it('a pushed proposal cannot be discarded — it is reverted', async () => {
+    const id = await toReady();
+    await workshop.submitProposal(id, 'operator');
+    await expect(workshop.discard(id, 'operator')).rejects.toThrow(/Revert/);
+  });
+});
+
+describe('pull-request delivery never moves a branch', () => {
+  it('opens its PR without a single PATCH, and has nothing to revert', async () => {
+    const id = await toReady();
+    await workshop.submitProposal(id, 'operator');
+    expect(ghCalls.some((c) => c.method === 'PATCH')).toBe(false);
+    await expect(workshop.revert(id, 'operator')).rejects.toThrow(/not pushed/);
   });
 });
