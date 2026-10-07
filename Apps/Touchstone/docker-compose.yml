@@ -1,0 +1,314 @@
+name: touchstone
+
+services:
+  # ── the app ───────────────────────────────────────────────────────────────────────────
+  # No caddy labels: reachable only on `pcs`, and from outside only through the AppShield
+  # sidecar below. The agent's callback comes in here directly (see TOUCHSTONE_CALLBACK_URL)
+  # because it is a service-to-service call that must not meet an interactive SSO redirect.
+  touchstone-backend:
+    image: ghcr.io/worph/touchstone:1.1.0
+    container_name: touchstone-backend
+    hostname: touchstone-backend
+    restart: unless-stopped
+    user: "$PUID:$PGID"
+    expose:
+      - 8080
+    environment:
+      TZ: $TZ
+      TOUCHSTONE_PORT: "8080"
+      TOUCHSTONE_HOST: "0.0.0.0"
+      # The one path that must persist — see the volume and the folders block below.
+      TOUCHSTONE_DATA_DIR: /DATA
+
+      # The Claude Code agent, reached through this box's own Beacon on `pcs`. The service
+      # name resolves to whatever Beacon is installed here, so nothing points off the box.
+      TOUCHSTONE_AGENT_URL: "http://beacon-backend:9300/mcp"
+      TOUCHSTONE_AGENT_TOOL: "claude-code__query_claude"
+      # `beacon`, not `direct`. That URL is an **aggregator**: its own tools/list offers
+      # `call`, `overview`, `server_doc`, `tool_doc` and nothing else, so `direct` — which
+      # means "the tool is a first-class tool on this endpoint" — can never find
+      # `claude-code__query_claude` and the agent probes unreachable on every fresh install.
+      # `beacon` wraps the call in the aggregator's own `call` tool, which is how everything
+      # else on this box reaches it.
+      TOUCHSTONE_AGENT_VIA: "beacon"
+
+      # Where the agent calls BACK to record each requirement as it settles it. This is the
+      # one place the dependency arrow points inward, and it names the **backend** rather than
+      # the `touchstone` sidecar on purpose: through the sidecar it would meet the SSO gate
+      # and get an HTML login page instead of the MCP endpoint. An agent that cannot reach it
+      # does not fail — it stops reporting incrementally, and a run that dies two-thirds
+      # through then leaves no record of what it had already established.
+      TOUCHSTONE_CALLBACK_URL: "http://touchstone-backend:8080/api/v1/mcp"
+
+      # Touchstone's own administration, served as MCP at /api/v1/mcp/admin and announced to
+      # this box's Beacon by the `touchstone-mcp` sidecar below — the same seven tools the
+      # chat on the front page uses. Six read what is written down (the archive, a fix brief,
+      # the log, the backlog, the schedule); `run_assay` starts one audit and returns.
+      #
+      # It ships ON here because the sidecar is in this file: a beaconify container in front
+      # of a disabled route would announce a server with no tools, which is worse than not
+      # announcing one. Two things bound what that is worth to an attacker who is already on
+      # this box's `pcs` network — no tool can write a verdict or name a repo and ref
+      # (that is invariant 6, and it is enforced in the tool registry, not here), and
+      # `run_assay` refuses while `runner.enabled` is false, which is the shipped default.
+      #
+      # To narrow it to answers-only, set TOUCHSTONE_ADMIN_MCP_READ_ONLY: "on" — `run_assay`
+      # then disappears from tools/list and is refused if asked for anyway. To close it
+      # entirely, set TOUCHSTONE_ADMIN_MCP: "off" and delete the sidecar; the route is then
+      # not registered at all.
+      TOUCHSTONE_ADMIN_MCP: "on"
+
+      # Touchstone's OWN browser, never the box-wide `browsermcp`: that one is busy with other
+      # work, and an audit whose tab was stolen mid-install records the theft against the app
+      # under audit.
+      TOUCHSTONE_BROWSER_URL: "http://touchstone-browser-1:9746/mcp"
+
+      # The demo instances a functional audit installs into, and the human-readable board the
+      # UI links beside its own probe. Named here rather than left to the built-in defaults so
+      # this file is the single place an operator changes them — they are Nasselle product
+      # infrastructure, not something every install should inherit silently.
+      # Touchstone's own address as a demo bench reaches it, and the only thing a trial cannot
+      # work out for itself: the request that starts one arrives on `pcs` under a service name
+      # no bench can resolve. Without it a trial still runs, but records its functional section
+      # blocked — there is nowhere to serve the files under trial from.
+      TOUCHSTONE_PUBLIC_BASE_URL: "https://touchstone-${APP_DOMAIN}"
+
+      TOUCHSTONE_POOL_URL: "https://app.nasselle.com/demo/api/demos"
+      TOUCHSTONE_BOARD_URL: "https://app.nasselle.com/demo/admin/manage"
+    volumes:
+      # Trailing slash: this is the bind the `folders` block below is generated from.
+      - /DATA/AppData/touchstone/:/DATA
+    networks:
+      - pcs
+    depends_on:
+      - touchstone-browser-1
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+
+  # ── the browser the functional section drives ─────────────────────────────────────────
+  # Deliberately WITHOUT a profile volume, and this is the one intentional divergence from
+  # how the other browser apps are packaged. A session cookie surviving from a previous assay
+  # makes an unprotected app look protected on the very check that catches auth bypass — so
+  # the profile is ephemeral by design. Do not "fix" this by adding a volume.
+  touchstone-browser-1:
+    image: ghcr.io/worph/browser-mcp:1.1.7
+    container_name: touchstone-browser-1
+    hostname: touchstone-browser-1
+    restart: unless-stopped
+    # supervisord is PID 1 and must start as root to spawn Xvfb/x11vnc and drop privileges
+    # for its children; a non-root uid cannot manage the display.
+    user: "0:0"
+    # Chrome crashes on the 64M default.
+    shm_size: "2gb"
+    expose:
+      - 9746
+    environment:
+      TZ: $TZ
+      MCP_PORT: "9746"
+      VNC_RESOLUTION: "1440x900x24"
+      # Reap Chrome between runs. Nothing is kept, so a cold start costs only time.
+      IDLE_TTL_MS: "900000"
+      # Sweep tabs nobody owns. The runner closes its own on release, so anything still here
+      # after half an hour is a leak.
+      PAGE_COLLECTOR: "on"
+      PAGE_TTL_MS: "1800000"
+    networks:
+      - pcs
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+  # ── the operator tools, announced to this box's Beacon ────────────────────────────────
+  # A stock beaconify sidecar: it answers Beacon's UDP discovery, fetches tools/list from the
+  # backend once at startup and periodically after, and proxies /mcp through to it. Nothing
+  # about Touchstone is rebuilt for this.
+  #
+  # It points at `touchstone-backend` directly and NOT at the `touchstone` sidecar, for the
+  # same reason TOUCHSTONE_CALLBACK_URL does: through the SSO gate it would fetch an HTML
+  # login page instead of a tool list, and register a server with no tools.
+  #
+  # On `pcs`, and here that is the point rather than a hazard. The browser sidecar above is
+  # deliberately kept OFF `pcs` because it announces itself and would be discovered as the
+  # box-wide browser; this container announces itself because being discovered is the whole
+  # job. What it announces is Touchstone's admin tools and nothing else.
+  touchstone-mcp:
+    image: ghcr.io/worph/beaconify@sha256:63ce59fbe15365540cb3d45849a46b68b8132a2c1d605ea8b7b310d010540107
+    container_name: touchstone-mcp
+    hostname: touchstone-mcp
+    restart: unless-stopped
+    cpu_shares: 20
+    expose:
+      - 9099
+    environment:
+      TZ: $TZ
+      BEACONIFY_NAME: touchstone
+      BEACONIFY_DESCRIPTION: "Touchstone conformance audits — every app's verdict, the evidence behind it, a fix brief, the audit log and the backlog; and starting an audit"
+      # The admin surface, not /api/v1/mcp — that one is the audit agent's run ledger, scoped
+      # to a token that dies with its run, and it has nothing to say to an aggregator.
+      BEACONIFY_UPSTREAM_URL: http://touchstone-backend:8080/api/v1/mcp/admin
+      # If you set a bearer on the backend (admin_mcp.token in config.yaml), name it here as
+      # a whole header value — `Bearer <token>` — and the sidecar injects it on every
+      # forwarded call, so nothing that calls through Beacon ever holds it.
+      # BEACONIFY_AUTH: "Bearer ..."
+    depends_on:
+      - touchstone-backend
+    networks:
+      - pcs
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+
+  # ── the only public surface ───────────────────────────────────────────────────────────
+  touchstone:
+    image: ghcr.io/yundera/appshield:2.0.6
+    # OIDC identity: the AppShield auth-service builds its redirect URIs from os.hostname(),
+    # and the auth-registrar independently attests this app's name via the container's PTR
+    # record, rejecting any redirect URI that does not match. container_name, hostname and the
+    # compose project `name` must all be `touchstone`, or Docker defaults the hostname to the
+    # random container id and OIDC registration fails.
+    container_name: touchstone
+    hostname: touchstone
+    restart: unless-stopped
+    user: "0:0"
+    expose:
+      - 80
+    labels:
+      caddy_0: touchstone-${APP_DOMAIN}
+      caddy_0.import: gateway_tls
+      caddy_0.reverse_proxy: "{{upstreams 80}}"
+      caddy_1: touchstone-${APP_PUBLIC_IP_DASH}.nip.io
+      caddy_1.import: gateway_tls
+      caddy_1.reverse_proxy: "{{upstreams 80}}"
+      caddy_2: touchstone-${APP_PUBLIC_IP_DASH}.sslip.io
+      caddy_2.reverse_proxy: "{{upstreams 80}}"
+    environment:
+      TZ: $TZ
+      BACKEND_HOST: "touchstone-backend"
+      BACKEND_PORT: "8080"
+      LISTEN_PORT: "80"
+      OIDC_REGISTRAR_URL: "http://auth-registrar:9092"
+      REDIRECT_HOST_SUFFIXES: "${APP_DOMAIN},${APP_PUBLIC_IP_DASH}.nip.io,${APP_PUBLIC_IP_DASH}.sslip.io"
+
+      # The conformance board, served without a login. Every operator page starts runs, arms
+      # the loop or edits the rubric and stays behind the gate; `/public` is the read-only
+      # view an app author is sent to, and publishing it is the entire reason that namespace
+      # exists (ARCHITECTURE §8.1). Two properties make writing this line safe rather than a
+      # judgement about forty handlers: `routes/public.ts` registers an `onRoute` hook that
+      # throws at boot on any verb but GET/HEAD, so the prefix cannot grow a write route; and
+      # the pages under it are a separate layout tree whose only three client calls are the
+      # three `/api/v1/public/*` endpoints, so a public page cannot quietly read the operator
+      # API. It composes nothing of its own either — `hallmarks()` and `buildFixReport()` are
+      # the same functions the operator pages read.
+      #
+      # AppShield turns this into nginx `location ~ ^/(public|api/v1/public|assets)(/|$)`, so
+      # each entry covers the prefix and everything under it. **`assets` is load-bearing and
+      # is not a third public surface**: the SPA's index.html references `/assets/index-*.js`
+      # and `/assets/index-*.css` by absolute path, which are outside `/public`. Without it an
+      # anonymous visitor gets the HTML shell, the bundle request meets the OIDC redirect, and
+      # the board renders as a blank page. What it exposes is the compiled bundle both frames
+      # share — no data, and every operator call it can make is still gated.
+      # `api/v1/trialstore` is the fourth, and it is not a page: it is the store zip a demo
+      # instance fetches when a trial audits files that are on no branch. The bench is on the
+      # public internet and holds no credential of ours, so the unguessable per-trial token in
+      # the path is the guard. It is served `application/zip` + `attachment` + `no-store`,
+      # because this origin also serves the SSO-gated operator UI and uploaded bytes must never
+      # render there. The backend also sets `nosniff`, but measured 2026-08-22 that header does
+      # not survive the AppShield → Caddy → Cloudflare chain — the content type and the
+      # disposition do, and either alone is enough, so do not count on three.
+      ALLOWED_PATHS: "public,api/v1/public,assets,api/v1/trialstore"
+    depends_on:
+      - touchstone-backend
+    networks:
+      - pcs
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+networks:
+  pcs:
+    name: pcs
+    external: true
+
+x-compose-app:
+  schema_version: 2
+  # The whole of Touchstone's state, created and chowned to $PUID:$PGID before every `up`.
+  #
+  # This is not a formality. The container runs as $PUID:$PGID and writes config.yaml, the
+  # rubric, the report archive, trials and runtime state under this one path. With the
+  # directory owned by root the process starts, answers /healthz, serves the UI — and
+  # silently persists nothing: no rubric on disk means every run blocks `no_protocol`, and
+  # every report is lost on restart. Verified by running the image against a root-owned
+  # volume, which produced exactly that.
+  folders:
+    - path: /DATA/AppData/touchstone
+      user: $PUID
+      group: $PGID
+  webui-host: touchstone-${domain}
+  webui-path: "/"
+
+x-casaos:
+  main: touchstone
+  index: /
+
+  architectures:
+    - amd64
+    - arm64
+  author: Yundera
+  category: Developer
+  tags: ["developer"]
+  developer: Worph
+  icon: https://cdn.jsdelivr.net/gh/worph/Touchstone@main/Apps/Touchstone/icon.png
+  thumbnail: https://cdn.jsdelivr.net/gh/worph/Touchstone@main/Apps/Touchstone/thumbnail.png
+  screenshot_link:
+    - https://cdn.jsdelivr.net/gh/worph/Touchstone@main/Apps/Touchstone/screenshot-1.png
+    - https://cdn.jsdelivr.net/gh/worph/Touchstone@main/Apps/Touchstone/screenshot-2.png
+    - https://cdn.jsdelivr.net/gh/worph/Touchstone@main/Apps/Touchstone/screenshot-3.png
+  title:
+    en_us: Touchstone
+  tagline:
+    en_us: Conformance audits for the apps in your store
+  description:
+    en_us: |
+      **Holds a standard, audits apps against it, and issues a verdict each app carries until the next audit contradicts it.**
+
+      Touchstone runs the store's review protocol against each app — reading its compose for the compose-level checks, and installing it on a demo instance and driving a real browser for the runtime ones — then records what it found, item by item, as it settles each one.
+
+      **What you can do:**
+      - See every app's current verdict, severity and risk on one board
+      - Read the full report for any audit, as markdown, straight off disk
+      - Hand a developer a fix brief composed from the audit's own evidence
+      - Edit the rubric in the app; it versions itself, and every audit records the version that judged it
+      - Run the loop on a schedule, or audit one app by hand
+      - Trial an unmerged ref without touching what the app currently carries
+      - Ask the built-in administrator chat what the loop is doing
+
+      **Two things it is careful about:** an environment problem is never recorded as a fault in your app, and no model can write a verdict — the agent settles each requirement, and Touchstone applies the gate.
+
+      **Perfect if you:** maintain an app store and want its standard applied the same way every time, with the evidence kept.
+  tips:
+    before_install:
+      en_us: |
+        **Both switches ship off, on purpose.**
+
+        - The scheduled loop is stopped. It decides and logs every hour and dispatches nothing until you start it from the Automation page.
+        - Hand-run audits are disabled until you set `runner.enabled` in `config.yaml`.
+
+        **What it needs to actually audit anything**, none of which is configured for you:
+
+        - A Claude Code agent reachable over MCP — by default this box's own Beacon at `beacon-backend:9300`.
+        - A demo instance pool to install apps into, set under `bench:` in `config.yaml`.
+
+        Everything Touchstone keeps lives in `AppData/touchstone/` — `config.yaml`, the rubric under `protocols/`, the report archive under `reports/`, trials, and runtime state. Back up that one folder and you have backed up the whole system. Uninstalling archives it like any other app, so your audit history survives.
+
+        The browser sidecar deliberately has **no** stored profile. A session surviving between audits would make an unprotected app look protected on the one check that catches that, so it starts cold every time — and it is Touchstone's own, never the box-wide `browsermcp`, whose tabs belong to other work.
+
+        **Backups.** Uninstalling archives `AppData/touchstone/` like any other app, so your audit history survives one. It is still a single copy on this server's disk: point Settings → Backups at a remote engine if the history is meant to outlive the disk.

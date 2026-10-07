@@ -9,8 +9,8 @@ import { describe, expect, it } from 'vitest';
 import type { AssayRecord, SubjectState } from '../../shared/types.js';
 import type { SectionResult, TaskMemory } from '../../shared/workshop.js';
 import { asSubjectKey } from '../../shared/subject.js';
-import { buildPrBody, PR_BODY_LIMIT, prTitle, regressionLine } from './prbody.js';
-import { baselineOf, candidates, crossesMajor, currencyOf, judgeValidation, quota, refFor, regressionsOf, sha256 } from './workshop.js';
+import { buildCommitMessage, buildPrBody, PR_BODY_LIMIT, prTitle, regressionLine } from './prbody.js';
+import { assertAppScope, baselineOf, candidates, crossesMajor, currencyOf, judgeValidation, quota, refFor, regressionsOf, sha256 } from './workshop.js';
 
 const NOW = new Date('2026-10-02T12:00:00Z');
 const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000).toISOString();
@@ -275,5 +275,32 @@ describe('regressionLine', () => {
     expect(regressionLine({})).toContain('only compliance was checked');
     expect(regressionLine({ baseline: b, baseline_stale: [] })).toContain('No requirement got worse');
     expect(regressionLine({ baseline: b, baseline_stale: ['static'] })).toContain('`static` was last audited under an older standard');
+  });
+});
+
+describe('assertAppScope', () => {
+  it('admits the app directory and anything under it', () => {
+    expect(() => assertAppScope(['Apps/X/docker-compose.yml', 'Apps/X/screenshots/1.png', 'Apps/X'], '/Apps/', 'X')).not.toThrow();
+  });
+  it('refuses anything else, however it is spelled', () => {
+    for (const bad of ['Apps/Y/docker-compose.yml', 'Apps/XY/a', '.github/workflows/x.yml', 'Apps/X/../Y/a', 'Apps/X//a', 'Apps/X/./a', 'Apps']) {
+      expect(() => assertAppScope([bad], 'Apps', 'X'), bad).toThrow(/refusing to write/);
+    }
+    expect(() => assertAppScope([], 'Apps', 'X')).toThrow(/writes nothing/);
+    expect(() => assertAppScope(['Apps/../a'], 'Apps', '..')).toThrow();
+  });
+});
+
+describe('buildCommitMessage', () => {
+  it('carries the validation in short and the two trailers', () => {
+    const msg = buildCommitMessage(
+      { id: 'abc123', kind: 'currency', app: 'X', summary: 'Bumped.', to_version: '2.0.0', major: true, round: 1, baseline: { static: { risk_score: 4, requirements: {} } }, baseline_stale: [] },
+      [{ section: 'static', status: 'done', verdict: 'compliant', risk_score: 2, trial: 't', standard_sha256: 'e'.repeat(64) }],
+    );
+    const lines = msg.split('\n');
+    expect(lines[0]).toBe('X: update to 2.0.0 (major)');
+    expect(msg).toContain('- static: compliant, risk 4 → 2, standard eeeeeeeeeeee');
+    expect(msg).toContain('No requirement got worse');
+    expect(lines.slice(-2)).toEqual(['Touchstone-Proposal: abc123', 'Touchstone-Kind: currency']);
   });
 });

@@ -140,3 +140,26 @@ export function buildPrBody(input: PrBodyInput): string {
   body += parts.join('') + (cut ? cutNote : '') + '\n' + tail;
   return body.length > PR_BODY_LIMIT ? body.slice(0, PR_BODY_LIMIT) : body;
 }
+
+/**
+ * The commit message, in both delivery modes. Without a pull request it is the only place the
+ * evidence travels with the change, so it carries the validation in short and two trailers
+ * that `git log --grep` can find: the proposal id and its kind.
+ */
+export function buildCommitMessage(
+  p: Pick<Proposal, 'id' | 'kind' | 'app' | 'summary' | 'major' | 'to_version' | 'round' | 'baseline' | 'baseline_stale'>,
+  validation: readonly SectionResult[],
+): string {
+  const lines: string[] = [prTitle(p).replace(/^\[touchstone\] /, ''), ''];
+  const summary = p.summary?.trim();
+  if (summary) lines.push(summary, '');
+  lines.push(`Prepared by Touchstone's workshop and validated on every platform the standard covers (round ${p.round}):`);
+  for (const r of validation) {
+    const was = p.baseline?.[r.section]?.risk_score;
+    const risk = was === undefined || was === null ? `risk ${r.risk_score ?? '—'}` : `risk ${was} → ${r.risk_score ?? '—'}`;
+    const std = r.standard_sha256 ? `, standard ${r.standard_sha256.slice(0, 12)}` : '';
+    lines.push(`- ${r.section}: ${r.verdict ?? r.status}, ${risk}${std}`);
+  }
+  lines.push('', regressionLine(p), '', `Touchstone-Proposal: ${p.id}`, `Touchstone-Kind: ${p.kind}`);
+  return lines.join('\n');
+}

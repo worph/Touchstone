@@ -8,7 +8,8 @@
  *     → dispatch: pin the base, open a session, hand the agent its prompt
  *     → the agent edits the working copy through `routes/mcp-workshop.ts`, ends with submit
  *     → validation: one trial per platform the standard covers, queued like any trial
- *     → ready → submitPr (a person, or automatically under auto_submit) → merged | closed
+ *     → ready → submitProposal (a person, or automatically under auto_submit)
+ *     → delivery: a pull request (→ merged | closed) or a fast-forward push (→ merged)
  *
  * Three rules hold throughout, and each is structural here rather than remembered:
  *
@@ -41,11 +42,12 @@ import { DEFAULT_TARGET } from '../../shared/target.js';
 import { asSubjectKey, subjectName, type SubjectKey } from '../../shared/subject.js';
 import { buildFixReport } from '../domain/fixreport.js';
 import { hallmarks, subjectHallmark } from '../domain/hallmark.js';
-import { buildPrBody, prTitle } from '../domain/prbody.js';
+import { buildCommitMessage, buildPrBody, prTitle } from '../domain/prbody.js';
 import { readStandards } from '../domain/standards.js';
 import { resolveSubjectKey } from '../domain/subjects.js';
 import type { AssayStore } from '../domain/store.js';
 import {
+  assertAppScope,
   baselineOf,
   candidates as candidateRows,
   crossesMajor,
@@ -285,7 +287,7 @@ export class Workshop {
 
   quotaNow(): ReturnType<typeof quota> {
     const since = new Date(this.now().getTime() - 86_400_000).toISOString();
-    return quota(this.prsPerDay, this.opts.store.prsOpenedSince(since), this.now());
+    return quota(this.prsPerDay, this.opts.store.submittedSince(since), this.now());
   }
 
   github(): GitHubStatus {
@@ -1077,11 +1079,14 @@ export class Workshop {
       .filter((p) => p.state === 'ready')
       .sort((a, b) => a.updated_at.localeCompare(b.updated_at))[0];
     if (!ready) return;
-    await this.submitPr(ready.id, 'workshop').catch(() => undefined);
+    await this.submitProposal(ready.id, 'workshop').catch(() => undefined);
   }
 
-  /** Open the pull request. The only path to GitHub's write API in the whole app. */
-  async submitPr(id: string, by: string): Promise<Proposal> {
+  /**
+   * Submit a ready proposal: the shared preconditions, then its delivery. The only path to
+   * GitHub's write API in the whole app (revert aside, which undoes a delivery).
+   */
+  async submitProposal(id: string, by: string): Promise<Proposal> {
     const gh = this.gh;
     const origin = this.origin;
     if (!gh || !origin) throw new WorkshopRefusal(503, this.unconfigured() ?? 'the workshop is not configured');
@@ -1097,76 +1102,115 @@ export class Workshop {
       throw new WorkshopRefusal(
         409,
         this.prsPerDay <= 0
-          ? 'workshop.prs_per_day is 0 — this instance builds and validates but never opens a pull request'
+          ? 'workshop.prs_per_day is 0 — this instance builds and validates but never submits'
           : `the daily quota is spent; the next slot opens ${q.next_slot_at ?? 'later'}`,
       );
     }
 
-    const now = this.now();
-    // Every GitHub call below can fail, and each failure has to reach the operator as GitHub's
-    // own sentence and leave a row in Activity. Only the last step used to be caught: a 403 on
-    // the first blob escaped as a bare 500, so Open PR said "Internal Server Error" and the log
-    // said nothing at all.
-    const failed = (err: unknown): never => {
-      const error = err instanceof GitHubError ? err.message : String((err as Error)?.message ?? err);
-      this.opts.events.log({
-        level: 'error',
-        code: 'PROPOSAL_SUBMIT_FAILED',
-        message: `Could not open the pull request for ${p.app}`,
-        detail: { proposal: p.id, app: p.app, error },
-      });
-      throw new WorkshopRefusal(502, error);
-    };
-
     let head: string;
-    let appTree: string | null;
     try {
-      head = await gh.headOf(origin.ref);
-      appTree = await gh.appTreeSha(origin.apps_path, p.app, head);
+      head = await gh.headOf(this.targetBranch());
+      if (await this.storeMoved(p, head)) return await this.discardMoved(p, by);
     } catch (err) {
-      return failed(err);
+      if (err instanceof WorkshopRefusal) throw err;
+      return this.submitFailed(p, err);
     }
-    if ((p.app_tree_sha ?? null) !== appTree) {
-      const reason = `${p.app} changed in ${origin.repo} since this proposal was built on it`;
-      await this.opts.store.update(p.id, { state: 'discarded', reason });
-      this.opts.events.log({
-        level: 'warn',
-        code: 'PROPOSAL_DISCARDED',
-        message: `Discarded ${p.app} — the store moved under it; nothing was charged`,
-        detail: { proposal: p.id, app: p.app, reason, by },
-      });
-      await this.opts.store.pruneFiles(p.id);
-      throw new WorkshopRefusal(409, reason);
-    }
-
     const diff = await this.opts.store.diff(p.id);
-    const work = await this.opts.store.workFiles(p.id);
-    const prefix = `${origin.apps_path.replace(/^\/+|\/+$/g, '')}/${p.app}/`;
     if (diff.added.length + diff.modified.length + diff.deleted.length === 0) {
       throw new WorkshopRefusal(409, 'the working copy changes nothing');
     }
+    return this.deliverPr(p, head, by);
+  }
+
+  /** The branch a proposal is built on and delivered to. */
+  private targetBranch(): string {
+    return this.origin!.ref;
+  }
+
+  /** Has `Apps/<App>/` changed on the target since the proposal was built on it? */
+  private async storeMoved(p: Proposal, head: string): Promise<boolean> {
+    const appTree = await this.gh!.appTreeSha(this.origin!.apps_path, p.app, head);
+    return (p.app_tree_sha ?? null) !== appTree;
+  }
+
+  /** It was validated against bytes that no longer exist: discard it, charging nothing. */
+  private async discardMoved(p: Proposal, by: string): Promise<never> {
+    const reason = `${p.app} changed in ${this.origin!.repo} since this proposal was built on it`;
+    await this.opts.store.update(p.id, { state: 'discarded', reason });
+    this.opts.events.log({
+      level: 'warn',
+      code: 'PROPOSAL_DISCARDED',
+      message: `Discarded ${p.app} — the store moved under it; nothing was charged`,
+      detail: { proposal: p.id, app: p.app, reason, by },
+    });
+    await this.opts.store.pruneFiles(p.id);
+    throw new WorkshopRefusal(409, reason);
+  }
+
+  /**
+   * Every GitHub call in a submission can fail, and each failure has to reach the operator as
+   * GitHub's own sentence and leave a row in Activity. Only the last step used to be caught: a
+   * 403 on the first blob escaped as a bare 500, so Open PR said "Internal Server Error" and
+   * the log said nothing at all.
+   */
+  private submitFailed(p: Proposal, err: unknown): never {
+    const error = err instanceof GitHubError ? err.message : String((err as Error)?.message ?? err);
+    this.opts.events.log({
+      level: 'error',
+      code: 'PROPOSAL_SUBMIT_FAILED',
+      message: `Could not submit ${p.app}`,
+      detail: { proposal: p.id, app: p.app, error },
+    });
+    throw new WorkshopRefusal(502, error);
+  }
+
+  /**
+   * The proposal's working copy as one commit on `head`. Blobs are uploaded once per call of
+   * `blobs` — a delivery that has to rebuild on a newer head passes the same map back in.
+   * `assertAppScope` runs before the tree exists, so nothing outside `Apps/<App>/` is ever
+   * spelled to GitHub.
+   */
+  private async buildCommit(p: Proposal, head: string, blobs = new Map<string, string>()): Promise<string> {
+    const gh = this.gh!;
+    const origin = this.origin!;
+    const diff = await this.opts.store.diff(p.id);
+    const work = await this.opts.store.workFiles(p.id);
+    const prefix = `${origin.apps_path.replace(/^\/+|\/+$/g, '')}/${p.app}/`;
+    const changed = [...diff.added, ...diff.modified];
+    assertAppScope([...changed, ...diff.deleted].map((rel) => prefix + rel), origin.apps_path, p.app);
+    const entries: TreeEntry[] = [];
+    for (const rel of changed) {
+      let sha = blobs.get(rel);
+      if (!sha) {
+        sha = await gh.createBlob(work.get(rel)!);
+        blobs.set(rel, sha);
+      }
+      entries.push({ path: prefix + rel, sha });
+    }
+    for (const rel of diff.deleted) entries.push({ path: prefix + rel, sha: null });
+    const tree = await gh.createTree(await gh.commitTree(head), entries);
+    return gh.createCommit(buildCommitMessage(p, p.validation ?? []), tree, head, this.commitAuthor());
+  }
+
+  private commitAuthor(): { name: string; email: string } {
+    const email =
+      this.opts.settings.commit_email ||
+      `${this.opts.probe.userId ?? 0}+${this.opts.probe.status().login ?? this.opts.settings.login}@users.noreply.github.com`;
+    return { name: this.opts.settings.commit_name, email };
+  }
+
+  /** Delivery `pr`: a `touchstone/…` branch and a labelled pull request from it. */
+  private async deliverPr(p: Proposal, head: string, by: string): Promise<Proposal> {
+    const gh = this.gh!;
+    const origin = this.origin!;
+    const now = this.now();
     const title = prTitle(p);
     const ref = refFor(p, now);
 
     let branched = false;
     let pr: { number: number; url: string };
     try {
-      const entries: TreeEntry[] = [];
-      for (const rel of [...diff.added, ...diff.modified]) {
-        entries.push({ path: prefix + rel, sha: await gh.createBlob(work.get(rel)!) });
-      }
-      for (const rel of diff.deleted) entries.push({ path: prefix + rel, sha: null });
-
-      const tree = await gh.createTree(await gh.commitTree(head), entries);
-      const email =
-        this.opts.settings.commit_email ||
-        `${this.opts.probe.userId ?? 0}+${this.opts.probe.status().login ?? this.opts.settings.login}@users.noreply.github.com`;
-      const commit = await gh.createCommit(
-        `${title.replace(/^\[touchstone\] /, '')}\n\nPrepared by Touchstone's workshop, proposal ${p.id}.`,
-        tree,
-        head,
-        { name: this.opts.settings.commit_name, email },
-      );
+      const commit = await this.buildCommit(p, head);
       await gh.createBranch(ref, commit);
       branched = true;
 
@@ -1189,7 +1233,7 @@ export class Workshop {
       });
     } catch (err) {
       if (branched) await gh.deleteBranch(ref).catch(() => undefined);
-      return failed(err);
+      return this.submitFailed(p, err);
     }
     // The label is best effort (D13): a PR without it is still a PR.
     await gh.addLabel(pr.number, WORKSHOP_LABEL).catch(() => undefined);

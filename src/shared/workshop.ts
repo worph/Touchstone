@@ -105,6 +105,22 @@ export interface ProposalPr {
   mergeable_at?: string;
 }
 
+/** A proposal delivered by pushing to the target branch rather than by a pull request (D16). */
+export interface ProposalDelivery {
+  mode: 'push';
+  branch: string;
+  /** The commit Touchstone pushed, and the head it fast-forwarded from. */
+  commit: string;
+  parent: string;
+  /** `Apps/<App>/`'s tree sha in that commit — what a revert checks is still there. */
+  app_tree_sha: string | null;
+  url: string;
+  at: string;
+  by: string;
+  /** Set when the push was undone by Revert. */
+  reverted?: { commit: string; at: string; by: string };
+}
+
 export interface Proposal {
   id: string;
   kind: ProposalKind;
@@ -146,6 +162,7 @@ export interface Proposal {
   to_version?: string;
   ref?: string;
   pr?: ProposalPr;
+  delivered?: ProposalDelivery;
   /** Times an infra condition sent it back with no charge. */
   infra_retries: number;
   /** Times a restart interrupted an authoring session. */

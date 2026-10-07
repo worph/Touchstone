@@ -239,7 +239,7 @@ describe('a proposal, the whole way', () => {
     expect(now.validation?.map((r) => r.section).sort()).toEqual(['functional', 'functional@foss', 'static']);
 
     ghCalls = [];
-    const submitted = await workshop.submitPr(p.id, 'operator');
+    const submitted = await workshop.submitProposal(p.id, 'operator');
     expect(submitted.state).toBe('submitted');
     expect(submitted.pr?.number).toBe(42);
     const writes = ghCalls.filter((c) => c.method !== 'GET').map((c) => `${c.method} ${c.path.replace('/repos/Yundera/AppStore', '')}`);
@@ -249,14 +249,15 @@ describe('a proposal, the whole way', () => {
       { path: 'Apps/X/docker-compose.yml', mode: '100644', type: 'blob', sha: SHA('b') },
       { path: 'Apps/X/old.txt', mode: '100644', type: 'blob', sha: null },
     ]);
-    const commit = ghCalls.find((c) => c.path.endsWith('/git/commits') && c.method === 'POST')!.body as { author: { name: string; email: string } };
+    const commit = ghCalls.find((c) => c.path.endsWith('/git/commits') && c.method === 'POST')!.body as { author: { name: string; email: string }; message: string };
     expect(commit.author).toEqual({ name: 'Mael (Touchstone)', email: '7+Mael@users.noreply.github.com' });
+    expect(commit.message).toContain(`Touchstone-Proposal: ${p.id}`);
     const ref = (ghCalls.find((c) => c.path.endsWith('/git/refs'))!.body as { ref: string }).ref;
     expect(ref).toMatch(/^refs\/heads\/touchstone\/fix\/X-\d{8}-[a-f0-9]{6}$/);
     expect(store.memoryOf(p.task_key)?.outcome).toBe('pr_opened');
 
     // The quota: one a day.
-    await expect(workshop.submitPr(p.id, 'operator')).rejects.toThrow(WorkshopRefusal);
+    await expect(workshop.submitProposal(p.id, 'operator')).rejects.toThrow(WorkshopRefusal);
 
     // Still open: the poll records whether it would merge, and only writes when that moves.
     pull42 = { state: 'open', merged: false, mergeable: true, mergeable_state: 'clean' };
@@ -348,7 +349,7 @@ describe('the rules around it', () => {
     await workshop.dispatch(p.id, lease);
     await finishTrials({});
     appTree = SHA('9');
-    await expect(workshop.submitPr(p.id, 'operator')).rejects.toThrow(/changed/);
+    await expect(workshop.submitProposal(p.id, 'operator')).rejects.toThrow(/changed/);
     expect(store.get(p.id)!.state).toBe('discarded');
     expect(store.memory()).toEqual({});
     expect(ghCalls.some((c) => c.method === 'POST')).toBe(false);
@@ -364,7 +365,7 @@ describe('the rules around it', () => {
     await workshop.dispatch(p.id, lease);
     await finishTrials({});
     blobRefused = true;
-    const refusal = await workshop.submitPr(p.id, 'operator').catch((err: unknown) => err);
+    const refusal = await workshop.submitProposal(p.id, 'operator').catch((err: unknown) => err);
     expect(refusal).toBeInstanceOf(WorkshopRefusal);
     expect((refusal as WorkshopRefusal).code).toBe(502);
     expect((refusal as Error).message).toMatch(/Resource not accessible by personal access token/);
