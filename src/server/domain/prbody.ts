@@ -25,7 +25,10 @@ export function prTitle(p: Pick<Proposal, 'kind' | 'app' | 'to_version' | 'major
 }
 
 export interface PrBodyInput {
-  proposal: Pick<Proposal, 'id' | 'kind' | 'app' | 'summary' | 'major' | 'to_version' | 'round'>;
+  proposal: Pick<
+    Proposal,
+    'id' | 'kind' | 'app' | 'summary' | 'major' | 'to_version' | 'round' | 'baseline' | 'baseline_stale'
+  >;
   validation: readonly SectionResult[];
   before?: readonly FindingRow[];
   /** Failing requirements in the validation trials — empty when it passed, which it did. */
@@ -37,6 +40,20 @@ export interface PrBodyInput {
 }
 
 const cell = (v: unknown) => String(v ?? '—').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+
+/**
+ * D7′, said once for both the PR body and the commit message: what the change was compared to
+ * and whether the comparison was whole.
+ */
+export function regressionLine(p: Pick<Proposal, 'baseline' | 'baseline_stale'>): string {
+  if (!p.baseline || Object.keys(p.baseline).length === 0) {
+    return 'There was no earlier audit to compare against, so only compliance was checked.';
+  }
+  const stale = p.baseline_stale ?? [];
+  return stale.length === 0
+    ? 'No requirement got worse than in the store as it is: nothing newly fails and no severity rose.'
+    : `No requirement got worse than in the store as it is. ${stale.map((s) => `\`${s}\``).join(', ')} ${stale.length === 1 ? 'was' : 'were'} last audited under an older standard, so only the requirements both audits judged were compared.`;
+}
 
 export function buildPrBody(input: PrBodyInput): string {
   const p = input.proposal;
@@ -59,12 +76,16 @@ export function buildPrBody(input: PrBodyInput): string {
   head.push('');
   head.push('## Validation');
   head.push('');
-  head.push('| Section | Platform | Verdict | Risk | Trial |');
+  head.push('| Section | Platform | Verdict | Risk (store → change) | Trial |');
   head.push('| --- | --- | --- | --- | --- |');
   for (const r of input.validation) {
     const trial = input.trialUrl ? `[${r.trial}](${input.trialUrl(r.trial)})` : `\`${r.trial}\``;
-    head.push(`| ${cell(r.section)} | ${cell(r.target ?? 'any')} | ${cell(r.verdict ?? r.status)} | ${cell(r.risk_score)} | ${trial} |`);
+    const was = p.baseline?.[r.section]?.risk_score;
+    const risk = was === undefined || was === null ? cell(r.risk_score) : `${was} → ${cell(r.risk_score)}`;
+    head.push(`| ${cell(r.section)} | ${cell(r.target ?? 'any')} | ${cell(r.verdict ?? r.status)} | ${risk} | ${trial} |`);
   }
+  head.push('');
+  head.push(regressionLine(p));
   if (p.kind === 'fix') {
     head.push('');
     head.push('## Findings before and after');

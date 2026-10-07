@@ -9,8 +9,8 @@ import { describe, expect, it } from 'vitest';
 import type { AssayRecord, SubjectState } from '../../shared/types.js';
 import type { SectionResult, TaskMemory } from '../../shared/workshop.js';
 import { asSubjectKey } from '../../shared/subject.js';
-import { buildPrBody, PR_BODY_LIMIT, prTitle } from './prbody.js';
-import { candidates, crossesMajor, currencyOf, judgeValidation, quota, refFor, sha256 } from './workshop.js';
+import { buildPrBody, PR_BODY_LIMIT, prTitle, regressionLine } from './prbody.js';
+import { baselineOf, candidates, crossesMajor, currencyOf, judgeValidation, quota, refFor, regressionsOf, sha256 } from './workshop.js';
 
 const NOW = new Date('2026-10-02T12:00:00Z');
 const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3_600_000).toISOString();
@@ -217,5 +217,63 @@ describe('the pull request', () => {
     expect(body.length).toBeLessThanOrEqual(PR_BODY_LIMIT);
     expect(body).toContain('cut to fit');
     expect(body).toContain('Pinned the image.');
+  });
+});
+
+describe('D7′ — a change may not make anything worse', () => {
+  const S = 'a'.repeat(64);
+  const rec = (section: string, requirements: unknown[], over: Record<string, unknown> = {}) =>
+    ({ meta: { section, status: 'done', verdict: 'compliant', risk_score: 10, standard_sha256: S, requirements, ...over } }) as never;
+  const req = (id: string, verdict: string, severity?: string) => ({ id, verdict, ...(severity ? { severity } : {}) });
+  const scoring = new Set(['static', 'functional']);
+
+  it('reduces the archive to what it compares, and leaves out what never ran or does not score', () => {
+    const b = baselineOf(
+      { static: rec('static', [req('a', 'fail', 'minor'), req('b', 'pass')]), functional: null, currency: rec('currency', []) },
+      scoring,
+    );
+    expect(Object.keys(b)).toEqual(['static']);
+    expect(b.static).toEqual({ standard_sha256: S, risk_score: 10, requirements: { a: { verdict: 'fail', severity: 'minor' }, b: { verdict: 'pass' } } });
+  });
+
+  const base = baselineOf({ static: rec('static', [req('a', 'fail', 'minor'), req('b', 'pass'), req('c', 'n-a')]) }, scoring);
+
+  it('a requirement that passed and now fails is a regression', () => {
+    const r = regressionsOf(base, { static: rec('static', [req('a', 'fail', 'minor'), req('b', 'fail', 'minor')]) });
+    expect(r.regressions).toEqual([{ section: 'static', id: 'b', severity: 'minor', was: 'pass' }]);
+    expect(r.stale).toEqual([]);
+  });
+
+  it('so is one that was not applicable, and one that fails more severely', () => {
+    const r = regressionsOf(base, { static: rec('static', [req('a', 'fail', 'major'), req('c', 'fail', 'minor')]) });
+    expect(r.regressions.map((x) => [x.id, x.was])).toEqual([
+      ['a', 'minor'],
+      ['c', 'n-a'],
+    ]);
+  });
+
+  it('a fix that removes findings, or leaves one as it was, is not', () => {
+    expect(regressionsOf(base, { static: rec('static', []) }).regressions).toEqual([]);
+    expect(regressionsOf(base, { static: rec('static', [req('a', 'fail', 'minor')]) }).regressions).toEqual([]);
+  });
+
+  it('a requirement the baseline never judged counts only under the same standard', () => {
+    expect(regressionsOf(base, { static: rec('static', [req('new', 'fail', 'minor')]) }).regressions).toMatchObject([{ id: 'new', was: 'absent' }]);
+    const other = regressionsOf(base, { static: rec('static', [req('new', 'fail', 'minor')], { standard_sha256: 'b'.repeat(64) }) });
+    expect(other.regressions).toEqual([]);
+    expect(other.stale).toEqual(['static']);
+  });
+
+  it('with no baseline there is nothing to regress from', () => {
+    expect(regressionsOf(undefined, { static: rec('static', [req('b', 'fail', 'minor')]) })).toEqual({ regressions: [], stale: [] });
+  });
+});
+
+describe('regressionLine', () => {
+  const b = { static: { risk_score: 5, requirements: {} } };
+  it('says what was compared, and when it was partial', () => {
+    expect(regressionLine({})).toContain('only compliance was checked');
+    expect(regressionLine({ baseline: b, baseline_stale: [] })).toContain('No requirement got worse');
+    expect(regressionLine({ baseline: b, baseline_stale: ['static'] })).toContain('`static` was last audited under an older standard');
   });
 });
