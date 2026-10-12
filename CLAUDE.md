@@ -478,8 +478,8 @@ because its data access was smeared through two 200-line n8n Code nodes.
   substituted **last** — a context containing `{{HISTORY}}` must reach the model as those
   characters rather than as the conversation. No tool reads or writes it: standing instructions
   a model can rewrite are not standing instructions.
-- **`src/web/`** — React + Vite SPA in **two frames**. The operator frame is `Shell` and eight pages (Workshop at `/workshop` is the eighth; Configuration folded into Settings)
-  (Administrator chat at `/`, **Store** at `/store`, Subject detail, Automation, Activity,
+- **`src/web/`** — React + Vite SPA in **two frames**. The operator frame is `Shell` and nine pages (Workshop at `/workshop` is the eighth; Configuration folded into Settings; **Status** at `/status` the ninth, split from Activity 2026-10-12 — Status is the present tense: the run in flight, agent, browsers, benches; Activity is what you are told: alerts, notifications, the log)
+  (Administrator chat at `/`, **Store** at `/store`, Subject detail, Automation, Status, Activity,
   Trials, Settings at `/settings/:tab` — tabs Assistant (the context prompt), Automation (the loop's controls, which were a block on the Automation page until 2026-10-05), Workshop (the GitHub token, write-only, and `prs_per_day`) and config.yaml (read-only; its own Configuration page until 2026-10-05, `/config` redirects). The arm switches stay on Automation and Workshop) plus Protocols — the chat is the front page and therefore has no nav row of its own,
   the brand being the way back to it; `/chat` redirects to `/`. The
   **public frame** is `PublicFrame` and two read-only pages under `/public` (the board and one

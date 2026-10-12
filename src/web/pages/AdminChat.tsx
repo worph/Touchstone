@@ -153,7 +153,7 @@ export default function AdminChat() {
         className="chat-input"
         rows={1}
         value={draft}
-        placeholder={unavailable ? 'The agent is not answering — see Activity' : 'Ask, or tell it what to run…'}
+        placeholder={unavailable ? 'The agent is not answering — see Status' : 'Ask, or tell it what to run…'}
         onChange={(e) => {
           setDraft(e.target.value);
           e.target.style.height = 'auto';
@@ -195,7 +195,7 @@ export default function AdminChat() {
 
       {unavailable ? (
         <p className="notice notice--warn">
-          No agent is answering, so a turn cannot be taken. The Activity page shows what its
+          No agent is answering, so a turn cannot be taken. The Status page shows what its
           state is.
         </p>
       ) : null}

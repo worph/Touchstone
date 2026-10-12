@@ -1,41 +1,46 @@
 /**
- * Activity — the log, the alerts and the environment. The page you open when something has
- * gone wrong, and the reason you never need the n8n executions list again.
+ * Activity — what you are told: the alerts, how this device is notified, and the log. The
+ * page you open when something has gone wrong, and the reason you never need the n8n
+ * executions list again.
  *
- * Four blocks: what is running right now, then the three UX.md §2.3 fixes the order of —
- * what is wrong now, what it is running on, and what happened. The live one comes first
- * because the log cannot answer it: a run writes one row when it starts and the next when it
- * finishes, so for the ten minutes in between the page read as an idle system. It must render with Beacon unreachable and push unconfigured, so
+ * Present-tense state — the run in flight, the agent, the browsers, the bench roster — moved
+ * to Status on 2026-10-12 (see `pages/Status.tsx` for why). What stayed is the record: an alert
+ * is a condition with an opening and a close, a notification is the outlet that carries it, and
+ * the log is everything else. It must render with Beacon unreachable and push unconfigured, so
  * every block degrades to a sentence rather than to an error — the one thing this page may
  * never do is fail to tell you why it is failing.
  */
 import { subjectName } from '@shared/subject';
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
-import type {
-  AlertsResponse,
-  BenchesResponse,
-  BenchHealth,
-  BenchPoolHealth,
-  EventsResponse,
-  PushStatus,
-} from '@shared/activity';
+import type { AlertKey, AlertsResponse, EventsResponse, PushStatus } from '@shared/activity';
 import AlertCard from '../components/AlertCard';
 import EventRow from '../components/EventRow';
-import RunCard from '../components/RunCard';
 import { EmptyState, Loading, Notice } from '../components/Ui';
 import {
   getAlerts,
-  getBenches,
   getEvents,
   getPushStatus,
   probeBenches,
   subscribePush,
 } from '../data/client';
 import { markSeen } from '../lib/badge';
-import { since, stamp } from '../lib/format';
+import { since } from '../lib/format';
 
 const REFRESH_MS = 10_000;
+
+/** How many closed alerts to keep on the page. The log has the rest. */
+const RESOLVED_SHOWN = 5;
+
+/**
+ * The alerts a probe can settle. `probeBenches` re-probes the agent and the browsers as well
+ * as the pool, so the button belongs on those cards too; a dead session or a GitHub token is
+ * not something a probe can see, and a button that cannot change the card is a lie.
+ */
+function probeable(key: AlertKey): boolean {
+  return key.startsWith('bench.') || key === 'agent.unavailable' || key === 'browser.unavailable';
+}
 
 const LEVELS = [
   { value: 'all', label: 'all levels' },
@@ -57,71 +62,8 @@ const CATEGORIES = [
   'system',
 ];
 
-/** Same rule as the benches: the status word is never carried by colour alone. */
-const PORT_LABEL: Record<string, string> = {
-  healthy: 'answering',
-  unreachable: 'not answering',
-  unconfigured: 'not configured',
-  unknown: 'not probed yet',
-};
-
-/** What the probe found, in words. The status word is never carried by colour alone. */
-const BENCH_LABEL: Record<string, string> = {
-  healthy: 'ready',
-  auth: 'cannot log in',
-  unreachable: 'not usable',
-  unconfigured: 'not configured',
-  unknown: 'not probed yet',
-};
-
-/**
- * The runway note. A bench can pass the login probe and still be the wrong one to start a
- * forty-minute assay on, because the daily cleanup is about to wipe it — so the row says how
- * long it has, and says plainly when that is not enough.
- */
-/**
- * The roster, grouped under the platform each bench serves.
- *
- * Config order, from the pool list, so the default platform leads — the same order the summary
- * lines above are drawn in, because a roster that disagreed with the summary about which
- * platform comes first would be worse than no grouping at all.
- *
- * A heading only when there is more than one platform: on a single-target box this returns one
- * unlabelled group and the block renders exactly as it always has. Rows whose target matches no
- * configured pool — a roster written before targets existed, or a pool just removed from the
- * config — are kept in a trailing unlabelled group rather than dropped: the whole purpose of
- * this block is to show what is there.
- */
-function groupByTarget(
-  rows: readonly BenchHealth[],
-  pools: readonly BenchPoolHealth[],
-): { label: string | null; rows: BenchHealth[] }[] {
-  if (pools.length <= 1) return [{ label: null, rows: [...rows] }];
-  const out: { label: string | null; rows: BenchHealth[] }[] = [];
-  const claimed = new Set<BenchHealth>();
-  for (const pool of pools) {
-    const mine = rows.filter((b) => b.target === pool.id);
-    mine.forEach((b) => claimed.add(b));
-    if (mine.length > 0) out.push({ label: pool.label, rows: mine });
-  }
-  const orphans = rows.filter((b) => !claimed.has(b));
-  if (orphans.length > 0) out.push({ label: null, rows: orphans });
-  return out;
-}
-
-function claimNote(bench: BenchHealth): string {
-  if (bench.processing === true) return ' · mid-cleanup, not claimable';
-  if (bench.remaining_min === undefined) return '';
-  if (bench.remaining_min === null) return ' · no countdown from the board';
-  const hours = (bench.remaining_min / 60).toFixed(1);
-  return bench.remaining_min > 60
-    ? ` · ${hours}h of runway`
-    : ` · only ${hours}h left, not claimable`;
-}
-
 export default function Activity() {
   const [alerts, setAlerts] = useState<AlertsResponse | null>(null);
-  const [benches, setBenches] = useState<BenchesResponse | null>(null);
   const [log, setLog] = useState<EventsResponse | null>(null);
   const [push, setPush] = useState<PushStatus | null>(null);
   /** Why the last attempt to register this device did not work. */
@@ -135,14 +77,12 @@ export default function Activity() {
 
   const refresh = useCallback(async () => {
     try {
-      const [a, b, e, p] = await Promise.all([
+      const [a, e, p] = await Promise.all([
         getAlerts(),
-        getBenches(),
         getEvents({ level, category, subject, limit: 300 }),
         getPushStatus(),
       ]);
       setAlerts(a);
-      setBenches(b);
       setLog(e);
       setPush(p);
       setError(null);
@@ -163,7 +103,7 @@ export default function Activity() {
   const probe = useCallback(async () => {
     setProbing(true);
     try {
-      setBenches(await probeBenches());
+      await probeBenches();
       setAlerts(await getAlerts());
     } catch (err) {
       setError(err instanceof Error ? err : new Error(String(err)));
@@ -188,10 +128,6 @@ export default function Activity() {
         </Notice>
       ) : null}
 
-      {/* Before the alerts: "what is happening now" is the question this page is opened
-          with, and the log between ASSAY_STARTED and ASSAY_COMPLETED cannot answer it. */}
-      <RunCard />
-
       <section className="act-section">
         <h2 className="act-h">
           Open alerts <span className="act-count">{open.length}</span>
@@ -199,142 +135,36 @@ export default function Activity() {
         {open.length === 0 ? (
           <div className="act-quiet">
             Nothing is currently wrong with the environment.
-            {alerts && alerts.resolved.length > 0 ? (
-              <> Last resolved {since(alerts.resolved[0]?.resolved_at)}.</>
-            ) : null}
+{' '}
+            <Link to="/status">Status</Link> shows what it is running on.
           </div>
         ) : (
           <div className="alert-stack">
             {open.map((a) => (
-              <AlertCard key={a.key} alert={a} onProbe={a.key.startsWith('bench.') ? probe : undefined} probing={probing} />
+              <AlertCard key={a.key} alert={a} onProbe={probeable(a.key) ? probe : undefined} probing={probing} />
             ))}
           </div>
         )}
       </section>
 
+      {/* A condition that came and went is still something you were told, and the open stack
+          alone cannot say "the agent was gone for five days and is back since this morning". */}
+      {(alerts?.resolved.length ?? 0) > 0 ? (
+        <section className="act-section">
+          <h2 className="act-h">Recently resolved</h2>
+          <div className="alert-stack">
+            {[...alerts!.resolved]
+              .sort((a, b) => (b.resolved_at ?? '').localeCompare(a.resolved_at ?? ''))
+              .slice(0, RESOLVED_SHOWN)
+              .map((a) => (
+              <AlertCard key={`${a.key}@${a.resolved_at ?? ''}`} alert={a} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <section className="act-section">
-        <h2 className="act-h">
-          Environment
-          <button type="button" className="btn btn--sm act-h-action" onClick={probe} disabled={probing}>
-            {probing ? 'probing…' : 'probe all'}
-          </button>
-        </h2>
-
-        {/* The agent and the browser first: without the agent nothing runs at all, and a
-            page that reports only the benches was the asymmetry that hid two of the three
-            dependencies an audit needs. */}
-        {(benches?.ports.length ?? 0) > 0 ? (
-          <div className="env" style={{ marginBottom: 10 }}>
-            {benches?.ports.map((p) => (
-              <div className="env-row" key={p.name} data-status={p.status}>
-                <span className="env-name">{p.name}</span>
-                <span className="env-status">
-                  <span className="env-dot" aria-hidden="true" />
-                  {PORT_LABEL[p.status] ?? p.status}
-                </span>
-                <span className="env-note">
-                  {p.status === 'healthy'
-                    ? `${p.tools ?? 0} tools · ${p.latency_ms ?? 0}ms`
-                    : `last ok ${p.healthy_at ? stamp(p.healthy_at) : 'never'}`}
-                </span>
-                <span className="env-probe">
-                  {p.kind === 'agent' ? 'agent · ' : 'browser · '}
-                  {p.url}
-                  {p.detail ? ` → ${p.detail}` : ''}
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        {/*
-          The pool in one line, above the roster.
-
-          The rows below say what each *box* is; this says whether a functional section can run
-          at all, and when that changes. Those came apart on 2026-08-23: every row read healthy
-          while nothing was claimable, and an operator reading the roster had no way to see it.
-          Composed by the server (`services/bench.ts`), so the page, the re-assay button, the
-          alert and the chat cannot phrase the same pool three ways.
-        */}
-        {/* One line per pool, never a sum. Summed, "3 of 4 usable" reads as healthy while
-            the pool that is down is the whole of a platform — and the line that stopped is
-            exactly what this block exists to make visible. */}
-        {benches?.pools.map((pool) => (
-          <div key={pool.id} className="act-quiet" data-pool={pool.leasable > 0 ? 'up' : 'down'}>
-            {benches.pools.length > 1 ? <strong>{pool.label}</strong> : null}
-            {benches.pools.length > 1 ? ' — ' : null}
-            <strong className="num">{pool.leasable}</strong> of {pool.total} usable
-            {pool.window ? ` — ${pool.window}` : ''}.
-            {/* Next to the pool whose board it is. Only the discovered pool has one; a fixed
-                box has no board to disagree with, which is half the point of showing it. */}
-            {pool.board_url ? (
-              <>
-                {' '}
-                <a className="tag tag--link" href={pool.board_url} target="_blank" rel="noreferrer">
-                  board ↗
-                </a>
-              </>
-            ) : null}
-          </div>
-        ))}
-
-        {(benches?.benches.length ?? 0) === 0 ? (
-          <div className="act-quiet">
-            The demo pool has not been read yet, so the functional queue stays paused. The
-            roster comes from <code>bench.pool_url</code> in <code>data/config.yaml</code> —
-            instances are wiped daily, so they are discovered rather than listed. An assay run
-            against a bench we cannot log into produces a verdict about the bench and
-            attributes it to the app.
-          </div>
-        ) : (
-          <div className="env">
-            {/* Grouped by platform, and keyed on `<target>/<name>`.
-
-                The key is not tidiness: `shared/activity.ts` already warns that a bench name
-                stopped identifying a row once there was more than one target, because two
-                platforms may legitimately hold same-named instances. Keyed on the name alone,
-                two such boxes collide into one row and React renders whichever it saw last. */}
-            {groupByTarget(benches?.benches ?? [], benches?.pools ?? []).map(({ label, rows }) => (
-              <Fragment key={label ?? '—'}>
-                {label ? <div className="env-group">{label}</div> : null}
-                {rows.map((b) => (
-              <div className="env-row" key={`${b.target ?? '—'}/${b.name}`} data-status={b.status}>
-                <span className="env-name">{b.name}</span>
-                <span className="env-status">
-                  <span className="env-dot" aria-hidden="true" />
-                  {BENCH_LABEL[b.status] ?? b.status}
-                </span>
-                <span className="env-note">
-                  {b.status === 'healthy'
-                    ? `answered in ${b.latency_ms ?? 0}ms`
-                    : `last ok ${b.healthy_at ? stamp(b.healthy_at) : 'never'}`}
-                  {/* Runway, because healthy and claimable are different questions: an
-                      instance the daily cleanup wipes mid-run costs a whole assay. */}
-                  {claimNote(b)}
-                </span>
-                <span className="env-probe">
-                  {b.detail ? `login flow → ${b.detail}` : 'login flow → ok'}
-                  {/* Which build of the platform this box is running. Not a version — Maison
-                      publishes none — but it changes when the box is redeployed, and that is
-                      the fact an operator needs when yesterday's verdicts stop reproducing. */}
-                  {b.build ? <span className="env-board"> · build {b.build}</span> : null}
-                  {/* The board said Ready for the whole of the 2026-08-05 outage. Showing
-                      the disagreement is the point; agreeing silently is the bug. */}
-                  {b.board_says !== undefined && b.status !== 'healthy' ? (
-                    <span className="env-board">
-                      {b.board_says === null
-                        ? ' · the board could not be read'
-                        : ` · board says ${b.board_says}`}
-                    </span>
-                  ) : null}
-                </span>
-              </div>
-                ))}
-              </Fragment>
-            ))}
-          </div>
-        )}
-
+        <h2 className="act-h">Notifications</h2>
         <div className="act-foot">
           Push is{' '}
           {push?.configured ? `configured · ${push.devices} device${push.devices === 1 ? '' : 's'}` : 'not configured'}

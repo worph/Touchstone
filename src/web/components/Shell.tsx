@@ -47,6 +47,10 @@ const NAV: { group: string; items: NavItem[] }[] = [
       // good day and a permanent number beside a nav row is furniture, while a request is
       // work somebody is waiting on and worth being told about from any page.
       { to: '/automation', label: 'Automation', queue: true },
+      // What it is running on, right now: the run in flight, the agent, the browsers, the
+      // bench pools. Split from Activity on 2026-10-12, which keeps what you are *told*.
+      // Off the phone's tab bar, which is full; Activity links here from its alerts block.
+      { to: '/status', label: 'Status', tab: false },
       { to: '/activity', label: 'Activity', badge: true },
     ],
   },
@@ -116,9 +120,9 @@ export default function Shell({ children }: { children: ReactNode }) {
           ))}
         </div>
 
-        {/* Not on Activity: the run card is the first thing on that page, and the strip a
+        {/* Not on Status: the run card is the first thing on that page, and the strip a
             few centimetres away saying the same thing twice is furniture. */}
-        {location.pathname === '/activity' ? null : <RunningStrip />}
+        {location.pathname === '/status' ? null : <RunningStrip />}
 
         {/* The board an app author sees. Linked from here rather than from the nav so it
             stays out of the phone's tab bar — and so an operator can check what is being
@@ -240,6 +244,12 @@ const GLYPH: Record<string, ReactNode> = {
     <>
       <path d="M18 8A6 6 0 1 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
       <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+    </>
+  ),
+  // a pulse: what it is running on
+  '/status': (
+    <>
+      <path d="M3 12h4l3-8 4 16 3-8h4" />
     </>
   ),
   // a page: the rubric
