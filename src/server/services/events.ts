@@ -198,6 +198,7 @@ export const EVENT_CODES = {
   CONTROL_IGNORED: { category: 'config', label: 'a stored setting was not applied' },
   AGENT_BUSY: { category: 'agent', label: 'agent busy' },
   AGENT_UNAUTHENTICATED: { category: 'agent', label: 'agent not logged in' },
+  AGENT_UNAVAILABLE: { category: 'agent', label: 'agent unreachable' },
 
   // ── the ports (P5) ────────────────────────────────────────────────────────
   PORT_HEALTHY: { category: 'system', label: 'endpoint answering' },
@@ -386,6 +387,7 @@ interface EventDetails {
   CONTROL_IGNORED: { key: string; value: unknown; reason: string };
   AGENT_BUSY: { subject: string; waitMs: number; attempt: number };
   AGENT_UNAUTHENTICATED: { subject: string; error: string; raw: string };
+  AGENT_UNAVAILABLE: { subject: string; error: string; raw: string };
   SUBJECT_DELISTED: { subjects: string[] };
   SUBJECT_PURGED: { subject: string; files: number; by: string };
   PORT_HEALTHY: { port: string; kind: 'agent' | 'browser'; tools: number };

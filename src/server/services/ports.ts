@@ -32,6 +32,7 @@
 import path from 'node:path';
 
 import { readJson, writeJsonAtomic } from '../store/state.js';
+import type { AlertInput } from './alerts.js';
 import type { EventLog } from './events.js';
 
 export type PortKind = 'agent' | 'browser';
@@ -44,6 +45,12 @@ export interface PortConfig {
   url: string;
   /** For the agent: the tool the runner will call, so the probe can say it is really there. */
   expectTool?: string;
+  /**
+   * How `expectTool` is reached. `direct` (the default) means it is on this endpoint's own
+   * `tools/list`. `beacon` means the endpoint is an aggregator, whose `tools/list` is only its
+   * own four tools whatever it has discovered — so the probe asks its `tool_doc` instead.
+   */
+  expectVia?: 'direct' | 'beacon';
   enabled?: boolean;
 }
 
@@ -111,11 +118,18 @@ export async function probeMcp(
       // matters: an empty surface will fail every call while looking up.
       return { status: 'unreachable', detail: 'the endpoint offers no tools', tools: 0, latencyMs };
     }
-    const hasExpected = port.expectTool ? names.includes(port.expectTool) : undefined;
+    const hasExpected = !port.expectTool
+      ? undefined
+      : port.expectVia === 'beacon'
+        ? await aggregatorHas(port.url, port.expectTool, timeoutMs, fetchImpl)
+        : names.includes(port.expectTool);
     if (hasExpected === false) {
       return {
         status: 'unreachable',
-        detail: `${port.expectTool} is not on this endpoint`,
+        detail:
+          port.expectVia === 'beacon'
+            ? `the aggregator answers, but has not discovered ${port.expectTool}`
+            : `${port.expectTool} is not on this endpoint`,
         tools: names.length,
         hasExpected,
         latencyMs,
@@ -152,6 +166,76 @@ export async function probeMcp(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Has a Beacon aggregator discovered `tool`?
+ *
+ * Its `tools/list` cannot say: that is the aggregator's own four tools (`overview`, `tool_doc`,
+ * `server_doc`, `call`) whether it has discovered every server on the network or none of them.
+ * So for a week from 2026-10-07 the agent read `answering` on Activity while every audit came
+ * back `Unknown tool: claude-code__query_claude` — the claude container had been redeployed
+ * with its MCP server off and Beacon had nothing to forward to. `tool_doc` is the cheapest
+ * question that names the tool, has no side effect, and answers `isError` when it is absent.
+ *
+ * Only a positive "absent" counts. A transport failure here, or an answer that is not shaped
+ * like one, is "cannot tell" — the `tools/list` that just succeeded stands.
+ */
+export async function aggregatorHas(
+  url: string,
+  tool: string,
+  timeoutMs: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<boolean | undefined> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(url, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'tool_doc', arguments: { tool_name: tool } },
+      }),
+    });
+    if (!res.ok) return undefined;
+    const text = await res.text();
+    for (const frame of jsonFrames(text)) {
+      const result = (frame as { result?: { isError?: unknown; content?: unknown } })?.result;
+      if (!result || typeof result !== 'object') continue;
+      return result.isError !== true;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Every JSON object in a response, SSE-framed or not. */
+function jsonFrames(payload: string): unknown[] {
+  const out: unknown[] = [];
+  for (const line of payload.split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('data:')) continue;
+    try {
+      out.push(JSON.parse(t.slice(5).trim()));
+    } catch {
+      /* a partial frame */
+    }
+  }
+  if (out.length === 0) {
+    try {
+      out.push(JSON.parse(payload));
+    } catch {
+      /* not JSON */
+    }
+  }
+  return out;
 }
 
 /**
@@ -294,6 +378,8 @@ export interface PortProberOptions {
   events: EventLog;
   probeTimeoutMs?: number;
   fetchImpl?: typeof fetch;
+  /** For `agent.unavailable` only — see the class comment. */
+  alerts?: { open(input: AlertInput): unknown; resolve(key: AlertInput['key'], note?: string): unknown };
 }
 
 /**
@@ -311,6 +397,14 @@ export interface PortProberOptions {
  * dead session is only ever observable to the code making the call. The clause this comment
  * used to carry — "the failed assay says so with its own event" — was the other half of that
  * mistake: an event is not an alert, and the banner, the chat and `get_status` all read alerts.
+ *
+ * **One exception: the agent being *absent* is this prober's to say**, as `agent.unavailable`.
+ * Absent is not the dead-session case above — it is an endpoint that cannot even offer the
+ * tool, which `tools/list` (or, through Beacon, `tool_doc`) does observe. And the runner alone
+ * cannot carry it: a runner only learns by running, and on 2026-10-12 the backlog had emptied
+ * itself by parking every app that was due, so nothing ran and nothing said the agent was gone.
+ * The runner opens the same key when a call is refused for the same reason; the two refresh one
+ * card rather than stacking.
  */
 export class PortProber {
   private readonly file: string;
@@ -395,6 +489,7 @@ export class PortProber {
         };
         this.health.set(port.name, next);
         this.logTransition(previous, next);
+        if (port.kind === 'agent') this.agentAlert(next);
         return next;
       }),
     );
@@ -403,6 +498,22 @@ export class PortProber {
       console.error('could not write ports.json', err),
     );
     return rows;
+  }
+
+  private agentAlert(next: PortHealth): void {
+    const alerts = this.opts.alerts;
+    if (!alerts) return;
+    if (next.status === 'healthy') {
+      alerts.resolve('agent.unavailable', 'The audit agent is reachable again');
+    } else if (next.status === 'unreachable') {
+      alerts.open({
+        key: 'agent.unavailable',
+        title: 'The audit agent cannot be reached',
+        detail: `${next.url} → ${next.detail ?? 'no response'}`,
+        impact:
+          'no audit, trial or chat turn can run until it is back · no app is charged a retry for this and no verdict is reached about one',
+      });
+    }
   }
 
   /** Only what changed. A port down for two days is one event, not one every five minutes. */

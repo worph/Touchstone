@@ -231,6 +231,24 @@ describe('classifying a failure', () => {
     expect(!out.ok && out.error).toBe('agent-auth');
   });
 
+  /**
+   * Beacon answers a `call` for a server it has not discovered with an ordinary result whose
+   * text is this sentence. It is no error by any test below, so it fell through to
+   * `parse-failed` and charged a try: from 2026-10-07 to 10-12 it parked eight apps on
+   * yunderalabs over an agent container that had been redeployed with its MCP server off.
+   */
+  it('calls a tool the endpoint does not have agent-missing', () => {
+    const out = classify('Unknown tool: claude-code__query_claude');
+    expect(!out.ok && out.error).toBe('agent-missing');
+    const server = classify('Unknown server: claude-code');
+    expect(!server.ok && server.error).toBe('agent-missing');
+  });
+
+  it('does not call a report that merely quotes the phrase agent-missing', () => {
+    const out = classify('The app logged "Unknown tool: foo" and nothing else.');
+    expect(!out.ok && out.error).toBe('parse-failed');
+  });
+
   it('calls a 409 agent-busy', () => {
     expect(classify('Error calling remote tool: 409 conflict').ok).toBe(false);
     const out = classify('Error calling remote tool: 409 conflict');
@@ -624,6 +642,22 @@ describe('a failure that is not busy', () => {
     });
     expect(out).toEqual({ kind: 'agent_auth' });
     expect(await reportFiles()).toHaveLength(0);
+  });
+
+  it('charges nothing and records nothing when the agent is not there at all', async () => {
+    const alerts = new AlertStore(dir, {});
+    const out = await make({ alerts }, [sse('Unknown tool: claude-code__query_claude')]).run({
+      subject: SUBJECT,
+      try_n: 1,
+    });
+    expect(out).toEqual({ kind: 'agent_unavailable' });
+    expect(await reportFiles()).toHaveLength(0);
+    expect(alerts.isOpen('agent.unavailable')).toBe(true);
+    await events.flush();
+    expect(events.query({ code: 'AGENT_UNAVAILABLE' })).toHaveLength(1);
+
+    await make({ alerts }).run({ subject: SUBJECT, try_n: 1 });
+    expect(alerts.isOpen('agent.unavailable')).toBe(false);
   });
 
   it('opens an alert, because a dead session stops every audit rather than one', async () => {

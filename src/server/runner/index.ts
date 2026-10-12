@@ -867,6 +867,7 @@ export class Runner {
     // An answer we could use is proof the session is alive. Resolving here rather than from a
     // prober is the same argument as opening there: this is the only place that finds out.
     this.opts.alerts?.resolve('agent.auth', 'The audit agent is answering again');
+    this.opts.alerts?.resolve('agent.unavailable', 'The audit agent is reachable again');
     const files: string[] = [];
     for (const assay of assays) {
       const res = await writeReport(reportsRoot, assay.meta, assay.body);
@@ -1094,15 +1095,18 @@ export class Runner {
   ): Promise<RunOutcome> {
     void this.dump(job, outcome);
     const isAuth = outcome.error === 'agent-auth';
+    const isMissing = outcome.error === 'agent-missing';
     // A run that died at requirement 12 of 16 established twelve facts. Saying so is the
     // difference between "we know nothing" and "we know most of it and the rest is unknown".
     const partial = flagged ? coverageOf(flagged.requirements) : null;
     this.opts.events.log({
       level: 'error',
-      code: isAuth ? 'AGENT_UNAUTHENTICATED' : 'ASSAY_FAILED',
+      code: isAuth ? 'AGENT_UNAUTHENTICATED' : isMissing ? 'AGENT_UNAVAILABLE' : 'ASSAY_FAILED',
       message: isAuth
         ? 'The audit agent is not logged in, so no audit can run'
-        : 'An audit failed to produce a report',
+        : isMissing
+          ? 'The audit agent cannot be reached, so no audit can run'
+          : 'An audit failed to produce a report',
       subject: job.subject,
       detail: {
         subject: job.subject,
@@ -1129,6 +1133,19 @@ export class Runner {
           'no audit can complete until the agent is logged in again · no app is charged a retry for this and no verdict is reached about one',
       });
       return { kind: 'agent_auth' };
+    }
+
+    if (isMissing) {
+      // `agent-auth`'s twin: the endpoint answered, and the answer was that there is no agent
+      // behind it. Same key the port prober opens, so the two refresh one card.
+      this.opts.alerts?.open({
+        key: 'agent.unavailable',
+        title: 'The audit agent cannot be reached',
+        detail: `${job.subject} → ${outcome.rawText.slice(0, 200)}`,
+        impact:
+          'no audit, trial or chat turn can run until it is back · no app is charged a retry for this and no verdict is reached about one',
+      });
+      return { kind: 'agent_unavailable' };
     }
 
     // `AgentFailure` is hyphenated (`agent-error`); `blocked_reason` is underscored, as
