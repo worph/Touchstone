@@ -10,6 +10,7 @@ import PublicFrame from './components/PublicFrame';
 import Shell from './components/Shell';
 import { EmptyState } from './components/Ui';
 import Activity from './pages/Activity';
+import Status from './pages/Status';
 import Automation from './pages/Automation';
 import Protocols from './pages/Protocols';
 import Settings from './pages/Settings';
@@ -48,6 +49,7 @@ createRoot(root).render(
           <Route path="/store" element={<Store />} />
           <Route path="/s/:name" element={<SubjectDetail />} />
           <Route path="/activity" element={<Activity />} />
+          <Route path="/status" element={<Status />} />
           <Route path="/automation" element={<Automation />} />
           <Route path="/protocol" element={<Protocols />} />
           <Route path="/trials" element={<Trials />} />

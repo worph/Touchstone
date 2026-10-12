@@ -1,5 +1,5 @@
 /**
- * `GET /benches` and `POST /benches/probe` — the environment block on Activity.
+ * `GET /benches` and `POST /benches/probe` — the Status page.
  *
  * The POST exists because the page has a `probe` button, and the page has a probe button
  * because the first thing anyone does when told the bench is down is check whether it

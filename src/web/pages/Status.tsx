@@ -1,0 +1,266 @@
+/**
+ * Status — what Touchstone is running on, right now.
+ *
+ * Split out of Activity on 2026-10-12. Activity had grown three jobs: what is running, what the
+ * environment looks like, and what happened. The first two are *present tense* — a probe or a
+ * poll, true until the next one — and the third is a record. Reading them on one page made the
+ * environment the thing you scrolled past on the way to the log, and on yunderalabs the agent
+ * row said `answering` for five days beside a log full of `Unknown tool`. So the present tense
+ * gets its own page and Activity keeps what is told to you: alerts, notifications, the log.
+ *
+ * Order is the dependency order of an audit: what is running on it, then the agent (without
+ * which nothing runs), the browsers, and the bench pools. Like Activity it must render with
+ * every outbound port broken, so each block degrades to a sentence rather than to an error.
+ */
+import { Fragment, useCallback, useEffect, useState } from 'react';
+
+import type { BenchesResponse, BenchHealth, BenchPoolHealth } from '@shared/activity';
+import RunCard from '../components/RunCard';
+import { Loading, Notice } from '../components/Ui';
+import { getBenches, probeBenches } from '../data/client';
+import { stamp } from '../lib/format';
+
+const REFRESH_MS = 10_000;
+
+/** Same rule as the benches: the status word is never carried by colour alone. */
+const PORT_LABEL: Record<string, string> = {
+  healthy: 'answering',
+  unreachable: 'not answering',
+  unconfigured: 'not configured',
+  unknown: 'not probed yet',
+};
+
+/** What the probe found, in words. The status word is never carried by colour alone. */
+const BENCH_LABEL: Record<string, string> = {
+  healthy: 'ready',
+  auth: 'cannot log in',
+  unreachable: 'not usable',
+  unconfigured: 'not configured',
+  unknown: 'not probed yet',
+};
+
+/**
+ * The runway note. A bench can pass the login probe and still be the wrong one to start a
+ * forty-minute assay on, because the daily cleanup is about to wipe it — so the row says how
+ * long it has, and says plainly when that is not enough.
+ */
+/**
+ * The roster, grouped under the platform each bench serves.
+ *
+ * Config order, from the pool list, so the default platform leads — the same order the summary
+ * lines above are drawn in, because a roster that disagreed with the summary about which
+ * platform comes first would be worse than no grouping at all.
+ *
+ * A heading only when there is more than one platform: on a single-target box this returns one
+ * unlabelled group and the block renders exactly as it always has. Rows whose target matches no
+ * configured pool — a roster written before targets existed, or a pool just removed from the
+ * config — are kept in a trailing unlabelled group rather than dropped: the whole purpose of
+ * this block is to show what is there.
+ */
+function groupByTarget(
+  rows: readonly BenchHealth[],
+  pools: readonly BenchPoolHealth[],
+): { label: string | null; rows: BenchHealth[] }[] {
+  if (pools.length <= 1) return [{ label: null, rows: [...rows] }];
+  const out: { label: string | null; rows: BenchHealth[] }[] = [];
+  const claimed = new Set<BenchHealth>();
+  for (const pool of pools) {
+    const mine = rows.filter((b) => b.target === pool.id);
+    mine.forEach((b) => claimed.add(b));
+    if (mine.length > 0) out.push({ label: pool.label, rows: mine });
+  }
+  const orphans = rows.filter((b) => !claimed.has(b));
+  if (orphans.length > 0) out.push({ label: null, rows: orphans });
+  return out;
+}
+
+function claimNote(bench: BenchHealth): string {
+  if (bench.processing === true) return ' · mid-cleanup, not claimable';
+  if (bench.remaining_min === undefined) return '';
+  if (bench.remaining_min === null) return ' · no countdown from the board';
+  const hours = (bench.remaining_min / 60).toFixed(1);
+  return bench.remaining_min > 60
+    ? ` · ${hours}h of runway`
+    : ` · only ${hours}h left, not claimable`;
+}
+
+export default function Status() {
+  const [benches, setBenches] = useState<BenchesResponse | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [probing, setProbing] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      setBenches(await getBenches());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const timer = setInterval(() => void refresh(), REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [refresh]);
+
+  // Probes the agent and the browsers as well as the benches (`POST /benches/probe`), which is
+  // what makes the button worth pressing when the agent row is the one in doubt.
+  const probe = useCallback(async () => {
+    setProbing(true);
+    try {
+      setBenches(await probeBenches());
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      setProbing(false);
+    }
+  }, []);
+
+  if (!benches && !error) return <Loading what="status" />;
+
+  return (
+    <div className="page page--wide">
+      {error ? (
+        <Notice tone="error" title="The status is not updating">
+          {error.message} What is shown is the last probe that reached this page.
+        </Notice>
+      ) : null}
+
+      {/* Before the environment: "what is it doing" is the first question, and the
+          dependencies below are what answers "and why not". */}
+      <RunCard />
+
+      <section className="act-section">
+        <h2 className="act-h">
+          Agent and browsers
+          <button type="button" className="btn btn--sm act-h-action" onClick={probe} disabled={probing}>
+            {probing ? 'probing…' : 'probe all'}
+          </button>
+        </h2>
+
+        {/* The agent and the browser first: without the agent nothing runs at all, and a
+            page that reports only the benches was the asymmetry that hid two of the three
+            dependencies an audit needs. */}
+        {(benches?.ports.length ?? 0) === 0 ? (
+          <div className="act-quiet">No agent or browser is configured in <code>data/config.yaml</code>.</div>
+        ) : (
+          <div className="env">
+            {benches?.ports.map((p) => (
+              <div className="env-row" key={p.name} data-status={p.status}>
+                <span className="env-name">{p.name}</span>
+                <span className="env-status">
+                  <span className="env-dot" aria-hidden="true" />
+                  {PORT_LABEL[p.status] ?? p.status}
+                </span>
+                <span className="env-note">
+                  {p.status === 'healthy'
+                    ? `${p.tools ?? 0} tools · ${p.latency_ms ?? 0}ms`
+                    : `last ok ${p.healthy_at ? stamp(p.healthy_at) : 'never'}`}
+                </span>
+                <span className="env-probe">
+                  {p.kind === 'agent' ? 'agent · ' : 'browser · '}
+                  {p.url}
+                  {p.detail ? ` → ${p.detail}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="act-section">
+        <h2 className="act-h">Benches</h2>
+
+        {/*
+          The pool in one line, above the roster.
+
+          The rows below say what each *box* is; this says whether a functional section can run
+          at all, and when that changes. Those came apart on 2026-08-23: every row read healthy
+          while nothing was claimable, and an operator reading the roster had no way to see it.
+          Composed by the server (`services/bench.ts`), so the page, the re-assay button, the
+          alert and the chat cannot phrase the same pool three ways.
+        */}
+        {/* One line per pool, never a sum. Summed, "3 of 4 usable" reads as healthy while
+            the pool that is down is the whole of a platform — and the line that stopped is
+            exactly what this block exists to make visible. */}
+        {benches?.pools.map((pool) => (
+          <div key={pool.id} className="act-quiet" data-pool={pool.leasable > 0 ? 'up' : 'down'}>
+            {benches.pools.length > 1 ? <strong>{pool.label}</strong> : null}
+            {benches.pools.length > 1 ? ' — ' : null}
+            <strong className="num">{pool.leasable}</strong> of {pool.total} usable
+            {pool.window ? ` — ${pool.window}` : ''}.
+            {/* Next to the pool whose board it is. Only the discovered pool has one; a fixed
+                box has no board to disagree with, which is half the point of showing it. */}
+            {pool.board_url ? (
+              <>
+                {' '}
+                <a className="tag tag--link" href={pool.board_url} target="_blank" rel="noreferrer">
+                  board ↗
+                </a>
+              </>
+            ) : null}
+          </div>
+        ))}
+
+        {(benches?.benches.length ?? 0) === 0 ? (
+          <div className="act-quiet">
+            The demo pool has not been read yet, so the functional queue stays paused. The
+            roster comes from <code>bench.pool_url</code> in <code>data/config.yaml</code> —
+            instances are wiped daily, so they are discovered rather than listed. An assay run
+            against a bench we cannot log into produces a verdict about the bench and
+            attributes it to the app.
+          </div>
+        ) : (
+          <div className="env">
+            {/* Grouped by platform, and keyed on `<target>/<name>`.
+
+                The key is not tidiness: `shared/activity.ts` already warns that a bench name
+                stopped identifying a row once there was more than one target, because two
+                platforms may legitimately hold same-named instances. Keyed on the name alone,
+                two such boxes collide into one row and React renders whichever it saw last. */}
+            {groupByTarget(benches?.benches ?? [], benches?.pools ?? []).map(({ label, rows }) => (
+              <Fragment key={label ?? '—'}>
+                {label ? <div className="env-group">{label}</div> : null}
+                {rows.map((b) => (
+              <div className="env-row" key={`${b.target ?? '—'}/${b.name}`} data-status={b.status}>
+                <span className="env-name">{b.name}</span>
+                <span className="env-status">
+                  <span className="env-dot" aria-hidden="true" />
+                  {BENCH_LABEL[b.status] ?? b.status}
+                </span>
+                <span className="env-note">
+                  {b.status === 'healthy'
+                    ? `answered in ${b.latency_ms ?? 0}ms`
+                    : `last ok ${b.healthy_at ? stamp(b.healthy_at) : 'never'}`}
+                  {/* Runway, because healthy and claimable are different questions: an
+                      instance the daily cleanup wipes mid-run costs a whole assay. */}
+                  {claimNote(b)}
+                </span>
+                <span className="env-probe">
+                  {b.detail ? `login flow → ${b.detail}` : 'login flow → ok'}
+                  {/* Which build of the platform this box is running. Not a version — Maison
+                      publishes none — but it changes when the box is redeployed, and that is
+                      the fact an operator needs when yesterday's verdicts stop reproducing. */}
+                  {b.build ? <span className="env-board"> · build {b.build}</span> : null}
+                  {/* The board said Ready for the whole of the 2026-08-05 outage. Showing
+                      the disagreement is the point; agreeing silently is the bug. */}
+                  {b.board_says !== undefined && b.status !== 'healthy' ? (
+                    <span className="env-board">
+                      {b.board_says === null
+                        ? ' · the board could not be read'
+                        : ` · board says ${b.board_says}`}
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+                ))}
+              </Fragment>
+            ))}
+          </div>
+        )}
+
+      </section>
+    </div>
+  );
+}

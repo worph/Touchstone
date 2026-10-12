@@ -100,7 +100,7 @@ const routes: FastifyPluginAsync<ChatRoutesOptions> = async (app, options) => {
     if (!threads || !options.template) return reply.code(503).send({ error: 'the chat is not wired' });
     if (!agentReachable()) {
       return reply.code(503).send({
-        error: 'the agent is not answering, so there is nothing to think with — see Activity for its state',
+        error: 'the agent is not answering, so there is nothing to think with — see Status for its state',
       });
     }
 

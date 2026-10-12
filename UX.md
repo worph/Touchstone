@@ -7,7 +7,8 @@ UI depends on — reports as files, and one alert instead of forty-nine.
 **Three pages.** The earlier design had five. Findings and Standards are gone with the
 capabilities behind them ([ARCHITECTURE.md §1.4 G](ARCHITECTURE.md#g-deliberately-dropped)), and
 Environment folded into Activity because benches, browsers and the agent are things you look at
-when something has gone wrong, which is the same moment you look at the log.
+when something has gone wrong, which is the same moment you look at the log — and came back out
+on 2026-10-12 as **Status** (§2.3a), because folded in it was the block you scrolled past.
 
 ---
 
@@ -343,10 +344,17 @@ from the report prose is precisely the mistake the archive was cleaned of in P1.
 
 ---
 
-### 2.3 Activity — what is running, the log, alerts and the environment
+### 2.3 Activity — alerts, notifications and the log
 
 The page you open when something has gone wrong, and the reason you never need the n8n executions
 list again.
+
+**Since 2026-10-12 it is only what you are told**: open alerts, the last few resolved ones,
+whether this device is notified, and the log. The run card and the environment — everything in
+the present tense — moved to Status (§2.3a). They are described below where they were designed,
+and the sketch still shows the old single page. What forced the split: on yunderalabs the agent
+row read `answering` from 2026-10-07 to 10-12 while every audit came back `Unknown tool`, and it
+sat between the alert stack and the log where nobody read it.
 
 **Running now comes first.** The log cannot answer "what is happening": a run writes one row when
 it starts and the next when it finishes, and for the six to ten minutes in between the page reads
@@ -440,7 +448,7 @@ another healthy it stays open, so its resolution never fires for a partial recov
 why the scheduler logs `TICK_BENCH_GATED` / `TICK_BENCH_UNGATED` as **transitions** — once when
 the gate closes, once when it opens, never once per tick.
 
-**Environment** sits on the same page because you look at it in the same moment. The line
+**Environment** (now on Status) was put on this page because you look at it in the same moment. The line
 **`board says ✅ Ready`** next to a failing probe is deliberate: the management board is known not
 to detect this failure mode, and the UI should show the disagreement rather than trust either
 source silently. `profile empty` next to a browser is likewise an assertion, not decoration — a
@@ -480,6 +488,20 @@ that ever becomes too many, the fix is to push only operator-initiated runs, whi
 happy path makes silence ambiguous: an operator who hears nothing cannot tell a slow run from a
 dead one, and the whole reason the runner separates `blocked` from `failed` is so the answer can
 be *"the demo pool is down"* rather than *"your app is broken"*.
+
+### 2.3a Status — what it is running on, right now
+
+Present tense only, in the dependency order of an audit: **the run card** (moved here unchanged;
+the shell's running strip is hidden on this page rather than on Activity), **agent and
+browsers** (one row per port, with `probe all`), and **benches** (one summary line per pool, then
+the roster grouped by platform). Every row is a probe's answer and goes stale at the next one;
+nothing here is a record. When it disagrees with itself — a port that answers while the alert
+says it is gone — the alert is the thing to believe, and that disagreement is a bug.
+
+The agent row is honest through an aggregator since the same day: through Beacon, `tools/list`
+is the aggregator's own four tools whatever it has discovered, so the probe now asks its
+`tool_doc` for the configured tool, and an unknown one makes the row `not answering` and opens
+`agent.unavailable`. It is off the phone's tab bar (full); Activity's alerts block links here.
 
 ---
 
