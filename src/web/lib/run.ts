@@ -205,6 +205,7 @@ export function describeLast(last: LastRun): string {
   // Same shape as busy, and said the same way: an operator reading this needs to know the app
   // was not judged and not charged, and that the thing to fix is the agent rather than the app.
   if (o.kind === 'agent_auth') return 'last run: the agent is not logged in — nothing was charged';
+  if (o.kind === 'agent_unavailable') return 'last run: the agent could not be reached — nothing was charged';
   if (o.kind === 'blocked') return `last run: could not start (${o.reason.replace(/_/g, ' ')})`;
   return `last run: failed (${o.reason})`;
 }

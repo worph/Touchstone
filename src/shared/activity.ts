@@ -309,6 +309,12 @@ export type RunOutcome =
    * parking during an outage, which is what invariant 3 exists to forbid.
    */
   | { kind: 'agent_auth' }
+  /**
+   * The agent is not there to ask — the endpoint has no such tool (Beacon stopped discovering
+   * it). Free for `agent_auth`'s reason: nothing about any app is wrong, and retrying the app
+   * will not bring the agent back.
+   */
+  | { kind: 'agent_unavailable' }
   | { kind: 'blocked'; reason: string };
 
 /**
@@ -360,6 +366,8 @@ export function outcomeClause(outcome: RunOutcome): string {
       return 'not run — the agent was busy';
     case 'agent_auth':
       return 'not run — the agent is not logged in';
+    case 'agent_unavailable':
+      return 'not run — the agent cannot be reached';
     case 'error':
       return `failed — ${outcome.reason}`;
   }

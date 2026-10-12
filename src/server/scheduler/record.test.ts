@@ -83,6 +83,13 @@ describe('the two outcomes that cost nothing', () => {
     expect(record({ kind: 'agent_auth' }, claimed(2)).stampsFinish).toBe(true);
   });
 
+  it('an agent that cannot be reached is free in exactly the same way', () => {
+    const r = record({ kind: 'agent_unavailable' }, claimed(3, 2));
+    expect(cell(r.schedule).try_n).toBe(2);
+    expect(r.parked).toBe(false);
+    expect(r.stampsFinish).toBe(true);
+  });
+
   it('a bench we could not claim behaves the same way', () => {
     const r = record({ kind: 'blocked', reason: 'bench_unavailable' }, claimed(3));
     expect(cell(r.schedule).try_n).toBe(2);

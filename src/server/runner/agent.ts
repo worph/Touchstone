@@ -8,6 +8,7 @@
  * | class | what it means | costs a try |
  * | --- | --- | --- |
  * | `agent-auth` | the agent's own session is dead — nothing to do with the app | no |
+ * | `agent-missing` | the endpoint has no such tool — the agent is not there to ask | no |
  * | `agent-busy` | someone else has the agent (409) — PR Review shares it, §5.3 | **no** |
  * | `agent-error` | the call failed or returned nothing | yes |
  * | `parse-failed` | an answer arrived with no JSON object in it | yes |
@@ -42,7 +43,7 @@ export interface AgentReport {
   report_markdown: string;
 }
 
-export type AgentFailure = 'agent-auth' | 'agent-busy' | 'agent-error' | 'parse-failed';
+export type AgentFailure = 'agent-auth' | 'agent-missing' | 'agent-busy' | 'agent-error' | 'parse-failed';
 
 export type AgentOutcome =
   | { ok: true; report: AgentReport }
@@ -80,6 +81,13 @@ const PERMISSIONS = [
   'mcp__claude_ai_yunderalabs_nsl_sh__call',
   'mcp__claude_ai_Yunderateam__call',
 ];
+
+/**
+ * The aggregator, or an MCP server, saying the tool is not there: Beacon answers
+ * `Unknown tool: claude-code__query_claude` once it has stopped discovering the agent. Anchored,
+ * because only the *whole* answer being this sentence means it — a report's prose may quote it.
+ */
+const MISSING_RE = /^(unknown tool|unknown server|tool not found)\b/i;
 
 const AUTH_RE = /failed to authenticate|oauth session|not logged in|please run \/login|invalid api key|authentication_error/i;
 
@@ -230,6 +238,13 @@ export function classify(text: string, fallback = ''): AgentOutcome {
   // it.
   const report = t ? envelopeOf(t) : null;
   if (report) return { ok: true, report };
+
+  // Before the error tests, and outside them: Beacon returns this as an ordinary result, so
+  // it never looked like an error and fell through to `parse-failed`, which charges a try.
+  // From 2026-10-07 to 10-12 that parked eight apps over an agent that was simply not there.
+  if (MISSING_RE.test(t)) {
+    return { ok: false, error: 'agent-missing', rawText: t.slice(0, 20_000) };
+  }
 
   const lower = t.toLowerCase();
   const isAuth = AUTH_RE.test(t);

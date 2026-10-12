@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { AlertStore } from './alerts.js';
 import { EventLog } from './events.js';
 import { PortProber, browserLiveness, probeMcp, sidecarBase, toolNames, type PortConfig } from './ports.js';
 
@@ -226,6 +227,38 @@ describe('probing one port', () => {
     expect(right.hasExpected).toBe(true);
   });
 
+  /**
+   * Through Beacon, `tools/list` is the aggregator's own four tools whatever it has found, so
+   * it said `answering` for a week while every audit came back `Unknown tool`. The probe asks
+   * the aggregator's `tool_doc` for the tool by name instead.
+   */
+  it('asks an aggregator whether it has discovered the agent', async () => {
+    const BEACON: PortConfig = { ...AGENT, expectVia: 'beacon' };
+    const beacon = (discovered: boolean) =>
+      (async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as { method: string };
+        if (body.method === 'tools/list') return toolList(['overview', 'tool_doc', 'server_doc', 'call']);
+        const result = discovered
+          ? { content: [{ type: 'text', text: '{"name":"claude-code__query_claude"}' }] }
+          : { content: [{ type: 'text', text: 'Unknown tool: claude-code__query_claude' }], isError: true };
+        return new Response(`event: message\ndata: ${JSON.stringify({ result })}\n\n`, { status: 200 });
+      }) as unknown as typeof fetch;
+
+    const gone = await probeMcp(BEACON, 8000, beacon(false));
+    expect(gone.status).toBe('unreachable');
+    expect(gone.detail).toContain('has not discovered claude-code__query_claude');
+
+    expect((await probeMcp(BEACON, 8000, beacon(true))).status).toBe('healthy');
+  });
+
+  it('does not call an aggregator broken when tool_doc itself cannot be read', async () => {
+    const BEACON: PortConfig = { ...AGENT, expectVia: 'beacon' };
+    let n = 0;
+    const probe = await probeMcp(BEACON, 8000, (async () =>
+      n++ === 0 ? toolList(['call']) : new Response('oops', { status: 500 })) as unknown as typeof fetch);
+    expect(probe.status).toBe('healthy');
+  });
+
   it('reads a refused connection as unreachable', async () => {
     const probe = await probeMcp(BROWSER, 8000, (async () => {
       throw new Error('ECONNREFUSED');
@@ -272,6 +305,30 @@ describe('the pool', () => {
     await p.probeAll();
     await events.flush();
     expect(events.query({ code: 'PORT_UNREACHABLE' })[0]?.message).toContain('no audit can run');
+  });
+
+  it('opens agent.unavailable while the agent is gone, and resolves it when it is back', async () => {
+    const alerts = new AlertStore(dir, {});
+    const down = new PortProber({ ports: [AGENT], stateDir: dir, events, alerts, fetchImpl: answering(['other']) });
+    await down.probeAll();
+    expect(alerts.isOpen('agent.unavailable')).toBe(true);
+
+    const up = new PortProber({
+      ports: [AGENT],
+      stateDir: dir,
+      events,
+      alerts,
+      fetchImpl: answering(['claude-code__query_claude']),
+    });
+    await up.probeAll();
+    expect(alerts.isOpen('agent.unavailable')).toBe(false);
+  });
+
+  it('never opens it for a browser', async () => {
+    const alerts = new AlertStore(dir, {});
+    const p = new PortProber({ ports: [BROWSER], stateDir: dir, events, alerts, fetchImpl: answering([]) });
+    await p.probeAll();
+    expect(alerts.openAlerts()).toEqual([]);
   });
 
   it('keeps the last healthy time across a restart', async () => {

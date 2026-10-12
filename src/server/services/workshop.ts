@@ -709,7 +709,10 @@ export class Workshop {
     }
     if (!raw.ok) {
       const cls = classify(raw.errorText);
-      if (cls.ok === false && (cls.error === 'agent-auth' || cls.error === 'agent-busy')) {
+      if (
+        cls.ok === false &&
+        (cls.error === 'agent-auth' || cls.error === 'agent-busy' || cls.error === 'agent-missing')
+      ) {
         if (cls.error === 'agent-auth') {
           this.opts.alerts?.open({
             key: 'agent.auth',
@@ -719,7 +722,14 @@ export class Workshop {
           });
         }
         this.ended(p, 'infra', cls.error);
-        await this.infra(p, cls.error === 'agent-auth' ? 'the agent is not logged in' : 'the agent was busy');
+        await this.infra(
+          p,
+          cls.error === 'agent-auth'
+            ? 'the agent is not logged in'
+            : cls.error === 'agent-missing'
+              ? 'the agent cannot be reached'
+              : 'the agent was busy',
+        );
         return;
       }
     }

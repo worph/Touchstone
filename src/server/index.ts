@@ -193,13 +193,15 @@ const ports = new PortProber({
       kind: 'agent',
       url: cfg.runner.agent_url,
       // Through an aggregator the namespaced tool is not in `tools/list` — the aggregator's
-      // own `call` is — so only a direct endpoint can be asked for the tool by name.
-      ...(cfg.runner.agent_via === 'direct' ? { expectTool: cfg.runner.agent_tool } : {}),
+      // own `call` is — so the probe asks the aggregator's `tool_doc` for it instead.
+      expectTool: cfg.runner.agent_tool,
+      expectVia: cfg.runner.agent_via === 'beacon' ? 'beacon' : 'direct',
     },
     ...cfg.browsers.map((b) => ({ name: b.name, kind: 'browser' as const, url: b.url, enabled: b.enabled })),
   ],
   stateDir: cfg.stateDir,
   events,
+  alerts,
 });
 await ports.load();
 
@@ -607,8 +609,8 @@ const scheduler = new Scheduler({
           ? { kind: 'verdict' }
           : outcome.kind === 'agent_busy'
             ? { kind: 'agent_busy' }
-            : outcome.kind === 'agent_auth'
-              ? { kind: 'agent_auth' }
+            : outcome.kind === 'agent_auth' || outcome.kind === 'agent_unavailable'
+              ? { kind: outcome.kind }
               : outcome.kind === 'blocked'
                 ? { kind: 'blocked', reason: outcome.reason }
                 : { kind: 'error', reason: outcome.reason },

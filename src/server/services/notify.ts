@@ -88,6 +88,8 @@ const ROUTES: Record<string, { beacon: boolean; push: boolean }> = {
    * first and refreshes silently after.
    */
   AGENT_UNAUTHENTICATED: { beacon: false, push: false },
+  // Same reason: `agent.unavailable` is the card, and routing the event too would notify twice.
+  AGENT_UNAVAILABLE: { beacon: false, push: false },
 
   /**
    * Trials notify nowhere.

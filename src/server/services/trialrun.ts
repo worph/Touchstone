@@ -519,10 +519,12 @@ export async function startTrial(deps: TrialRunDeps, slug: string, lease?: Lease
           ? 'the agent was busy'
           : outcome.kind === 'agent_auth'
             ? 'the agent is not logged in'
-            : outcome.reason;
+            : outcome.kind === 'agent_unavailable'
+              ? 'the agent cannot be reached'
+              : outcome.reason;
       // A trial has no retry budget and no schedule row, so `agent_auth` has nothing to be
       // free *of* here — it is recorded as the error it was, like any other failure to finish.
-      const kind = outcome.kind === 'agent_auth' ? 'error' : outcome.kind;
+      const kind = outcome.kind === 'agent_auth' || outcome.kind === 'agent_unavailable' ? 'error' : outcome.kind;
       await trials.update(spec.slug, { finished_at: finished, outcome: kind, error: reason });
       deps.events?.log({
         level: 'warn',

@@ -44,6 +44,8 @@ export type Outcome =
   | { kind: 'agent_busy' }
   /** The agent's own session is dead. Costs no try, but does move the cooldown — see below. */
   | { kind: 'agent_auth' }
+  /** The agent is not there to ask. Treated exactly as `agent_auth`. */
+  | { kind: 'agent_unavailable' }
   /** No bench could be claimed. Costs nothing, by principle 5. */
   | { kind: 'blocked'; reason: string };
 
@@ -118,12 +120,15 @@ export function recordResult(input: RecordInput): RecordResult {
    * tick claim the next subject at once and march the whole registry through the same dead
    * endpoint, one 26-minute failure after another. Free, and still spaced.
    */
-  if (outcome.kind === 'agent_auth') {
+  if (outcome.kind === 'agent_auth' || outcome.kind === 'agent_unavailable') {
     return {
       schedule: withLine({ ...previous, claim: undefined }),
       stampsFinish: true,
       parked: false,
-      note: 'the agent is not logged in, so the subject keeps its try',
+      note:
+        outcome.kind === 'agent_auth'
+          ? 'the agent is not logged in, so the subject keeps its try'
+          : 'the agent cannot be reached, so the subject keeps its try',
     };
   }
 
