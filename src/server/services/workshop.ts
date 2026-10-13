@@ -74,6 +74,7 @@ import {
   branchOf,
   GitHubClient,
   GitHubError,
+  explainGitHubError,
   GitHubNotFastForward,
   isValidDirectBranch,
   type TreeEntry,
@@ -1213,14 +1214,25 @@ export class Workshop {
    * the log said nothing at all.
    */
   private submitFailed(p: Proposal, err: unknown): never {
-    const error = err instanceof GitHubError ? err.message : String((err as Error)?.message ?? err);
+    const error = this.explain(err);
     this.opts.events.log({
       level: 'error',
       code: 'PROPOSAL_SUBMIT_FAILED',
       message: `Could not submit ${p.app}`,
       detail: { proposal: p.id, app: p.app, error },
     });
-    throw new WorkshopRefusal(502, error);
+    // 424, not 502. A refusal from GitHub is a dependency saying no, not this server failing
+    // as a gateway — and a 5xx is what proxies in front of us replace with their own page, which
+    // is how this sentence reached the operator as a bare "502" on 2026-10-12.
+    throw new WorkshopRefusal(424, error);
+  }
+
+  /** GitHub's refusal as something an operator can act on — `explainGitHubError`. */
+  private explain(err: unknown): string {
+    if (err instanceof GitHubError) {
+      return explainGitHubError(err, this.gh?.repo ?? 'the store', this.opts.probe.status().login);
+    }
+    return String((err as Error)?.message ?? err);
   }
 
   /**
@@ -1435,14 +1447,14 @@ export class Workshop {
         if (err instanceof StoreMoved) {
           throw new WorkshopRefusal(409, `${p.app} changed on ${d.branch} after Touchstone pushed it — revert it by hand`);
         }
-        const error = err instanceof GitHubError ? err.message : String((err as Error)?.message ?? err);
+        const error = this.explain(err);
         this.opts.events.log({
           level: 'error',
           code: 'PROPOSAL_SUBMIT_FAILED',
           message: `Could not revert ${p.app}`,
           detail: { proposal: p.id, app: p.app, error },
         });
-        throw new WorkshopRefusal(502, error);
+        throw new WorkshopRefusal(424, error);
       }
       const at = this.now().toISOString();
       const updated = await this.opts.store.update(p.id, {

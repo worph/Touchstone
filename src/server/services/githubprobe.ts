@@ -79,9 +79,19 @@ export class GitHubProbe {
       if (this.opts.expectedLogin && user.login.toLowerCase() !== this.opts.expectedLogin.toLowerCase()) {
         problems.push(`the token belongs to ${user.login}, not ${this.opts.expectedLogin}`);
       }
+      // The account's role first — a token cannot do more than its account may — then the
+      // token's own grant, which is narrower and is what actually refused on 2026-10-12.
       const repo = await client.repoInfo();
-      status.push = repo.push;
-      if (!repo.push) problems.push(`the token cannot push to ${client.repo} (needs Contents: read and write)`);
+      const tokenMay = repo.push ? await client.canWriteContents() : false;
+      status.push = repo.push && tokenMay !== false;
+      if (!repo.push) {
+        problems.push(`${user.login} cannot push to ${client.repo}`);
+      } else if (tokenMay === false) {
+        problems.push(
+          `the token cannot write to ${client.repo}: ${user.login} may, but the token was not given ` +
+            `Contents: Read and write for it (github.com → Settings → Developer settings → Fine-grained tokens)`,
+        );
+      }
       const direct = client.directBranch;
       if (direct) {
         status.direct_branch = direct;

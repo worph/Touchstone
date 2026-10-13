@@ -91,6 +91,10 @@ function fakeFetch(): typeof fetch {
     if (p.startsWith('/repos/Yundera/AppStore/pulls?state=open')) return json(200, []);
     if (method === 'GET' && p.startsWith('/repos/Yundera/AppStore/git/commits/')) return json(200, { tree: { sha: SHA('1') } });
     if (method === 'POST' && p === '/repos/Yundera/AppStore/git/blobs') {
+      // The probe's empty blob is a permission question (`canWriteContents`): a token that may
+      // write is told 422. `blobRefused` refuses only real uploads, so the submit path is what
+      // meets the 403 — the probe-time refusal has its own tests in github.test.ts.
+      if (!init?.body || String(init.body) === '{}') return json(422, { message: 'Invalid request' });
       return blobRefused ? json(403, { message: 'Resource not accessible by personal access token' }) : json(201, { sha: SHA('b') });
     }
     if (method === 'POST' && p === '/repos/Yundera/AppStore/git/trees') return json(201, { sha: SHA('c') });
@@ -385,10 +389,10 @@ describe('the rules around it', () => {
     await expect(workshop.submitProposal(p.id, 'operator')).rejects.toThrow(/changed/);
     expect(store.get(p.id)!.state).toBe('discarded');
     expect(store.memory()).toEqual({});
-    expect(ghCalls.some((c) => c.method === 'POST')).toBe(false);
+    expect(ghCalls.some((c) => c.method === 'POST' && JSON.stringify(c.body) !== '{}')).toBe(false);
   });
 
-  it('a GitHub refusal before the pull request is a 502 with GitHub\'s words, logged, and leaves it ready', async () => {
+  it('a GitHub refusal before the pull request is a 424 saying what to change, logged, and leaves it ready', async () => {
     agentScript = async (prompt, ws) => {
       await ws.writeFile(tokenOf(prompt), 'docker-compose.yml', 'services: {}\n');
       ws.submit(tokenOf(prompt), 'x');
@@ -400,7 +404,11 @@ describe('the rules around it', () => {
     blobRefused = true;
     const refusal = await workshop.submitProposal(p.id, 'operator').catch((err: unknown) => err);
     expect(refusal).toBeInstanceOf(WorkshopRefusal);
-    expect((refusal as WorkshopRefusal).code).toBe(502);
+    // Not 502: a 5xx is what a proxy in front replaces with its own page, which is how this
+    // reached an operator as a bare "502" on 2026-10-12.
+    expect((refusal as WorkshopRefusal).code).toBe(424);
+    expect((refusal as Error).message).toMatch(/Contents: Read and write/);
+    // GitHub's own words are kept, after the explanation, so the line can still be searched for.
     expect((refusal as Error).message).toMatch(/Resource not accessible by personal access token/);
     expect(events.query({}).some((e) => e.code === 'PROPOSAL_SUBMIT_FAILED')).toBe(true);
     expect(store.get(p.id)!.state).toBe('ready');

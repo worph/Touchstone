@@ -54,7 +54,7 @@ async function get<T>(path: string): Promise<T> {
 
   const ct = res.headers.get('content-type') ?? '';
   if (!ct.includes('json')) {
-    throw new ApiError(res.status, `The API returned ${res.status} (${ct || 'no content type'}).`);
+    throw new ApiError(res.status, notTouchstone(res.status, ct));
   }
 
   const body = (await res.json()) as unknown;
@@ -151,6 +151,20 @@ export function getReport(subject: string, file: string): Promise<ReportResponse
  * own refusals answer `{ error: 'Bad Request', message: <the reason> }`, where `error` is only
  * the status phrase — so a `message` beside a `statusCode` is the one worth showing.
  */
+/**
+ * A failure whose body is not ours. Every route answers JSON, so an HTML or empty body on an
+ * error means something in front of Touchstone — the SSO sidecar, the box's proxy, Cloudflare —
+ * answered instead and threw our sentence away. Saying only "502" left the operator with nothing
+ * (2026-10-12, a workshop Push GitHub had refused); every refusal is also a row in the log, so
+ * point there.
+ */
+function notTouchstone(status: number, ct: string): string {
+  if (status >= 400) {
+    return `The request failed with HTTP ${status}, and the answer did not come from Touchstone (${ct || 'no content type'}) — a proxy in front of it replaced the reason. Activity → Log has what Touchstone recorded.`;
+  }
+  return `The API returned ${status} (${ct || 'no content type'}).`;
+}
+
 function errorText(body: unknown, status: number): string {
   if (body && typeof body === 'object') {
     const b = body as { error?: unknown; message?: unknown; statusCode?: unknown };
@@ -178,7 +192,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
   }
   const ct = res.headers.get('content-type') ?? '';
   if (!ct.includes('json')) {
-    throw new ApiError(res.status, `The API returned ${res.status} (${ct || 'no content type'}).`);
+    throw new ApiError(res.status, notTouchstone(res.status, ct));
   }
   const parsed = (await res.json()) as unknown;
   if (!res.ok) throw new ApiError(res.status, errorText(parsed, res.status));
