@@ -31,6 +31,8 @@ requirements:
     text: Authentication enabled by default and documented
   - id: no-hardcoded-credentials
     text: No hardcoded credentials
+  - id: per-app-secrets
+    text: Credentials are per-app x-compose-app secrets, not the shared $APP_DEFAULT_PASSWORD
   - id: pinned-image-tag
     text: Specific version tag (no :latest)
   - id: data-under-datadir
@@ -126,6 +128,7 @@ here detects "what changed" and no item is conditioned on a change.
    - volumes under `/DATA/AppData/<app>/`, or the deviation documented in `rationale.md`
    - `user:` / `PUID`+`PGID` per the Permission Strategy (§4)
    - no hardcoded credentials, inline passwords or baked tokens
+   - credentials generated per app under `x-compose-app.secrets`, not `$APP_DEFAULT_PASSWORD` (§7)
    - app metadata present and coherent (§6), assets existing and pointing at `<repo>@main`
      rather than a contributor fork
    - a broad `/DATA` mount disclosed before install (§6)
@@ -252,8 +255,23 @@ inference has been drawn and shipped as a Major against an app whose guard was c
 
 **Security (`install-cmd-security`).** Pinned tags, never `:latest`. `--user $PUID:$PGID` on any
 `docker run` writing under `/DATA/Documents`, `/DATA/Downloads`, `/DATA/Media` or `/DATA/Gallery`.
-Non-interactive. No baked credentials — `$APP_DEFAULT_PASSWORD` and friends instead. Static
+Non-interactive. No baked credentials — the app's own `x-compose-app.secrets` instead. Static
 assets a hook needs may live under `Apps/<app>/pre-install/` in the repo.
+
+**Per-app secrets (`per-app-secrets`).** `$APP_DEFAULT_PASSWORD` is one password shared by every
+app on the box and is being phased out; every credential an app needs is its own entry under
+`x-compose-app.secrets` (CONTRIBUTING.md, First-run setup, *Credentials*).
+- `pass` — every credential comes from `secrets`, including a **seeded** one,
+  `${APP_DEFAULT_PASSWORD}|alnum:32`: that is the sanctioned way to convert an installed app (it
+  keeps its old value; new installs generate). A login shown via `x-compose-app.credentials` is
+  the expected companion, not a requirement of this item.
+- `n-a` — the app has no credential at all (onboarding in the app, or no auth by design).
+- `fail` **Minor** — `$APP_DEFAULT_PASSWORD` (or `$DefaultPassword`) used directly anywhere it
+  becomes a credential: `environment`, a hook, an `init` step, `bcrypt:${APP_DEFAULT_PASSWORD}`.
+  A mention in tips/description text only is not a fail — note it.
+- `fail` **Major** — an internal secret (JWT/session/encryption key, a token between the app's
+  own services) set to the **login** password, shared or per-app: whoever can log in can forge
+  sessions, and changing the password breaks the app.
 
 ## 8. Guardrails
 
