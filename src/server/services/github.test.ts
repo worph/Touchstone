@@ -12,6 +12,7 @@ import { AlertStore } from './alerts.js';
 import {
   assertOwnRef,
   branchOf,
+  explainGitHubError,
   GitHubClient,
   GitHubError,
   GitHubNotFastForward,
@@ -258,6 +259,8 @@ describe('the probe', () => {
   const healthy: Record<string, [number, unknown]> = {
     'GET /user': [200, { login: 'Mael', id: 42 }],
     'GET /repos/Yundera/AppStore': [200, { permissions: { push: true }, default_branch: 'main' }],
+    // A token that may write is told its empty blob is invalid — nothing is created.
+    'POST /repos/Yundera/AppStore/git/blobs': [422, { message: 'Invalid request.' }],
     'GET /repos/Yundera/AppStore/labels/touchstone': [200, { name: 'touchstone' }],
   };
 
@@ -301,6 +304,49 @@ describe('the probe', () => {
     const { c } = client({ ...healthy, 'GET /repos/Yundera/AppStore': [200, { permissions: { push: false } }] });
     const p = new GitHubProbe({ client: c, expectedLogin: 'Mael', alerts });
     expect((await p.probe()).problems.join()).toContain('cannot push');
+  });
+
+  /**
+   * The case `permissions.push` cannot see: the account may push, the fine-grained token was not
+   * given Contents write. On yunderalabs, 2026-10-12, the probe read ok and Push then failed on
+   * the first blob with "Resource not accessible by personal access token".
+   */
+  it('a token narrower than its account is a failure, said before anybody presses Push', async () => {
+    const alerts = await alertsIn();
+    const { c } = client({
+      ...healthy,
+      'POST /repos/Yundera/AppStore/git/blobs': [403, { message: 'Resource not accessible by personal access token' }],
+    });
+    const p = new GitHubProbe({ client: c, expectedLogin: 'Mael', alerts });
+    const s = await p.probe();
+    expect(s.state).toBe('failing');
+    expect(s.push).toBe(false);
+    expect(s.problems.join()).toContain('Contents: Read and write');
+    expect(alerts.isOpen('github.auth')).toBe(true);
+  });
+
+  it('does not call a token broken when the write check cannot be read', async () => {
+    const { c } = client({ ...healthy, 'POST /repos/Yundera/AppStore/git/blobs': [500, { message: 'oops' }] });
+    const s = await new GitHubProbe({ client: c, expectedLogin: 'Mael' }).probe();
+    expect(s.state).toBe('ok');
+  });
+});
+
+describe('explaining a GitHub refusal', () => {
+  it('names the permission and where to grant it, and keeps GitHub\'s words', () => {
+    const err = new GitHubError(
+      'GitHub POST /repos/Yundera/AppStore/git/blobs → HTTP 403: Resource not accessible by personal access token',
+      403,
+    );
+    const text = explainGitHubError(err, 'Yundera/AppStore', 'Mael');
+    expect(text).toContain('the token for Mael is not allowed to write to Yundera/AppStore');
+    expect(text).toContain('Contents: Read and write');
+    expect(text).toContain('Resource not accessible by personal access token');
+  });
+
+  it('leaves a refusal it has nothing to add to as GitHub said it', () => {
+    const err = new GitHubError('GitHub POST /x → HTTP 409: Reference already exists', 409);
+    expect(explainGitHubError(err, 'Yundera/AppStore')).toBe(err.message);
   });
 });
 

@@ -45,6 +45,32 @@ export class GitHubError extends Error {
 /** A ref outside `refs/heads/touchstone/` was asked for. Thrown before any request. */
 export class GitHubRefRefused extends Error {}
 
+/**
+ * A GitHub refusal, said so an operator knows what to change.
+ *
+ * GitHub's own sentence for a token without the permission is "Resource not accessible by
+ * personal access token", which names neither the permission nor where to grant it. The raw
+ * line is kept after the explanation, because it is the only thing that can be searched for.
+ */
+export function explainGitHubError(err: GitHubError, repo: string, login?: string): string {
+  const who = login ? `the token for ${login}` : 'the workshop\'s GitHub token';
+  if (err.status === 403 && /not accessible by (personal access token|integration)/i.test(err.message)) {
+    return (
+      `GitHub refused: ${who} is not allowed to write to ${repo}. On github.com → Settings → ` +
+      `Developer settings → Fine-grained tokens, give it access to ${repo} with Contents: ` +
+      `Read and write (and Pull requests: Read and write for pull-request delivery), then try ` +
+      `again. (${err.message})`
+    );
+  }
+  if (err.status === 401) {
+    return `GitHub refused: ${who} is invalid or expired. Set a new one on Settings → Workshop. (${err.message})`;
+  }
+  if (err.status === 404) {
+    return `GitHub says ${repo} does not exist or ${who} cannot see it. (${err.message})`;
+  }
+  return err.message;
+}
+
 /** GitHub refused to move the direct branch because the new commit is not a fast-forward of it. */
 export class GitHubNotFastForward extends GitHubError {}
 
@@ -143,6 +169,29 @@ export class GitHubClient {
       this.repoPath(''),
     );
     return { push: r.permissions?.push === true, default_branch: String(r.default_branch ?? '') };
+  }
+
+  /**
+   * May this *token* write the repository's contents?
+   *
+   * `repoInfo().push` cannot say. It is `permissions.push` from `GET /repos`, which is the
+   * **account's** role on the repo — and a fine-grained token is narrower than its account. On
+   * yunderalabs, 2026-10-12, the check read `push: true` for a token with no Contents write, and
+   * the first anybody heard of it was Push failing on the first blob.
+   *
+   * So ask with a write that cannot land: a blob with no content. GitHub checks permission
+   * before it validates the body, so a token that may write gets `422` (nothing was created)
+   * and one that may not gets `403`. Anything else is "cannot tell", never "no".
+   */
+  async canWriteContents(): Promise<boolean | undefined> {
+    try {
+      await this.request('POST', this.repoPath('/git/blobs'), {});
+      return true; // GitHub accepted an empty blob — odd, but it was allowed to
+    } catch (err) {
+      if (err instanceof GitHubError && err.status === 422) return true;
+      if (err instanceof GitHubError && err.status === 403) return false;
+      return undefined;
+    }
   }
 
   async labelExists(name: string): Promise<boolean> {
