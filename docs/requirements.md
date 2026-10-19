@@ -40,7 +40,7 @@ surprise.
 | **R14** | The administrator can change how this instance behaves, from inside it | ✅ built 2026-08-25 — §16 |
 | **R15** | Supporting knowledge lives beside the rubric instead of inside it — a *knowledge base* | ✅ built 2026-08-28 — §17 |
 | — | The rubric cleanup: one id space, severity defined, the static leaf's mechanics to the KB | ✅ done 2026-08-28 — §18 |
-| — | The rubric is seeded from `seed/`, not committed as if it were the live standard | ✅ done 2026-08-28 — §19 |
+| — | The rubric is seeded from `seed/`, not committed as if it were the live standard; since 2026-10-19 not in the repo at all | ✅ done 2026-08-28, 2026-10-19 — §19 |
 | — | An app the store has stopped offering is marked, unscheduled, and deletable — *delisted* | ✅ done 2026-08-31 — §20 |
 | **R16** | Every way of asking for the single agent is one queue, drained in order — and one verb | ✅ built 2026-09-01 — §21 |
 | **R17** | Touchstone proposes fixes, updates and new apps as pull requests — the *workshop* | ✅ built 2026-10-02; direct delivery, auto-submit and no-regression 2026-10-07 — §24, design in [auto-app-pr.md](auto-app-pr.md) |
@@ -1267,7 +1267,23 @@ original; `seed/` is the default the next fresh install begins from; bringing a 
 improvement back into `seed/` is a deliberate, reviewed act. The same rule `config.yaml` has
 always followed.
 
-### 19.4 Fail closed when a section produced nothing
+### 19.4 No seed at all — 2026-10-19
+
+§19.3 kept a default in the repo and called reconciling it "a deliberate, reviewed act". In
+practice the act was a copy in both directions, and the repo held a second definition of the
+standard that a reviewer read as the live one. It was also how the box's own copy kept being
+replaced by hand: on 2026-10-19 the new static and functional rubrics went into `seed/` and onto
+the box as files, skipping the save that records a reason.
+
+So `seed/protocols/` (rubrics and `currency.sh`) and `seed/kb/` are gone; the box is the only
+copy. `ensureProtocolFiles` and `KB_SEED_DIR` went with them. A volume with no rubric boots,
+logs `PROTOCOL_MISSING` once and turns every run away `no_protocol`, which charges nobody — a new
+instance is given its rubric by copying it from a running one. The cost: `test/currency.test.ts`
+ran the shipped `currency.sh` and left with it, so that script is no longer exercised by
+`yarn test`. The workshop test writes a synthetic rubric of the right shape instead.
+`seed/workshop/` and `seed/wishlist/` stay: they are starting points, not a standard.
+
+### 19.5 Fail closed when a section produced nothing
 
 `sectionRan` returned `{ ran: true }` for any section with no phase plan — "nothing to gate on".
 True for the static checklist. False, and dangerous, for a section that declares
@@ -1284,7 +1300,7 @@ The test is **evidence, not shape**: a live section with no sequence still count
 has settled a single requirement, recorded any phase, or written prose. Only total silence is
 blocked.
 
-### 19.5 Still open
+### 19.6 Still open
 
 **A `schema_version` for the protocol file format.** `static.md` fails an app **Major** for
 relying on `folders` or `hooks` without declaring `schema_version: 2`, and the stated reason is

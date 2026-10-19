@@ -28,7 +28,7 @@ import { Scheduler } from './scheduler/index.js';
 import { Runner } from './runner/index.js';
 import { Leases } from './services/leases.js';
 import { PortProber } from './services/ports.js';
-import { ensureProtocolFiles, ProtocolStore, sectionsOf } from './store/protocols.js';
+import { ProtocolStore, sectionsOf } from './store/protocols.js';
 import { lineOf } from '../shared/schedule.js';
 import { ensureKbFiles, KbStore } from './store/kb.js';
 import { RevisionStore } from './store/revisions.js';
@@ -65,18 +65,11 @@ try {
 }
 const cfg = await loadConfig(dataDir);
 
-// The rubric has to be *on disk in the data dir*, not merely in the image: it is editable in
-// the app, and every assay records the sha256 of the file that judged it. In a
-// container the data dir is an empty volume on first boot, and an empty protocol directory
-// means every run blocks `no_protocol`. Seeding never overwrites — an operator's edit outranks
-// the image's copy, or a redeploy would quietly change the standard.
-const seededProtocols = await ensureProtocolFiles(cfg.protocolsDir);
-
-// The knowledge base, on the same terms and for the same reason: an empty volume would
-// otherwise leave the agent operating a platform it has been told nothing about. Missing
-// entirely is a supported state — the prompt is then what it was before the KB existed — so
-// this failing is never fatal.
-const seededKb = await ensureKbFiles(cfg.kbDir);
+// The rubric and the knowledge base are **not** seeded (2026-10-19). The box holds the only
+// copy of each: `data/protocols/` and `data/kb/` are written by the editor, the chat or by hand
+// on the volume, and the repo carries no default that could read like the live standard and
+// drift from it. A volume without a rubric boots fine and says so (below); every run is then
+// turned away `no_protocol`, which writes nothing and charges nobody.
 
 // The workshop's standing authoring instructions and the wishlist's example, on the same
 // never-overwrite terms: `ensureKbFiles` is a plain "copy *.md that is not there yet".
@@ -878,31 +871,15 @@ if (seededConfig) {
   });
 }
 
-if (seededProtocols.seeded.length > 0) {
+if (sectionsOf(await protocols.list().catch(() => [])).length === 0) {
+  // Nothing seeds a rubric any more, so a fresh volume lands here. Say it once at boot rather
+  // than leaving the first blocked run to be the only clue.
   events.log({
-    level: 'info',
-    code: 'PROTOCOL_SEEDED',
-    message: `The rubric was written into the data directory — ${seededProtocols.seeded.join(', ')}`,
-    detail: { files: seededProtocols.seeded, dir: cfg.protocolsDir },
+    level: 'warn',
+    code: 'PROTOCOL_MISSING',
+    message: `No rubric in ${cfg.protocolsDir} — no audit can run until the protocol files are put there`,
+    detail: { dir: cfg.protocolsDir },
   });
-}
-if (seededKb.seeded.length > 0) {
-  events.log({
-    level: 'info',
-    code: 'KB_SEEDED',
-    message: `The knowledge base was written into the data directory — ${seededKb.seeded.join(', ')}`,
-    detail: { files: seededKb.seeded, dir: cfg.kbDir },
-  });
-}
-if (seededKb.failed) {
-  // Softer than the rubric's: an audit with no reference material still runs and still judges.
-  app.log.warn({ err: seededKb.failed }, 'could not seed the knowledge base into the data dir');
-}
-if (seededProtocols.failed) {
-  // Not fatal: whatever is already on disk still loads, and a read-only data dir is a real
-  // deployment. But a *first* boot that lands here has no rubric at all, which the Protocols
-  // page and the first blocked run will both say.
-  app.log.warn({ err: seededProtocols.failed }, 'could not seed the rubric into the data dir');
 }
 
 events.log({

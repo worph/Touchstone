@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AssayRecord } from '../../shared/types.js';
 import { asSubjectKey } from '../../shared/subject.js';
 import type { AgentRaw } from '../runner/agent.js';
-import { ensureProtocolFiles, ProtocolStore, sectionsOf } from '../store/protocols.js';
+import { ProtocolStore, sectionsOf } from '../store/protocols.js';
 import { writeReport } from '../store/reports.js';
 import { TrialStore } from '../store/trials.js';
 import { WorkshopStore } from '../store/workshop.js';
@@ -164,10 +164,28 @@ beforeEach(async () => {
   store = new WorkshopStore(path.join(dir, 'state'), path.join(dir, 'workshop'), { maxFileBytes: 1 << 20, maxTotalBytes: 1 << 22 });
   await store.load();
   const protocolsDir = path.join(dir, 'protocols');
-  await ensureProtocolFiles(protocolsDir);
+  await writeRubric(protocolsDir);
   shas = Object.fromEntries(sectionsOf(await new ProtocolStore(protocolsDir).list()).map((x) => [x.id, x.sha256]));
   workshop = await build();
 });
+
+/**
+ * A rubric of the shape the workshop reads — `static` on the default target, `functional` on
+ * two, and a `currency` reading — with none of the standard's prose. The real rubric lives on
+ * the box and nowhere in this repo.
+ */
+async function writeRubric(protocolsDir: string): Promise<void> {
+  await fs.mkdir(protocolsDir, { recursive: true });
+  const leaf = (id: string, order: number, extra: string[]) =>
+    ['---', `id: ${id}`, `name: ${id} protocol`, 'kind: leaf', `order: ${order}`, ...extra, '---', '', `# ${id}`, ''].join('\n');
+  await fs.writeFile(path.join(protocolsDir, 'static.md'), leaf('static', 1, ['requires: []']), 'utf8');
+  await fs.writeFile(
+    path.join(protocolsDir, 'functional.md'),
+    leaf('functional', 2, ['targets:', '  - yundera', '  - foss', 'requires:', '  - bench', '  - browser']),
+    'utf8',
+  );
+  await fs.writeFile(path.join(protocolsDir, 'currency.md'), leaf('currency', 3, ['requires: []', 'scores: false']), 'utf8');
+}
 
 /** A workshop over the fakes; `settings` overrides the defaults (delivery, push_branch, …). */
 async function build(settings: Partial<WorkshopSettings> = {}): Promise<Workshop> {

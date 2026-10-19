@@ -25,7 +25,6 @@ import path from 'node:path';
 import YAML from 'yaml';
 
 import { composeSectionId } from '../../shared/target.js';
-import { REPO_ROOT } from './config.js';
 
 export interface ProtocolMeta {
   /**
@@ -406,89 +405,6 @@ export function sectionsOf(protocols: readonly Protocol[]): ProtocolSection[] {
       body: p.body,
     }))
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
-}
-
-/**
- * **What a fresh install starts with** — `seed/protocols/`, tracked in the repo and copied
- * into the image, and never the same file as the one a box is running.
- *
- * The data dir is a volume: it starts empty, and an empty protocol directory means
- * `sectionsOf()` returns nothing, every run blocks `no_protocol` and the Protocols page
- * renders empty. So the seed lives outside the volume and is copied in on first boot without
- * ever overwriting — the same move `ensureConfigFile` makes for `config.yaml`.
- *
- * It lived at `data/protocols/` until 2026-08-28, committed *and* shipped. Two things were
- * wrong with that and neither was the seeding:
- *
- * - **The repo's copy looked like the live standard.** A box edits its own — that is the whole
- *   point of an editable rubric — so the tracked file drifts from every instance the moment
- *   anybody uses the editor, while still being what a reviewer reads.
- * - **Development never ran this code.** The checkout arrived with `data/protocols/` populated,
- *   so seeding only ever executed in a container.
- *
- * `REPO_ROOT` resolves to `/app` in the image and to the repo in development, and both now
- * have a `seed/`.
- */
-export const PROTOCOL_SEED_DIR =
-  process.env.TOUCHSTONE_PROTOCOL_SEED_DIR ?? path.join(REPO_ROOT, 'seed', 'protocols');
-
-export interface SeedResult {
-  /** Files written. Empty when the directory already had them, which is the steady state. */
-  seeded: string[];
-  failed?: string;
-}
-
-/**
- * Copy the shipped rubric into `dir` for any leaf that is not already there.
- *
- * **Never overwrites.** The protocol is editable in the app, so an operator's edit outranks
- * the image's copy — a redeploy that silently reverted the rubric would also silently change
- * what every subsequent assay is judged against. A file that exists is left exactly as it is,
- * whatever it now says.
- */
-export async function ensureProtocolFiles(
-  dir: string,
-  seedDir: string = PROTOCOL_SEED_DIR,
-): Promise<SeedResult> {
-  const out: SeedResult = { seeded: [] };
-  let names: string[];
-  try {
-    // `.sh` too: a leaf whose `executor:` names a script is not seeded until its script is,
-    // and a protocol pointing at a file the volume does not have would block on first boot.
-    names = (await fs.readdir(seedDir)).filter((n) => n.endsWith('.md') || isSafeExecutor(n)).sort();
-  } catch (err) {
-    // No seed directory is the normal development case: the checkout already has the files.
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return out;
-    out.failed = err instanceof Error ? err.message : String(err);
-    return out;
-  }
-
-  try {
-    await fs.mkdir(dir, { recursive: true });
-    for (const name of names) {
-      const target = path.join(dir, name);
-      try {
-        // `wx` is the whole guarantee: exclusive create, so two boots racing cannot both
-        // write, and an existing file is never touched.
-        await fs.writeFile(target, await fs.readFile(path.join(seedDir, name), 'utf8'), {
-          encoding: 'utf8',
-          flag: 'wx',
-          // The executable bit does not survive every copy into a volume, and a script seeded
-          // without it would fail at dispatch rather than at boot. `runScript` spawns through
-          // `sh` regardless, so this is convenience for whoever opens the directory, not a
-          // dependency.
-          ...(isSafeExecutor(name) ? { mode: 0o755 } : {}),
-        });
-        out.seeded.push(name);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-      }
-    }
-  } catch (err) {
-    // A read-only data dir is a real deployment; the app still runs on whatever is there.
-    out.failed = err instanceof Error ? err.message : String(err);
-  }
-  return out;
 }
 
 export class ProtocolStore {
