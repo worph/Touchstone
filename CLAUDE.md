@@ -324,6 +324,10 @@ because its data access was smeared through two 200-line n8n Code nodes.
   (`PolicyInput.workshop`): never while a request is queued or running, and for idle work never
   while an audit runs or armed backlog is due. Validation is one trial per scoring target,
   derived from the protocol; `TrialRunDeps.finished(slug)` is how a round learns it ended.
+  **A round is spent only on an attempt**: an authoring session that called no workshop tool,
+  any agent failure, and a trial section that settled nothing (blocked, unusable answer, or
+  `errored` with no failure) are infra — free, behind a backoff — and a task whose every round
+  ended without a submission cools off for seven days (`retry_after`) rather than parking.
   Pure rules — `judgeValidation`, `regressionsOf` (D7′), `assertAppScope`, `quota`, `refFor`,
   `candidates` — are in `domain/workshop.ts`.
 - **`domain/fixreport.ts`** — the audit composed into a brief for whoever has to fix the app,

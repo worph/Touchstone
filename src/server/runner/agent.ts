@@ -8,7 +8,7 @@
  * | class | what it means | costs a try |
  * | --- | --- | --- |
  * | `agent-auth` | the agent's own session is dead — nothing to do with the app | no |
- * | `agent-missing` | the endpoint has no such tool — the agent is not there to ask | no |
+ * | `agent-missing` | the endpoint has no such tool, or nothing answered the connection — the agent is not there to ask | no |
  * | `agent-busy` | someone else has the agent (409) — PR Review shares it, §5.3 | **no** |
  * | `agent-error` | the call failed or returned nothing | yes |
  * | `parse-failed` | an answer arrived with no JSON object in it | yes |
@@ -88,6 +88,15 @@ const PERMISSIONS = [
  * because only the *whole* answer being this sentence means it — a report's prose may quote it.
  */
 const MISSING_RE = /^(unknown tool|unknown server|tool not found)\b/i;
+
+/**
+ * The connection itself failing, as `postToAgent` frames it: undici's `fetch failed`, a refused
+ * connect, a name that does not resolve. Nothing answered, so nothing was asked. On 2026-10-14
+ * a minute of this on yunderalabs read as `agent-error` and spent all three rounds of six
+ * workshop proposals in two seconds each. A timeout is deliberately not here — a session that
+ * ran for hours and was cut off did reach the agent.
+ */
+const UNREACHABLE_RE = /^error calling remote tool: (fetch failed|connect ECONNREFUSED|getaddrinfo)/i;
 
 const AUTH_RE = /failed to authenticate|oauth session|not logged in|please run \/login|invalid api key|authentication_error/i;
 
@@ -242,7 +251,7 @@ export function classify(text: string, fallback = ''): AgentOutcome {
   // Before the error tests, and outside them: Beacon returns this as an ordinary result, so
   // it never looked like an error and fell through to `parse-failed`, which charges a try.
   // From 2026-10-07 to 10-12 that parked eight apps over an agent that was simply not there.
-  if (MISSING_RE.test(t)) {
+  if (MISSING_RE.test(t) || UNREACHABLE_RE.test(t)) {
     return { ok: false, error: 'agent-missing', rawText: t.slice(0, 20_000) };
   }
 

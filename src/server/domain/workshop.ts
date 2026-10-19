@@ -98,8 +98,6 @@ export function refFor(p: Pick<Proposal, 'kind' | 'app' | 'id'>, now: Date): str
 
 // ── validation ──────────────────────────────────────────────────────────────────────────
 
-/** Blocked reasons that say the agent's *answer* was unusable — a round, not infra (§7). */
-const ANSWER_FAILURES = new Set(['agent_error', 'parse_failed']);
 /** Blocked reasons no retry can fix — configuration answers. */
 const CONFIG_FAILURES = new Set(['bench_unconfigured', 'store_url_unconfigured']);
 
@@ -112,9 +110,14 @@ export type Judgement =
 /**
  * Did this round pass? Every expected scoring section must be `done` and `compliant`.
  *
- * A blocked section is **never** a pass. Blocked by infrastructure, it is retried at no cost
- * to the task; blocked because the agent's answer was unusable, it established nothing and
- * counts as a failed round, since "nothing" cannot be put in a PR as evidence.
+ * A section that established nothing is **never** a pass, and it is never the author's fault
+ * either: it is retried at no cost to the task. That covers a section blocked by
+ * infrastructure, one blocked because the *auditor's* answer was unusable (`agent_error`,
+ * `parse_failed` — that says nothing about the change under trial), and one that came back
+ * `errored` without settling a single failing requirement, which is what an audit writes when
+ * the bench would not let it reach the app. Until 2026-10-19 the latter two were failed
+ * rounds, and HermesAgent spent two of its three on them — the second with feedback reading
+ * "No failing requirement was recorded".
  */
 export function judgeValidation(expected: readonly string[], results: readonly SectionResult[]): Judgement {
   const by = new Map(results.map((r) => [r.section, r]));
@@ -129,8 +132,11 @@ export function judgeValidation(expected: readonly string[], results: readonly S
     if (r.status === 'blocked') {
       const why = r.blocked_reason ?? '';
       if (CONFIG_FAILURES.has(why)) return { kind: 'impossible', reason: `${id}: ${why.replace(/_/g, ' ')}` };
-      if (ANSWER_FAILURES.has(why)) failing.push(id);
-      else infra.push(id);
+      infra.push(id);
+      continue;
+    }
+    if (r.verdict === 'errored' && (r.failed ?? 0) === 0) {
+      infra.push(id);
       continue;
     }
     if (r.verdict !== 'compliant') failing.push(id);
@@ -152,6 +158,7 @@ export function resultOf(section: string, slug: string, rec: AssayRecord | null 
     risk_score: typeof m.risk_score === 'number' ? m.risk_score : null,
     ...(m.blocked_reason ? { blocked_reason: String(m.blocked_reason) } : {}),
     ...(typeof m.standard_sha256 === 'string' ? { standard_sha256: m.standard_sha256 } : {}),
+    failed: (m.requirements ?? []).filter((r) => r.verdict === 'fail').length,
     trial: slug,
   };
 }
@@ -309,6 +316,8 @@ export interface CandidateInput {
   wishes?: readonly Wish[];
   /** Every app name any origin offers or used to offer. */
   offered?: ReadonlySet<string>;
+  /** The clock, for memory that expires (`retry_after`). Without it, no memory expires. */
+  now?: Date;
 }
 
 /**
@@ -324,7 +333,11 @@ export function candidates(input: CandidateInput): CandidateRow[] {
   const common = (key: string, app: string, inputSha: string, reasons: string[]): void => {
     const mem = input.memory[key];
     if (mem && mem.input_sha === inputSha) {
-      reasons.push(`tried ${mem.last_attempt_at.slice(0, 10)} — ${mem.outcome.replace(/_/g, ' ')}; waits for the input to change`);
+      if (!mem.retry_after) {
+        reasons.push(`tried ${mem.last_attempt_at.slice(0, 10)} — ${mem.outcome.replace(/_/g, ' ')}; waits for the input to change`);
+      } else if (!input.now || Date.parse(mem.retry_after) > input.now.getTime()) {
+        reasons.push(`tried ${mem.last_attempt_at.slice(0, 10)} — ${mem.outcome.replace(/_/g, ' ')}; retries after ${mem.retry_after.slice(0, 10)}`);
+      }
     }
     if (input.active.has(key)) reasons.push('a proposal is already in flight');
     if (input.openPrApps === null) reasons.push('open pull requests could not be read');

@@ -244,6 +244,22 @@ describe('classifying a failure', () => {
     expect(!server.ok && server.error).toBe('agent-missing');
   });
 
+  it('calls an endpoint nothing answered agent-missing', () => {
+    for (const t of [
+      'Error calling remote tool: fetch failed',
+      'Error calling remote tool: connect ECONNREFUSED 172.18.0.5:9300',
+      'Error calling remote tool: getaddrinfo ENOTFOUND beacon-backend',
+    ]) {
+      const out = classify(t);
+      expect(!out.ok && out.error).toBe('agent-missing');
+    }
+  });
+
+  it('still calls a timeout agent-error — that session reached the agent', () => {
+    const out = classify('Error calling remote tool: The operation was aborted due to timeout');
+    expect(!out.ok && out.error).toBe('agent-error');
+  });
+
   it('does not call a report that merely quotes the phrase agent-missing', () => {
     const out = classify('The app logged "Unknown tool: foo" and nothing else.');
     expect(!out.ok && out.error).toBe('parse-failed');
