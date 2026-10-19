@@ -92,8 +92,8 @@ phase sequence, identical for every app, deriving everything app-specific at run
 hardcoding nothing. The *static / compose* items belong to the Static Review Protocol
 (`static`).
 
-The repo's own `CONTRIBUTING.md` Functionality checklist is the source of truth for what
-"functional" means. **Hard rule: report a verdict, never merge or approve.** A human keeps the
+The repo's own `CONTRIBUTING.md` — its `functional` requirements, §7 Runtime — is the source
+of truth for what "functional" means. **Hard rule: report a verdict, never merge or approve.** A human keeps the
 merge button.
 
 > **How to operate the platform is not in here.** Routes, dialogs, the store's cache, where an
@@ -122,7 +122,7 @@ about the app, and as a **result** for the step.
 | `pass` | ran, and the app satisfied it |
 | `fail` | ran, and the app did not |
 | `errored` | could not run: infra failed, or the platform got in the way. **Never** the app's fault; the caller retries |
-| `n-a` | a deterministic, input-forced impossibility. The standing case is `migration`, which this protocol never runs |
+| `n-a` | a deterministic, input-forced impossibility. The standing case is `migration`, which this protocol never runs; the other is a service app (§3 `app-url`) |
 
 Write this section's prose under a `## Functionality` heading. Evidence, screenshots taken, the
 install duration and the host you ran on go in the records' notes and in that prose.
@@ -262,7 +262,8 @@ that bracket this phase still apply.
 4. Read the **Tips** dialog if the app offers one, and keep what it says. It is where an app's
    first-run URL, path or credentials are usually documented, and later phases are judged partly
    on what the app documents.
-5. ✅ **pass** when the app settles as installed and ready to open, with no error. Record the
+5. ✅ **pass** when the app settles as installed and ready to open, with no error: every
+   long-running service up, every one-shot service (an `init` step, a setup container) exited 0. Record the
    duration. A failed install leaves its own diagnosis on the tile — read it before concluding
    anything; it is evidence.
 
@@ -289,6 +290,15 @@ them. Checking here removes the incentive, because the real answer is available 
    `list_pages`; else (b) the Tips URL; else (c) the fallback formula. A tile offering no
    reachable address instead of an Open action means the app declares no resolvable web UI:
    record that, and try the formula before calling the app broken.
+
+   **A service app.** An app whose compose declares no web UI (no `x-compose-app.webui-host`
+   and no `routes` entry) is a *service app*: Maison puts its tile in the **Services** grid and a
+   click opens its settings, not a page. Samba is one. There is nothing for a browser to judge,
+   so record `app-url`, `works-immediately`, `auth-gate`, `clean-boot`, `zero-config` and
+   `data-persistence` as `n-a` — reason *service app, no web UI* — and go to cleanup. Its auth
+   and its state are the static leaf's (`auth-default`, `state-persistence`). Confirm it from
+   the compose, not from the tile alone: a tile in the **App** grid with no Open action is a
+   broken web app, not a service app.
 
 The next three are the core gate. Open `APP_URL` in the same context and assert **generically**,
 never against fixed selectors:
@@ -329,6 +339,28 @@ or editing a file to find the same value is not, and is a `fail`. Before judging
 check what the app documented: the value is often in Tips, and an audit that never opened it is
 reporting on a step it did not take. Name in the prose where you found it, or that there was
 nowhere.
+
+**The third-party identity exception.** Some apps delegate identity to a service outside the
+operator's control, so the only route to a usable screen is signing in to an account on that
+service — Plex against plex.tv is the standing case. Such an app meets neither trigger: no file
+is edited and no command is run, yet no usable screen is reached. When the app's `rationale.md`
+documents the dependency and names the provider, record `pass` with the exception named in the
+note — the same shape as a documented public exception under `auth-gate`. Say in the note that
+setup was verified only as far as the provider's sign-in wall, so the reader knows what was not
+exercised, and check what the app documents for the operator who *does* hold such an account
+(Tips, the store description) as you would for any other first login.
+
+Undocumented, it stays `unverified` — and under §5 that errors the audit and asks the caller to
+retry it, which for a dependency that is a permanent property of the app can never come out any
+differently. Documenting it in `rationale.md` is the only way out, and that is deliberate: it
+puts the deviation in front of the human who reviews the app rather than leaving it to be
+rediscovered by every future run.
+
+This turns on **whose** account it is, never on difficulty. It covers an identity provider the
+operator does not control, where holding an account is a commitment on a third party's service
+that no audit may make for itself. It does not cover an awkward or lengthy setup, and it does
+not cover a credential the app itself issues or documents — that is ordinary documented setup,
+judged exactly as before.
 
 **`data-persistence`** *(mandatory)* — on Maison an uninstall never deletes, it **archives**.
 There is no "keep data" option to tick, and a plain reinstall lands on a clean slate and proves
@@ -413,7 +445,8 @@ not made less critical by everything else passing.
 
 ## 5. Gate
 
-Every requirement except `migration` is mandatory and must `pass` for the app to be functional.
+Every requirement except `migration` is mandatory and must `pass` for the app to be functional,
+except where §3 makes it `n-a` for a service app.
 Any mandatory `fail` makes the app non-compliant, and a Critical does so unconditionally (§4).
 Any mandatory `errored` or missing result makes the **audit** errored and retried — that is a
 statement about the environment, never a verdict about the app. Record the requirements; the

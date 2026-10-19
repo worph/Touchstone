@@ -16,14 +16,15 @@ rubric does — but a rule applied to a field nothing reads is a finding about n
 
 ## Two metadata blocks, and which one wins
 
-Maison consumes the **unmodified CasaOS store format**, and reads its own Compose extension
-`x-compose-app` **alongside** `x-casaos` rather than in place of it.
+Maison reads **one block, never both** (since Maison `2fec354`, October 2026):
 
-- An app carrying only `x-casaos` is correct and installs fine.
-- An app carrying only `x-compose-app` is also correct.
-- With both present, `x-compose-app` **wins field by field**, falling back to `x-casaos` for
-  anything it omits. The block that will actually be used is the merge of the two, in that
-  order.
+- A compose with `x-compose-app` is read from `x-compose-app` **only**; an `x-casaos` beside it
+  is ignored. A field that exists only in `x-casaos` is invisible to Maison.
+- A compose with no `x-compose-app` is read from `x-casaos`, translated whole — plain CasaOS
+  apps install unchanged.
+- Older Maison builds merged the two field by field, and CasaOS reads only `x-casaos`. That is
+  why the Yundera store requires store info in `x-compose-app` **and** an equal mirror in
+  `x-casaos` (its `CONTRIBUTING.md`, `app-metadata-coherence`).
 
 **What is parsed and then ignored.** The *per-service* `x-casaos` description lists — `envs:`,
 `volumes:`, `ports:`, `devices:` — are read and then never consumed: the CasaOS per-field

@@ -14,49 +14,67 @@ report_headings:
   - ^static\b
 
 requirements:
-  # The canonical checklist ids: one per line of the repo's own Submission Checklist, in its
-  # order (Tech, Security, Functionality-that-is-statically-visible, Documentation). They are
-  # a stable vocabulary, not a second rubric — CONTRIBUTING.md is still what each item MEANS.
-  # An item found but not named here is recorded anyway and marked `unlisted`, which is how
-  # this list gets corrected.
-  - id: permissions
-    text: Proper file permissions / Permission Strategy
-  - id: install-cmd-security
-    text: Install-hook security (pinned tags, --user $PUID:$PGID, no baked secrets)
-  - id: hook-idempotency
-    text: Install hooks are safe to rerun on every reinstall and upgrade
-  - id: declared-folders
-    text: Directories the app needs are declared under x-compose-app.folders with schema_version 2
-  - id: auth-default
-    text: Authentication enabled by default and documented
-  - id: no-hardcoded-credentials
-    text: No hardcoded credentials
-  - id: per-app-secrets
-    text: Credentials are per-app x-compose-app secrets, not the shared $APP_DEFAULT_PASSWORD
-  - id: pinned-image-tag
-    text: Specific version tag (no :latest)
-  - id: data-under-datadir
-    text: Data mapped to appropriate /DATA subdirectories
-  - id: state-persistence
-    text: Data persistence requirements met (static persistence cross-check)
-  - id: cpu-shares
-    text: cpu_shares set on all services
-  - id: architectures
-    text: architectures
-  - id: description
-    text: Clear description of the application
-  - id: broad-mount-disclosure
-    text: A mount exposing a broad slice of /DATA is disclosed before install
-  - id: assets
-    text: Icon and screenshots meet specifications, URLs point to this repo
+  # The canonical ids: one per static requirement of the store's CONTRIBUTING.md, which since
+  # 2026-10-19 IS the requirements checklist (the how-to moved to GUIDELINES.md). Same ids, same
+  # order. They are a stable vocabulary, not a second rubric — CONTRIBUTING.md says what each
+  # item MEANS and gives its severity. An item found but not named here is recorded anyway and
+  # marked `unlisted`, which is how this list gets corrected.
   - id: name-regex
-    text: "name: regex"
+    text: "The app ID (compose name) is valid and unique"
+  - id: pinned-image-tag
+    text: "Every image is pinned, including init, migration and hook images"
+  - id: portable-references
+    text: "Bind sources use ${DATA_ROOT:-/DATA}; the shared network is name: ${APP_NET:-pcs}"
+  - id: cpu-shares
+    text: "cpu_shares set on every service"
+  - id: architectures
+    text: "Supported architectures are declared"
   - id: caddy-wiring
-    text: Caddy web-UI wiring
+    text: "Web UI routed with the caddy_0/1/2 triple, main and webui-host coherent"
   - id: container-name
-    text: container_name conventions
+    text: "Services on the shared network have stable, app-prefixed container names"
+  - id: network-isolation
+    text: "Only services that must be reachable are on the shared network"
+  - id: no-published-web-port
+    text: "No HTTP/web UI port published; published ports are non-HTTP only"
+  - id: needs-public-ip-tag
+    text: "Apps needing inbound connections carry needs-public-ip"
+  - id: data-under-datadir
+    text: "Data lives in the app folder or the user folders"
+  - id: permissions
+    text: "The container user fits what it touches (D1-D5)"
+  - id: state-persistence
+    text: "All state is on a mapped volume (static persistence cross-check)"
+  - id: declared-folders
+    text: "Directories the app needs are declared under x-compose-app.folders"
+  - id: broad-mount-disclosure
+    text: "A mount exposing a broad slice of /DATA is disclosed before install"
+  - id: migrations-wellformed
+    text: "data_version and migrations follow the contract"
+  - id: hook-idempotency
+    text: "Hooks are safe to rerun on every reinstall and update"
+  - id: install-cmd-security
+    text: "Hooks are pinned and non-interactive; host changes justified"
+  - id: hook-scope
+    text: "Hooks do no declarative work (folders, secrets, config files)"
+  - id: auth-default
+    text: "A login is enabled by default"
+  - id: appshield-wiring
+    text: "The AppShield sidecar is wired so it cannot be bypassed"
+  - id: no-hardcoded-credentials
+    text: "No secret is written as a literal in the listing"
+  - id: per-app-secrets
+    text: "Credentials are per-app x-compose-app secrets, not the shared $APP_DEFAULT_PASSWORD"
+  - id: credentials-shown
+    text: "A generated first login is declared under x-compose-app.credentials"
+  - id: lifecycle-rationale
+    text: "Any lifecycle key set to false is justified in rationale.md"
   - id: app-metadata-coherence
-    text: app metadata coherence (x-compose-app / x-casaos)
+    text: "Store info in x-compose-app, mirrored in x-casaos, no reserved keys"
+  - id: description
+    text: "title, tagline and description in en_us"
+  - id: assets
+    text: "Icon and screenshots present, referenced by relative path"
 ---
 
 # Static Review Protocol
@@ -118,9 +136,11 @@ here detects "what changed" and no item is conditioned on a change.
 
 ## 2. Procedure
 
-1. **Re-fetch `CONTRIBUTING.md`** — never cache it, it evolves. Read the Tech, Security,
-   Documentation and Functionality checklists; judge the statically visible items and leave the
-   rest to the Functional protocol.
+1. **Re-fetch `CONTRIBUTING.md`** — never cache it, it evolves. It is the requirements list:
+   each item names its id, its check (`static` or `functional`), its severity and its
+   pass / fail / n-a conditions. Judge the `static` items and leave the `functional` ones to the
+   Functional protocol. `GUIDELINES.md` beside it explains the conventions; it is background,
+   and a recommendation there is never a finding.
 2. **Settle every canonical item**, recording each as it settles. The rules in §4–§7 below are
    how the harder ones are decided; the rest read straight off the compose:
    - no `:latest` on any `image:` (a specific tag, everywhere)
@@ -129,8 +149,13 @@ here detects "what changed" and no item is conditioned on a change.
    - `user:` / `PUID`+`PGID` per the Permission Strategy (§4)
    - no hardcoded credentials, inline passwords or baked tokens
    - credentials generated per app under `x-compose-app.secrets`, not `$APP_DEFAULT_PASSWORD` (§7)
-   - app metadata present and coherent (§6), assets existing and pointing at `<repo>@main`
-     rather than a contributor fork
+   - app metadata present and coherent (§6), required assets (`icon.png` and at least one
+     screenshot) existing in the app folder and referenced by relative path — an absolute URL
+     must point at `<repo>`, not a contributor fork. `thumbnail.png` is **optional** — the store
+     falls back to `screenshot-1.png`, so its absence is never a finding, and a thumbnail that
+     merely duplicates a screenshot is the fallback by another name and is not one either. What
+     *is* a finding: a thumbnail that is only the icon rescaled, or any asset copied from a
+     different app. Compare against the other apps in the store, not just within this one
    - a broad `/DATA` mount disclosed before install (§6)
    - install hooks pinned, non-interactive, idempotent and doing only host-daemon work (§7)
 3. **Judge intent as well as form.** Pre/post-install command intent, image and supply-chain
@@ -140,15 +165,21 @@ here detects "what changed" and no item is conditioned on a change.
 
 ## 3. Severity — on every `fail`
 
+Start from the severity `CONTRIBUTING.md` gives the item — it states one, sometimes split by
+case, for every requirement. The tiers below are what those mean, and the rule for an
+`unlisted` item; where they and the item disagree, the item wins.
+
 - **Critical** — security or data loss: no or bypassable auth, an account-takeover vector,
   undocumented privilege escalation (rule D5), real credentials exposed on a publicly reachable
   service, data erasure or unmapped state lost on reinstall.
 - **Major** — breaks the store contract without security or data risk: a missing required asset
-  or a broken asset URL, a missing `rationale.md` where one is required (rule D2), a `name`
+  (`icon.png` or the one mandatory screenshot — never `thumbnail.png`, which is optional) or a
+  broken asset URL, a missing `rationale.md` where one is required (rule D2), a `name`
   regex violation, `:latest` on the main served image, an app that cannot install or cannot
   start as shipped.
 - **Minor** — one-liners: a missing or mis-tiered `cpu_shares`, an unpinned helper image in a
-  non-secret context, a thumbnail reusing `screenshot-1`, a redundant declaration.
+  non-secret context, a thumbnail that is only the icon rescaled or copied from another
+  app, a redundant declaration.
 
 ## 4. Permission deviations — decide mechanically (D1–D5)
 
@@ -183,16 +214,17 @@ guarantee about the folder is not a guarantee about a path outside the folder.
 Which block Maison reads, and which wins where both are present, is `maison-compose.md`. Three
 rules follow from it, and they are the ones that decide items here:
 
-- **Either block alone is correct.** `x-casaos` only, or `x-compose-app` only — **never** a
-  finding on its own.
-- **Judge the block that will actually be used** — the merge, `x-compose-app` first — and check
-  the two do not contradict each other on the same field (`app-metadata-coherence`).
+- **Maison reads one block, never a merge**: `x-compose-app` when present, otherwise
+  `x-casaos` translated whole. So a field only in `x-casaos` is invisible to Maison.
+- **The store requires both**: store info in `x-compose-app`, mirrored in `x-casaos` for
+  CasaOS and older Maison builds, the two not contradicting each other
+  (`app-metadata-coherence`).
 - **The per-service `x-casaos` description lists reach no user.** Their absence is not a
   finding, and neither is their presence in an older app. Do not ask for them either way.
 
 What replaces them is disclosure where a user will actually see it. A mount exposing a broad
 slice of `/DATA` — `/DATA/Documents`, `/DATA/Downloads`, `/DATA/Media`, `/DATA/Gallery`, or
-`/DATA` itself — must be called out in the app `description`, in `tips.before_install`, or in
+`/DATA` itself — must be called out in the app `description`, in `tips`, or in
 `rationale.md` (`broad-mount-disclosure`). Undisclosed and writable, or `/DATA` whole →
 **Major**; a narrower read-only slice left unexplained → **Minor**.
 
@@ -203,8 +235,8 @@ slice of `/DATA` — `/DATA/Documents`, `/DATA/Downloads`, `/DATA/Media`, `/DATA
 | `mode:` under `folders` is **quoted** (`"0755"`) | Unquoted, the install is rejected → **Major**, the app cannot be installed as shipped |
 | `folders` paths are absolute, inside `/DATA`, and every variable resolves | Anything else fails the up → **Major** |
 | `schema_version: 2` where the app relies on `folders` or `hooks` | Missing or `1` → **Major**: an older Maison starts it silently without its directories |
-| `view: system` on an ordinary store app | **Major** — a user cannot remove it |
-| `store`, `store-app-id`, `generated-routes` shipped in a store compose | **Minor** — they are Maison's own bookkeeping, written into an installed app's override |
+| `view: system` on an ordinary store app | **Minor** — `view` is only the grid now; stop/uninstall/update guards are `lifecycle` (`lifecycle-rationale`) |
+| `store-ref`, `store`, `store-app-id`, `generated-routes` shipped in a store compose | **Minor** — they are Maison's own bookkeeping, written into an installed app's override |
 
 ### Declared folders (`declared-folders`)
 
@@ -255,8 +287,8 @@ inference has been drawn and shipped as a Major against an app whose guard was c
 
 **Security (`install-cmd-security`).** Pinned tags, never `:latest`. `--user $PUID:$PGID` on any
 `docker run` writing under `/DATA/Documents`, `/DATA/Downloads`, `/DATA/Media` or `/DATA/Gallery`.
-Non-interactive. No baked credentials — the app's own `x-compose-app.secrets` instead. Static
-assets a hook needs may live under `Apps/<app>/pre-install/` in the repo.
+Non-interactive. No baked credentials — the app's own `x-compose-app.secrets` instead. Files a hook
+needs ship in the app's `seed/` tree.
 
 **Per-app secrets (`per-app-secrets`).** `$APP_DEFAULT_PASSWORD` is one password shared by every
 app on the box and is being phased out; every credential an app needs is its own entry under
