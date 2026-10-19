@@ -362,7 +362,17 @@ It has its own web access for upstream READMEs, image tags and icons, but not To
 **new** session opens on the same working copy, given the failing trials' fix brief. That is
 what a human developer does with a review, and the walls in §3 still hold because each trial is a
 fresh session the author cannot reach. Rounds exhausted → `failed_validation`, and the task is
-parked.
+parked until its input changes. If **no** round reached validation — the author worked and never
+submitted — the memory is `no_submission` instead, with a `retry_after` seven days out: nothing
+was learnt about the app, so it cools off rather than parking for ever.
+
+**A round is only spent on an attempt.** A session in which the author called no tool at all was
+not one — the agent was missing, logged out, busy, or answered something else (Beacon's
+`Unknown tool`, which arrives as an ordinary result) — and goes back to the queue at no cost
+with a backoff, as does any agent failure (`agent-auth`, `agent-busy`, `agent-missing`,
+including a connection nothing answered) at any point in a session. On 2026-10-14 a minute
+without the agent spent all three rounds of six proposals, two seconds apiece, and parked them
+all as `failed_validation` (2026-10-19).
 
 ---
 
@@ -375,10 +385,16 @@ requests, in ask order like every other trial:
 - a trial on **foss** runs `functional@foss`.
 
 **Pass = every scoring section is `compliant`.** A `blocked` section is **not a pass**:
-- If it was blocked by infrastructure, the proposal waits and the trial is retried, at no cost
-  to the task (invariant 3).
-- If it was blocked by `agent_error` / `parse_failed`, it counts as a failed round. It
-  established nothing, and "nothing" cannot be put in a PR as evidence.
+- If it was blocked by infrastructure, the proposal waits out a backoff and the trial is retried,
+  at no cost to the task (invariant 3), at most three times before the proposal fails without
+  charging the task.
+- If it was blocked by `agent_error` / `parse_failed`, it is retried the same way. It
+  established nothing, so it is never a pass — but the auditor's unusable answer says nothing
+  about the change either, so it is not a failed round (until 2026-10-19 it was).
+- The same holds for a section that came back `errored` without a single failing requirement:
+  that is what an audit writes when the bench would not let it reach the app (a dashboard
+  wedged in onboarding), and it is not the author's to fix. An `errored` section that *did*
+  record a failure is a failed round.
 
 **D7′ — and nothing got worse (D17, 2026-10-07).** Compliant everywhere is necessary, not
 sufficient. When the base is pinned, the subject's scoring sections are recorded on the proposal

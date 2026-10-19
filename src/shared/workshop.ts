@@ -56,6 +56,8 @@ export interface SectionResult {
   risk_score: number | null;
   blocked_reason?: string;
   standard_sha256?: string;
+  /** Requirements the section failed. An `errored` section with none settled nothing. */
+  failed?: number;
   trial: string;
   /** Evidence copy of the report under the proposal's own directory. */
   evidence?: string;
@@ -176,7 +178,15 @@ export interface Proposal {
 }
 
 /** What `memory` remembers about a task. **Infra is never stored** — invariant 3. */
-export type TaskOutcome = 'pr_opened' | 'pr_closed' | 'pushed' | 'reverted' | 'cannot' | 'failed_validation';
+export type TaskOutcome =
+  | 'pr_opened'
+  | 'pr_closed'
+  | 'pushed'
+  | 'reverted'
+  | 'cannot'
+  | 'failed_validation'
+  /** Every round ended without a submission: the author worked and produced nothing to trial. */
+  | 'no_submission';
 
 export interface TaskMemory {
   input_sha: string;
@@ -186,6 +196,12 @@ export interface TaskMemory {
   reason?: string;
   proposal_id?: string;
   pr_url?: string;
+  /**
+   * When the task becomes a candidate again although its input has not changed. Absent, it
+   * waits for the input to change. Set for `no_submission`: nothing about the app was learnt,
+   * so parking it for ever would be a verdict, and re-picking it at once a loop.
+   */
+  retry_after?: string;
 }
 
 /** The GitHub identity, as the probe last saw it. */

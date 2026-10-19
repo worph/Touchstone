@@ -99,6 +99,8 @@ class StoreMoved extends Error {}
 const MAX_TRIAL_RETRIES = 3;
 /** Free re-queues of an authoring session after an infra outcome, before it is given up. */
 const MAX_INFRA = 6;
+/** How long a task whose every round ended without a submission waits before it is a candidate again. */
+const NO_SUBMISSION_COOLOFF_MS = 7 * 86_400_000;
 /** A staged zip lives this long — long enough to install and iterate, not for ever. */
 const STAGE_TTL_MS = 3 * 60 * 60_000;
 
@@ -165,6 +167,11 @@ interface Session {
   proposal: string;
   expires_at: number;
   ended?: { kind: 'submit'; summary: string } | { kind: 'cannot'; reason: string };
+  /**
+   * The author called at least one tool. A session that never did was not an attempt at the
+   * work — the agent was missing, dead or answered something else — and costs no round.
+   */
+  touched?: boolean;
 }
 
 interface Stage {
@@ -470,6 +477,7 @@ export class Workshop {
       active,
       wishes: await this.wishes(),
       offered,
+      now: this.now(),
     });
   }
 
@@ -708,31 +716,37 @@ export class Workshop {
       await this.cannot(p, session.ended.reason);
       return;
     }
-    if (!raw.ok) {
-      const cls = classify(raw.errorText);
-      if (
-        cls.ok === false &&
-        (cls.error === 'agent-auth' || cls.error === 'agent-busy' || cls.error === 'agent-missing')
-      ) {
-        if (cls.error === 'agent-auth') {
-          this.opts.alerts?.open({
-            key: 'agent.auth',
-            title: 'The agent is not logged in',
-            detail: 'The workshop asked the agent to author a proposal and was told its session is dead.',
-            impact: 'No audit, trial or proposal can run until the agent is logged in again.',
-          });
-        }
-        this.ended(p, 'infra', cls.error);
-        await this.infra(
-          p,
-          cls.error === 'agent-auth'
-            ? 'the agent is not logged in'
-            : cls.error === 'agent-missing'
-              ? 'the agent cannot be reached'
-              : 'the agent was busy',
-        );
-        return;
+    // The agent's own failures are infra whenever they happen. And a session nobody opened is
+    // infra whatever the envelope said: nothing about the work was tried. Beacon's "Unknown
+    // tool" arrives as an *ok* answer, and on 2026-10-14 that, and a minute of `fetch failed`,
+    // spent every round of six proposals in seconds.
+    const text = raw.ok ? raw.text : raw.errorText;
+    const cls = !raw.ok || !session?.touched ? classify(text) : null;
+    const error =
+      cls && cls.ok === false && (cls.error === 'agent-auth' || cls.error === 'agent-busy' || cls.error === 'agent-missing')
+        ? cls.error
+        : undefined;
+    if (error || !session?.touched) {
+      if (error === 'agent-auth') {
+        this.opts.alerts?.open({
+          key: 'agent.auth',
+          title: 'The agent is not logged in',
+          detail: 'The workshop asked the agent to author a proposal and was told its session is dead.',
+          impact: 'No audit, trial or proposal can run until the agent is logged in again.',
+        });
       }
+      this.ended(p, 'infra', error ?? 'untouched');
+      await this.infra(
+        p,
+        error === 'agent-auth'
+          ? 'the agent is not logged in'
+          : error === 'agent-missing'
+            ? 'the agent cannot be reached'
+            : error === 'agent-busy'
+              ? 'the agent was busy'
+              : `the agent answered without opening the session: ${String(text ?? '').trim().slice(0, 120) || '(nothing)'}`,
+      );
+      return;
     }
     const why = raw.ok
       ? 'the session ended without calling submit or cannot'
@@ -888,14 +902,20 @@ export class Workshop {
       this.opts.kick?.();
       return;
     }
-    const reason = `did not pass validation in ${p.max_rounds} round(s)`;
+    // No round reached validation: the author worked and produced nothing to trial. That
+    // says nothing about the app, so it cools off rather than waiting for the input to change.
+    const submitted = p.trials.length > 0;
+    const reason = submitted
+      ? `did not pass validation in ${p.max_rounds} round(s)`
+      : `no submission in ${p.max_rounds} round(s)`;
     await this.opts.store.update(p.id, { state: 'failed', reason });
     await this.opts.store.remember(p.task_key, {
       input_sha: p.input_sha,
       last_attempt_at: this.now().toISOString(),
-      outcome: 'failed_validation',
+      outcome: submitted ? 'failed_validation' : 'no_submission',
       reason,
       proposal_id: p.id,
+      ...(submitted ? {} : { retry_after: new Date(this.now().getTime() + NO_SUBMISSION_COOLOFF_MS).toISOString() }),
     });
     this.opts.events.log({
       level: 'warn',
@@ -962,6 +982,7 @@ export class Workshop {
       trials,
       reason: undefined,
       started_at: undefined,
+      backoff_until: undefined,
     });
     this.opts.events.log({
       level: 'info',
@@ -1096,12 +1117,21 @@ export class Workshop {
           });
           return;
         }
-        this.opts.events.log({
-          level: 'warn',
-          code: 'PROPOSAL_INFRA',
-          message: `Validation of ${p.app} did not complete — ${verdict.reason}; re-queued at no cost`,
-          detail: { proposal: p.id, app: p.app, reason: verdict.reason },
-        });
+        // Wait out a backoff before retrying, so a minute-long outage cannot spend every
+        // retry in seconds. The judgement is re-derived from the same trial files on each
+        // `reconcile()`, so all the wait needs is the time it ends.
+        if (!p.backoff_until) {
+          const until = new Date(this.now().getTime() + this.opts.runner.busyBackoffMin * 60_000).toISOString();
+          await this.opts.store.update(p.id, { validation: results, backoff_until: until, reason: verdict.reason });
+          this.opts.events.log({
+            level: 'warn',
+            code: 'PROPOSAL_INFRA',
+            message: `Validation of ${p.app} did not complete — ${verdict.reason}; retried at no cost`,
+            detail: { proposal: p.id, app: p.app, reason: verdict.reason, retry_after: until },
+          });
+          return;
+        }
+        if (Date.parse(p.backoff_until) > this.now().getTime()) return;
         await this.startValidation(p, p.summary ?? '', targets);
         return;
       }
@@ -1591,6 +1621,7 @@ export class Workshop {
     if (s.ended) throw new WorkshopError(`this session already ended with ${s.ended.kind}`);
     const proposal = this.opts.store.get(s.proposal);
     if (!proposal || proposal.state !== 'authoring') throw new WorkshopError('this session is no longer authoring');
+    s.touched = true;
     return { proposal, session: s };
   }
 

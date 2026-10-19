@@ -141,6 +141,8 @@ let shas: Record<string, string> = {};
 let agentScript: (prompt: string, ws: Workshop) => Promise<AgentRaw>;
 let workshop: Workshop;
 let released: string[];
+/** The workshop's clock; unset, it is the real one. */
+let clock: Date | undefined;
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'touchstone-wsvc-'));
@@ -154,6 +156,7 @@ beforeEach(async () => {
   commitShas = [];
   mainProtected = false;
   released = [];
+  clock = undefined;
   events = new EventLog(path.join(dir, 'state'));
   await events.load();
   trials = new TrialStore(path.join(dir, 'state'), path.join(dir, 'trials'));
@@ -205,6 +208,7 @@ async function build(settings: Partial<WorkshopSettings> = {}): Promise<Workshop
     events,
     fetchImpl,
     postAgent: async (prompt) => agentScript(prompt, ws),
+    now: () => clock ?? new Date(),
   });
   return ws;
 }
@@ -334,14 +338,73 @@ describe('the rules around it', () => {
     expect(store.memory()).toEqual({});
   });
 
-  it('a session that never submits is a failed round, and the last round is remembered', async () => {
+  it('a session that worked and never submitted is a failed round, and the last round cools off', async () => {
+    agentScript = async (prompt, ws) => {
+      await ws.listFiles(tokenOf(prompt));
+      return { ok: true, text: 'done', payload: '' };
+    };
     const p = await workshop.propose({ subject: 'X', kind: 'fix' }, 'operator');
     await workshop.dispatch(p.id, lease);
     expect(store.get(p.id)).toMatchObject({ state: 'revising', round: 2 });
     expect(await store.feedback(p.id)).toContain('without calling submit');
     await workshop.dispatch(p.id, lease);
-    expect(store.get(p.id)!.state).toBe('failed');
-    expect(store.memoryOf(p.task_key)?.outcome).toBe('failed_validation');
+    expect(store.get(p.id)).toMatchObject({ state: 'failed', reason: 'no submission in 2 round(s)' });
+    const mem = store.memoryOf(p.task_key)!;
+    expect(mem.outcome).toBe('no_submission');
+    expect(Date.parse(mem.retry_after!)).toBeGreaterThan(Date.now() + 6 * 86_400_000);
+  });
+
+  /**
+   * 2026-10-14 on yunderalabs: a minute with the agent gone spent all three rounds of six
+   * proposals, two seconds apiece — `fetch failed`, and Beacon's ok-shaped "Unknown tool".
+   */
+  it('a session nobody opened costs no round and leaves no memory, whatever the agent answered', async () => {
+    for (const answer of [
+      { ok: true as const, text: 'Unknown tool: claude-code__query_claude', payload: '' },
+      { ok: true as const, text: 'done', payload: '' },
+      { ok: false as const, errorText: 'Error calling remote tool: fetch failed' },
+    ]) {
+      agentScript = async () => answer;
+      const p = await workshop.propose({ subject: 'X', kind: 'fix' }, 'operator');
+      await workshop.dispatch(p.id, lease);
+      const after = store.get(p.id)!;
+      expect(after).toMatchObject({ state: 'queued', round: 1, infra_retries: 1 });
+      expect(after.backoff_until).toBeTruthy();
+      expect(store.memoryOf(p.task_key)).toBeUndefined();
+      await workshop.discard(p.id, 'operator');
+    }
+  });
+
+  it('a session that dies mid-work because the agent went away is still infra', async () => {
+    agentScript = async (prompt, ws) => {
+      await ws.listFiles(tokenOf(prompt));
+      return { ok: false, errorText: 'Error calling remote tool: fetch failed' };
+    };
+    const p = await workshop.propose({ subject: 'X', kind: 'fix' }, 'operator');
+    await workshop.dispatch(p.id, lease);
+    expect(store.get(p.id)).toMatchObject({ state: 'queued', round: 1, infra_retries: 1 });
+  });
+
+  it('a validation that did not complete waits out a backoff before it is retried', async () => {
+    clock = new Date('2026-10-14T02:00:00Z');
+    agentScript = async (prompt, ws) => {
+      ws.submit(tokenOf(prompt), 'Tried.');
+      return { ok: true, text: '', payload: '' };
+    };
+    const p = await workshop.propose({ subject: 'X', kind: 'fix' }, 'operator');
+    await workshop.dispatch(p.id, lease);
+    await finishTrials({}, { functional: { status: 'blocked', verdict: null, blocked_reason: 'parse_failed' } });
+    const held = store.get(p.id)!;
+    expect(held).toMatchObject({ state: 'validating', round: 1 });
+    expect(held.backoff_until).toBe('2026-10-14T02:10:00.000Z');
+    expect(trials.queued()).toHaveLength(0);
+    clock = new Date('2026-10-14T02:05:00Z');
+    await workshop.reconcile();
+    expect(trials.queued()).toHaveLength(0);
+    clock = new Date('2026-10-14T02:11:00Z');
+    await workshop.reconcile();
+    expect(trials.queued()).toHaveLength(1);
+    expect(store.get(p.id)!.backoff_until).toBeUndefined();
   });
 
   it('a failing validation goes back with the findings as feedback', async () => {

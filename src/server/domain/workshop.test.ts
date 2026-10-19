@@ -70,8 +70,20 @@ describe('judgeValidation', () => {
     expect(j.kind).toBe('infra');
   });
 
-  it('an unusable agent answer established nothing, so it is a failed round', () => {
-    const j = judgeValidation(expected, [r('static'), r('functional', { status: 'blocked', verdict: null, blocked_reason: 'parse_failed' }), r('functional@foss')]);
+  it("an unusable auditor answer established nothing about the change, so it is infra", () => {
+    for (const why of ['parse_failed', 'agent_error']) {
+      const j = judgeValidation(expected, [r('static'), r('functional', { status: 'blocked', verdict: null, blocked_reason: why }), r('functional@foss')]);
+      expect(j).toEqual({ kind: 'infra', sections: ['functional'], reason: 'not audited: functional' });
+    }
+  });
+
+  it('an errored audit that settled no finding is infra — the bench would not let it reach the app', () => {
+    const j = judgeValidation(expected, [r('static'), r('functional', { verdict: 'errored', failed: 0 }), r('functional@foss')]);
+    expect(j.kind).toBe('infra');
+  });
+
+  it('an errored audit that did record a failure still fails the round', () => {
+    const j = judgeValidation(expected, [r('static'), r('functional', { verdict: 'errored', failed: 2 }), r('functional@foss')]);
     expect(j).toEqual({ kind: 'fail', failing: ['functional'] });
   });
 
@@ -163,6 +175,24 @@ describe('candidates', () => {
     expect(candidates({ ...base, subjects: [broken], memory })[0]!.eligible).toBe(false);
     const moved = candidates({ ...base, subjects: [broken], memory, versions: { 'yundera~Broken': 'v9' } })[0]!;
     expect(moved.eligible).toBe(true);
+  });
+
+  it('a no-submission memory cools off, then the task is offered again on the same input', () => {
+    const first = candidates({ ...base, subjects: [broken] })[0]!;
+    const memory = {
+      [first.task_key]: {
+        input_sha: first.input_sha,
+        attempts: 1,
+        last_attempt_at: NOW.toISOString(),
+        outcome: 'no_submission' as const,
+        retry_after: new Date(NOW.getTime() + 7 * 86_400_000).toISOString(),
+      },
+    };
+    const held = candidates({ ...base, subjects: [broken], memory, now: NOW })[0]!;
+    expect(held.eligible).toBe(false);
+    expect(held.reasons.join(' ')).toContain('retries after');
+    const later = new Date(NOW.getTime() + 8 * 86_400_000);
+    expect(candidates({ ...base, subjects: [broken], memory, now: later })[0]!.eligible).toBe(true);
   });
 
   it('never offers an app somebody already has a pull request open for, or when that is unknown', () => {
