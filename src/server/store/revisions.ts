@@ -214,9 +214,10 @@ export class RevisionStore {
           sha256: hash,
           parent: previous?.sha256 ?? null,
           bytes: bytes.length,
-          // A first sighting nobody claims is a `seed`: a file that appeared because the
-          // image seeded it was not edited by anyone, and calling that a save would put a
-          // reason on a revision nobody wrote.
+          // A first sighting nobody claims is a `seed`: a file that was simply there when the
+          // history started (put on the volume by hand, or by an older build that seeded it)
+          // was not edited through anything that could carry a reason, and calling that a save
+          // would put a reason on a revision nobody wrote.
           source: saved ? 'save' : previous ? 'observed' : 'seed',
           message: saved ? (opts.save?.message ?? null) : null,
         };

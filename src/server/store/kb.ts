@@ -36,7 +36,6 @@ import path from 'node:path';
 
 import YAML from 'yaml';
 
-import { REPO_ROOT } from './config.js';
 
 /** The index, always included, and never treated as a page. */
 export const KB_INDEX_FILE = 'KB.md';
@@ -102,25 +101,23 @@ export function parseKbDoc(raw: string, file: string): Omit<KbDoc, 'sha256' | 'b
   };
 }
 
-/**
- * What a fresh install starts with — `seed/kb/`, on the same terms as the rubric's seed and
- * for the same reasons. See `PROTOCOL_SEED_DIR`.
- */
-export const KB_SEED_DIR = process.env.TOUCHSTONE_KB_SEED_DIR ?? path.join(REPO_ROOT, 'seed', 'kb');
-
 export interface KbSeedResult {
   seeded: string[];
   failed?: string;
 }
 
 /**
- * Copy the shipped knowledge base into `dir` for any page that is not already there.
+ * Copy every `*.md` in `seedDir` into `dir` that is not already there — the workshop's
+ * authoring instructions and the wishlist's example, from `seed/`.
  *
- * **Never overwrites**, for the reason `ensureProtocolFiles` does not: an operator's page
- * outranks the image's, and a redeploy that silently reverted it would silently change what
- * the next audit reads.
+ * **Never overwrites**: an operator's copy outranks the image's, and a redeploy that silently
+ * reverted it would silently change what the next session reads.
+ *
+ * The knowledge base itself is **not** seeded, and neither is the rubric (2026-10-19): the box
+ * holds the only copy of each, because a tracked default was a second definition that read
+ * like the live one and drifted from it.
  */
-export async function ensureKbFiles(dir: string, seedDir: string = KB_SEED_DIR): Promise<KbSeedResult> {
+export async function ensureKbFiles(dir: string, seedDir: string): Promise<KbSeedResult> {
   const out: KbSeedResult = { seeded: [] };
   let names: string[];
   try {

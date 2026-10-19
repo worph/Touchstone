@@ -206,6 +206,8 @@ export const EVENT_CODES = {
 
   SERVER_STARTED: { category: 'system', label: 'Touchstone started' },
   CONFIG_SEEDED: { category: 'system', label: 'configuration written' },
+  // Not emitted since 2026-10-19, when the rubric and the KB stopped being seeded; kept so
+  // older log rows still read.
   PROTOCOL_SEEDED: { category: 'system', label: 'rubric written into the data directory' },
   KB_SEEDED: { category: 'system', label: 'knowledge base written into the data directory' },
   LOG_TRIMMED: { category: 'system', label: 'log trimmed' },

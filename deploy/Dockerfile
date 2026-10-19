@@ -5,14 +5,10 @@
 # 1. **Everything Touchstone owns lives under one path** — `/DATA` here, the volume in the
 #    compose. Config, the rubric, the report archive, trials and runtime state are all under
 #    it, so a backup of one path is the whole system (ARCHITECTURE §8).
-# 2. **The rubric and the knowledge base are seeded, not baked.** `data/protocols/*.md` and
-#    `data/kb/*.md` are committed to the repo, which is enough for a checkout and wrong for a
-#    container: the volume starts empty. The image therefore carries its own copies at
-#    `/app/seed/protocols` and `/app/seed/kb`, *outside* the volume, and `ensureProtocolFiles`
-#    / `ensureKbFiles` copy them in on first boot without ever overwriting. The rubric is
-#    editable in the app and versions itself on save, so an operator's edit must outrank the
-#    image's copy — a redeploy that reverted it would silently change what every subsequent
-#    assay is judged against.
+# 2. **The rubric and the knowledge base are not in the image at all** (since 2026-10-19). They
+#    live on the volume (`protocols/`, `kb/`) and nowhere else: a copy shipped here read like the
+#    live standard and drifted from every box. A fresh volume boots with no rubric, logs
+#    `PROTOCOL_MISSING`, and turns every run away (`no_protocol`) until the files are put there.
 #
 # Debian rather than Alpine: no native dependencies (the AppStore requires amd64 *and* arm64,
 # which is why there is no SQLite here), but glibc keeps the build boring.
@@ -62,15 +58,9 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/dist         ./dist
 
-# What a fresh install starts with: the rubric, its executors, and the knowledge base. It is
-# copied verbatim from the repo's `seed/` to the image's, because `PROTOCOL_SEED_DIR` and
-# `KB_SEED_DIR` both resolve to `<REPO_ROOT>/seed/...` and REPO_ROOT is `/app` here — the code
-# runs from `/app/dist/server/`. The seeders copy them onto the volume on first boot and never
-# overwrite: an operator's edit outranks the image's copy, for the procedure exactly as for the
-# policy.
-#
-# One directory, no per-subdirectory lines and no `.dockerignore` exceptions to keep in step, so
-# adding a seeded file is adding a file rather than editing three places.
+# What a fresh install starts with besides its config: the workshop's authoring instructions
+# and the wishlist's example, copied onto the volume on first boot and never overwritten. The
+# rubric and the knowledge base are deliberately absent — see note 2 at the top.
 COPY seed/ ./seed/
 
 # `pcs` runs apps as 1000:1000 and the compose sets `user: 1000:1000`; node:22 already has a

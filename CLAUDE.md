@@ -202,13 +202,16 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | `state/controls.json` | **what somebody changed while it was running** — the override for each *control*, re-applied at boot. `config.yaml` stays what a fresh install boots into, so deleting this one file puts every setting back. `scheduler.armed` is deliberately **not** here: the scheduler has kept that switch in `state/schedule.json` since the Automation page had a button, and two files claiming one switch is how they come to disagree |
 | `state/index.json` | cache only — deleting it must always be safe |
 
-**The whole of `data/` is gitignored, and `seed/` is what the repo tracks.** `seed/protocols/`
-and `seed/kb/` are what a *fresh install* starts with: the image copies them to `/app/seed/` and
-`ensureProtocolFiles` / `ensureKbFiles` copy them onto the volume on first boot, **never
-overwriting**. So the tracked file is a default, not the live standard — a box edits its own the
-moment anyone uses the editor, and the two are reconciled by a deliberate backport, never a sync.
-Development takes the same path: a fresh checkout has no `data/`, so it seeds itself exactly as a
-container does. `test/fixtures/` is committed.
+**The whole of `data/` is gitignored, and the rubric and the knowledge base are not in the
+repo at all** (since 2026-10-19). The box holds the only copy of `protocols/*.{md,sh}` and
+`kb/*.md`; there is no tracked default, because one read like the live standard and drifted from
+it — the second definition this rule exists to prevent. A fresh volume, or a fresh dev checkout,
+boots with **no rubric**: it logs `PROTOCOL_MISSING` once at boot and every run is turned away
+`no_protocol`, writing nothing and charging nobody, until somebody puts the files there — copy
+them from a running box (`GET /api/v1/protocols/:id`, or the volume). Do not re-add them to the
+repo, and do not write a test that reads them: tests write their own small rubric.
+`seed/` still carries `workshop/author.md` and the wishlist example, copied onto the volume on
+first boot by `ensureKbFiles` and never overwritten. `test/fixtures/` is committed.
 
 **Rule: nothing outside `src/server/store/` touches the filesystem.** Routes, the scheduler and the
 runner get the index or a store object, never a path. The thing being replaced failed partly
