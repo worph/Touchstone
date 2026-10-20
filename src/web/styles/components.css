@@ -1921,3 +1921,40 @@
   border: 1px solid var(--border-2);
   border-radius: 8px;
 }
+
+/* -- token usage (Status) ------------------------------------------------- */
+.usage {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-1);
+}
+.usage-tiles { display: flex; flex-wrap: wrap; gap: 8px 28px; margin-bottom: 12px; }
+.usage-tile { display: flex; flex-direction: column; gap: 2px; }
+.usage-tile-v { font: 600 20px/1.1 var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); }
+.usage-tile-k { font-size: 11.5px; color: var(--fg-2); }
+.usage-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12px; color: var(--fg-1); }
+.usage-key { display: inline-flex; align-items: center; gap: 6px; }
+.usage-sw { width: 10px; height: 10px; border-radius: 2px; }
+.usage-note { color: var(--fg-2); font-size: 12px; }
+.usage-legend .usage-note { margin-left: auto; }
+.usage-tip {
+  min-height: 1.6em;
+  margin: 8px 0 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-1);
+}
+.usage-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 860px) { .usage-charts { grid-template-columns: 1fr; } }
+.usage-fig { margin: 0; min-width: 0; }
+.usage-fig-h { font: 600 11px/1.4 var(--sans); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-2); margin-bottom: 4px; }
+.usage-svg { display: block; overflow: visible; }
+.usage-grid { stroke: var(--border); stroke-width: 1; }
+.usage-base { stroke: var(--border-3); stroke-width: 1; }
+.usage-axis { font: 11px var(--mono); fill: var(--fg-2); }
+.usage-bar.is-hover rect:not([fill="transparent"]) { opacity: 1; }
+.usage-svg:hover .usage-bar:not(.is-hover) rect:not([fill="transparent"]) { opacity: 0.45; }
+.usage-tbl-wrap { margin-top: 14px; overflow-x: auto; }
+@media (max-width: 720px) { .usage-tbl td, .usage-tbl th { padding-left: 6px; padding-right: 6px; } }
+.usage-tbl th { position: static; }

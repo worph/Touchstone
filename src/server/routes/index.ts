@@ -58,6 +58,8 @@ import browserRoutes, { registerBrowserProxy } from './browser.js';
 import scheduleRoutes from './schedule.js';
 import controlsRoutes from './controls.js';
 import settingsRoutes from './settings.js';
+import usageRoutes from './usage.js';
+import type { UsageLog } from '../store/usage.js';
 import trialRoutes from './trials.js';
 import uploadRoutes from './uploads.js';
 import workshopRoutes from './workshop.js';
@@ -124,6 +126,8 @@ export interface RoutesOptions {
   adminMcp?: Omit<AdminMcpOptions, 'ctx' | 'events'>;
   /** The workshop — docs/auto-app-pr.md. Absent, its page says it is not wired. */
   workshop?: Workshop;
+  /** Token usage per agent call — `routes/usage.ts`. Absent, the chart is empty. */
+  usage?: UsageLog;
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
@@ -181,6 +185,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     ...(options.settings ?? {}),
     ...(options.events ? { events: options.events } : {}),
   });
+  await app.register(usageRoutes, { ...(options.usage ? { usage: options.usage } : {}) });
   await app.register(chatRoutes, {
     ...(options.chat ?? {}),
     ...(options.events ? { events: options.events } : {}),

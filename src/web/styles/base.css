@@ -63,6 +63,12 @@
   --on-solid:  #ffffff;
   --code-fg:   #9c4221;
   --select:    #cfe0f5;
+  /* Categorical series for charts, in fixed order — never the status colours above.
+     Validated as a set (dataviz validate_palette.js) against --bg-1 in each mode. */
+  --series-1:  #2a78d6;
+  --series-2:  #eb6834;
+  --series-3:  #1baf7a;
+  --series-4:  #eda100;
   --shadow:    0 10px 28px oklch(0.17 0.01 250 / 14%);
 
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
@@ -123,6 +129,10 @@
     --on-solid:  #0a1015;
     --code-fg:   #d9c8a3;
     --select:    #2b4a6b;
+    --series-1:  #3987e5;
+    --series-2:  #d95926;
+    --series-3:  #199e70;
+    --series-4:  #c98500;
     --shadow:    0 10px 28px rgb(0 0 0 / 45%);
 
     color-scheme: dark;

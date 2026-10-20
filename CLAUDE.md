@@ -200,6 +200,7 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | `wishlist/*.md` | **the wishlist** — one file per app to integrate, operator-authored on the volume. No route or tool writes one. `_`-prefixed files are examples |
 | `state/workshop.json` | proposals, task memory, and the `workshop.armed` override |
 | `state/controls.json` | **what somebody changed while it was running** — the override for each *control*, re-applied at boot. `config.yaml` stays what a fresh install boots into, so deleting this one file puts every setting back. `scheduler.armed` is deliberately **not** here: the scheduler has kept that switch in `state/schedule.json` since the Automation page had a button, and two files claiming one switch is how they come to disagree |
+| `state/usage.jsonl` | **token usage**, one row per agent call that reported it (`store/usage.ts`), read by `GET /usage` for the Status page's chart. Recorded only when the claude-code agent returns `_meta.usage` — requirements §25 |
 | `state/index.json` | cache only — deleting it must always be safe |
 
 **The whole of `data/` is gitignored, and the rubric and the knowledge base are not in the

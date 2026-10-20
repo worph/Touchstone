@@ -16,6 +16,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 
 import type { BenchesResponse, BenchHealth, BenchPoolHealth } from '@shared/activity';
 import RunCard from '../components/RunCard';
+import UsageChart from '../components/UsageChart';
 import { Loading, Notice } from '../components/Ui';
 import { getBenches, probeBenches } from '../data/client';
 import { stamp } from '../lib/format';
@@ -261,6 +262,8 @@ export default function Status() {
         )}
 
       </section>
+
+      <UsageChart />
     </div>
   );
 }

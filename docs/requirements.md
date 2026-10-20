@@ -1849,3 +1849,39 @@ for every mode. Design: [auto-app-pr.md](auto-app-pr.md) D15–D18, §7, §10, �
 - **Not done, deliberately:** a per-kind delivery (say, currency patches pushed and everything
   else as PRs) — easy on top of this, and not asked for. Push mode is not enabled on any box.
 
+
+## 25. Token usage — what the agent spent, per day — 2026-10-20
+
+### 25.1 The requirement
+
+A graph of tokens in and out. Every audit, trial, chat turn and workshop session is one call to
+the same claude-code agent, and nothing recorded what any of them cost.
+
+### 25.2 What it took
+
+- **The agent, not Touchstone, was the gap.** The claude-code container's MCP server ran
+  `claude -p` in plain-text mode and returned stdout, so the CLI's usage never left the box. It
+  now runs `--output-format json`, returns the same text in `content[0]` (a CLI error such as
+  *Not logged in* is the same string it always was, so `AUTH_RE` is unaffected) and puts the
+  run's usage in the result's `_meta.usage` — summed over `modelUsage`, so subagents count.
+  Unparseable stdout passes through as before with no usage. Beacon relays `CallToolResult`
+  whole, `_meta` included.
+- **`postToAgent`** reads `_meta.usage` (`extractUsage`) and hands it to `AgentOptions.onUsage`
+  with the caller's `usageTag` — `assay`/`trial` from the runner, `workshop` from the workshop,
+  `chat` from the chat. A sink that throws cannot fail the call.
+- **`state/usage.jsonl`** (`store/usage.ts`), one row per call that reported usage; kept apart
+  from `events.jsonl`, which is trimmed and read newest-first. `domain/usage.ts` buckets it by
+  UTC day, empty days included, and folds subject keys to app names so a trial and an audit of
+  one app are one row. `GET /usage?days=N`.
+- **The chart** — the bottom of the Status page (`components/UsageChart.tsx`): tokens in and
+  tokens out as **two** charts, never one with two axes (a day is ~10⁶ in and ~10⁴ out), each
+  stacked by kind in fixed `--series-1..4` tokens, plus totals and the ten costliest apps.
+
+### 25.3 Not done, deliberately
+
+- **No backfill.** History starts when the updated agent first reports usage; a day before that
+  was not measured and the page says so rather than drawing it as cheap. Claude Code's own
+  session logs in the agent container could backfill it, as a one-off.
+- **Cost is list price.** On a subscription login `total_cost_usd` is what the API would have
+  charged, not a bill; the token counts are exact either way.
+- **Nothing judges on it.** No budget, no alert, no effect on the scheduler.

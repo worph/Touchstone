@@ -20,6 +20,7 @@ import type {
   RunStatus,
 } from '@shared/activity';
 import type { ControlsResponse, ControlValue } from '@shared/controls';
+import type { UsageSummary } from '@shared/usage';
 import type { Diff } from '@shared/linediff';
 import type { ScheduleResponse } from '@shared/schedule';
 import type { Revision } from '@shared/standard';
@@ -219,6 +220,11 @@ export function getEvents(filters: EventFilters = {}): Promise<EventsResponse> {
 
 export function getAlerts(): Promise<AlertsResponse> {
   return get<AlertsResponse>('/alerts');
+}
+
+/** Token usage per day over the last `days` — the Status page's chart. */
+export function getUsage(days: number): Promise<UsageSummary> {
+  return get<UsageSummary>(`/usage?days=${days}`);
 }
 
 export function getBenches(): Promise<BenchesResponse> {
