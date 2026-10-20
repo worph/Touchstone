@@ -22,6 +22,8 @@
  * failure, and n8n's ordering says so.
  */
 
+import type { AgentUsage, UsageKind } from '../../shared/usage.js';
+
 const DEFAULT_TOOL = 'claude-code__query_claude';
 
 /** Four hours. An audit installs an app, drives a browser and uninstalls it again. */
@@ -69,6 +71,17 @@ export interface AgentOptions {
   workdir?: string;
   /** Injected in tests. Nothing else should reach past this. */
   fetchImpl?: typeof fetch;
+  /**
+   * Told what the call cost, when the agent said. Set once in the composition root; the
+   * caller names the work with `usageTag`, since only it knows which subject this is.
+   */
+  onUsage?: (usage: AgentUsage, tag: UsageTag) => void;
+  usageTag?: UsageTag;
+}
+
+export interface UsageTag {
+  kind: UsageKind;
+  subject?: string;
 }
 
 const PERMISSIONS = [
@@ -348,5 +361,57 @@ export async function postToAgent(prompt: string, opts: AgentOptions = {}): Prom
     };
   }
 
+  const usage = extractUsage(payload);
+  if (usage && opts.onUsage) {
+    // Accounting is never allowed to fail the call it is accounting for.
+    try {
+      opts.onUsage(usage, opts.usageTag ?? { kind: 'assay' });
+    } catch {
+      /* best-effort */
+    }
+  }
   return { ok: true, text: extractText(payload), payload };
+}
+
+const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+/**
+ * The run's usage from `result._meta.usage`, SSE-framed or not, or null when the agent sent
+ * none — an older claude-code container, or a call that died before `claude` printed its
+ * result. Beacon hands the remote `CallToolResult` back whole, so the path is the same both ways.
+ */
+export function extractUsage(payload: string): AgentUsage | null {
+  const candidates: string[] = [];
+  for (const line of String(payload).split('\n')) {
+    const t = line.trim();
+    if (t.startsWith('data:')) candidates.push(t.slice(5).trim());
+  }
+  candidates.push(payload);
+  let found: AgentUsage | null = null;
+  for (const c of candidates) {
+    let u: unknown;
+    try {
+      u = (JSON.parse(c) as { result?: { _meta?: { usage?: unknown } } })?.result?._meta?.usage;
+    } catch {
+      continue;
+    }
+    if (!u || typeof u !== 'object') continue;
+    const o = u as Record<string, unknown>;
+    found = {
+      input_tokens: num(o.input_tokens),
+      output_tokens: num(o.output_tokens),
+      cache_read_input_tokens: num(o.cache_read_input_tokens),
+      cache_creation_input_tokens: num(o.cache_creation_input_tokens),
+      total_cost_usd: numOrNull(o.total_cost_usd),
+      num_turns: numOrNull(o.num_turns),
+      duration_ms: numOrNull(o.duration_ms),
+      models: Array.isArray(o.models)
+        ? o.models.filter((m): m is string => typeof m === 'string')
+        : o.models && typeof o.models === 'object'
+          ? Object.keys(o.models)
+          : [],
+    };
+  }
+  return found;
 }

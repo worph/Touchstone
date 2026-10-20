@@ -10,6 +10,7 @@ import { buildIndex } from './store/index.js';
 import { logArchiveMigration, migrateArchiveLayout } from './store/migrate.js';
 import { splitSubjectKey } from '../shared/subject.js';
 import { TrialStore } from './store/trials.js';
+import { UsageLog } from './store/usage.js';
 import { startTrial, type TrialRunDeps } from './services/trialrun.js';
 import { UploadStore } from './store/uploads.js';
 import {
@@ -102,6 +103,13 @@ const events = new EventLog(cfg.stateDir, {
   onWriteError: (err, event) => app.log.error({ err, code: event.code }, 'event not written'),
 });
 await events.load();
+
+/**
+ * What each agent call cost, as the agent reported it — `state/usage.jsonl`, for the Status
+ * page's chart. Every agent options object below carries `onUsage`; the caller tags the call.
+ */
+const usageLog = new UsageLog(cfg.stateDir);
+const onUsage = usageLog.record.bind(usageLog);
 // Deferred from before the index was built, because that is when the move had to happen and
 // this is the first moment there is anywhere to say so.
 logArchiveMigration(migration, events);
@@ -318,7 +326,7 @@ const runner = new Runner({
   ledger,
   callbackUrl: cfg.runner.callback_url,
   busyBackoffMs: cfg.runner.busy_backoff_min * 60_000,
-  agent: { url: cfg.runner.agent_url, tool: cfg.runner.agent_tool, via: cfg.runner.agent_via },
+  agent: { url: cfg.runner.agent_url, tool: cfg.runner.agent_tool, via: cfg.runner.agent_via, onUsage },
   dumpDir: cfg.stateDir,
 });
 
@@ -478,7 +486,7 @@ const workshop: Workshop = new Workshop({
   publicBaseUrl: cfg.trials.public_base_url,
   // The authoring surface sits beside the ledger's: `/api/v1/mcp` → `/api/v1/mcp/workshop`.
   callbackUrl: cfg.runner.callback_url.replace(/\/mcp\/?$/, '/mcp/workshop'),
-  agent: { url: cfg.runner.agent_url, tool: cfg.runner.agent_tool, via: cfg.runner.agent_via },
+  agent: { url: cfg.runner.agent_url, tool: cfg.runner.agent_tool, via: cfg.runner.agent_via, onUsage },
   runner: {
     get enabled() {
       return runner.enabled;
@@ -714,6 +722,7 @@ await app.register(registerRoutes, {
   revisions,
   ledger,
   leases,
+  usage: usageLog,
   browser: {
     browsers: cfg.browsers.map((b) => ({ name: b.name, url: b.url })),
     // Only while a run holds that sidecar; the panel narrows the tab list to that audit's own
@@ -760,7 +769,15 @@ await app.register(registerRoutes, {
     threads: chatThreads,
     ...(chatPrompt ? { template: chatPrompt } : {}),
     context: async () => (await chatContext.read()).text,
-    ask: { agent: { url: cfg.runner.agent_url, tool: cfg.runner.agent_tool, via: cfg.runner.agent_via } },
+    ask: {
+      agent: {
+        url: cfg.runner.agent_url,
+        tool: cfg.runner.agent_tool,
+        via: cfg.runner.agent_via,
+        onUsage,
+        usageTag: { kind: 'chat' },
+      },
+    },
     ctx: {
       runner,
       registry,

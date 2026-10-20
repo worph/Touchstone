@@ -778,7 +778,11 @@ export class Runner {
       },
     });
 
-    let outcome = await callAgent(prompt, this.opts.agent);
+    const agent = {
+      ...this.opts.agent,
+      usageTag: { kind: job.trial ? ('trial' as const) : ('assay' as const), subject: job.subject },
+    };
+    let outcome = await callAgent(prompt, agent);
 
     // ── the one retry, row D5 ────────────────────────────────────────────────────────────
     if (!outcome.ok && outcome.error === 'agent-busy') {
@@ -791,7 +795,7 @@ export class Runner {
         detail: { subject: job.subject, waitMs, attempt: 1 },
       });
       await (this.opts.sleep ?? sleep)(waitMs);
-      outcome = await callAgent(prompt, this.opts.agent);
+      outcome = await callAgent(prompt, agent);
 
       if (!outcome.ok && outcome.error === 'agent-busy') {
         // Still busy. The subject is put back exactly as it was — this is the branch that

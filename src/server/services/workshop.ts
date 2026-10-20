@@ -698,7 +698,11 @@ export class Workshop {
     const post = this.opts.postAgent ?? postToAgent;
     let raw: AgentRaw;
     try {
-      raw = await post(prompt, { ...this.opts.agent, timeoutS: this.opts.settings.session_minutes * 60 });
+      raw = await post(prompt, {
+        ...this.opts.agent,
+        timeoutS: this.opts.settings.session_minutes * 60,
+        usageTag: { kind: 'workshop', ...(p.subject ? { subject: p.subject } : {}) },
+      });
     } catch (err) {
       raw = { ok: false, errorText: `Error calling remote tool: ${(err as Error).message}` };
     }
