@@ -351,6 +351,15 @@ function sectionIds(state: SubjectState): Section[] {
 }
 
 /**
+ * The platforms still audited on, for every hallmark a tool composes — the same filter the
+ * Store page and the board apply, so the chat cannot report a verdict about a retired target
+ * that neither of them shows.
+ */
+function targetsOf(ctx: ChatToolContext): { targets?: readonly string[] } {
+  return ctx.targets ? { targets: ctx.targets.ids } : {};
+}
+
+/**
  * One subject as one line, for the board.
  *
  * `describeSection` is the long form and runs to five lines a section; sixty of those is a
@@ -524,6 +533,7 @@ export const CHAT_TOOLS: ChatTool[] = [
       // surface invites — `routes/public.ts` refuses it for the same reason.
       const rows = hallmarks(store.all(), {
         standards: await currentStandards(ctx),
+        ...targetsOf(ctx),
         ...(ctx.registry ? { versions: ctx.registry.versions() } : {}),
         ...(ctx.registry ? { delisted: ctx.registry.delisted() } : {}),
       });
@@ -770,7 +780,7 @@ export const CHAT_TOOLS: ChatTool[] = [
       const found = locate(ctx, String(input.subject ?? ''));
       if ('text' in found) return found;
 
-      const { state, legs } = subjectHallmark(found.key, found.records);
+      const { state, legs } = subjectHallmark(found.key, found.records, targetsOf(ctx));
       const lines = [
         ...(delistedNote(ctx, found.key) ? [delistedNote(ctx, found.key)!] : []),
         `${state.label} (${state.origin}) — total risk ${state.risk}, ` +
@@ -809,7 +819,7 @@ export const CHAT_TOOLS: ChatTool[] = [
       const found = locate(ctx, String(input.subject ?? ''));
       if ('text' in found) return found;
 
-      const { state } = subjectHallmark(found.key, found.records);
+      const { state } = subjectHallmark(found.key, found.records, targetsOf(ctx));
       const markdown = buildFixReport({
         subject: state.label,
         sections: Object.values(state.sections)
@@ -884,7 +894,7 @@ export const CHAT_TOOLS: ChatTool[] = [
         key = found.key;
       }
 
-      const { state } = subjectHallmark(key, records);
+      const { state } = subjectHallmark(key, records, targetsOf(ctx));
       const wanted = String(input.section ?? '').trim().toLowerCase();
       const present = sectionIds(state).filter((id) => state.sections[id]);
 

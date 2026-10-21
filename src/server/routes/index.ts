@@ -141,6 +141,14 @@ function isSafeSegment(value: string): boolean {
 
 const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
   const store = options.store ?? fixtureStore();
+  /**
+   * The platforms still audited on, for every hallmark composed here — a verdict about a
+   * retired target is left off the row (`HallmarkOptions.targets`). Absent without a target
+   * list, which is the fixture rig's case, and then every record counts as before.
+   */
+  const configuredTargets = options.targetLabels
+    ? { targets: options.targetLabels.map((t) => t.id) }
+    : {};
 
   await app.register(eventRoutes, { events: options.events });
   await app.register(alertRoutes, { alerts: options.alerts });
@@ -209,6 +217,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
    */
   await app.register(publicRoutes, {
     store,
+    ...configuredTargets,
     ...(options.protocols ? { protocols: options.protocols } : {}),
     ...(options.registry ? { registry: options.registry } : {}),
   });
@@ -278,6 +287,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     hallmarks(store.all(), {
       include: options.registry?.list() ?? [],
       standards: await currentStandards(),
+      ...configuredTargets,
       ...(options.registry ? { versions: options.registry.versions() } : {}),
       ...(options.registry ? { delisted: options.registry.delisted() } : {}),
     }));
@@ -326,6 +336,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
       return {
         subject: subjectHallmark(resolved.name, resolved.records, {
           standards: await currentStandards(),
+          ...configuredTargets,
           ...(options.registry ? { versions: options.registry.versions() } : {}),
           ...(options.registry ? { delisted: options.registry.delisted() } : {}),
         }).state,
@@ -435,7 +446,7 @@ const routes: FastifyPluginAsync<RoutesOptions> = async (app, options) => {
     }
     if (resolved.kind !== 'ok') return fail(reply, 404, `unknown subject: ${request.params.name}`);
 
-    const state = subjectHallmark(resolved.name, resolved.records).state;
+    const state = subjectHallmark(resolved.name, resolved.records, configuredTargets).state;
     const markdown = buildFixReport({
       // The brief is for a person fixing an app, so it is headed with the app's name. The
       // store it came from is already in the `subject_ref` line the report quotes.

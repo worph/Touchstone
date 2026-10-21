@@ -60,6 +60,12 @@ export interface PublicRoutesOptions {
    * is invariant 10 expressed in the type: nothing this file can reach has a verb.
    */
   registry?: { versions: () => Record<string, string>; delisted: () => string[] };
+  /**
+   * The platforms still audited on. Passed to every composition here exactly as the operator
+   * routes pass it, so the board cannot keep publishing a verdict about a retired platform
+   * the operator table has already dropped.
+   */
+  targets?: readonly string[];
 }
 
 function fail(reply: FastifyReply, code: number, error: string) {
@@ -87,6 +93,7 @@ const routes: FastifyPluginAsync<PublicRoutesOptions> = async (app, options) => 
   app.addHook('onRoute', assertReadOnly);
 
   const store = options.store;
+  const configuredTargets = options.targets ? { targets: options.targets } : {};
 
   /**
    * Resolve what somebody typed, exactly as the operator routes do — a bare `FileBrowser`
@@ -121,6 +128,7 @@ const routes: FastifyPluginAsync<PublicRoutesOptions> = async (app, options) => 
   app.get('/public/subjects', async (): Promise<SubjectState[]> =>
     hallmarks(store.all(), {
       standards: await currentStandards(),
+      ...configuredTargets,
       ...(options.registry ? { versions: options.registry.versions() } : {}),
       // An app author looking for their own app is the reader most owed this: their app is
       // on a public board carrying a verdict, and it is not in the store any more. Without
@@ -138,6 +146,7 @@ const routes: FastifyPluginAsync<PublicRoutesOptions> = async (app, options) => 
     if (resolved.kind !== 'ok') return fail(reply, 404, `unknown subject: ${request.params.name}`);
     return subjectHallmark(resolved.name, resolved.records, {
       standards: await currentStandards(),
+      ...configuredTargets,
       ...(options.registry ? { versions: options.registry.versions() } : {}),
       ...(options.registry ? { delisted: options.registry.delisted() } : {}),
     }).state;
@@ -158,7 +167,7 @@ const routes: FastifyPluginAsync<PublicRoutesOptions> = async (app, options) => 
     }
     if (resolved.kind !== 'ok') return fail(reply, 404, `unknown subject: ${request.params.name}`);
 
-    const state = subjectHallmark(resolved.name, resolved.records).state;
+    const state = subjectHallmark(resolved.name, resolved.records, configuredTargets).state;
     const markdown = buildFixReport({
       subject: state.label,
       sections: Object.values(state.sections)

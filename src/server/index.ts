@@ -498,6 +498,7 @@ const workshop: Workshop = new Workshop({
   index: store,
   registry,
   protocols,
+  targets: targetList.map((t) => t.id),
   kb,
   storedoc,
   wishlist: new WishlistStore(cfg.wishlistDir),
