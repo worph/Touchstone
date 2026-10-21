@@ -485,3 +485,43 @@ describe('the age of a verdict on two platforms', () => {
     expect(subjectHallmark(APP, records, { now: NOW }).state.age_days).toBe(3);
   });
 });
+
+/**
+ * A platform taken out of `config.targets`. Its last verdicts are never refreshed, so left on
+ * the row they would go on adding risk and set the age column for ever.
+ */
+describe('a target that is no longer configured', () => {
+  const foss = (at: string, risk_score = 0) => {
+    const r = makeRecord({ subject: 'App', leg: 'functional@foss', at, risk_score });
+    return { ...r, meta: { ...r.meta, target: 'foss' } };
+  };
+  const records = [
+    makeRecord({ subject: 'App', leg: 'static', at: '2026-08-05T12:00:00Z', risk_score: 10 }),
+    makeRecord({ subject: 'App', leg: 'functional', at: '2026-08-05T12:00:00Z' }),
+    foss('2026-07-06T12:00:00Z', 100),
+  ];
+
+  it('drops its cell, its risk and its age from the row', () => {
+    const { state, legs } = subjectHallmark(APP, records, { now: NOW, targets: ['yundera'] });
+    expect(Object.keys(state.sections)).not.toContain('functional@foss');
+    expect(legs['functional@foss']).toBeUndefined();
+    expect(state.risk).toBe(10);
+    expect(state.age_days).toBe(1);
+  });
+
+  it('keeps a section that is not target-scoped', () => {
+    const { state } = subjectHallmark(APP, records, { now: NOW, targets: ['yundera'] });
+    expect(state.sections.static).not.toBeNull();
+  });
+
+  it('counts everything when the question is not asked', () => {
+    const { state } = subjectHallmark(APP, records, { now: NOW });
+    expect(state.risk).toBe(110);
+    expect(state.age_days).toBe(31);
+  });
+
+  it('gives no board row to a subject judged only on a retired target', () => {
+    const only = [{ ...foss('2026-08-01T12:00:00Z'), subject: subjectKey(DEFAULT_ORIGIN, 'Gone') }];
+    expect(hallmarks(only, { targets: ['yundera'] })).toEqual([]);
+  });
+});

@@ -147,6 +147,8 @@ export interface WorkshopOptions {
   index: AssayStore;
   registry?: Pick<SubjectRegistry, 'list' | 'delisted' | 'versions' | 'versionOf'>;
   protocols?: ProtocolStore;
+  /** The platforms still audited on — a verdict about a retired target is not a finding to fix. */
+  targets?: readonly string[];
   kb?: KbStore;
   storedoc?: StoreDocReader;
   wishlist?: WishlistStore;
@@ -424,6 +426,7 @@ export class Workshop {
     return hallmarks(this.opts.index.all(), {
       include: this.opts.registry?.list() ?? [],
       ...(standards ? { standards } : {}),
+      ...(this.opts.targets ? { targets: this.opts.targets } : {}),
       ...(this.opts.registry ? { versions: this.opts.registry.versions(), delisted: this.opts.registry.delisted() } : {}),
     });
   }

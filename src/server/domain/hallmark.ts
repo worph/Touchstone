@@ -120,6 +120,30 @@ export interface HallmarkOptions {
    * answer. Absent means it is not being asked, and no row comes back marked.
    */
   delisted?: readonly string[];
+  /**
+   * The platforms this installation audits on — `config.targets[].id`.
+   *
+   * An assay recorded against a target that is no longer listed is left out of the row
+   * entirely: no cell, no risk, no age. Without this, retiring a platform left its last
+   * verdicts on every row for ever — summed into risk, and setting the age column, since age
+   * is the *oldest* platform's newest verdict and a retired platform is never audited again.
+   * The files stay in the archive, so listing the target again brings them back.
+   *
+   * Only the recorded `target` is read, and a record with none — a section that is not
+   * target-scoped, like `static` — is always kept. This is deliberately not "drop sections
+   * the protocol does not declare": a section nobody has heard of still has its risk counted
+   * (see `subjectHallmark`), while a retired target is an operator's explicit decision in
+   * `config.yaml`. Absent means the question is not being asked and every record counts.
+   */
+  targets?: readonly string[];
+}
+
+/** Whether a record is about a platform this installation still audits on. */
+function onConfiguredTarget(record: AssayRecord, targets: readonly string[] | undefined): boolean {
+  if (!targets) return true;
+  const target = record.meta.target;
+  if (target === undefined || target === null || target === '') return true;
+  return targets.includes(String(target));
 }
 
 /**
@@ -225,7 +249,7 @@ export function subjectHallmark(
   // `key` is `<origin>~<name>`, so this filter separates two stores' same-named apps without
   // knowing anything about origins. That is the whole reason identity is one opaque string.
   const name = asSubjectKey(key);
-  const mine = records.filter((r) => r.subject === name);
+  const mine = records.filter((r) => r.subject === name && onConfiguredTarget(r, options.targets));
 
   // Whatever sections this subject actually has, plus the two the table names — so a subject
   // with no functional assay still gets an (empty) functional cell, and a subject carrying a
@@ -327,7 +351,8 @@ export function hallmarks(
   records: readonly AssayRecord[],
   options: BoardOptions = {},
 ): SubjectState[] {
-  const names = [...new Set([...subjectNames(records), ...(options.include ?? [])])].sort((a, b) =>
+  const judged = records.filter((r) => onConfiguredTarget(r, options.targets));
+  const names = [...new Set([...subjectNames(judged), ...(options.include ?? [])])].sort((a, b) =>
     a.localeCompare(b),
   );
   return names
