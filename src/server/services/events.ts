@@ -203,6 +203,12 @@ export const EVENT_CODES = {
   // ── the ports (P5) ────────────────────────────────────────────────────────
   PORT_HEALTHY: { category: 'system', label: 'endpoint answering' },
   PORT_UNREACHABLE: { category: 'system', label: 'endpoint unreachable' },
+  /**
+   * A probe cycle outlived its deadline and was abandoned. Not a statement about any bench or
+   * port — the rows keep their last answer — but about the prober, which before this existed
+   * went silent instead (2026-10-26).
+   */
+  PROBE_STALLED: { category: 'system', label: 'a probe cycle never finished' },
 
   SERVER_STARTED: { category: 'system', label: 'Touchstone started' },
   CONFIG_SEEDED: { category: 'system', label: 'configuration written' },
@@ -394,6 +400,7 @@ interface EventDetails {
   SUBJECT_PURGED: { subject: string; files: number; by: string };
   PORT_HEALTHY: { port: string; kind: 'agent' | 'browser'; tools: number };
   PORT_UNREACHABLE: { port: string; kind: 'agent' | 'browser'; url: string; error: string };
+  PROBE_STALLED: { prober: string; after_ms: number };
 }
 
 type DetailPart<C extends EventCode> = C extends keyof EventDetails

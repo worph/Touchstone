@@ -291,6 +291,19 @@ describe('the pool', () => {
     expect(p.healthy('browser')).toEqual([]);
   });
 
+  it('abandons a cycle that never settles, so the next probe starts fresh', async () => {
+    let hang = true;
+    const fetchImpl = (async () =>
+      hang ? new Promise<Response>(() => {}) : toolList(['click'])) as unknown as typeof fetch;
+    const p = new PortProber({ ports: [BROWSER], stateDir: dir, events, fetchImpl, cycleDeadlineMs: 50 });
+    await p.probeAll();
+    await events.flush();
+    expect(events.query({ code: 'PROBE_STALLED' })).toHaveLength(1);
+    hang = false;
+    await p.probeAll();
+    expect(p.healthy('browser').map((x) => x.name)).toEqual(['browser-1']);
+  });
+
   it('logs a port going down once, not once per probe', async () => {
     const p = prober([BROWSER], (async () => {
       throw new Error('ECONNREFUSED');

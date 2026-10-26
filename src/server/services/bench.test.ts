@@ -264,6 +264,20 @@ describe('the pool', () => {
     expect(p.poolUp).toBe(true);
   });
 
+  it('abandons a cycle that never settles, so the next probe starts fresh', async () => {
+    // A request that ignores its own abort — the shape of the 2026-10-26 hang, where one
+    // coalesced cycle was handed to every tick for four hours.
+    let hang = true;
+    vi.stubGlobal('fetch', async () => (hang ? new Promise<Response>(() => {}) : answer(200)));
+    const p = new BenchProber({ benches: [BENCH], stateDir: dir, events, alerts, cycleDeadlineMs: 50 });
+    await p.probeAll();
+    await events.flush();
+    expect(events.query({ code: 'PROBE_STALLED' })).toHaveLength(1);
+    hang = false;
+    await p.probeAll();
+    expect(p.poolUp).toBe(true);
+  });
+
   it('logs a bench failing once, not once per probe', async () => {
     vi.stubGlobal('fetch', async () => answer(401));
     const p = prober([BENCH]);

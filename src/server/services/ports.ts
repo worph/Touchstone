@@ -33,6 +33,7 @@ import path from 'node:path';
 
 import { readJson, writeJsonAtomic } from '../store/state.js';
 import type { AlertInput } from './alerts.js';
+import { withDeadline } from './deadline.js';
 import type { EventLog } from './events.js';
 
 export type PortKind = 'agent' | 'browser';
@@ -377,6 +378,12 @@ export interface PortProberOptions {
   stateDir: string;
   events: EventLog;
   probeTimeoutMs?: number;
+  /**
+   * How long one cycle may take before it is abandoned. Defaults to three request timeouts —
+   * `tools/list`, then an aggregator's `tool_doc` or a browser's liveness check — plus room
+   * for the state write.
+   */
+  cycleDeadlineMs?: number;
   fetchImpl?: typeof fetch;
   /** For `agent.unavailable` only — see the class comment. */
   alerts?: { open(input: AlertInput): unknown; resolve(key: AlertInput['key'], note?: string): unknown };
@@ -438,8 +445,18 @@ export class PortProber {
   }
 
   probeAll(): Promise<PortHealth[]> {
+    // Bounded for the bench prober's reason — see `withDeadline`.
     if (this.inFlight) return this.inFlight;
-    this.inFlight = this.run().finally(() => {
+    const deadlineMs = this.opts.cycleDeadlineMs ?? 3 * (this.opts.probeTimeoutMs ?? 8000) + 30_000;
+    this.inFlight = withDeadline(this.run(), deadlineMs, () => {
+      this.opts.events.log({
+        level: 'warn',
+        code: 'PROBE_STALLED',
+        message: `The endpoint probe did not finish in ${Math.round(deadlineMs / 1000)}s and was abandoned; the next one starts fresh`,
+        detail: { prober: 'ports', after_ms: deadlineMs },
+      });
+      return this.list();
+    }).finally(() => {
       this.inFlight = undefined;
     });
     return this.inFlight;

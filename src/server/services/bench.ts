@@ -46,6 +46,7 @@ import type {
   BenchWindow,
 } from '../../shared/activity.js';
 import type { AlertStore } from './alerts.js';
+import { withDeadline } from './deadline.js';
 import type { EventLog } from './events.js';
 
 export type { BenchHealth, BenchStatus };
@@ -402,6 +403,11 @@ export interface BenchProberOptions {
   minRemainingMin?: number;
   probeTimeoutMs?: number;
   /**
+   * How long one cycle may take before it is abandoned. Defaults to two request timeouts (the
+   * pool read, then the probes in parallel) plus room for the state write.
+   */
+  cycleDeadlineMs?: number;
+  /**
    * Which **target** this prober serves — the id from `config.targets`, stamped onto every row.
    *
    * One prober per target rather than one prober that knows about targets: every option above
@@ -544,9 +550,19 @@ export class BenchProber {
   /** Probe every enabled bench, update alerts, return the new health rows. */
   probeAll(): Promise<BenchHealth[]> {
     // Coalesce: the timer and a hand-clicked `probe all` must not double the load on a
-    // pool that is already timing out.
+    // pool that is already timing out. Bounded, because a coalesced cycle that never settles
+    // would otherwise be handed to every later caller for ever.
     if (this.inFlight) return this.inFlight;
-    this.inFlight = this.run().finally(() => {
+    const deadlineMs = this.opts.cycleDeadlineMs ?? 2 * (this.opts.probeTimeoutMs ?? 8000) + 30_000;
+    this.inFlight = withDeadline(this.run(), deadlineMs, () => {
+      this.opts.events.log({
+        level: 'warn',
+        code: 'PROBE_STALLED',
+        message: `The ${this.label} bench probe did not finish in ${Math.round(deadlineMs / 1000)}s and was abandoned; the next one starts fresh`,
+        detail: { prober: `bench:${this.targetId}`, after_ms: deadlineMs },
+      });
+      return this.list();
+    }).finally(() => {
       this.inFlight = undefined;
     });
     return this.inFlight;
