@@ -193,13 +193,14 @@ services:
       BACKEND_HOST: "touchstone-backend"
       BACKEND_PORT: "8080"
       LISTEN_PORT: "80"
-      # No REDIRECT_HOST_SUFFIXES, on purpose. Which hosts are this app's is the deployment's
-      # answer, not the listing's: AppShield >= 2.0.10 sends the registrar only its callback
-      # path and adopts the hosts that come back. A listing that guesses them breaks when the
-      # platform moves — 2.0.6 registered a hard-coded nip.io host, auth-registrar stopped
-      # allowing nip.io on 2026-10-27, and one disallowed host failed the whole login.
-      # (Only an app with OAUTH_RESOURCE still needs a suffix: its first one pins the issuer.)
       OIDC_REGISTRAR_URL: "http://auth-registrar:9092"
+      # The primary domain only. Which other hosts are this app's is the registrar's answer,
+      # not the listing's: AppShield >= 2.0.10 sends it the callback path and adopts the hosts
+      # that come back. A listing that guesses them breaks when the platform moves — 2.0.6
+      # registered a hard-coded nip.io host, auth-registrar stopped allowing nip.io on
+      # 2026-10-27, and one disallowed host failed the whole login. This one entry still
+      # matters: it is where a login from a host the gate does not recognise is sent.
+      REDIRECT_HOST_SUFFIXES: "${APP_HOST_SUFFIXES:-${APP_DOMAIN}}"
 
       # The conformance board, served without a login. Every operator page starts runs, arms
       # the loop or edits the rubric and stays behind the gate; `/public` is the read-only
