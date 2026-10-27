@@ -194,7 +194,10 @@ services:
       BACKEND_PORT: "8080"
       LISTEN_PORT: "80"
       OIDC_REGISTRAR_URL: "http://auth-registrar:9092"
-      REDIRECT_HOST_SUFFIXES: "${APP_DOMAIN},${APP_PUBLIC_IP_DASH}.nip.io,${APP_PUBLIC_IP_DASH}.sslip.io"
+      # Every entry becomes a registered `touchstone-<suffix>` callback, and auth-registrar
+      # rejects the whole registration if any one is not allowed — nip.io stopped being
+      # allowed on 2026-10-27 and broke the login. The IP zone is the platform's to name.
+      REDIRECT_HOST_SUFFIXES: "${APP_DOMAIN},${APP_PUBLIC_IP_DASH}.${APP_IP_ZONE},${APP_PUBLIC_IP_DASH}.sslip.io"
 
       # The conformance board, served without a login. Every operator page starts runs, arms
       # the loop or edits the rubric and stays behind the gate; `/public` is the read-only
