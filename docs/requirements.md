@@ -945,10 +945,14 @@ with `CHAT_TOOLS`, and for the same reason: a list in two places is a list that 
 
 Four rules hold it together.
 
-1. **`config.yaml` stays the default.** An override is kept in `state/controls.json` and is
-   re-applied at boot. Every row carries both values and which one is in force, because "why
-   is this 14 when the file says 7" has to be answerable from the page. Deleting that one file
-   returns the instance to what the file asks for.
+1. **`config.yaml` is where a control lives.** A change is written into the file as well as
+   applied (`store/configfile.ts`: one key, comments and every other key kept), so the file
+   always says what is running and a restart reads back what was set; reset removes the key and
+   the built-in default applies. Until 2026-10-27 a change was an override in
+   `state/controls.json` (and the two `armed` switches in `schedule.json` / `workshop.json`) that
+   beat the file for ever — an operator editing `config.yaml` for one of those keys saw nothing
+   happen. The first boot after moved every override into the file (`store/controls.ts`,
+   `CONTROL_MIGRATED`), refusing any value the control itself would refuse (`CONTROL_IGNORED`).
 2. **It applies to the live object, not only to the file.** A changed `tick_min` replaces the
    running timer; a changed `fresh_days` is read by the next decision. A setting that took
    effect at the next restart while the page said otherwise is the failure this replaces.

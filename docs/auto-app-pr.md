@@ -195,8 +195,7 @@ else is configured.
 **The token can also be set on the Settings page** (added 2026-10-05; on Workshop for one
 release, moved so that page stays about operating), and that one wins: it is
 kept in `data/github-token` (`0600`, beside `config.yaml` because a person typed it) and
-overrides `github.token` / `TOUCHSTONE_GITHUB_TOKEN` the way `state/controls.json` overrides
-the config file. Setting it swaps the client and runs the §4.4 probe in the same response, so
+overrides `github.token` / `TOUCHSTONE_GITHUB_TOKEN` — deleting it puts the boot value back. Setting it swaps the client and runs the §4.4 probe in the same response, so
 a token that cannot push is stored and said to be failing rather than refused. Clear puts the
 boot token back. It is **write-only** — `PUT|DELETE /workshop/github`, nothing returns it, and
 it is not a control or a chat tool, so the admin MCP cannot set it (§10). `GITHUB_TOKEN_SET` /

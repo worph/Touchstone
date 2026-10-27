@@ -61,10 +61,24 @@ export interface LeaseSource {
   /** Healthy browser sidecars — `PortProber.healthy('browser')`. */
   browsers: () => readonly PortHealth[];
   now?: () => Date;
+  /**
+   * Cleanup for a released lease — the one place every run, trial and workshop session passes
+   * through on its way out, however it ended. `services/browsertabs.ts` uses it to close the
+   * run's tabs.
+   *
+   * While it runs the lease **stays held**, so the next run cannot be handed the same browser
+   * and have its fresh tabs mistaken for the old run's. It must settle on its own (the tab
+   * cleanup's requests carry timeouts); a rejection is swallowed — a release always releases.
+   */
+  onRelease?: (lease: Lease) => Promise<void> | void;
+  /** A lease that waited on `onRelease` is free now — the cue to look for queued work. */
+  onFreed?: () => void;
 }
 
 export class Leases {
   private readonly held = new Map<string, Lease>();
+  /** Released and cleaning up: still held, not releasable twice. */
+  private readonly releasing = new Set<string>();
 
   constructor(private readonly source: LeaseSource) {}
 
@@ -128,7 +142,27 @@ export class Leases {
 
   /** Idempotent: releasing twice, or releasing a lease that was never held, is a no-op. */
   release(id: string | undefined): void {
-    if (id) this.held.delete(id);
+    if (!id || this.releasing.has(id)) return;
+    const lease = this.held.get(id);
+    if (!lease) return;
+    let pending: Promise<void> | void;
+    try {
+      pending = this.source.onRelease?.(lease);
+    } catch {
+      pending = undefined;
+    }
+    if (!pending) {
+      this.held.delete(id);
+      return;
+    }
+    this.releasing.add(id);
+    void pending
+      .catch(() => undefined)
+      .then(() => {
+        this.releasing.delete(id);
+        this.held.delete(id);
+        this.source.onFreed?.();
+      });
   }
 
   list(): Lease[] {

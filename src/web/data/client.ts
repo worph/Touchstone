@@ -283,7 +283,7 @@ export function setControl(key: string, value: ControlValue): Promise<ControlsRe
   return put<ControlsResponse>(`/controls/${encodeURIComponent(key)}`, { value });
 }
 
-/** Drop the override, back to what `config.yaml` says. */
+/** Take the key out of `config.yaml`, so the built-in default applies. */
 export async function resetControl(key: string): Promise<ControlsResponse> {
   let res: Response;
   try {
@@ -713,7 +713,7 @@ export function discardProposal(id: string): Promise<{ proposal: Proposal }> {
   return post(`/workshop/proposals/${encodeURIComponent(id)}/discard`);
 }
 
-/** `null` puts the switch back to what config.yaml says. */
+/** `null` takes `workshop.armed` out of config.yaml, so the built-in default applies. */
 export function armWorkshop(armed: boolean | null): Promise<{ armed: boolean; armed_default: boolean }> {
   return post('/workshop/arm', { armed });
 }

@@ -123,6 +123,12 @@ export interface WorkshopSettings {
 export interface WorkshopOptions {
   store: WorkshopStore;
   settings: WorkshopSettings;
+  /**
+   * Writes `workshop.armed` into `config.yaml` — `undefined` removes the key — and answers what
+   * the switch now is. The switch's only home since 2026-10-27; absent (tests), it is held in
+   * memory only.
+   */
+  saveArmed?: (armed: boolean | undefined) => Promise<boolean>;
   origins: OriginEntry[];
   github?: GitHubClient;
   probe: GitHubProbe;
@@ -231,15 +237,17 @@ export class Workshop {
   }
 
   get armed(): boolean {
-    return this.opts.store.armed ?? this.opts.settings.armed;
+    return this.opts.settings.armed;
   }
 
+  /** What `config.yaml` says — the same thing as `armed` now that the switch writes the file. */
   get armedDefault(): boolean {
     return this.opts.settings.armed;
   }
 
   async setArmed(armed: boolean, by: string): Promise<void> {
-    await this.opts.store.setArmed(armed);
+    // The file first: a switch that cannot be saved is refused rather than held in memory.
+    this.opts.settings.armed = this.opts.saveArmed ? await this.opts.saveArmed(armed) : armed;
     this.opts.events.log({
       level: 'warn',
       code: armed ? 'WORKSHOP_ARMED' : 'WORKSHOP_DISARMED',
@@ -251,12 +259,13 @@ export class Workshop {
     this.opts.kick?.();
   }
 
+  /** Take `workshop.armed` out of `config.yaml`, so the built-in default applies. */
   async clearArmed(by: string): Promise<void> {
-    await this.opts.store.setArmed(undefined);
+    if (this.opts.saveArmed) this.opts.settings.armed = await this.opts.saveArmed(undefined);
     this.opts.events.log({
       level: 'info',
       code: this.armed ? 'WORKSHOP_ARMED' : 'WORKSHOP_DISARMED',
-      message: 'The workshop switch went back to what config.yaml says',
+      message: 'The workshop switch went back to its default',
       detail: { armed: this.armed, by },
     });
   }

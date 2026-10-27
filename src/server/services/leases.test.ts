@@ -63,6 +63,51 @@ describe('Leases', () => {
   });
 
   /**
+   * The tab cleanup runs on release, and the pair stays held until it settles — otherwise the
+   * next run could be handed the browser and have its fresh tabs closed as the old run's.
+   */
+  it('runs onRelease once and keeps the pair held until it settles', async () => {
+    let finish!: () => void;
+    const released: string[] = [];
+    let freed = 0;
+    const leases = new Leases({
+      benches: () => [bench('demo1')],
+      browsers: () => [browser('b1')],
+      onRelease: (lease) => {
+        released.push(lease.holder);
+        return new Promise<void>((resolve) => (finish = resolve));
+      },
+      onFreed: () => (freed += 1),
+    });
+    const a = leases.reserve('yundera', BOTH, 'A');
+    if (!a.ok) throw new Error('expected a lease');
+    leases.release(a.lease.id);
+    leases.release(a.lease.id);
+    expect(released).toEqual(['A']);
+    expect(leases.reserve('yundera', BOTH, 'B').ok).toBe(false);
+    finish();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(freed).toBe(1);
+    expect(leases.reserve('yundera', BOTH, 'B').ok).toBe(true);
+  });
+
+  it('frees at once when onRelease has nothing to wait for, or fails', async () => {
+    const leases = new Leases({
+      benches: () => [bench('demo1')],
+      browsers: () => [browser('b1')],
+      onRelease: (lease) => (lease.holder === 'A' ? undefined : Promise.reject(new Error('boom'))),
+    });
+    const a = leases.reserve('yundera', BOTH, 'A');
+    if (!a.ok) throw new Error('expected a lease');
+    leases.release(a.lease.id);
+    const b = leases.reserve('yundera', BOTH, 'B');
+    if (!b.ok) throw new Error('expected a lease');
+    leases.release(b.lease.id);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(leases.reserve('yundera', BOTH, 'C').ok).toBe(true);
+  });
+
+  /**
    * An outage is not "busy". With nothing healthy the run is granted the half it can have, so
    * `resolveCapabilities` records the rest `*_unavailable` — what every run did before leases.
    */

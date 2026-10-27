@@ -3,7 +3,8 @@
  *
  * Two places, for the reason `uploads/` and `state/uploads.json` are two:
  *
- * - `state/workshop.json` — the proposals, the per-task **memory**, and the `armed` override.
+ * - `state/workshop.json` — the proposals and the per-task **memory**. (It also held the `armed`
+ *   override until 2026-10-27; that switch lives in `config.yaml` now, see `store/controls.ts`.)
  *   Small, mutable, rewritten atomically. The memory is the one part that is not
  *   regenerable, and it is small.
  * - `<workshopDir>/proposals/<id>/` — one working copy per proposal, **content-addressed**:
@@ -52,7 +53,6 @@ export interface WorkshopLimits {
 interface WorkshopFile {
   proposals: Proposal[];
   memory: Record<string, TaskMemory>;
-  armed?: boolean;
   /** One-time notices already given — keys, so a restart does not repeat one. */
   notices?: string[];
 }
@@ -63,7 +63,6 @@ export class WorkshopStore {
   private readonly file: string;
   private proposals: Proposal[] = [];
   private memoryRows: Record<string, TaskMemory> = {};
-  private armedOverride?: boolean;
   private notices = new Set<string>();
 
   constructor(
@@ -79,7 +78,6 @@ export class WorkshopStore {
     const stored = await readJson<WorkshopFile>(this.file, { proposals: [], memory: {} });
     this.proposals = Array.isArray(stored?.proposals) ? stored.proposals : [];
     this.memoryRows = stored?.memory && typeof stored.memory === 'object' ? stored.memory : {};
-    this.armedOverride = typeof stored?.armed === 'boolean' ? stored.armed : undefined;
     this.notices = new Set(Array.isArray(stored?.notices) ? stored.notices.filter((n) => typeof n === 'string') : []);
   }
 
@@ -87,7 +85,6 @@ export class WorkshopStore {
     const out: WorkshopFile = {
       proposals: this.proposals,
       memory: this.memoryRows,
-      ...(this.armedOverride === undefined ? {} : { armed: this.armedOverride }),
       ...(this.notices.size > 0 ? { notices: [...this.notices].sort() } : {}),
     };
     await writeJsonAtomic(this.file, out);
@@ -371,17 +368,6 @@ export class WorkshopStore {
   async authorInstructions(): Promise<string | null> {
     const text = await fs.readFile(path.join(this.root, 'author.md'), 'utf8').catch(() => null);
     return text?.trim() ? text : null;
-  }
-
-  // ── the switch ───────────────────────────────────────────────────────────────────────
-
-  get armed(): boolean | undefined {
-    return this.armedOverride;
-  }
-
-  async setArmed(value: boolean | undefined): Promise<void> {
-    this.armedOverride = value;
-    await this.persist();
   }
 
   // ── one-time notices ─────────────────────────────────────────────────────────────────

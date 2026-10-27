@@ -45,8 +45,9 @@
  * app.** It changes the cadence the loop runs at, how stale a result may get, and the two
  * safety switches — the values `domain/controls.ts` lists because something live re-reads
  * them. It is not "the chat can edit `config.yaml`": a setting nothing re-reads is not on
- * that list and cannot be put there from here, `config.yaml` stays the default a fresh boot
- * falls back to, and every change is an event naming what moved, from what, and by whom. The
+ * that list and cannot be put there from here. A change is written into `config.yaml` (since
+ * 2026-10-27; before, it was an override beside it), and every change is an event naming what
+ * moved, from what, and by whom. The
  * question it answers used to have no answer at all — asked to make the re-audit window a
  * fortnight, the chat could read the window and then send the operator to a page.
  *
@@ -1189,8 +1190,8 @@ export const CHAT_TOOLS: ChatTool[] = [
       const snap = scheduler.snapshot();
       const lines = [
         snap.armed
-          ? `Automatic mode is on (${snap.armed_source === 'override' ? 'switched on from the Automation page' : 'from config.yaml'}).`
-          : `Automatic mode is off (${snap.armed_source === 'override' ? 'switched off from the Automation page' : 'from config.yaml'}), so the loop decides every tick and claims nothing.`,
+          ? 'Automatic mode is on (scheduler.armed in config.yaml).'
+          : 'Automatic mode is off (scheduler.armed in config.yaml), so the loop decides every tick and claims nothing.',
       ];
       if (ctx.runner && !ctx.runner.enabled) {
         lines.push('The runner is switched off as well, so nothing would run even if it were armed.');
@@ -1465,7 +1466,7 @@ export const CHAT_TOOLS: ChatTool[] = [
         );
       }
       lines.push('');
-      lines.push('Change one with set_control. A change takes effect without a restart; config.yaml stays the value a fresh boot falls back to.');
+      lines.push('Change one with set_control. A change takes effect without a restart and is written into config.yaml, so it survives one.');
       return ok(lines.join('\n'));
     },
   },
@@ -1529,7 +1530,7 @@ export const CHAT_TOOLS: ChatTool[] = [
     name: 'set_control',
     writes: true,
     description:
-      'Change one of this instance\'s settings — the re-audit window, the cooldown, the tick, when it parks an app, the bench runway guard, or either safety switch. Read `get_controls` first for the exact key and what it currently is. Takes effect without a restart: a number the loop reads is applied at the next decision, and the two switches apply at once. Pass `reset: true` instead of a value to put a setting back to what `config.yaml` says. Say what you changed and what it will mean — raising the re-audit window empties the backlog, lowering it fills it.',
+      'Change one of this instance\'s settings — the re-audit window, the cooldown, the tick, when it parks an app, the bench runway guard, or either safety switch. Read `get_controls` first for the exact key and what it currently is. Takes effect without a restart: a number the loop reads is applied at the next decision, and the two switches apply at once. A change is written into `config.yaml`, so it also survives a restart. Pass `reset: true` instead of a value to take the key out of `config.yaml`, back to the built-in default. Say what you changed and what it will mean — raising the re-audit window empties the backlog, lowering it fills it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1542,7 +1543,7 @@ export const CHAT_TOOLS: ChatTool[] = [
         },
         reset: {
           type: 'boolean',
-          description: 'Drop the override and go back to what config.yaml says. Ignores `value`.',
+          description: 'Take the key out of config.yaml, back to the built-in default. Ignores `value`.',
         },
       },
       required: ['key'],
@@ -1571,8 +1572,8 @@ export const CHAT_TOOLS: ChatTool[] = [
         [
           `${row.key} is now ${controlWord(row)}` +
             (row.source === 'override'
-              ? `. config.yaml still says ${controlWord({ ...row, value: row.default })}, and a fresh install would boot into that.`
-              : ', which is what config.yaml asks for.'),
+              ? `, but config.yaml still says ${controlWord({ ...row, value: row.default })} — a restart would come back up on that.`
+              : ', and config.yaml says so too.'),
           row.effect,
         ].join('\n'),
       );

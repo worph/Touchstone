@@ -17,10 +17,12 @@
  *
  * Two rules hold this together:
  *
- * 1. **`config.yaml` stays the default.** An override lives in `state/controls.json`, so
- *    deleting that file returns the instance to what the file asks for. Every row carries
- *    both values and which one is in force, because "why is this 14 when the file says 7"
- *    has to be answerable from the page rather than from a changelog.
+ * 1. **`config.yaml` is where a control lives.** A change is written into the file
+ *    (`store/configfile.ts`) and applied to the live object, so what the file says is what
+ *    runs, before and after a restart. Until 2026-10-27 a change was an *override* in
+ *    `state/controls.json` that beat the file for ever, and editing `config.yaml` silently did
+ *    nothing for those keys; `store/controls.ts` moved the leftovers into the file. Reset
+ *    removes the key, so the built-in default applies.
  * 2. **A control is not a verdict.** Invariant 6 is about who may write an outcome, and
  *    nothing here writes one: these change *when* and *whether* audits happen, never what
  *    one concluded. `scheduler.armed` and `runner.enabled` are the two safety switches and
@@ -31,7 +33,7 @@
 
 import type { ControlRow, ControlValue } from '../../shared/controls.js';
 import type { TouchstoneConfig } from '../store/config.js';
-import type { ControlStore } from '../store/controls.js';
+import type { ConfigFile } from '../store/configfile.js';
 import type { Scheduler } from '../scheduler/index.js';
 import type { Runner } from '../runner/index.js';
 import type { BenchProber } from '../services/bench.js';
@@ -49,9 +51,12 @@ export type ControlDefaults = Pick<TouchstoneConfig, 'scheduler' | 'runner' | 'b
   Partial<Pick<TouchstoneConfig, 'workshop'>>;
 
 export interface ControlPorts {
-  /** Where an override is kept. Absent, controls are readable and every write is refused. */
-  controls?: ControlStore;
-  /** What `config.yaml` said. Absent, a row reports its live value as its own default. */
+  /** Writes `config.yaml`. Absent (tests), a change is applied to the live object only. */
+  config?: Pick<ConfigFile, 'file' | 'set' | 'builtin'>;
+  /**
+   * What `config.yaml` says — the live config slice, which `ConfigFile` updates as it writes.
+   * Absent, a row reports its live value as its own default.
+   */
   defaults?: ControlDefaults;
   scheduler?: Scheduler;
   runner?: Runner;
@@ -74,18 +79,15 @@ interface ControlDef {
   read: (ports: ControlPorts) => ControlValue | undefined;
   /** What `config.yaml` asked for. Falls back to the live value when there is no config. */
   fallback: (ports: ControlPorts) => ControlValue | undefined;
-  /** Put the value into the live object. Called on a write and again after a restart. */
+  /** Put the value into the live object. */
   apply: (ports: ControlPorts, value: ControlValue) => void | Promise<void>;
-  /** Drop the runtime override, so the live object returns to the config value. */
-  revert: (ports: ControlPorts) => void | Promise<void>;
   /**
-   * True when the owning object persists its own override.
+   * True when the owning object writes `config.yaml` itself.
    *
-   * `scheduler.armed` is the only one: the scheduler has written it to
-   * `state/schedule.json` since the Automation page's switch existed, and moving it here
-   * would leave two files claiming the same switch with no rule about which wins. So this
-   * layer drives it and lets the scheduler keep it — and skips the log line too, because
-   * `setArmed` already writes `SCHEDULER_ARMED`.
+   * The two `armed` switches: the Automation and Workshop pages flip them through
+   * `setArmed` without coming through here, so the write lives with the owner and every path
+   * gets it. This layer skips its own write — and its log line, because `setArmed` already
+   * writes `SCHEDULER_ARMED` / `WORKSHOP_ARMED`.
    */
   ownPersistence?: true;
   /**
@@ -107,7 +109,7 @@ const WORKSHOP = 'The workshop';
 /** Scheduler constants, whose setter takes a patch of the same shape. */
 function constant(
   key: 'fresh_days' | 'stuck_days' | 'lease_min' | 'cooldown_min' | 'max_tries',
-  rest: Omit<ControlDef, 'key' | 'group' | 'kind' | 'read' | 'fallback' | 'apply' | 'revert'>,
+  rest: Omit<ControlDef, 'key' | 'group' | 'kind' | 'read' | 'fallback' | 'apply'>,
 ): ControlDef {
   return {
     key: `scheduler.${key}`,
@@ -116,7 +118,6 @@ function constant(
     read: (p) => p.scheduler?.constants[key],
     fallback: (p) => p.defaults?.scheduler[key] ?? p.scheduler?.constantsDefault[key],
     apply: (p, v) => p.scheduler?.setConstants({ [key]: Number(v) }),
-    revert: (p) => p.scheduler?.clearConstant(key),
     ...rest,
   };
 }
@@ -136,9 +137,6 @@ export const CONTROLS: ControlDef[] = [
     apply: async (p, v) => {
       await p.scheduler?.setArmed(v === true, 'control');
     },
-    revert: async (p) => {
-      await p.scheduler?.clearArmed('control');
-    },
   },
   {
     key: 'scheduler.tick_min',
@@ -153,10 +151,6 @@ export const CONTROLS: ControlDef[] = [
     read: (p) => p.scheduler?.tickMinutes,
     fallback: (p) => p.defaults?.scheduler.tick_min,
     apply: (p, v) => p.scheduler?.setTickMinutes(Number(v)),
-    revert: (p) => {
-      const to = p.defaults?.scheduler.tick_min;
-      if (typeof to === 'number') p.scheduler?.setTickMinutes(to);
-    },
   },
   constant('cooldown_min', {
     label: 'Waits between audits',
@@ -217,7 +211,6 @@ export const CONTROLS: ControlDef[] = [
     read: (p) => p.runner?.enabled,
     fallback: (p) => p.defaults?.runner.enabled ?? p.runner?.enabledDefault,
     apply: (p, v) => p.runner?.setEnabled(v === true),
-    revert: (p) => p.runner?.clearEnabled(),
   },
   {
     key: 'runner.busy_backoff_min',
@@ -233,7 +226,6 @@ export const CONTROLS: ControlDef[] = [
     read: (p) => p.runner?.busyBackoffMin,
     fallback: (p) => p.defaults?.runner.busy_backoff_min ?? p.runner?.busyBackoffMinDefault,
     apply: (p, v) => p.runner?.setBusyBackoffMin(Number(v)),
-    revert: (p) => p.runner?.clearBusyBackoff(),
   },
   {
     key: 'bench.min_remaining_min',
@@ -250,7 +242,6 @@ export const CONTROLS: ControlDef[] = [
     read: (p) => p.prober?.minRemainingMin,
     fallback: (p) => p.defaults?.bench.min_remaining_min ?? p.prober?.minRemainingMinDefault,
     apply: (p, v) => p.prober?.setMinRemainingMin(Number(v)),
-    revert: (p) => p.prober?.clearMinRemainingMin(),
   },
   {
     key: 'workshop.armed',
@@ -267,9 +258,6 @@ export const CONTROLS: ControlDef[] = [
     apply: async (p, v) => {
       await p.workshop?.setArmed(v === true, 'control');
     },
-    revert: async (p) => {
-      await p.workshop?.clearArmed('control');
-    },
   },
   {
     key: 'workshop.auto_submit',
@@ -283,7 +271,6 @@ export const CONTROLS: ControlDef[] = [
     read: (p) => p.workshop?.autoSubmit,
     fallback: (p) => p.defaults?.workshop?.auto_submit ?? p.workshop?.autoSubmitDefault,
     apply: (p, v) => p.workshop?.setAutoSubmit(v === true),
-    revert: (p) => p.workshop?.clearAutoSubmit(),
   },
   {
     key: 'workshop.prs_per_day',
@@ -299,7 +286,6 @@ export const CONTROLS: ControlDef[] = [
     read: (p) => p.workshop?.prsPerDay,
     fallback: (p) => p.defaults?.workshop?.prs_per_day ?? p.workshop?.prsPerDayDefault,
     apply: (p, v) => p.workshop?.setPrsPerDay(Number(v)),
-    revert: (p) => p.workshop?.clearPrsPerDay(),
   },
 ];
 
@@ -322,16 +308,13 @@ function rowFor(def: ControlDef, ports: ControlPorts): ControlRow | undefined {
     return { ...describe(def), value: fallback, default: fallback, source: 'config', settable: false };
   }
   const fallback = def.fallback(ports) ?? value;
-  // `armed` keeps its override in the scheduler's own file, so the store cannot answer for
-  // it; the honest test for every control is the same one — is the live value the file's?
-  const overridden = def.ownPersistence
-    ? value !== fallback
-    : ports.controls?.get(def.key) !== undefined;
+  // A write goes to the file and the live object together, so these agree; `override` now only
+  // ever means a live value the file does not hold — a write that could not be saved.
   return {
     ...describe(def),
     value,
     default: fallback,
-    source: overridden ? 'override' : 'config',
+    source: value === fallback ? 'config' : 'override',
     settable: true,
   };
 }
@@ -386,6 +369,18 @@ function coerce(def: ControlDef, raw: unknown): { ok: true; value: ControlValue 
   return { ok: true, value: n };
 }
 
+/**
+ * Why a stored value cannot become this control's value, or `''` when it can. For the
+ * one-shot move of old overrides into `config.yaml`, which must not write a value the page
+ * would refuse — the ranges are this file's and can tighten.
+ */
+export function controlValueProblem(key: string, raw: unknown): string {
+  const def = controlDef(key);
+  if (!def) return 'no such control';
+  const parsed = coerce(def, raw);
+  return parsed.ok ? '' : parsed.error;
+}
+
 function unknownControl(key: string): ControlResult {
   return {
     ok: false,
@@ -394,11 +389,11 @@ function unknownControl(key: string): ControlResult {
 }
 
 /**
- * Change one control, and record that it changed.
+ * Change one control — in the live object and in `config.yaml` — and record that it changed.
  *
- * The write order is deliberate: apply first, persist second. A setter that throws must not
- * leave a stored override the next boot would apply — the file would then be the only record
- * of a value the process never ran on.
+ * Apply first, write second, and undo the apply when the write fails: a setter that throws
+ * must not leave a value in the file the process never ran on, and a file that cannot be
+ * written must not leave the process running on a value the next boot will not have.
  */
 export async function setControl(
   ports: ControlPorts,
@@ -423,8 +418,19 @@ export async function setControl(
     return row ? { ok: true, row, changed: false } : unknownControl(key);
   }
 
-  await def.apply(ports, parsed.value);
-  if (!def.ownPersistence) await ports.controls?.set(key, parsed.value);
+  try {
+    await def.apply(ports, parsed.value);
+  } catch (err) {
+    return { ok: false, error: `${key} was not changed — ${errorText(err)}` };
+  }
+  if (!def.ownPersistence && ports.config) {
+    try {
+      await ports.config.set(key, parsed.value);
+    } catch (err) {
+      await def.apply(ports, before);
+      return { ok: false, error: `${key} was not changed — config.yaml could not be written: ${errorText(err)}` };
+    }
+  }
 
   // `armed` is not logged here — `setArmed` already writes SCHEDULER_ARMED, and two rows for
   // one action is how a log stops being read.
@@ -440,7 +446,12 @@ export async function setControl(
   return row ? { ok: true, row, changed: true } : unknownControl(key);
 }
 
-/** Drop the override, back to `config.yaml`. */
+/**
+ * Take the key out of `config.yaml`, so the built-in default applies — now and after a restart.
+ *
+ * The live object moves first (an owner that writes the file itself writes the default there),
+ * then the key is removed, leaving the file as if it had never been set.
+ */
 export async function resetControl(ports: ControlPorts, key: string, by = 'operator'): Promise<ControlResult> {
   const def = controlDef(key);
   if (!def) return unknownControl(key);
@@ -448,54 +459,31 @@ export async function resetControl(ports: ControlPorts, key: string, by = 'opera
     return { ok: false, error: `${key} cannot be changed here — the part of the app that owns it is not running.` };
   }
   const before = def.read(ports) as ControlValue;
-  await def.revert(ports);
-  await ports.controls?.clear(key);
+  const to = ports.config?.builtin(key) ?? def.fallback(ports) ?? before;
+  try {
+    if (to !== before) await def.apply(ports, to);
+    await ports.config?.set(key, undefined);
+  } catch (err) {
+    return { ok: false, error: `${key} was not reset — ${errorText(err)}` };
+  }
   const row = rowFor(def, ports);
   const after = def.read(ports) as ControlValue;
   if (before !== after && !def.ownPersistence) {
     ports.events?.log({
       level: 'info',
       code: 'CONTROL_RESET',
-      message: `${def.label} is back to what config.yaml says, ${describeValue(def, after)} (was ${describeValue(def, before)})`,
+      message: `${def.label} is back to its default, ${describeValue(def, after)} (was ${describeValue(def, before)})`,
       detail: { key, from: before, to: after, by },
     });
   }
   return row ? { ok: true, row, changed: before !== after } : unknownControl(key);
 }
 
-/**
- * Put every stored override back into the live objects — called once, at boot.
- *
- * A value that no longer passes its own check is dropped rather than applied: the ranges are
- * this file's and can tighten, and `state/controls.json` is on a volume an operator can edit.
- * Dropping it silently would be worse than either, so it is logged.
- */
-export async function applyStoredControls(ports: ControlPorts): Promise<{ applied: string[] }> {
-  const stored = ports.controls?.all() ?? {};
-  const applied: string[] = [];
-  for (const [key, value] of Object.entries(stored)) {
-    const def = controlDef(key);
-    const reason = !def
-      ? 'no such control'
-      : def.read(ports) === undefined
-        ? 'nothing to apply it to'
-        : ((parsed) => (parsed.ok ? '' : parsed.error))(coerce(def, value));
-    if (!def || reason !== '') {
-      ports.events?.log({
-        level: 'warn',
-        code: 'CONTROL_IGNORED',
-        message: `A stored setting for ${key} was not applied`,
-        detail: { key, value, reason },
-      });
-      continue;
-    }
-    await def.apply(ports, value);
-    applied.push(key);
-  }
-  return { applied };
-}
-
 function describeValue(def: ControlDef, value: ControlValue): string {
   if (def.kind === 'boolean') return value ? 'on' : 'off';
   return def.unit ? `${value} ${def.unit}` : String(value);
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

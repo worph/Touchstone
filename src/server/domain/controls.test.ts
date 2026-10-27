@@ -1,24 +1,24 @@
 /**
- * The controls, which are the one place `config.yaml` stops being the last word.
+ * The controls — the configuration that can change while the app runs.
  *
- * The properties worth pinning are the ones that make this different from a settings blob:
- * a write reaches the *live* object rather than only the file, `config.yaml` stays the value
- * a fresh boot falls back to, a stored override is put back after a restart, and anything
- * that cannot be applied is refused loudly rather than swallowed.
+ * The properties worth pinning: a write reaches the *live* object and `config.yaml` together
+ * (since 2026-10-27 the file is a control's only home, so a restart reads back what was set),
+ * a reset removes the key so the built-in default applies, and anything that cannot be applied
+ * is refused loudly rather than swallowed.
  */
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import YAML from 'yaml';
 
 import type { ReportIndex } from '../store/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import type { BenchProber } from '../services/bench.js';
 import { EventLog } from '../services/events.js';
 import { Scheduler } from '../scheduler/index.js';
-import { ControlStore } from '../store/controls.js';
+import { ConfigFile } from '../store/configfile.js';
 import {
-  applyStoredControls,
   listControls,
   resetControl,
   setControl,
@@ -50,10 +50,11 @@ const DEFAULTS: ControlDefaults = {
 let dir: string;
 let events: EventLog;
 
-function schedulerOf(): Scheduler {
+function schedulerOf(config?: ConfigFile): Scheduler {
   return new Scheduler({
     constants: { ...CONSTANTS },
     armed: false,
+    ...(config ? { saveArmed: (armed: boolean) => config.set('scheduler.armed', armed) } : {}),
     tickMin: 60,
     stateDir: dir,
     index: {
@@ -84,13 +85,28 @@ function proberOf(): BenchProber {
   } as unknown as BenchProber;
 }
 
+function configPath(): string {
+  return path.join(dir, 'config.yaml');
+}
+
+/** What the file on disk says now, parsed — `undefined` when it was never written. */
+async function onDisk(): Promise<Record<string, Record<string, unknown>> | undefined> {
+  const raw = await fs.readFile(configPath(), 'utf8').catch(() => null);
+  return raw === null ? undefined : (YAML.parse(raw) ?? {});
+}
+
 async function portsOf(over: Partial<ControlPorts> = {}): Promise<ControlPorts> {
-  const controls = new ControlStore({ stateDir: dir });
-  await controls.load();
+  // A live copy for the writer to keep in step, as `index.ts` hands it the booted config.
+  const live = structuredClone(DEFAULTS);
+  const config = new ConfigFile({
+    file: configPath(),
+    live: live as unknown as Record<string, unknown>,
+    builtin: DEFAULTS as unknown as Record<string, unknown>,
+  });
   return {
-    controls,
-    defaults: DEFAULTS,
-    scheduler: schedulerOf(),
+    config,
+    defaults: live,
+    scheduler: schedulerOf(config),
     prober: proberOf(),
     events,
     ...over,
@@ -132,31 +148,61 @@ describe('reading them', () => {
   });
 
   /** The whole point of the exercise: the operator's example, end to end. */
-  it('changes the re-audit window without a restart', async () => {
+  it('changes the re-audit window without a restart, and in the file', async () => {
     const ports = await portsOf();
     const result = await setControl(ports, 'scheduler.fresh_days', 14, 'chat');
     expect(result.ok && result.changed).toBe(true);
     // The live object, not just the row that came back.
     expect(ports.scheduler?.constants.fresh_days).toBe(14);
+    expect((await onDisk())?.scheduler?.fresh_days).toBe(14);
+    // The file and the process agree, so there is nothing to call an override.
     expect(row(ports, 'scheduler.fresh_days')).toMatchObject({
       value: 14,
-      default: 7,
-      source: 'override',
+      default: 14,
+      source: 'config',
     });
   });
 });
 
 describe('writing them', () => {
-  it('survives a restart, because the override is on disk', async () => {
+  it('survives a restart, because the value is in config.yaml', async () => {
     const first = await portsOf();
     await setControl(first, 'scheduler.cooldown_min', 240);
+    await setControl(first, 'bench.min_remaining_min', 90);
+    // What the next boot's `loadConfig` reads.
+    const file = await onDisk();
+    expect(file?.scheduler?.cooldown_min).toBe(240);
+    expect(file?.bench?.min_remaining_min).toBe(90);
+    expect(file?.scheduler).not.toHaveProperty('fresh_days');
+  });
 
-    // A second boot: a new store over the same directory, a new scheduler on the config value.
-    const second = await portsOf();
-    expect(second.scheduler?.constants.cooldown_min).toBe(55);
-    await applyStoredControls(second);
-    expect(second.scheduler?.constants.cooldown_min).toBe(240);
-    expect(row(second, 'scheduler.cooldown_min')).toMatchObject({ source: 'override', default: 55 });
+  it('keeps what the operator wrote in the file — comments, order, other keys', async () => {
+    await fs.writeFile(
+      configPath(),
+      '# my notes\nscheduler:\n  armed: false   # off until Monday\n  cooldown_min: 55\nrunner:\n  enabled: true\n',
+    );
+    const ports = await portsOf();
+    await setControl(ports, 'scheduler.cooldown_min', 30);
+    const raw = await fs.readFile(configPath(), 'utf8');
+    expect(raw).toContain('# my notes');
+    expect(raw).toContain('# off until Monday');
+    expect(YAML.parse(raw)).toEqual({ scheduler: { armed: false, cooldown_min: 30 }, runner: { enabled: true } });
+  });
+
+  it('puts the live value back when the file cannot be written', async () => {
+    const ports = await portsOf({
+      config: {
+        file: configPath(),
+        set: async () => {
+          throw new Error('read-only volume');
+        },
+        builtin: () => undefined,
+      },
+    });
+    const result = await setControl(ports, 'scheduler.fresh_days', 14);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('read-only volume');
+    expect(ports.scheduler?.constants.fresh_days).toBe(7);
   });
 
   it('puts the timer on the new cadence rather than only the number', async () => {
@@ -204,7 +250,7 @@ describe('writing them', () => {
     const ports = await portsOf();
     const result = await setControl(ports, 'scheduler.fresh_days', 7);
     expect(result.ok && result.changed).toBe(false);
-    expect(ports.controls?.get('scheduler.fresh_days')).toBeUndefined();
+    expect(await onDisk()).toBeUndefined();
     expect(row(ports, 'scheduler.fresh_days')?.source).toBe('config');
   });
 
@@ -217,14 +263,14 @@ describe('writing them', () => {
 });
 
 describe('putting one back', () => {
-  it('drops the override and the stored value with it', async () => {
+  it('takes the key out of the file and runs on the built-in default', async () => {
     const ports = await portsOf();
     await setControl(ports, 'scheduler.fresh_days', 14);
     const result = await resetControl(ports, 'scheduler.fresh_days');
     expect(result.ok && result.changed).toBe(true);
     expect(ports.scheduler?.constants.fresh_days).toBe(7);
-    expect(ports.controls?.get('scheduler.fresh_days')).toBeUndefined();
-    expect(row(ports, 'scheduler.fresh_days')?.source).toBe('config');
+    expect((await onDisk())?.scheduler).not.toHaveProperty('fresh_days');
+    expect(row(ports, 'scheduler.fresh_days')).toMatchObject({ value: 7, default: 7, source: 'config' });
   });
 
   it('puts the timer back too', async () => {
@@ -237,57 +283,32 @@ describe('putting one back', () => {
 
 describe('the two safety switches', () => {
   /**
-   * `armed` is driven from here but persisted by the scheduler, which already has a file and
-   * a page for it. The test that matters is that it is not *also* written here, because two
-   * files holding one switch is how they come to disagree.
+   * `armed` is driven from here but written by the scheduler, because the Automation page
+   * flips it through `setArmed` without coming through here. Either way it lands in the one
+   * file, and not in `state/schedule.json` as it did before 2026-10-27.
    */
-  it('arms through the scheduler, and keeps the switch in the scheduler’s own file', async () => {
+  it('arms through the scheduler, which writes the switch into config.yaml', async () => {
     const ports = await portsOf();
     const result = await setControl(ports, 'scheduler.armed', true, 'chat');
     expect(result.ok).toBe(true);
     expect(ports.scheduler?.armed).toBe(true);
-    expect(ports.controls?.get('scheduler.armed')).toBeUndefined();
-    expect(row(ports, 'scheduler.armed')).toMatchObject({ value: true, default: false, source: 'override' });
+    expect((await onDisk())?.scheduler?.armed).toBe(true);
+    expect(row(ports, 'scheduler.armed')).toMatchObject({ value: true, default: true, source: 'config' });
+    await ports.scheduler?.tick();
+    const schedule = JSON.parse(await fs.readFile(path.join(dir, 'schedule.json'), 'utf8'));
+    expect(schedule).not.toHaveProperty('armed');
 
     expect(events.query({ code: 'SCHEDULER_ARMED' })).toHaveLength(1);
     // One row for one action: `setArmed` already announced it.
     expect(events.query({ code: 'CONTROL_CHANGED' })).toHaveLength(0);
   });
 
-  it('reverts arming to what the config file says', async () => {
+  it('resets arming to the built-in default and out of the file', async () => {
     const ports = await portsOf();
     await setControl(ports, 'scheduler.armed', true);
     await resetControl(ports, 'scheduler.armed');
     expect(ports.scheduler?.armed).toBe(false);
     expect(ports.scheduler?.snapshot().armed_source).toBe('config');
-  });
-});
-
-describe('restoring at boot', () => {
-  it('ignores a stored value that no longer passes its own check, and says so', async () => {
-    const controls = new ControlStore({ stateDir: dir });
-    await controls.load();
-    await controls.set('scheduler.fresh_days', 9999);
-    await controls.set('scheduler.made_up', 3);
-
-    const ports = await portsOf({ controls });
-    const applied = await applyStoredControls(ports);
-    expect(applied.applied).toEqual([]);
-    expect(ports.scheduler?.constants.fresh_days).toBe(7);
-
-    expect(events.query({ code: 'CONTROL_IGNORED' })).toHaveLength(2);
-  });
-
-  it('applies the ones that are still good', async () => {
-    const controls = new ControlStore({ stateDir: dir });
-    await controls.load();
-    await controls.set('scheduler.fresh_days', 14);
-    await controls.set('bench.min_remaining_min', 90);
-
-    const ports = await portsOf({ controls });
-    const applied = await applyStoredControls(ports);
-    expect(applied.applied).toHaveLength(2);
-    expect(ports.scheduler?.constants.fresh_days).toBe(14);
-    expect(ports.prober?.minRemainingMin).toBe(90);
+    expect((await onDisk())?.scheduler).not.toHaveProperty('armed');
   });
 });

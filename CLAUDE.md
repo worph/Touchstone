@@ -46,8 +46,11 @@ every subject's hallmark, at `/public`, addressed to app authors rather than to 
 frontmatter, a badge and a table, invisible to the hallmark — `currency` is the first),
 **control** (one configuration value that can be changed while Touchstone is *running* —
 `domain/controls.ts` — as opposed to the rest of `config.yaml`, which is read once at boot; the
-bar is mechanical, something live has to re-read the value, and the override lives in
-`state/controls.json` so the file stays the default), **standard in force** (the revision of each
+bar is mechanical, something live has to re-read the value. A change is applied to the live
+object **and written into `config.yaml`** (`store/configfile.ts`, comments kept), so the file
+always says what is running; reset removes the key. Until 2026-10-27 it was an override in
+`state/controls.json` that beat the file for ever — `store/controls.ts` moved those into the file
+at the first boot after), **standard in force** (the revision of each
 rubric that would judge a subject *today*, and when
 that last changed — `domain/standards.ts`; a verdict reached under an older one carries an
 `older standard` chip and stops waiting out `fresh_days`), **knowledge base** (supporting knowledge for an audit that is *not* the standard — how the
@@ -198,8 +201,8 @@ native deps). Everything is files under `data/` (`TOUCHSTONE_DATA_DIR`, default 
 | `state/*.json`, `events.jsonl` | small mutable runtime state and the append-only log |
 | `workshop/proposals/<id>/` | a proposal's **working copy**, content-addressed: `objects/<sha256>`, `base.json` and `work.json` (path → sha). A deletion is a missing key, which an upload session could never say; the trial zip and the commit are made from one map. Plus `evidence/` (the passing reports, copied so trial eviction cannot take a PR's evidence) and `feedback.md`. `workshop/author.md` is the operator's standing authoring instructions, seeded from `seed/workshop/` |
 | `wishlist/*.md` | **the wishlist** — one file per app to integrate, operator-authored on the volume. No route or tool writes one. `_`-prefixed files are examples |
-| `state/workshop.json` | proposals, task memory, and the `workshop.armed` override |
-| `state/controls.json` | **what somebody changed while it was running** — the override for each *control*, re-applied at boot. `config.yaml` stays what a fresh install boots into, so deleting this one file puts every setting back. `scheduler.armed` is deliberately **not** here: the scheduler has kept that switch in `state/schedule.json` since the Automation page had a button, and two files claiming one switch is how they come to disagree |
+| `state/workshop.json` | proposals and task memory (`workshop.armed` lived here until 2026-10-27; it is in `config.yaml` now) |
+| `state/controls.json.migrated` | the pre-2026-10-27 control overrides, renamed once `store/controls.ts` had written them into `config.yaml`. Read by nothing; kept as the record of what was moved |
 | `state/usage.jsonl` | **token usage**, one row per agent call that reported it (`store/usage.ts`), read by `GET /usage` for the Status page's chart. Recorded only when the claude-code agent returns `_meta.usage` — requirements §25 |
 | `state/index.json` | cache only — deleting it must always be safe |
 
@@ -632,7 +635,8 @@ because its data access was smeared through two 200-line n8n Code nodes.
 
 - `scheduler.armed: false` — the tick still runs, decides and logs every hour, and **works no
   backlog**. Since 2026-08-20 it is also settable at runtime from the Automation page, which
-  persists an **override** into `state/schedule.json`; absent, the config value stands. Stopping
+  (since 2026-10-27) writes it into `config.yaml` — until then it was an override in
+  `state/schedule.json`. Stopping
   means "claim nothing further" and deliberately leaves the audit in flight alone.
   **It gates the backlog and nothing else.** Requested audits and trials still drain while it is
   off, which is not new behaviour dressed up — `POST /assays` never consulted this switch — but
@@ -646,17 +650,17 @@ because its data access was smeared through two 200-line n8n Code nodes.
   for ever. Validation is a **single hand-run assay**
   through `POST /api/v1/assays`, never a loop: other work shares this agent endpoint, and two
   systems auditing at once contend for it. Since 2026-08-25 it is settable
-  at runtime too, as a **control** — the override is `state/controls.json`'s, the config value is
-  still what a fresh boot falls back to, and the flag is read when a job arrives, so turning it off
+  at runtime too, as a **control** — written into `config.yaml` — and the flag is read when a job
+  arrives, so turning it off
   leaves the audit in flight alone.
 
 - `workshop.armed: false` — the workshop authors only what a person proposes. Armed, it picks
   its own work when the queue is quiet. **Since 2026-10-07 it submits nothing**: that is the
-  next switch, and an armed box was told so once (`WORKSHOP_SUBMIT_SPLIT`). Persisted in
-  `state/workshop.json`.
+  next switch, and an armed box was told so once (`WORKSHOP_SUBMIT_SPLIT`). Written into
+  `config.yaml` by the switch (it was `state/workshop.json`'s until 2026-10-27).
 - `workshop.auto_submit: false` — a ready proposal waits for a person to press Open PR / Push.
   On, it is submitted as soon as it passes validation, within `workshop.prs_per_day`
-  ("Submissions a day" — PRs and pushes alike). A control in `state/controls.json`.
+  ("Submissions a day" — PRs and pushes alike). A control, written into `config.yaml`.
 
   All three workshop controls carry `ControlDef.operatorOnly`, so the chat's `set_control` —
   and therefore the admin MCP — refuses them. They are how pull requests and pushes under a

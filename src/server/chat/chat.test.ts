@@ -24,7 +24,7 @@ import { RevisionStore } from '../store/revisions.js';
 import { StoreDocReader } from '../services/storedoc.js';
 import { TrialStore } from '../store/trials.js';
 import { UploadStore } from '../store/uploads.js';
-import { ControlStore } from '../store/controls.js';
+import { ConfigFile } from '../store/configfile.js';
 import { Scheduler } from '../scheduler/index.js';
 
 let dir: string;
@@ -1212,8 +1212,7 @@ describe('changing what this instance is set to', () => {
   async function controlCtx() {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'touchstone-chat-controls-'));
     const log = new EventLog(stateDir);
-    const controls = new ControlStore({ stateDir });
-    await controls.load();
+    const config = new ConfigFile({ file: path.join(stateDir, 'config.yaml') });
     const scheduler = new Scheduler({
       constants: { fresh_days: 7, stuck_days: 7, lease_min: 120, cooldown_min: 55, max_tries: 3 },
       armed: false,
@@ -1226,7 +1225,7 @@ describe('changing what this instance is set to', () => {
     return {
       stateDir,
       scheduler,
-      ctx: { controls: { controls, scheduler, events: log } } as never,
+      ctx: { controls: { config, scheduler, events: log } } as never,
     };
   }
 

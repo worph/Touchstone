@@ -191,11 +191,14 @@ export const EVENT_CODES = {
   // `config` for the same reason the context edit is: it is a change to how this instance is
   // set up, whoever made it and whichever surface they made it from.
   CONTROL_CHANGED: { category: 'config', label: 'a setting was changed' },
-  CONTROL_RESET: { category: 'config', label: 'a setting went back to config.yaml' },
-  // At boot: something in `state/controls.json` could not be applied. `warn`, because the
-  // instance is now running on a value nobody chose — the file says one thing and the
-  // process is doing another, and that is exactly the confusion controls exist to prevent.
+  CONTROL_RESET: { category: 'config', label: 'a setting went back to its default' },
+  // A value in `state/controls.json` that did not pass its control's check, so it was neither
+  // applied (builds before 2026-10-27) nor moved into `config.yaml` (the migration since).
+  // `warn`: something an operator once chose is not what the instance runs on.
   CONTROL_IGNORED: { category: 'config', label: 'a stored setting was not applied' },
+  // At the first boot after 2026-10-27: an override found in `state/` was written into
+  // `config.yaml`, which is the only home of a control from then on (`store/controls.ts`).
+  CONTROL_MIGRATED: { category: 'config', label: 'a stored setting moved into config.yaml' },
   AGENT_BUSY: { category: 'agent', label: 'agent busy' },
   AGENT_UNAUTHENTICATED: { category: 'agent', label: 'agent not logged in' },
   AGENT_UNAVAILABLE: { category: 'agent', label: 'agent unreachable' },
@@ -209,6 +212,11 @@ export const EVENT_CODES = {
    * went silent instead (2026-10-26).
    */
   PROBE_STALLED: { category: 'system', label: 'a probe cycle never finished' },
+  /**
+   * A released lease's tabs were closed. Before 2026-10-27 nothing closed them: they waited out
+   * browser-mcp's 30-minute idle collector, so a busy sidecar carried 7–14 live demo pages.
+   */
+  BROWSER_TABS_CLOSED: { category: 'system', label: 'a run’s browser tabs were closed' },
 
   SERVER_STARTED: { category: 'system', label: 'Touchstone started' },
   CONFIG_SEEDED: { category: 'system', label: 'configuration written' },
@@ -393,6 +401,7 @@ interface EventDetails {
   };
   CONTROL_RESET: { key: string; from: number | boolean; to: number | boolean; by: string };
   CONTROL_IGNORED: { key: string; value: unknown; reason: string };
+  CONTROL_MIGRATED: { key: string; value: number | boolean; from: string };
   AGENT_BUSY: { subject: string; waitMs: number; attempt: number };
   AGENT_UNAUTHENTICATED: { subject: string; error: string; raw: string };
   AGENT_UNAVAILABLE: { subject: string; error: string; raw: string };
@@ -401,6 +410,7 @@ interface EventDetails {
   PORT_HEALTHY: { port: string; kind: 'agent' | 'browser'; tools: number };
   PORT_UNREACHABLE: { port: string; kind: 'agent' | 'browser'; url: string; error: string };
   PROBE_STALLED: { prober: string; after_ms: number };
+  BROWSER_TABS_CLOSED: { browser: string; holder: string; closed: number; kept: number; failed: number };
 }
 
 type DetailPart<C extends EventCode> = C extends keyof EventDetails

@@ -161,9 +161,13 @@ export interface PromptInput {
  * (`workshop/prompt.ts`), which leases a sidecar the same way and must name it the same way.
  */
 export function browserRule(endpoint: string): string {
+  // Every open tab keeps its page live — a Maison dashboard polls its host for as long as it is
+  // open — so one run used to leave ~3 behind and a busy sidecar carried a dozen (2026-10-27).
+  // Touchstone closes a run's tabs when its lease is released; this keeps the count down during it.
+  const TABS = '. Work in ONE tab: move it with navigate_page rather than opening a new page per step, and close_page any extra tab you opened once you are done with it';
   return endpoint
-    ? ('Drive all of it via the browser-mcp instance at ' + endpoint + ', which is leased to THIS run alone - connect to it directly over MCP and do NOT use the shared browser-mcp on the aggregator, whose tabs belong to other work')
-    : 'Drive all of it via browser-mcp reached through mcp__beacon__call (bare tool names browser-mcp__*, Chrome CDP on the direct beacon:9300, NOT the claude.ai connector)';
+    ? ('Drive all of it via the browser-mcp instance at ' + endpoint + ', which is leased to THIS run alone - connect to it directly over MCP and do NOT use the shared browser-mcp on the aggregator, whose tabs belong to other work' + TABS)
+    : 'Drive all of it via browser-mcp reached through mcp__beacon__call (bare tool names browser-mcp__*, Chrome CDP on the direct beacon:9300, NOT the claude.ai connector)' + TABS;
 }
 
 export function buildPrompt(input: PromptInput): { app_name: string; sections: string[]; prompt: string } {
