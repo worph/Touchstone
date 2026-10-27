@@ -22,7 +22,7 @@ import { WorkshopStore } from '../store/workshop.js';
 import { EventLog } from './events.js';
 import { GitHubClient } from './github.js';
 import { GitHubProbe } from './githubprobe.js';
-import { Workshop, WorkshopRefusal, type WorkshopSettings } from './workshop.js';
+import { Workshop, WorkshopRefusal, type WorkshopOptions, type WorkshopSettings } from './workshop.js';
 
 const SHA = (c: string) => c.repeat(40);
 const ORIGIN = { id: 'yundera', repo: 'Yundera/AppStore', ref: 'main', apps_path: 'Apps' };
@@ -188,7 +188,7 @@ async function writeRubric(protocolsDir: string): Promise<void> {
 }
 
 /** A workshop over the fakes; `settings` overrides the defaults (delivery, push_branch, …). */
-async function build(settings: Partial<WorkshopSettings> = {}): Promise<Workshop> {
+async function build(settings: Partial<WorkshopSettings> = {}, extra: Partial<WorkshopOptions> = {}): Promise<Workshop> {
   const fetchImpl = fakeFetch();
   const directBranch = settings.delivery === 'push' ? 'main' : undefined;
   const github = new GitHubClient({ token: 'ghp_SECRET_TOKEN', repo: ORIGIN.repo, fetchImpl, ...(directBranch ? { directBranch } : {}) });
@@ -227,6 +227,7 @@ async function build(settings: Partial<WorkshopSettings> = {}): Promise<Workshop
     fetchImpl,
     postAgent: async (prompt) => agentScript(prompt, ws),
     now: () => clock ?? new Date(),
+    ...extra,
   });
   return ws;
 }
@@ -537,6 +538,23 @@ async function toReady(verdicts: Record<string, string> = {}, extra: Record<stri
 }
 
 describe('the three switches (D15)', () => {
+  /** Since 2026-10-27 the switch is `config.yaml`'s, not an override in `state/workshop.json`. */
+  it('writes the armed switch through saveArmed, and takes the default on clear', async () => {
+    const saved: (boolean | undefined)[] = [];
+    const ws = await build({}, {
+      saveArmed: async (armed) => {
+        saved.push(armed);
+        return armed ?? false;
+      },
+    });
+    await ws.setArmed(true, 'operator');
+    expect(ws.armed).toBe(true);
+    expect(ws.armedDefault).toBe(true);
+    await ws.clearArmed('operator');
+    expect(ws.armed).toBe(false);
+    expect(saved).toEqual([true, undefined]);
+  });
+
   it('armed picks work but submits nothing by itself', async () => {
     await workshop.setArmed(true, 'test');
     const id = await toReady();

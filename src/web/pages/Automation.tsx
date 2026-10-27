@@ -179,9 +179,8 @@ export default function Automation() {
 
         {data.armed_source === 'override' ? (
           <div className="auto-foot">
-            Set from this page. <code>config.yaml</code> says{' '}
-            <code>armed: {String(data.armed_default)}</code>, which is what a fresh install
-            would boot into; deleting <code>state/schedule.json</code> returns to it.
+            Running on a value <code>config.yaml</code> does not hold — it says{' '}
+            <code>armed: {String(data.armed_default)}</code>. The switch above writes the file.
           </div>
         ) : null}
       </section>

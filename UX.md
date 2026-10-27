@@ -965,12 +965,14 @@ These matter more than usual, because the system's normal condition includes "la
 - **No history strip, no charts, no regression markers.** Nothing reads past assays.
 - **No Standards page.** The rubric is versioned content owned elsewhere.
 - **No PR or gate surface.** That workflow stays in n8n.
-- **No editing of `config.yaml` in the UI.** It is read at boot and handed to the services as
-  values; a form that wrote it would be a switch that appears to do something until a restart.
-  It is displayed (§2.8), never posted. What *is* editable is the closed list of **controls** —
-  values something live re-reads, kept as an override in `state/controls.json` beside the file
-  rather than written into it (§2.4, requirements §16). A value with no live reader is not on
-  that list, which is what keeps the distinction honest rather than gradual.
+- **No free editing of `config.yaml` in the UI.** It is read at boot and handed to the services
+  as values; a form that wrote any key would be a switch that appears to do something until a
+  restart. It is displayed (§2.8), never posted. What *is* editable is the closed list of
+  **controls** — values something live re-reads — and a change to one is applied live **and
+  written into `config.yaml`**, one key at a time with the operator's comments kept (§2.4,
+  requirements §16). Until 2026-10-27 it was an override in `state/controls.json` that silently
+  beat later edits of the file. A value with no live reader is not on that list, which is what
+  keeps the distinction honest rather than gradual.
 - **No tool for the administrator to read or write its own context.** The chat's registry has
   seventeen tools and none of them touch `data/context.md`. Standing instructions a model can
   rewrite are not standing instructions, and invariant 6 is the general form of that.

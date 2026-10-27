@@ -178,9 +178,9 @@ function ControlsSection({ pick, intro }: { pick: (row: ControlRow) => boolean; 
         }}
       />
       <div className="auto-foot">
-        These take effect without a restart. <code>config.yaml</code> stays the value a fresh
-        install boots into; a change is kept in <code>{controls.file ?? 'state/controls.json'}</code>,
-        and deleting that file puts every one of them back.
+        These take effect without a restart, and a change is written into{' '}
+        <code>{controls.file ?? 'config.yaml'}</code> — so the file always says what is running,
+        and a restart comes back up on it.
       </div>
     </section>
   );

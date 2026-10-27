@@ -386,6 +386,15 @@ export interface TouchstoneConfig {
   [key: string]: unknown;
 }
 
+/**
+ * The built-in configuration, before `config.yaml` is merged over it — what a key falls back
+ * to when the file does not set it. Exported for `ConfigFile`, which needs the same answer when
+ * a control is reset and its key removed.
+ */
+export function builtinConfig(dataDir?: string): TouchstoneConfig {
+  return defaults(resolveDataDir(dataDir));
+}
+
 function defaults(dataDir: string): TouchstoneConfig {
   return {
     dataDir,

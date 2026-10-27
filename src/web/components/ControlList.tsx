@@ -78,7 +78,7 @@ function Row({ row, onSet, onReset, busy }: { row: ControlRow } & Omit<ControlLi
         <div className="ctl-desc">{row.description}</div>
         {row.source === 'override' ? (
           <div className="ctl-note">
-            Changed here. <code>config.yaml</code> says{' '}
+            Running on a value <code>config.yaml</code> does not hold — it says{' '}
             <code>{row.kind === 'boolean' ? String(row.default) : row.default}</code>.{' '}
             <button
               type="button"
@@ -86,7 +86,7 @@ function Row({ row, onSet, onReset, busy }: { row: ControlRow } & Omit<ControlLi
               disabled={busy || !row.settable}
               onClick={() => void run(() => onReset(row.key))}
             >
-              use that instead
+              reset to default
             </button>
           </div>
         ) : null}

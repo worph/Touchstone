@@ -246,6 +246,12 @@ export interface SchedulerOptions {
   tickMin?: number;
   /** False means decide and log; never claim, never dispatch. */
   armed: boolean;
+  /**
+   * Writes `scheduler.armed` into `config.yaml` — the switch's only home since 2026-10-27, when
+   * it stopped being an override in `state/schedule.json`. Absent (tests), the switch is held in
+   * memory only.
+   */
+  saveArmed?: (armed: boolean) => Promise<void>;
   stateDir: string;
   index: ReportIndex;
   registry: SubjectRegistry;
@@ -387,15 +393,13 @@ export class Scheduler {
   private lastFinishedByLine: Record<LineKey, string> = {};
   private lineSince: Record<LineKey, string> = {};
   private lastTick?: ScheduleFile['last_tick'];
-  private armedOverride?: boolean;
+  /** What `config.yaml` says `scheduler.armed` is — moved by `setArmed`, which writes the file. */
+  private armedConfig: boolean;
   /**
    * The cadence numbers someone has changed at runtime — `domain/controls.ts`.
    *
-   * Held here rather than persisted here, which is the opposite of `armedOverride` and
-   * deliberate: `ControlStore` owns the file every control's override lives in, and a second
-   * writer for these six would put the same numbers in two files with no rule about which
-   * wins. The composition root re-applies what was stored after `load()`, so a restart comes
-   * back up on them.
+   * Held here rather than persisted here: `domain/controls.ts` writes the value into
+   * `config.yaml` alongside, so a restart comes back up on it by reading the file.
    */
   private constantsOverride: Partial<SchedulerConstants> = {};
   private tickMs?: number;
@@ -406,6 +410,7 @@ export class Scheduler {
 
   constructor(opts: SchedulerOptions) {
     this.opts = opts;
+    this.armedConfig = opts.armed;
     this.file = path.join(opts.stateDir, 'schedule.json');
     if (opts.tickMin) this.tickMs = opts.tickMin * 60_000;
   }
@@ -430,11 +435,12 @@ export class Scheduler {
       for (const line of await this.knownLines()) this.lastFinishedByLine[line] = this.lastFinished;
     }
     this.lastTick = stored?.last_tick;
-    this.armedOverride = typeof stored?.armed === 'boolean' ? stored.armed : undefined;
+    // `armed` in this file is a pre-2026-10-27 override. `store/controls.ts` moves it into
+    // `config.yaml` before this runs, so it is not read here.
   }
 
   get armed(): boolean {
-    return this.armedOverride ?? this.opts.armed;
+    return this.armedConfig;
   }
 
   /**
@@ -448,41 +454,20 @@ export class Scheduler {
    */
   async setArmed(armed: boolean, by = 'operator'): Promise<void> {
     if (this.armed === armed) return;
-    this.armedOverride = armed;
+    // The file first: a switch that cannot be saved is refused rather than held in memory,
+    // where it would silently undo itself at the next restart.
+    await this.opts.saveArmed?.(armed);
+    this.armedConfig = armed;
     this.opts.events.log({
       level: 'info',
       code: armed ? 'SCHEDULER_ARMED' : 'SCHEDULER_DISARMED',
       message: armed
         ? 'Automated mode is on — the scheduler will claim and dispatch audits'
         : 'Automated mode is off — any audit already running will finish, and nothing new starts',
-      detail: { armed, by, config_default: this.opts.armed },
+      detail: { armed, by, config_default: armed },
     });
-    await this.persist();
   }
 
-  /**
-   * Forget the runtime switch, back to what `config.yaml` asks for.
-   *
-   * The reset half of the same control. It logs only when the effective value actually
-   * moves: reverting an override that already agreed with the file changes nothing anybody
-   * needs to be told about, and a log that reports non-events is one nobody reads.
-   */
-  async clearArmed(by = 'operator'): Promise<void> {
-    if (this.armedOverride === undefined) return;
-    const before = this.armed;
-    this.armedOverride = undefined;
-    if (this.armed !== before) {
-      this.opts.events.log({
-        level: 'info',
-        code: this.armed ? 'SCHEDULER_ARMED' : 'SCHEDULER_DISARMED',
-        message: this.armed
-          ? 'Automated mode is on again — config.yaml asks for it'
-          : 'Automated mode is off again — config.yaml asks for it',
-        detail: { armed: this.armed, by, config_default: this.opts.armed },
-      });
-    }
-    await this.persist();
-  }
 
   /**
    * Whether a re-audit flag is *counting* for this subject.
@@ -694,8 +679,8 @@ export class Scheduler {
     });
     return {
       armed: this.armed,
-      armed_default: this.opts.armed,
-      armed_source: this.armedOverride === undefined ? 'config' : 'override',
+      armed_default: this.armedConfig,
+      armed_source: 'config',
       subjects: this.subjects,
       last_finished_at: this.lastFinishedAt(),
       last_tick: this.lastTick,
@@ -1561,7 +1546,6 @@ export class Scheduler {
     try {
       await writeJsonAtomic(this.file, {
         subjects: this.subjects,
-        ...(this.armedOverride === undefined ? {} : { armed: this.armedOverride }),
         last_finished_at: this.lastFinished,
         ...(Object.keys(this.lastFinishedByLine).length > 0
           ? { last_finished_by_line: this.lastFinishedByLine }

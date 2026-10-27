@@ -1,7 +1,7 @@
 /**
  * The settings over HTTP. The domain is tested next door; what is worth pinning here is the
- * wire: a refusal is a 400 with a sentence rather than a 500, an instance with nowhere to
- * write says so instead of accepting the write, and every answer carries the whole list —
+ * wire: a refusal is a 400 with a sentence rather than a 500, an instance with no config.yaml
+ * to write says so instead of accepting the write, and every answer carries the whole list —
  * the page renders one block and must not have to join two responses to do it.
  */
 import { promises as fs } from 'node:fs';
@@ -14,7 +14,7 @@ import type { ReportIndex } from '../store/index.js';
 import type { SubjectRegistry } from '../store/registry.js';
 import { EventLog } from '../services/events.js';
 import { Scheduler } from '../scheduler/index.js';
-import { ControlStore } from '../store/controls.js';
+import { ConfigFile } from '../store/configfile.js';
 import routes from './controls.js';
 
 let dir: string;
@@ -45,10 +45,12 @@ async function serve(options: Parameters<typeof routes>[1] = {}): Promise<Fastif
   return instance;
 }
 
+function configOf(): ConfigFile {
+  return new ConfigFile({ file: path.join(dir, 'config.yaml') });
+}
+
 async function wired(): Promise<FastifyInstance> {
-  const controls = new ControlStore({ stateDir: dir });
-  await controls.load();
-  return serve({ controls, scheduler: schedulerOf(), events });
+  return serve({ config: configOf(), scheduler: schedulerOf(), events });
 }
 
 beforeEach(async () => {
@@ -70,16 +72,16 @@ describe('GET /controls', () => {
     expect(res.json().file).toBeNull();
   });
 
-  it('says where an override is kept, so the page can say how to undo them all', async () => {
+  it('names the config.yaml a change is written into', async () => {
     app = await wired();
     const res = await app.inject({ method: 'GET', url: '/controls' });
-    expect(res.json().file).toContain('controls.json');
+    expect(res.json().file).toBe(path.join(dir, 'config.yaml'));
     expect(res.json().controls.map((r: { key: string }) => r.key)).toContain('scheduler.fresh_days');
   });
 });
 
 describe('PUT /controls/:key', () => {
-  it('applies the change and answers with the whole list', async () => {
+  it('applies the change, writes it into config.yaml, and answers with the whole list', async () => {
     app = await wired();
     const res = await app.inject({
       method: 'PUT',
@@ -89,7 +91,8 @@ describe('PUT /controls/:key', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().changed).toBe(true);
     const row = res.json().controls.find((r: { key: string }) => r.key === 'scheduler.fresh_days');
-    expect(row).toMatchObject({ value: 14, default: 7, source: 'override' });
+    expect(row).toMatchObject({ value: 14 });
+    expect(await fs.readFile(path.join(dir, 'config.yaml'), 'utf8')).toContain('fresh_days: 14');
   });
 
   it('refuses an unusable value with a sentence, not a stack trace', async () => {
@@ -109,7 +112,7 @@ describe('PUT /controls/:key', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  /** No data directory is a real state — dev, and the route tests. It must not pretend. */
+  /** No config file to write is a real state — dev, and the route tests. It must not pretend. */
   it('answers 503 when there is nowhere to keep the change', async () => {
     app = await serve({ scheduler: schedulerOf(), events });
     const res = await app.inject({
@@ -122,11 +125,9 @@ describe('PUT /controls/:key', () => {
 });
 
 describe('DELETE /controls/:key', () => {
-  it('puts the value back to what config.yaml says', async () => {
-    const controls = new ControlStore({ stateDir: dir });
-    await controls.load();
+  it('takes the key out of config.yaml and puts the default back', async () => {
     const scheduler = schedulerOf();
-    app = await serve({ controls, scheduler, events });
+    app = await serve({ config: configOf(), scheduler, events });
 
     await app.inject({ method: 'PUT', url: '/controls/scheduler.cooldown_min', payload: { value: 240 } });
     expect(scheduler.constants.cooldown_min).toBe(240);
@@ -136,5 +137,6 @@ describe('DELETE /controls/:key', () => {
     expect(scheduler.constants.cooldown_min).toBe(55);
     const row = res.json().controls.find((r: { key: string }) => r.key === 'scheduler.cooldown_min');
     expect(row).toMatchObject({ value: 55, source: 'config' });
+    expect(await fs.readFile(path.join(dir, 'config.yaml'), 'utf8')).not.toContain('cooldown_min');
   });
 });

@@ -1,6 +1,7 @@
 /**
  * `GET /controls`, `PUT /controls/:key` and `DELETE /controls/:key` — the configuration an
- * operator may change without editing a file on the volume and restarting.
+ * operator may change without editing a file on the volume and restarting. A change is written
+ * into `config.yaml` for them; `DELETE` removes the key, so the built-in default applies.
  *
  * Its own prefix rather than a branch of `/settings` for one dull, load-bearing reason:
  * `/settings/context` already exists, so `/settings/:key` would be a parametric route living
@@ -24,7 +25,7 @@ export type ControlsRoutesOptions = ControlPorts;
 const routes: FastifyPluginAsync<ControlsRoutesOptions> = async (app, options) => {
   const answer = (): ControlsResponse => ({
     controls: listControls(options),
-    file: options.controls?.file ?? null,
+    file: options.config?.file ?? null,
   });
 
   app.get('/controls', async () => answer());
@@ -32,8 +33,8 @@ const routes: FastifyPluginAsync<ControlsRoutesOptions> = async (app, options) =
   app.put<{ Params: { key: string }; Body?: { value?: unknown } }>(
     '/controls/:key',
     async (req, reply) => {
-      if (!options.controls) {
-        return reply.code(503).send({ error: 'There is no data directory to keep a setting in.' });
+      if (!options.config) {
+        return reply.code(503).send({ error: 'There is no config.yaml to keep a setting in.' });
       }
       const result = await setControl(options, req.params.key, req.body?.value, 'operator');
       if (!result.ok) return reply.code(400).send({ error: result.error });
@@ -45,8 +46,8 @@ const routes: FastifyPluginAsync<ControlsRoutesOptions> = async (app, options) =
   );
 
   app.delete<{ Params: { key: string } }>('/controls/:key', async (req, reply) => {
-    if (!options.controls) {
-      return reply.code(503).send({ error: 'There is no data directory to keep a setting in.' });
+    if (!options.config) {
+      return reply.code(503).send({ error: 'There is no config.yaml to keep a setting in.' });
     }
     const result = await resetControl(options, req.params.key, 'operator');
     if (!result.ok) return reply.code(400).send({ error: result.error });

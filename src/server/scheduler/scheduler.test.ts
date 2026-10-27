@@ -377,17 +377,43 @@ describe('automated mode — the runtime switch', () => {
     expect(cell(s.snapshot().subjects.Alpha)?.claim).toBeDefined();
   });
 
-  it('remembers the switch across a restart, and says the config did not set it', async () => {
-    const first = make();
+  /**
+   * Since 2026-10-27 the switch is written into `config.yaml` (through `saveArmed`), not kept
+   * as an override in `state/schedule.json` — so a restart reads it back from the config.
+   */
+  it('writes the switch through saveArmed, and keeps it out of schedule.json', async () => {
+    const saved: boolean[] = [];
+    const first = make({ saveArmed: async (armed) => void saved.push(armed) });
     await first.load();
     await first.setArmed(true);
+    expect(saved).toEqual([true]);
+    expect(first.snapshot()).toMatchObject({ armed: true, armed_default: true, armed_source: 'config' });
+    await first.tick();
+    const file = JSON.parse(await fs.readFile(path.join(dir, 'schedule.json'), 'utf8'));
+    expect(file).not.toHaveProperty('armed');
 
-    // A whole new instance over the same state dir — the restart.
-    const second = make();
+    // The restart: the config now says armed, and the scheduler is built from it.
+    const second = make({ armed: true });
     await second.load();
     expect(second.armed).toBe(true);
-    expect(second.snapshot().armed_default).toBe(false);
-    expect(second.snapshot().armed_source).toBe('override');
+  });
+
+  it('refuses the switch when it cannot be saved, rather than holding it in memory', async () => {
+    const s = make({
+      saveArmed: async () => {
+        throw new Error('read-only volume');
+      },
+    });
+    await s.load();
+    await expect(s.setArmed(true)).rejects.toThrow('read-only volume');
+    expect(s.armed).toBe(false);
+  });
+
+  it('ignores an armed override a pre-2026-10-27 schedule.json still carries', async () => {
+    await fs.writeFile(path.join(dir, 'schedule.json'), JSON.stringify({ armed: true, subjects: {} }));
+    const s = make();
+    await s.load();
+    expect(s.armed).toBe(false);
   });
 
   it('falls back to the config default when nothing has been pressed', async () => {
@@ -413,16 +439,17 @@ describe('automated mode — the runtime switch', () => {
     expect(cell(s.snapshot().subjects.Beta)?.claim).toBeUndefined();
   });
 
-  it('logs who changed it and what the config would have said', async () => {
+  it('logs who changed it, and that the config now says so', async () => {
     const s = make();
     await s.load();
-    await s.setArmed(true);
+    await s.setArmed(true, 'operator');
     await s.setArmed(false);
     await events.flush();
 
     expect(events.query({ code: 'SCHEDULER_ARMED' })[0]?.detail).toMatchObject({
       armed: true,
-      config_default: false,
+      by: 'operator',
+      config_default: true,
     });
     expect(events.query({ code: 'SCHEDULER_DISARMED' })).toHaveLength(1);
   });

@@ -11,9 +11,10 @@
  * later; anything read once at construction (a root directory, the agent's address) is not
  * one, and pretending otherwise is the lie the settings page already refuses to tell.
  *
- * Every control keeps its `config.yaml` value as `default`: an override lives in
- * `state/controls.json`, so deleting that file returns the instance to what the file asks
- * for — the same relationship `state/schedule.json`'s `armed` has, and for the same reason.
+ * A change is written into `config.yaml` itself (since 2026-10-27), so the file and the
+ * running process agree before and after a restart. Until then a change was an override in
+ * `state/controls.json` that beat the file for ever, and editing the file for one of these
+ * keys silently did nothing.
  */
 
 export type ControlValue = number | boolean;
@@ -32,9 +33,12 @@ export interface ControlRow {
   unit?: string;
   /** What the running process is using right now. */
   value: ControlValue;
-  /** What `config.yaml` says, which is what a fresh boot falls back to. */
+  /** What `config.yaml` says — where a change is written, and what a fresh boot reads. */
   default: ControlValue;
-  /** Whether the live value came from the file or from someone changing it here. */
+  /**
+   * `config` when the live value is the file's, which is always the case after a change made
+   * here. `override` only for a live value the file does not hold.
+   */
   source: 'config' | 'override';
   min?: number;
   max?: number;
@@ -55,6 +59,6 @@ export interface ControlRow {
 
 export interface ControlsResponse {
   controls: ControlRow[];
-  /** Where an override is kept, so the page can say how to undo every one of them at once. */
+  /** The `config.yaml` a change is written into, so the page can name it. */
   file: string | null;
 }

@@ -110,7 +110,8 @@ describe('POST /schedule/arm', () => {
     const body = res.json() as ScheduleResponse;
     expect(res.statusCode).toBe(200);
     expect(body.armed).toBe(true);
-    expect(body.armed_source).toBe('override');
+    // Written into config.yaml (2026-10-27), so it is the config's value, not an override.
+    expect(body.armed_source).toBe('config');
     // It decided on the way out, so the page has something to show immediately rather than
     // an hour of silence.
     expect(body.last_tick).not.toBeNull();

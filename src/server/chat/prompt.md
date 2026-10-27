@@ -103,8 +103,8 @@ Rules that matter:
   `get_controls` is what it is set to — the cadence, how stale a result may get before an app
   is re-audited, when it parks an app, the bench runway guard, and the two switches that
   decide whether anything runs at all. `set_control` changes one, without a restart.
-  - `config.yaml` stays what a fresh install boots into; a change here is an override kept
-    beside it. Say which you have moved and what it will mean, because the consequence is
+  - A change is written into `config.yaml`, so it holds across a restart. Say which you have
+    moved and what it will mean, because the consequence is
     rarely the number: raising the re-audit window empties the backlog, lowering it fills it,
     and arming the loop starts it auditing apps on its own.
   - The list is closed. Anything not in `get_controls` — where the agent lives, which stores

@@ -15,10 +15,12 @@ import { startTrial, type TrialRunDeps } from './services/trialrun.js';
 import { UploadStore } from './store/uploads.js';
 import {
   targets as resolveTargets,
+  builtinConfig,
   ensureConfigFile,
   loadConfig,
   resolveDataDir,
 } from './store/config.js';
+import { ConfigFile } from './store/configfile.js';
 import { AlertStore } from './services/alerts.js';
 import { BenchProber, Targets } from './services/bench.js';
 import { EventLog } from './services/events.js';
@@ -28,6 +30,7 @@ import { SubjectRegistry } from './store/registry.js';
 import { Scheduler } from './scheduler/index.js';
 import { Runner } from './runner/index.js';
 import { Leases } from './services/leases.js';
+import { closeRunTabs } from './services/browsertabs.js';
 import { PortProber } from './services/ports.js';
 import { ProtocolStore, sectionsOf } from './store/protocols.js';
 import { lineOf } from '../shared/schedule.js';
@@ -39,8 +42,8 @@ import { outcomeClause, type RunOutcome } from '../shared/activity.js';
 import { subjectName, type SubjectKey } from '../shared/subject.js';
 import { ChatThreads } from './chat/thread.js';
 import { ContextStore } from './store/context.js';
-import { ControlStore } from './store/controls.js';
-import { applyStoredControls, type ControlPorts } from './domain/controls.js';
+import { migrateStoredControls, type MigratedControl, type SkippedControl } from './store/controls.js';
+import { controlValueProblem, type ControlPorts } from './domain/controls.js';
 import { CHAT_TOOLS } from './chat/registry.js';
 import { GitHubClient, isValidDirectBranch } from './services/github.js';
 import { GitHubProbe } from './services/githubprobe.js';
@@ -64,7 +67,29 @@ try {
 } catch (err) {
   app.log.warn({ err }, 'could not seed config.yaml; running on defaults');
 }
-const cfg = await loadConfig(dataDir);
+// Runtime settings live in `config.yaml` since 2026-10-27. Before the file is read for real,
+// move any override an older build left in `state/` into it, so the instance comes back up
+// running exactly as it was — and the file says so.
+const configPath = join(dataDir, 'config.yaml');
+const bootCfg = await loadConfig(dataDir);
+let migratedControls: MigratedControl[] = [];
+let skippedControls: SkippedControl[] = [];
+try {
+  ({ moved: migratedControls, skipped: skippedControls } = await migrateStoredControls({
+    stateDir: bootCfg.stateDir,
+    config: new ConfigFile({ file: configPath }),
+    problem: controlValueProblem,
+  }));
+} catch (err) {
+  app.log.error({ err }, 'could not move stored settings into config.yaml; they stay in state/ for the next boot');
+}
+const cfg = migratedControls.length > 0 ? await loadConfig(dataDir) : bootCfg;
+/** The one writer of `config.yaml` at runtime — every control and both `armed` switches. */
+const configFile = new ConfigFile({
+  file: configPath,
+  live: cfg as unknown as Record<string, unknown>,
+  builtin: builtinConfig(dataDir) as unknown as Record<string, unknown>,
+});
 
 // The rubric and the knowledge base are **not** seeded (2026-10-19). The box holds the only
 // copy of each: `data/protocols/` and `data/kb/` are written by the editor, the chat or by hand
@@ -113,6 +138,22 @@ const onUsage = usageLog.record.bind(usageLog);
 // Deferred from before the index was built, because that is when the move had to happen and
 // this is the first moment there is anywhere to say so.
 logArchiveMigration(migration, events);
+for (const m of migratedControls) {
+  events.log({
+    level: 'info',
+    code: 'CONTROL_MIGRATED',
+    message: `${m.key} moved from state/${m.from} into config.yaml`,
+    detail: { key: m.key, value: m.value, from: m.from },
+  });
+}
+for (const s of skippedControls) {
+  events.log({
+    level: 'warn',
+    code: 'CONTROL_IGNORED',
+    message: `A stored setting for ${s.key} was not moved into config.yaml`,
+    detail: { key: s.key, value: s.value, reason: s.reason },
+  });
+}
 
 const push = new PushService({ stateDir: cfg.stateDir, events, subject: cfg.notify.push_subject });
 await push.load();
@@ -300,6 +341,12 @@ const ledger = new RunLedger({ events });
 const leases = new Leases({
   benches: (target) => targets.leasable(target),
   browsers: () => ports.healthy('browser'),
+  // A run's tabs go with its lease, rather than waiting out browser-mcp's idle collector.
+  onRelease: (lease) =>
+    lease.browser
+      ? closeRunTabs({ url: lease.browser.url, since: lease.since, holder: lease.holder, events }).then(() => undefined)
+      : undefined,
+  onFreed: () => void scheduler.tick().catch((err) => app.log.error({ err }, 'post-release tick failed')),
 });
 
 const runner = new Runner({
@@ -447,8 +494,8 @@ for (const id of interruptedProposals) {
   });
 }
 const workshopOrigin = cfg.origins.find((o) => o.id === cfg.workshop.origin);
-// A token set on the Settings page outranks config.yaml / the environment, the way
-// `state/controls.json` outranks the config file; clearing it falls back to the boot value.
+// A token set on the Settings page outranks config.yaml / the environment; clearing it falls
+// back to the boot value.
 const githubTokens = new GitHubTokenStore(cfg.dataDir);
 const storedToken = await githubTokens.read();
 const githubToken = storedToken?.token || cfg.github.token;
@@ -463,6 +510,10 @@ const github =
 const githubProbe = new GitHubProbe({ ...(github ? { client: github } : {}), expectedLogin: cfg.github.login, alerts });
 const workshop: Workshop = new Workshop({
   store: workshopStore,
+  saveArmed: async (armed) => {
+    await configFile.set('workshop.armed', armed);
+    return cfg.workshop.armed;
+  },
   settings: {
     origin: cfg.workshop.origin,
     delivery: cfg.workshop.delivery,
@@ -570,8 +621,7 @@ async function noteFinished(subject: SubjectKey, outcome: RunOutcome, target?: s
 const scheduler = new Scheduler({
   constants: cfg.scheduler,
   armed: cfg.scheduler.armed,
-  // The cadence is the object's own, so a `scheduler.tick_min` control restored below has
-  // somewhere to land before `start()` arms the timer at whatever it ended up being.
+  saveArmed: (armed) => configFile.set('scheduler.armed', armed),
   tickMin: cfg.scheduler.tick_min,
   stateDir: cfg.stateDir,
   index: store,
@@ -673,16 +723,12 @@ await scheduler.load();
 /**
  * The configuration that can be changed while this is running — `domain/controls.ts`.
  *
- * Loaded and applied here, after every object a control drives exists and before the first
- * tick: an override is a value the process is supposed to be running on, so a boot that
- * decided once on the config file's figure and then switched would be reporting a decision
- * nobody could reproduce. `config.yaml` remains the default in the only sense that matters —
- * delete `state/controls.json` and the instance is back to what the file asks for.
+ * Nothing to restore: a change is written into `config.yaml` as it is made, so the values
+ * every object above was built from are already the ones it should run on. `defaults` is the
+ * live config slice, which `configFile` keeps in step with the file.
  */
-const controlStore = new ControlStore({ stateDir: cfg.stateDir });
-await controlStore.load();
 const controlPorts: ControlPorts = {
-  controls: controlStore,
+  config: configFile,
   defaults: { scheduler: cfg.scheduler, runner: cfg.runner, bench: cfg.bench, workshop: cfg.workshop },
   scheduler,
   runner,
@@ -690,10 +736,6 @@ const controlPorts: ControlPorts = {
   events,
   workshop,
 };
-const restored = await applyStoredControls(controlPorts);
-if (restored.applied.length > 0) {
-  app.log.info({ controls: restored.applied }, 'restored settings changed since boot config');
-}
 await workshop.noteSubmitSplit();
 
 /**

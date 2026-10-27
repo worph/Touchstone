@@ -2,8 +2,9 @@
  * The workshop's GitHub token, as set from the Settings page: `data/github-token`.
  *
  * It **overrides** what the process booted with (`github.token` in `config.yaml`, or
- * `TOUCHSTONE_GITHUB_TOKEN`), the same way `state/controls.json` overrides the config file:
- * deleting this one file puts the boot value back. Clearing it from the page does exactly that.
+ * `TOUCHSTONE_GITHUB_TOKEN`): deleting this one file puts the boot value back. (Controls used
+ * to work the same way, from `state/controls.json`; since 2026-10-27 they write `config.yaml`.
+ * A token stays a separate file on purpose — it is a secret, and the file is displayed.) Clearing it from the page does exactly that.
  *
  * Beside `config.yaml` rather than under `state/`, for the reason `context.md` is: everything
  * in `state/` is regenerable, and this is something a person typed. Written `0600`, and it is

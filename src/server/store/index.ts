@@ -46,9 +46,34 @@ interface CacheFile {
   entries: Record<string, CacheEntry>;
 }
 
+/**
+ * Everything the read methods answer from, derived from `byPath` in one pass.
+ *
+ * Until 2026-10-27 every lookup was a scan: `latest()` filtered and sorted the whole archive
+ * to answer one (subject, section), and the scheduler asks that subjects × sections × 3 times
+ * per `buildInput` — which `GET /assays/current` runs on every poll. At 3782 reports that was
+ * ~100 ms of a fast core per poll and over a second on yunderalabs, growing with every audit.
+ * Writes are rare and reads are constant, so a write only drops this and the next read
+ * rebuilds it whole: one sort per change instead of one per question.
+ */
+interface Derived {
+  all: AssayRecord[];
+  bySubject: Map<string, AssayRecord[]>;
+  latestDone: Map<string, AssayRecord>;
+  latestAny: Map<string, AssayRecord>;
+  subjects: string[];
+  sections: Section[];
+}
+
+/** `\0` cannot appear in a subject key or a section id. */
+function pairKey(subject: string, section: Section): string {
+  return `${subject}\0${section}`;
+}
+
 export class ReportIndex {
   readonly reportsRoot: string;
   private readonly byPath = new Map<string, AssayRecord>();
+  private derived: Derived | null = null;
   /** Files that could not be parsed, kept so a degraded UI can say so rather than lie. */
   readonly broken: { path: string; error: string }[] = [];
 
@@ -57,13 +82,42 @@ export class ReportIndex {
     for (const r of records) this.byPath.set(r.path, r);
   }
 
+  private view(): Derived {
+    if (this.derived) return this.derived;
+    const all = [...this.byPath.values()].sort(byNewestFirst);
+    const bySubject = new Map<string, AssayRecord[]>();
+    const latestDone = new Map<string, AssayRecord>();
+    const latestAny = new Map<string, AssayRecord>();
+    const sections = new Set<Section>();
+    // `all` is newest first, so the first record seen for a key is that key's latest — the
+    // same record the old `find()` over a sorted `forSubject` returned.
+    for (const r of all) {
+      let bucket = bySubject.get(r.subject);
+      if (!bucket) bySubject.set(r.subject, (bucket = []));
+      bucket.push(r);
+      const key = pairKey(r.subject, r.meta.section);
+      if (!latestAny.has(key)) latestAny.set(key, r);
+      if (r.meta.status === 'done' && !latestDone.has(key)) latestDone.set(key, r);
+      sections.add(r.meta.section);
+    }
+    this.derived = {
+      all,
+      bySubject,
+      latestDone,
+      latestAny,
+      subjects: [...bySubject.keys()].sort((a, b) => a.localeCompare(b)),
+      sections: [...sections].sort((a, b) => a.localeCompare(b)),
+    };
+    return this.derived;
+  }
+
   get size(): number {
     return this.byPath.size;
   }
 
   /** Every assay in the archive, newest first. */
   all(): AssayRecord[] {
-    return [...this.byPath.values()].sort(byNewestFirst);
+    return [...this.view().all];
   }
 
   get(relPath: string): AssayRecord | undefined {
@@ -72,14 +126,12 @@ export class ReportIndex {
 
   /** Every subject that has at least one report on disk, alphabetically. */
   subjects(): string[] {
-    return [...new Set([...this.byPath.values()].map((r) => r.subject))].sort((a, b) =>
-      a.localeCompare(b),
-    );
+    return [...this.view().subjects];
   }
 
   /** All assays for one subject, newest first, every section interleaved. */
   forSubject(subject: string): AssayRecord[] {
-    return [...this.byPath.values()].filter((r) => r.subject === subject).sort(byNewestFirst);
+    return [...(this.view().bySubject.get(subject) ?? [])];
   }
 
   /**
@@ -90,9 +142,7 @@ export class ReportIndex {
    * sections with no assay yet union this with `sectionsOf(protocols)`.
    */
   sections(): Section[] {
-    return [...new Set([...this.byPath.values()].map((r) => r.meta.section))].sort((a, b) =>
-      a.localeCompare(b),
-    );
+    return [...this.view().sections];
   }
 
   /**
@@ -103,15 +153,12 @@ export class ReportIndex {
    * Use `latestAny` when you want the current *state* including a block.
    */
   latest(subject: string, section: Section): AssayRecord | null {
-    return (
-      this.forSubject(subject).find((r) => r.meta.section === section && r.meta.status === 'done') ??
-      null
-    );
+    return this.view().latestDone.get(pairKey(subject, section)) ?? null;
   }
 
   /** The most recent assay for a (subject, section) pair whatever its status. */
   latestAny(subject: string, section: Section): AssayRecord | null {
-    return this.forSubject(subject).find((r) => r.meta.section === section) ?? null;
+    return this.view().latestAny.get(pairKey(subject, section)) ?? null;
   }
 
   /**
@@ -154,10 +201,11 @@ export class ReportIndex {
   /** Update in place after a write. */
   upsert(record: AssayRecord): void {
     this.byPath.set(record.path, record);
+    this.derived = null;
   }
 
   remove(relPath: string): void {
-    this.byPath.delete(relPath);
+    if (this.byPath.delete(relPath)) this.derived = null;
   }
 
   /**
@@ -197,6 +245,7 @@ export class ReportIndex {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
       }
       this.byPath.delete(record.path);
+      this.derived = null;
       dirs.add(path.dirname(abs));
       removed += 1;
     }
