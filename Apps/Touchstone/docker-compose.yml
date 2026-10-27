@@ -167,10 +167,10 @@ services:
 
   # ── the only public surface ───────────────────────────────────────────────────────────
   touchstone:
-    image: ghcr.io/yundera/appshield:2.0.6
-    # OIDC identity: the AppShield auth-service builds its redirect URIs from os.hostname(),
-    # and the auth-registrar independently attests this app's name via the container's PTR
-    # record, rejecting any redirect URI that does not match. container_name, hostname and the
+    image: ghcr.io/yundera/appshield:3.2.0
+    # OIDC identity: AppShield names itself after its hostname, and the auth-registrar
+    # independently attests this app's name via the container's PTR record and derives the
+    # redirect hosts from it. container_name, hostname and the
     # compose project `name` must all be `touchstone`, or Docker defaults the hostname to the
     # random container id and OIDC registration fails.
     container_name: touchstone
@@ -193,11 +193,13 @@ services:
       BACKEND_HOST: "touchstone-backend"
       BACKEND_PORT: "8080"
       LISTEN_PORT: "80"
+      # No REDIRECT_HOST_SUFFIXES, on purpose. Which hosts are this app's is the deployment's
+      # answer, not the listing's: AppShield >= 2.0.10 sends the registrar only its callback
+      # path and adopts the hosts that come back. A listing that guesses them breaks when the
+      # platform moves — 2.0.6 registered a hard-coded nip.io host, auth-registrar stopped
+      # allowing nip.io on 2026-10-27, and one disallowed host failed the whole login.
+      # (Only an app with OAUTH_RESOURCE still needs a suffix: its first one pins the issuer.)
       OIDC_REGISTRAR_URL: "http://auth-registrar:9092"
-      # Every entry becomes a registered `touchstone-<suffix>` callback, and auth-registrar
-      # rejects the whole registration if any one is not allowed — nip.io stopped being
-      # allowed on 2026-10-27 and broke the login. The IP zone is the platform's to name.
-      REDIRECT_HOST_SUFFIXES: "${APP_DOMAIN},${APP_PUBLIC_IP_DASH}.${APP_IP_ZONE},${APP_PUBLIC_IP_DASH}.sslip.io"
 
       # The conformance board, served without a login. Every operator page starts runs, arms
       # the loop or edits the rubric and stays behind the gate; `/public` is the read-only
