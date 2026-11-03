@@ -19,6 +19,13 @@
  * loop did its job. `free()` is the other question — healthy *and* nobody holding it — and only
  * the allocator asks it.
  *
+ * **A bench rests between jobs** (requirements §26). For `scheduler.cooldown_min` after a lease
+ * holding it is released, a bench is healthy but not free — whatever ran on it, an audit, a
+ * trial or a workshop session, foreground or not. It is the blank between two songs: the next
+ * job does not start on a box the last one is still settling. It lives here rather than in the
+ * policy because only this file knows *which* bench a job had, and a per-platform anchor would
+ * idle the second bench of a pool every time the first one finished.
+ *
  * In-process and in-memory, deliberately. A lease outlives nothing: the run that holds it dies
  * with the process, so a lease that survived a restart would describe a run that does not exist
  * and hold a bench nobody is using.
@@ -71,8 +78,13 @@ export interface LeaseSource {
    * cleanup's requests carry timeouts); a rejection is swallowed — a release always releases.
    */
   onRelease?: (lease: Lease) => Promise<void> | void;
-  /** A lease that waited on `onRelease` is free now — the cue to look for queued work. */
+  /**
+   * A lease that waited on `onRelease` is free now — the cue to look for queued work. Also
+   * called when a bench's rest ends, for the same reason.
+   */
   onFreed?: () => void;
+  /** Minutes a bench rests after every job. Read at each release, so a control change applies to the next one. */
+  gapMin?: () => number;
 }
 
 export class Leases {
@@ -80,7 +92,44 @@ export class Leases {
   /** Released and cleaning up: still held, not releasable twice. */
   private readonly releasing = new Set<string>();
 
+  /** Bench URL → epoch ms its rest ends. Entries in the past are simply ignored. */
+  private readonly restUntil = new Map<string, number>();
+
   constructor(private readonly source: LeaseSource) {}
+
+  private nowMs(): number {
+    return (this.source.now?.() ?? new Date()).getTime();
+  }
+
+  private isResting(url: string): boolean {
+    const until = this.restUntil.get(url);
+    return until !== undefined && until > this.nowMs();
+  }
+
+  /** Start a bench's rest, and wake the scheduler when it ends. */
+  private rest(lease: Lease): void {
+    const url = lease.bench?.url;
+    if (!url) return;
+    const gapMs = Math.max(0, (this.source.gapMin?.() ?? 0) * 60_000);
+    if (gapMs === 0) return;
+    this.restUntil.set(url, this.nowMs() + gapMs);
+    const timer = setTimeout(() => this.source.onFreed?.(), gapMs + 50);
+    timer.unref?.();
+  }
+
+  /** Healthy benches of this target in their rest, and when the first comes back. */
+  resting(target: string): { count: number; until?: string } {
+    const taken = this.heldUrls('bench');
+    let count = 0;
+    let first: number | undefined;
+    for (const b of this.source.benches(target)) {
+      if (taken.has(b.url) || !this.isResting(b.url)) continue;
+      count += 1;
+      const until = this.restUntil.get(b.url)!;
+      if (first === undefined || until < first) first = until;
+    }
+    return { count, ...(first !== undefined ? { until: new Date(first).toISOString() } : {}) };
+  }
 
   private heldUrls(kind: 'bench' | 'browser'): Set<string> {
     const out = new Set<string>();
@@ -91,10 +140,10 @@ export class Leases {
     return out;
   }
 
-  /** Healthy benches of this target that nobody holds, in the prober's (name) order. */
+  /** Healthy benches of this target that nobody holds and that are not resting, in the prober's (name) order. */
   freeBenches(target: string): BenchHealth[] {
     const taken = this.heldUrls('bench');
-    return this.source.benches(target).filter((b) => !taken.has(b.url));
+    return this.source.benches(target).filter((b) => !taken.has(b.url) && !this.isResting(b.url));
   }
 
   /** Healthy browsers nobody holds. Shared across every target — a browser is not a platform. */
@@ -153,6 +202,7 @@ export class Leases {
     }
     if (!pending) {
       this.held.delete(id);
+      this.rest(lease);
       return;
     }
     this.releasing.add(id);
@@ -161,6 +211,7 @@ export class Leases {
       .then(() => {
         this.releasing.delete(id);
         this.held.delete(id);
+        this.rest(lease);
         this.source.onFreed?.();
       });
   }
@@ -176,20 +227,39 @@ export class Leases {
    * are one shared number because they are one shared pool: `decide()` spends them across
    * lines in priority order rather than handing each line its own.
    */
-  capacity(targets: readonly string[]): { benches: Record<string, number>; browsers: number } {
+  capacity(targets: readonly string[]): {
+    benches: Record<string, number>;
+    browsers: number;
+    /** Only targets with a resting bench; absent when none is. */
+    resting?: Record<string, { count: number; until?: string }>;
+  } {
     const benches: Record<string, number> = {};
-    for (const t of targets) benches[t] = this.freeBenches(t).length;
-    return { benches, browsers: this.freeBrowsers().length };
+    const resting: Record<string, { count: number; until?: string }> = {};
+    for (const t of targets) {
+      benches[t] = this.freeBenches(t).length;
+      const r = this.resting(t);
+      if (r.count > 0) resting[t] = r;
+    }
+    return {
+      benches,
+      browsers: this.freeBrowsers().length,
+      ...(Object.keys(resting).length > 0 ? { resting } : {}),
+    };
   }
 
   /** Totals beside the free counts, for a page that has to say "1 of 2 benches in use". */
   usage(targets: readonly string[]): {
-    benches: Record<string, { free: number; total: number }>;
+    benches: Record<string, { free: number; total: number; resting?: number }>;
     browsers: { free: number; total: number };
   } {
-    const benches: Record<string, { free: number; total: number }> = {};
+    const benches: Record<string, { free: number; total: number; resting?: number }> = {};
     for (const t of targets) {
-      benches[t] = { free: this.freeBenches(t).length, total: this.source.benches(t).length };
+      const r = this.resting(t).count;
+      benches[t] = {
+        free: this.freeBenches(t).length,
+        total: this.source.benches(t).length,
+        ...(r > 0 ? { resting: r } : {}),
+      };
     }
     return {
       benches,

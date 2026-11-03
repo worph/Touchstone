@@ -413,7 +413,9 @@ function defaults(dataDir: string): TouchstoneConfig {
       fresh_days: 14,
       stuck_days: 7,
       lease_min: 120,
-      cooldown_min: 55,
+      // The rest a bench takes between any two jobs (requirements §26). Was 55, and paced only
+      // the backlog's audits per platform, until 2026-11-03.
+      cooldown_min: 5,
       max_tries: 3,
     },
     runner: {
@@ -624,7 +626,7 @@ scheduler:
                      # main trigger and does not have to run as hot.
   stuck_days: 7      # how long a subject that exhausted its tries stays parked
   lease_min: 120     # an in-progress claim expires after this
-  cooldown_min: 55   # minimum gap between finishing one assay and starting the next
+  cooldown_min: 5    # minutes a bench rests after any job before the next one starts on it
   max_tries: 3       # consecutive errored attempts before parking
 
 # ── the runner ──────────────────────────────────────────────────────────────────────────

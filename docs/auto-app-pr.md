@@ -30,7 +30,7 @@ built, it gets a number in `requirements.md` (R17) and §1.4 G gets a note.
 | D8 | Commit author | **`Mael (Touchstone)`**, on Mael's account and noreply address. The person is accountable and the name says a machine wrote it. |
 | D9 | Currency across major versions | **Yes, automatically**, as long as D7 passes. The validation trials are what make a major bump safe to propose, and the PR body flags it. |
 | D10 | n8n `AppStore PR Review` | **Not touched.** It is out of scope here and will review the bot's PRs like anyone's. A second opinion is welcome. |
-| D11 | Where it lives in the UI | **A Workshop page of its own**, *and* a place in the one Automation queue. Workshop work starts only when no audit request or trial is queued or running (§6.1). |
+| D11 | Where it lives in the UI | **A Workshop page of its own**, *and* a place in the one Automation queue — foreground in ask order when a person proposed it, background tier 3 when the workshop picked it (§6.1, revised 2026-11-03). |
 | D12 | Branch cleanup | **Touchstone deletes its own branches**, whether merged or closed. The repo-wide *Automatically delete head branches* setting is not turned on, because it would change behaviour for everyone's PRs to serve one bot's. |
 | D13 | Label | **Every Touchstone PR carries `touchstone`**, and only Touchstone PRs do. |
 | D14 | Org facts | Fine-grained tokens are **allowed**. `main` is **not protected** (§4.1 says what that means). |
@@ -290,34 +290,33 @@ Rules:
 
 ## 6. The authoring session
 
-### 6.1 When it may start: last in the one queue
+### 6.1 When it may start: its place in the one queue
 
-D11 makes the workshop a **tenant of the Automation queue**, not a second loop beside it. The
-queue's order becomes:
+D11 makes the workshop a **tenant of the Automation queue**, not a second loop beside it. Since
+2026-11-03 ([requirements §26](requirements.md)) its place depends on who asked:
 
-1. requests (audits and trials, in ask order). **A proposal's own validation trials are ordinary
-   trials here** (§7), so they queue and drain like any other;
-2. the backlog;
-3. **the workshop**: at most one entry, either the candidate it would start or the session it is
-   running.
+1. **An operator's proposal is foreground.** It waits in ask order with every audit and trial a
+   person asked for. Its revisions, and its validation trials (§7), keep the *proposal's* ask
+   time, so finishing it does not send it to the back of the line.
+2. **A proposal the workshop picked for itself** (armed) **is background, at tier 3**. It comes
+   after app-changed/never-audited audits and retries, and before stale audits and apps only the
+   standard moved under. Its validation trials go before it authors anything new.
 
-A workshop entry starts only when **all** of these hold:
+Either one starts only when, in addition:
 
-- the workshop is armed;
-- **nothing else is in the pipe**: no audit request or trial queued *or running*, and no due
-  backlog on any line. This is stricter than "a free pair exists" on purpose. The workshop is
-  the only work Touchstone gives itself that nobody asked for, so it waits for real quiet rather
-  than sharing benches with somebody waiting for an answer;
-- **the PR quota is unspent** and no proposal is already `ready` waiting for the next slot.
-  With a cap of one a day, building more than one ahead is wasted bench time, and the candidate
-  ranking may have changed by then;
-- a free (bench, browser) pair exists on the default target;
+- **the PR quota is unspent** and no proposal is already `ready` waiting for the next slot (idle
+  work only). With a cap of one a day, building more than one ahead is wasted bench time;
+- a free (bench, browser) pair exists on the default target. It holds at a line's head like any
+  other work, so a request stuck at a dead bench holds the workshop on that line too;
 - no other authoring session is running. At most one proposal is ever in flight.
 
 It holds at most one pair. An authoring session cannot be paused, so a request arriving
 mid-session waits at most `session_minutes`, and the queue shows it waiting *behind the
-workshop*, with the reason. The same rule (wait for quiet) applies between rounds: a validation
-that failed does not start round two while a request is queued.
+workshop*, with the reason. Like every job, the session is followed by the bench's rest.
+
+The rule this replaced (until 2026-11-03) was "last in the one queue": nothing started while any
+request was queued or running, and idle work also waited for the whole backlog to be empty.
+After a rubric edit, that starved the workshop for about 30 hours.
 
 `GET /schedule` gains a `workshop` entry so the queue, the shell strip and `runStatus.ts` render
 it with no second poller.

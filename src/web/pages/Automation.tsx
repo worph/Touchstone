@@ -102,6 +102,8 @@ export default function Automation() {
   const backlog = data.queue.filter((r) => r.position !== undefined);
   const next = backlog.find((r) => r.state !== 'running');
   const requested = data.requests;
+  /** What a person asked for — the line's foreground. Background rows follow it (requirements §26). */
+  const asked = requested.filter((r) => !r.background);
   /**
    * The head of the request queue, when there is one and nothing is moving.
    *
@@ -138,9 +140,9 @@ export default function Automation() {
               <div className="auto-state-word">{armed ? 'Running' : 'Stopped'}</div>
               <div className="auto-state-sub">
                 {armed
-                  ? `Working through the backlog on every platform at once — as many apps as there are free benches and browsers — each platform waiting ${data.constants.cooldown_min} minutes between its audits.`
-                  : requested.length > 0
-                    ? `The backlog is not being worked. ${plural(requested.length, 'requested audit')} will still run — this switch stops the loop helping itself, not audits somebody asked for.`
+                  ? `Working through the backlog on every platform at once — as many apps as there are free benches and browsers — after everything somebody asked for, each bench resting ${data.constants.cooldown_min} minutes between jobs.`
+                  : asked.length > 0
+                    ? `The backlog is not being worked. ${plural(asked.length, 'request')} will still run — this switch stops the loop helping itself, not work somebody asked for.`
                     : 'The backlog is not being worked. Audits you ask for still run.'}
               </div>
             </div>
@@ -222,12 +224,16 @@ export default function Automation() {
               next ? subjectName(next.subject) : running ? 'after the current one' : 'nothing due'
             }
           />
+          {/* With a lease registry the gap belongs to each bench (requirements §26); the
+              per-platform countdown is only what a single-flight rig still runs on. */}
           <Fact
-            label="Cooldown"
+            label={data.browsers ? 'Bench rest' : 'Cooldown'}
             value={
-              data.cooldown_left_min > 0
-                ? `${data.cooldown_left_min}m left of ${data.constants.cooldown_min}m`
-                : `clear (${data.constants.cooldown_min}m between audits)`
+              data.browsers
+                ? `${data.constants.cooldown_min}m between jobs`
+                : data.cooldown_left_min > 0
+                  ? `${data.cooldown_left_min}m left of ${data.constants.cooldown_min}m`
+                  : `clear (${data.constants.cooldown_min}m between audits)`
             }
           />
           <Fact label="Checks every" value={`${data.constants.tick_min}m`} />
@@ -235,7 +241,7 @@ export default function Automation() {
           <Fact label="Gives up after" value={`${data.constants.max_tries} failed tries`} />
         </div>
 
-        {/* One row per platform: each has its own line, its own cooldown and its own benches,
+        {/* One row per platform: each has its own line and its own benches, each bench its own rest,
             and shares the browsers with the others. "Full" and "no usable bench" are different
             facts — a busy pool is working — so the row says which. */}
         {data.lines && data.lines.length > 0 ? (
@@ -251,7 +257,13 @@ export default function Automation() {
                     </span>
                   ) : null}
                   <span className="auto-line__cool">
-                    {l.cooldown_left_min > 0 ? `cooldown ${l.cooldown_left_min}m` : 'no cooldown'}
+                    {l.benches
+                      ? l.benches.resting
+                        ? `${l.benches.resting} resting`
+                        : 'none resting'
+                      : l.cooldown_left_min > 0
+                        ? `cooldown ${l.cooldown_left_min}m`
+                        : 'no cooldown'}
                   </span>
                   <span className="auto-line__why dim">{hold ? hold.reason : ''}</span>
                 </div>
@@ -273,10 +285,11 @@ export default function Automation() {
         {/* The freshness rule is the one number that decides whether "continuous" means a
             carousel or a weekly sweep, and it is not obvious from the number alone. */}
         <div className="auto-foot">
-          A full pass is {data.queue.length} apps at roughly{' '}
-          {Math.round((data.constants.cooldown_min / 60) * 10) / 10}h apart. Apps re-enter the
-          backlog {data.constants.fresh_days} days after their last result, so the loop idles
-          once everything is fresh — lower the re-audit window to keep it cycling. The cadence,
+          The backlog is worked by kind: apps that changed in the store or were never audited
+          first, then retries, then the workshop’s own work, then apps past{' '}
+          {data.constants.fresh_days} days, and last — as filler — apps only the standard moved
+          under. Anything somebody asks for goes before all of it, in the order it was asked.
+          The loop idles only when none of that is due. The cadence,
           retries and bench guard are set in <Link to="/settings/automation">Settings</Link>.
         </div>
       </section>
@@ -284,13 +297,13 @@ export default function Automation() {
       {/* ── what somebody asked for ───────────────────────────────────────── */}
       {/* Its own section, above the backlog and not merged into it, because they answer
           different questions. This is work the loop was *told* to do: it drains in the order
-          it was asked for, it ignores the cooldown, and it runs whether or not the switch
+          it was asked for, ahead of all background work, and it runs whether or not the switch
           above is on. The backlog is the rotation the loop works out for itself, which that
           switch gates. Rendering them as one list is how an operator comes to believe a
           request started something, or that stopping the loop stopped their audit. */}
       <section className="act-section">
         <h2 className="act-h">
-          Requested <span className="act-count">{requested.length}</span>
+          Requested <span className="act-count">{asked.length}</span>
         </h2>
 
         {requested.length === 0 ? (
@@ -456,14 +469,20 @@ function RequestLine({
         {row.kind === 'workshop'
           ? row.state === 'running'
             ? 'being authored now'
-            : 'workshop · waits for quiet'
+            : row.background
+              ? 'workshop · background'
+              : 'workshop'
           : row.state === 'running'
             ? 'being audited now'
             : row.kind === 'trial'
-              ? 'trial'
+              ? row.background
+                ? 'validation · background'
+                : 'trial'
               : 'audit'}
       </span>
-      <span className="env-note">asked for {since(row.requested_at)}</span>
+      <span className="env-note">
+        {row.background ? `queued ${since(row.requested_at)}` : `asked for ${since(row.requested_at)}`}
+      </span>
       {/* Only an audit can be withdrawn from here. A trial is a whole record with its own
           files — dropping it is a delete, and it lives on the trial's own page where the
           consequence is visible. */}
@@ -522,6 +541,8 @@ function note(row: QueueRow, maxTries: number): string {
     row.subject_changed ? 'app changed in the store' : '',
     row.flagged ? 'flagged for re-audit' : '',
   ].filter(Boolean);
-  if (why.length > 0) return [last, ...why].filter(Boolean).join(' · ');
-  return last;
+  // The tier is what set the row's place in the line (requirements §26). `never`, `retry`
+  // and app-changed already say so in their own words; stale and filler are otherwise a date.
+  const tier = row.tier === 'stale' ? 'stale' : row.tier === 'standard' ? 'filler' : '';
+  return [tier, last, ...why].filter(Boolean).join(' · ');
 }

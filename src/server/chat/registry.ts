@@ -1181,7 +1181,7 @@ export const CHAT_TOOLS: ChatTool[] = [
   {
     name: 'get_schedule',
     description:
-      'What the automatic loop thinks: whether it is armed, when it next decides, what the cooldown is, and the backlog in the order it would be worked. Call it when the operator asks why nothing is running, when an app will next be audited, or what is next.',
+      'What the automatic loop thinks: whether it is armed, when it next decides, how long a bench rests between jobs, and the backlog in the order it would be worked — by kind: app changed or never audited, retries, the workshop’s own work, stale, then apps only the standard moved under, all after anything somebody asked for. Call it when the operator asks why nothing is running, when an app will next be audited, or what is next.',
     inputSchema: { type: 'object', properties: {} },
     handler: async (_input, ctx) => {
       const scheduler = ctx.scheduler;
@@ -1200,6 +1200,8 @@ export const CHAT_TOOLS: ChatTool[] = [
       if (snap.next_tick_at) lines.push(`Next decision at ${snap.next_tick_at}.`);
       if (snap.cooldown_left_min > 0) {
         lines.push(`Cooling down for another ${snap.cooldown_left_min} minute(s) after the last audit.`);
+      } else if (snap.constants.cooldown_min > 0) {
+        lines.push(`Each bench rests ${snap.constants.cooldown_min} minute(s) after any job before the next one starts on it.`);
       }
 
       const queue = await scheduler.previewQueue();
@@ -1216,6 +1218,8 @@ export const CHAT_TOOLS: ChatTool[] = [
                 ? 'never audited'
                 : `${row.state}, ${row.days} day(s) since its last`) +
               (row.try_n > 1 ? `, try ${row.try_n}` : '') +
+              (row.tier === 'changed' && row.days !== undefined ? ' — changed in the store' : '') +
+              (row.tier === 'standard' ? ' — only the standard moved (filler)' : '') +
               '.',
           );
         }

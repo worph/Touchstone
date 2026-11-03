@@ -153,13 +153,13 @@ export const CONTROLS: ControlDef[] = [
     apply: (p, v) => p.scheduler?.setTickMinutes(Number(v)),
   },
   constant('cooldown_min', {
-    label: 'Waits between audits',
+    label: 'Bench rest between jobs',
     unit: 'minutes',
     min: 0,
     max: 10_080,
-    description: 'How long the loop waits after one audit finishes before starting the next.',
-    effect:
-      'Applied on the next decision, and to the countdown already showing — it is measured from the last finish, so lowering it can make an audit due at once.',
+    description:
+      'How long a bench rests after any job on it ends — an audit, a trial or a workshop session, asked for or not — before the next one may start there. 0 turns the gap off.',
+    effect: 'Applied to the next job that ends; a bench already resting keeps the rest it was given.',
   }),
   constant('fresh_days', {
     label: 'Re-audits after',

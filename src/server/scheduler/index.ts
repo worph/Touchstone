@@ -670,11 +670,16 @@ export class Scheduler {
       return {
         line,
         last_finished_at: anchor ?? null,
-        cooldown_left_min: cooldownLeftMin({
-          now,
-          cooldown_min: this.constants.cooldown_min,
-          lastFinishedAt: anchor,
-        }),
+        // With a lease registry nothing waits on this anchor any more — each bench rests
+        // instead (requirements §26) — so a countdown here would describe a wait that is not
+        // happening. Zero, honestly; the Automation page shows resting benches.
+        cooldown_left_min: this.opts.leases
+          ? 0
+          : cooldownLeftMin({
+              now,
+              cooldown_min: this.constants.cooldown_min,
+              lastFinishedAt: anchor,
+            }),
       };
     });
     return {
@@ -1027,6 +1032,7 @@ export class Scheduler {
         : {}),
       lineSince: this.noteLines(sections, opts.now),
       agentBusy: this.opts.agentBusy?.() ?? false,
+      armed: this.armed,
       ...(this.opts.trials
         ? {
             queuedTrials: this.opts.trials.queued(),
@@ -1052,7 +1058,6 @@ export class Scheduler {
     return {
       ...(slot ? { slot } : {}),
       ...(running ? { running } : {}),
-      backlogCounts: this.armed,
     };
   }
 
@@ -1077,7 +1082,12 @@ export class Scheduler {
       if (section.requires.includes('browser')) n.browser = true;
     }
     return {
-      free: { benches: cap.benches, browsers: cap.browsers, browsersHealthy: usage.browsers.total },
+      free: {
+        benches: cap.benches,
+        browsers: cap.browsers,
+        browsersHealthy: usage.browsers.total,
+        ...(cap.resting ? { resting: cap.resting } : {}),
+      },
       ...(Object.keys(needs).length > 0 ? { needs } : {}),
     };
   }
@@ -1219,7 +1229,10 @@ export class Scheduler {
     // registry) decides at most one, so this loop is the old branch run once.
     let started = 0;
     for (const d of decision.dispatches ?? []) {
-      const mayStart = this.armed || d.source === 'requested';
+      // `armed` gates the loop's own *audits* and nothing else: a request is a person asking,
+      // and a background trial is the workshop validating work it already started under its
+      // own switch (`workshop.armed`) — requirements §26.
+      const mayStart = this.armed || d.source !== 'backlog';
 
       if (d.action === 'trial' && d.trial) {
         const slug = d.trial;

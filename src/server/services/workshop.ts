@@ -593,13 +593,18 @@ export class Workshop {
       .list()
       .filter((p) => (p.state === 'queued' || p.state === 'revising') && !(p.backoff_until && Date.parse(p.backoff_until) > now))
       .sort((a, b) => {
-        // A revision finishes what was started before anything new is begun.
-        const ra = a.state === 'revising' ? 0 : 1;
-        const rb = b.state === 'revising' ? 0 : 1;
-        if (ra !== rb) return ra - rb;
+        // A person's proposal first, in ask order — it is foreground work and takes its place
+        // in the one line (requirements §26), so an idle revision must not shadow it. Among
+        // the workshop's own, a revision finishes what was started before anything new.
         const ca = a.class === 'operator' ? 0 : 1;
         const cb = b.class === 'operator' ? 0 : 1;
-        return ca - cb || a.asked_at.localeCompare(b.asked_at);
+        if (ca !== cb) return ca - cb;
+        if (ca === 1) {
+          const ra = a.state === 'revising' ? 0 : 1;
+          const rb = b.state === 'revising' ? 0 : 1;
+          if (ra !== rb) return ra - rb;
+        }
+        return a.asked_at.localeCompare(b.asked_at);
       });
     const next = waiting[0];
     if (next) {
@@ -980,6 +985,9 @@ export class Workshop {
           ...(target !== DEFAULT_TARGET ? { target } : {}),
           repo: origin.repo,
           proposal_id: p.id,
+          // Requirements §26: an idle proposal's validation is background work at the
+          // workshop's tier; an operator's keeps the proposal's place in the foreground line.
+          ...(p.class === 'idle' ? { background: true } : { asked_at: p.asked_at }),
         },
         at,
       );

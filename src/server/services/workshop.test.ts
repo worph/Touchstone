@@ -270,6 +270,16 @@ async function finishTrials(verdicts: Record<string, string>, extra: Record<stri
   }
 }
 
+describe('the slot order', () => {
+  it('offers a person’s proposal before the workshop’s own revision, however old that is', async () => {
+    const mine = await workshop.propose({ subject: 'X', kind: 'fix' }, 'operator');
+    const { id: _i, created_at: _c, updated_at: _u, round: _r, trials: _t, infra_retries: _f, interrupted: _x, state: _s, ...rest } = mine;
+    const own = await store.create({ ...rest, task_key: 'fix:other', class: 'idle', asked_at: new Date(Date.parse(mine.asked_at) - 3_600_000).toISOString() });
+    await store.update(own.id, { state: 'revising' });
+    expect((await workshop.slot())?.id).toBe(mine.id);
+  });
+});
+
 describe('a proposal, the whole way', () => {
   it('authors, validates on both platforms, and opens one labelled PR from the validated bytes', async () => {
     agentScript = async (prompt, ws) => {
@@ -292,6 +302,9 @@ describe('a proposal, the whole way', () => {
     expect(now.before_findings?.[0]?.id).toBe('pinned-image-tag');
     // One trial per platform the standard covers, derived from the protocol, not named.
     expect(trials.queued().map((t) => t.target ?? 'yundera').sort()).toEqual(['foss', 'yundera']);
+    // An operator's proposal: its validation keeps the proposal's place in the foreground line
+    // rather than the moment authoring ended (requirements §26).
+    expect(trials.queued().every((t) => t.asked_at === p.asked_at && !t.background)).toBe(true);
 
     await finishTrials({});
     now = store.get(p.id)!;

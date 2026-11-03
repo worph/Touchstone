@@ -347,6 +347,9 @@ const leases = new Leases({
       ? closeRunTabs({ url: lease.browser.url, since: lease.since, holder: lease.holder, events }).then(() => undefined)
       : undefined,
   onFreed: () => void scheduler.tick().catch((err) => app.log.error({ err }, 'post-release tick failed')),
+  // The transition gap between any two jobs on one bench (requirements §26). Read through the
+  // scheduler so a change on Settings → Automation applies at the next release.
+  gapMin: (): number => (scheduler as Scheduler).constants.cooldown_min,
 });
 
 const runner = new Runner({

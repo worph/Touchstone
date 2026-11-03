@@ -18,10 +18,18 @@
  * from a button, with a place in a line. Parity is a record now rather than a gate
  * (architecture §1.4), so this is a deliberate departure and row A3 says so.
  *
- * Two things about that queue are load-bearing here. **A request bypasses the cooldown**, so
- * pressing Audit on an idle box starts an audit rather than explaining that it will in
- * fifty-five minutes. And **a request is not gated by `armed`** — that switch stops the loop
- * helping itself, not an operator asking — which is why the decision carries a `source`.
+ * Two things about that queue are load-bearing here. **A request bypasses the cooldown** on
+ * the single-flight path, so pressing Audit on an idle box starts an audit rather than
+ * explaining that it will in fifty-five minutes. And **a request is not gated by `armed`** —
+ * that switch stops the loop helping itself, not an operator asking — which is why the
+ * decision carries a `source`.
+ *
+ * **On the concurrent path (production) the order is requirements §26**: everything a person
+ * asked for — audits, trials, operator workshop proposals and their validation — first in,
+ * first out; then the background by tier — app changed or never audited, retries, the
+ * workshop's own work, stale, and last the apps only the standard moved under, as filler.
+ * There is no cooldown there: each *bench* rests between any two jobs (`services/leases.ts`),
+ * which reaches this file as `free.resting`.
  *
  * The bench gate is deliberately **after** that chain rather than woven into it, so the gate
  * is visibly a separate decision rather than a clause inside the pick. A request that cannot
@@ -38,6 +46,7 @@ import type {
   LineSchedule,
   QueueRow,
   QueueState,
+  QueueTier,
   Reclaim,
   RequestRow,
   SubjectSchedule,
@@ -123,7 +132,7 @@ export interface PolicyInput {
    * The one part of the request queue that is genuinely *stored*, because a trial has no
    * subject row and no attempt record to spend a timestamp against. See invariant 8.
    */
-  queuedTrials?: { slug: string; subject: string; queued_at: string; target?: string }[];
+  queuedTrials?: QueuedTrial[];
   /**
    * The trial holding the agent right now, if one is.
    *
@@ -134,7 +143,7 @@ export interface PolicyInput {
    */
   runningTrial?: { slug: string; subject: string; queued_at: string };
   /** Every trial in flight, when several can be. Supersedes `runningTrial` where present. */
-  runningTrials?: { slug: string; subject: string; queued_at: string; target?: string }[];
+  runningTrials?: QueuedTrial[];
   /**
    * What the lease registry has free right now — `services/leases.ts`.
    *
@@ -152,7 +161,18 @@ export interface PolicyInput {
     browsers: number;
     /** How many browsers are healthy at all. Zero is an outage (gate); free zero is busy (wait). */
     browsersHealthy: number;
+    /**
+     * Healthy benches out of `benches` only because they are in their transition gap, and
+     * when the first comes back. Lets a hold say *resting* rather than *in use*.
+     */
+    resting?: Record<LineKey, { count: number; until?: string }>;
   };
+  /**
+   * `scheduler.armed`. Off, the backlog's audits are still decided — the tick logs them as a
+   * dry run — but they take no pair and hold no line. Absent means armed, which is what every
+   * caller that predates the field was deciding for.
+   */
+  armed?: boolean;
   /**
    * What a run on each line needs, from its sections' `requires:`. Absent for a line means both:
    * every line today carries `functional`, and assuming less would let a run start with no
@@ -228,9 +248,24 @@ export interface PolicyInput {
   workshop?: {
     slot?: { id: string; label: string; class: 'operator' | 'idle'; asked_at: string };
     running?: { id: string; label: string; started_at: string };
-    /** Whether due backlog counts as "in the pipe" — true exactly while the scheduler is armed. */
-    backlogCounts: boolean;
   };
+}
+
+/**
+ * A trial as the queue sees it.
+ *
+ * `background` and `asked_at` exist for the workshop's validation trials (requirements §26):
+ * one validating a proposal the workshop picked for itself is the loop's own work, and one
+ * validating an operator's proposal takes that proposal's place in the line rather than the
+ * moment authoring finished. A trial a person started carries neither.
+ */
+export interface QueuedTrial {
+  slug: string;
+  subject: string;
+  queued_at: string;
+  target?: string;
+  background?: boolean;
+  asked_at?: string;
 }
 
 const DAY_MS = 86_400_000;
@@ -437,6 +472,54 @@ function cellOf(row: SubjectSchedule | undefined, line: LineKey): LineSchedule |
  * rules. `decide` still calls it first and behaves exactly as it did; `queue` calls it and
  * stops there. One set of rules, two readers.
  */
+/**
+ * The background's kinds of work, in the order they are served — requirements §26.
+ *
+ * Numbers rather than names so the comparator can subtract them. `workshop` (3) is never
+ * returned by `tierOf` — the workshop is not a cell — but it lives in this table because the
+ * walk in `decideConcurrent` slots it between `retry` and `stale`, and a second numbering
+ * would be a second thing to keep in step with this one.
+ */
+export const TIER = { changed: 1, retry: 2, workshop: 3, stale: 4, standard: 5 } as const;
+export type BacklogTier = (typeof TIER)[keyof typeof TIER];
+
+const TIER_NAME: Record<BacklogTier, QueueTier> = {
+  1: 'changed',
+  2: 'retry',
+  3: 'workshop',
+  4: 'stale',
+  5: 'standard',
+};
+
+function bestTier(cells: { tier?: QueueTier }[]): QueueTier | undefined {
+  const rank = (t: QueueTier): number => Object.values(TIER_NAME).indexOf(t);
+  return cells
+    .map((c) => c.tier)
+    .filter((t): t is QueueTier => Boolean(t))
+    .sort((a, b) => rank(a) - rank(b))[0];
+}
+
+/**
+ * Which tier an eligible cell belongs to. The best one it qualifies for wins.
+ *
+ * `changed` covers a never-audited cell as well: no verdict and a verdict about bytes the
+ * store no longer offers are the two ways the board is wrong rather than old. A cell that is
+ * only eligible because somebody asked lands at `stale`; it sorts as a request first anyway.
+ */
+function tierOf(
+  input: PolicyInput,
+  schedule: Record<string, SubjectSchedule>,
+  cell: Cell,
+  restandard: Set<string>,
+): BacklogTier {
+  const last = input.lastDoneAt[cell.subject]?.[cell.line];
+  if (!last || subjectChanged(input, cell.subject, cell.line)) return TIER.changed;
+  if ((cellOf(schedule[cell.subject], cell.line)?.try_n ?? 0) > 0) return TIER.retry;
+  if (daysSince(last, input.now) >= input.constants.fresh_days) return TIER.stale;
+  if (restandard.has(cellKey(cell.subject, cell.line))) return TIER.standard;
+  return TIER.stale;
+}
+
 function plan(input: PolicyInput): {
   schedule: Record<string, SubjectSchedule>;
   reclaimed: Reclaim[];
@@ -463,6 +546,8 @@ function plan(input: PolicyInput): {
   parked: Cell[];
   /** The lines being scheduled, in first-declared order — the comparator's tie-break. */
   lines: LineKey[];
+  /** Each eligible cell's background tier, by `cellKey`. A request carries one too; it is not read. */
+  tier: Map<string, BacklogTier>;
 } {
   const { constants, now } = input;
   const { schedule, reclaimed, busy } = reclaimExpired(input.schedule, input);
@@ -530,19 +615,13 @@ function plan(input: PolicyInput): {
         continue;
       }
     // Three ways past the freshness window, and they are independent: the question changed,
-    // the subject did, or somebody asked. **Two of the three merely add to the backlog** —
-    // no jump, no bypass of the cooldown, the park or the bench gate. A rubric edit and a
-    // compose change are facts about the world, and the world can wait for the rotation: the
-    // loop is saturated most of the time, so in practice they say "re-judge it with the
-    // spare hour rather than waiting out the week", which is exactly as much as they should
-    // say. Both sort last among the eligible — by `lastDoneAt`, and they are the freshest
-    // things in the list — so a never-audited app still goes first.
-    //
-    // The third is different and became different on 2026-09-01. A flag is not a fact about
-    // the world, it is a person waiting for an answer, and it now sorts to the **front** —
-    // see the comparator below. That asymmetry is the whole design: `standard_moved` and
-    // `subject_changed` must go on proving they do not jump, or a rubric edit would put
-    // seventy-three apps ahead of the one somebody actually pressed a button for.
+    // the subject did, or somebody asked. None of them is an order by itself — the order is
+    // `tierOf` below, and since 2026-11-03 (requirements §26) it is not age alone. A request is
+    // a person waiting and goes to the front. An app that changed in the store is the board
+    // being *wrong* about bytes it no longer offers, so it jumps the rotation. A rubric edit
+    // is the opposite end: the `older standard` chip already qualifies the verdict on display,
+    // so a protocol change is **filler** — worked when nothing else is due, which is what keeps
+    // Touchstone busy without letting one edit put seventy-three apps ahead of anything real.
       const moved = standardMoved(input, subject, line);
       const changed = subjectChanged(input, subject, line);
       if (!moved && !changed && !flagged) continue;
@@ -551,10 +630,10 @@ function plan(input: PolicyInput): {
       if (changed) rechanged.add(key);
     }
   }
-  // Requested first, oldest ask first; everything else by staleness underneath. Two
-  // comparators stacked rather than one, because they are answering different questions —
-  // "who asked first" has nothing to say about an app nobody asked for, and "who is stalest"
-  // has nothing to say about a queue.
+  // Requested first, oldest ask first; then the background by tier; staleness within a tier.
+  // Stacked rather than one score, because they answer different questions — "who asked
+  // first" has nothing to say about an app nobody asked for, and "which kind of work is this"
+  // has nothing to say about two apps of the same kind.
   const askedAt = (cell: Cell): number => {
     if (!reflagged.has(cellKey(cell.subject, cell.line))) return Number.NaN;
     const t = Date.parse(schedule[cell.subject]?.flagged_at ?? '');
@@ -563,6 +642,11 @@ function plan(input: PolicyInput): {
     // the requested block is the safe direction: it keeps its place in the queue.
     return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
   };
+  const tier = new Map<string, BacklogTier>();
+  for (const cell of eligible) {
+    tier.set(cellKey(cell.subject, cell.line), tierOf(input, schedule, cell, restandard));
+  }
+  const tierAt = (c: Cell): number => tier.get(cellKey(c.subject, c.line)) ?? TIER.stale;
   eligible.sort((a, b) => {
     const ra = askedAt(a);
     const rb = askedAt(b);
@@ -570,6 +654,10 @@ function plan(input: PolicyInput): {
     const requestedB = Number.isNaN(rb) ? 1 : 0;
     if (requestedA !== requestedB) return requestedA - requestedB;
     if (requestedA === 0 && ra !== rb) return ra - rb;
+    if (requestedA === 1) {
+      const t = tierAt(a) - tierAt(b);
+      if (t !== 0) return t;
+    }
     const d =
       daysSince(input.lastDoneAt[b.subject]?.[b.line], now) -
       daysSince(input.lastDoneAt[a.subject]?.[a.line], now);
@@ -585,7 +673,7 @@ function plan(input: PolicyInput): {
     return lines.indexOf(a.line) - lines.indexOf(b.line);
   });
 
-  return { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged, parked, lines };
+  return { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged, parked, lines, tier };
 }
 
 /**
@@ -832,9 +920,10 @@ function decideSingle(input: PolicyInput): TickDecision {
  * head is oldest rather than whatever claim happened to be first.
  */
 function decideConcurrent(input: PolicyInput, free: NonNullable<PolicyInput['free']>): TickDecision {
-  const { constants, now } = input;
-  const { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged, parked } =
+  const { constants } = input;
+  const { schedule, reclaimed, busy, unparked, eligible, restandard, rechanged, reflagged, parked, tier } =
     plan(input);
+  void busy;
 
   const base = {
     backlog: eligible.length,
@@ -843,104 +932,170 @@ function decideConcurrent(input: PolicyInput, free: NonNullable<PolicyInput['fre
     parked: parked.length,
   };
 
+  const armed = input.armed ?? true;
   const available = (line: LineKey): boolean => input.capabilities[line]?.available ?? true;
   const needs = (line: LineKey) => input.needs?.[line] ?? { bench: true, browser: true };
   const requested = (c: Cell): boolean => reflagged.has(cellKey(c.subject, c.line));
+  const tierOfCell = (c: Cell): number => tier.get(cellKey(c.subject, c.line)) ?? TIER.stale;
   const benches: Record<LineKey, number> = { ...free.benches };
   let browsers = free.browsers;
+  // What a disarmed tick *would* start, spent from a copy: those dispatches are logged as a
+  // dry run and never started, so they must neither take a pair nor hold a line from work
+  // that will run — and without a budget of their own every due cell would be "dispatched".
+  const dryBenches: Record<LineKey, number> = { ...free.benches };
+  let dryBrowsers = free.browsers;
 
   const askedAt = (c: Cell): number => {
     const t = Date.parse(schedule[c.subject]?.flagged_at ?? '');
     return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
   };
+  const parseAt = (iso: string | undefined): number => {
+    const t = Date.parse(iso ?? '');
+    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+  };
 
-  // ── the candidates, in the order they are served ──────────────────────────────────────
+  // ── the candidates, in the order they are served — requirements §26 ───────────────────
+  // **Foreground** is everything a person is waiting for, first asked first served, whatever
+  // kind of work it is. **Background** is the loop's own work, by tier. One list, one walk:
+  // the workshop used to be a separate block after it with holds of its own, and that is how
+  // an operator's proposal came to wait behind a trial asked for an hour later.
   type Candidate =
     | { kind: 'audit'; cell: Cell; line: LineKey; at: number; requested: boolean }
-    | { kind: 'trial'; slug: string; subject: string; line: LineKey; at: number; requested: true };
+    | { kind: 'trial'; slug: string; subject: string; line: LineKey; at: number; requested: boolean }
+    | { kind: 'workshop'; id: string; label: string; line: LineKey; at: number; requested: boolean };
+  const trialCandidates = (input.queuedTrials ?? []).map((t): Candidate => ({
+    kind: 'trial',
+    slug: t.slug,
+    subject: t.subject,
+    line: t.target ?? DEFAULT_TARGET,
+    at: parseAt(t.asked_at ?? t.queued_at),
+    requested: !t.background,
+  }));
+  const ws = input.workshop;
+  const slot = ws?.slot && !ws.running ? ws.slot : undefined;
+  const workshopCandidate: Candidate | undefined = slot
+    ? {
+        kind: 'workshop',
+        id: slot.id,
+        label: slot.label,
+        line: DEFAULT_TARGET,
+        at: parseAt(slot.asked_at),
+        requested: slot.class === 'operator',
+      }
+    : undefined;
+
+  const KIND_TIE: Record<Candidate['kind'], number> = { trial: 0, audit: 1, workshop: 2 };
   const asks: Candidate[] = [
     ...eligible
       .filter(requested)
       .map((cell): Candidate => ({ kind: 'audit', cell, line: cell.line, at: askedAt(cell), requested: true })),
-    ...(input.queuedTrials ?? []).map((t): Candidate => {
-      const at = Date.parse(t.queued_at);
-      return {
-        kind: 'trial',
-        slug: t.slug,
-        subject: t.subject,
-        line: t.target ?? DEFAULT_TARGET,
-        at: Number.isNaN(at) ? Number.POSITIVE_INFINITY : at,
-        requested: true,
-      };
-    }),
+    ...trialCandidates.filter((c) => c.requested),
+    ...(workshopCandidate?.requested ? [workshopCandidate] : []),
   ];
-  // Stable, so two cells of one request keep `plan()`'s line order; a trial asked at the same
-  // instant as an audit goes first, which is the tie `decideSingle` breaks the same way.
-  asks.sort((a, b) => (a.at !== b.at ? a.at - b.at : a.kind === b.kind ? 0 : a.kind === 'trial' ? -1 : 1));
-  const candidates: Candidate[] = [
-    ...asks,
-    ...eligible
-      .filter((c) => !requested(c))
-      .map((cell): Candidate => ({ kind: 'audit', cell, line: cell.line, at: Number.NaN, requested: false })),
+  // Stable, so two cells of one request keep `plan()`'s line order; at the same instant a
+  // trial goes first, which is the tie `decideSingle` breaks the same way.
+  asks.sort((a, b) => (a.at !== b.at ? a.at - b.at : KIND_TIE[a.kind] - KIND_TIE[b.kind]));
+
+  const backlog = eligible
+    .filter((c) => !requested(c))
+    .map((cell): Candidate => ({ kind: 'audit', cell, line: cell.line, at: Number.NaN, requested: false }));
+  const above = backlog.filter((c) => c.kind === 'audit' && tierOfCell(c.cell) < TIER.workshop);
+  const below = backlog.filter((c) => c.kind === 'audit' && tierOfCell(c.cell) > TIER.workshop);
+  // The workshop's own tier: validation it already started finishes before it authors more.
+  const workshopTier: Candidate[] = [
+    ...trialCandidates.filter((c) => !c.requested).sort((a, b) => a.at - b.at),
+    ...(workshopCandidate && !workshopCandidate.requested ? [workshopCandidate] : []),
   ];
+  const candidates: Candidate[] = [...asks, ...above, ...workshopTier, ...below];
 
   // ── the walk ────────────────────────────────────────────────────────────────────────────
   const holds = new Map<LineKey, LineHold>();
+  /** What set each line's hold, so a workshop held behind it can say what it waits for. */
+  const heldBy = new Map<LineKey, string>();
+  const describe = (c: Candidate): string =>
+    c.kind === 'trial' ? `trial of ${c.subject}` : c.kind === 'workshop' ? `workshop — ${c.label}` : c.cell.subject;
   const hold = (c: Candidate, why: LineHold['why'], reason: string): void => {
     if (holds.has(c.line)) return;
-    const waiting = c.requested ? (c.kind === 'trial' ? `trial of ${c.subject}` : c.cell.subject) : undefined;
+    const waiting = c.requested ? describe(c) : undefined;
     holds.set(c.line, { line: c.line, why, reason, ...(waiting ? { waiting_on: waiting } : {}) });
+    heldBy.set(c.line, describe(c));
   };
   const dispatches: Dispatch[] = [];
+  let workshopHold: string | undefined;
 
   for (const c of candidates) {
-    if (holds.has(c.line)) continue;
     const want = needs(c.line);
+    // A disarmed loop decides its backlog and starts none of it (`runTick`'s `mayStart`).
+    const dry = c.kind === 'audit' && !c.requested && !armed;
+
+    if (!dry && holds.has(c.line)) {
+      if (c.kind === 'workshop') {
+        const by = heldBy.get(c.line);
+        workshopHold =
+          by && by !== describe(c) ? `waits for ${by} — ${holds.get(c.line)!.reason}` : holds.get(c.line)!.reason;
+      }
+      continue;
+    }
+
+    const refuse = (why: LineHold['why'], reason: string): void => {
+      if (dry) return;
+      hold(c, why, reason);
+      if (c.kind === 'workshop') workshopHold = reason;
+    };
 
     if (!available(c.line)) {
       const note = input.capabilities[c.line]?.note;
-      hold(c, 'gated', `${gateText([c.line])}${note ? ` — ${note}` : ''}`);
+      refuse('gated', `${gateText([c.line])}${note ? ` — ${note}` : ''}`);
       continue;
     }
     if (want.browser && free.browsersHealthy === 0) {
-      hold(c, 'gated', 'no usable browser');
+      refuse('gated', 'no usable browser');
       continue;
-    }
-    // Only the backlog waits out a cooldown. A request is a person waiting for an answer.
-    if (!c.requested) {
-      // Per line once the file has per-line anchors; a line with none has never finished and
-      // owes no cooldown. Only a pre-2026-10 state file falls back to the one global anchor.
-      const anchor = input.lastFinishedAtByLine
-        ? input.lastFinishedAtByLine[c.line]
-        : input.lastFinishedAt;
-      const left = cooldownLeftMin({ now, cooldown_min: constants.cooldown_min, lastFinishedAt: anchor });
-      if (anchor && left > 0) {
-        const ago = Math.round(minutesSince(anchor, now));
-        hold(c, 'cooldown', `cooldown — last audit finished ${ago}m ago, ${left}m left`);
-        continue;
-      }
     }
     // A line no pool counts is not managed here (`resolveCapabilities` records it), so it is
     // never "full" — the same "absent means available" this file's gate has always used.
-    if (want.bench && c.line in benches && benches[c.line]! <= 0) {
-      hold(c, 'full', `every ${c.line} bench is in use`);
+    const pool = dry ? dryBenches : benches;
+    if (want.bench && c.line in pool && pool[c.line]! <= 0) {
+      // **Resting is not busy.** The transition gap (`services/leases.ts`) takes a bench out
+      // of the free count for `cooldown_min` after every job, and "every bench is in use"
+      // would send somebody to look for a run that is not there.
+      const rest = free.resting?.[c.line];
+      if (rest && rest.count > 0) {
+        const mins = rest.until ? Math.max(1, Math.ceil((Date.parse(rest.until) - input.now.getTime()) / 60_000)) : undefined;
+        refuse('resting', `transition — a ${c.line} bench is free again${mins ? ` in ${mins}m` : ' shortly'}`);
+      } else {
+        refuse('full', `every ${c.line} bench is in use`);
+      }
       continue;
     }
-    if (want.browser && browsers <= 0) {
-      hold(c, 'full', 'every browser is in use');
+    if (want.browser && (dry ? dryBrowsers : browsers) <= 0) {
+      refuse('full', 'every browser is in use');
       continue;
     }
 
-    if (want.bench && c.line in benches) benches[c.line]! -= 1;
-    if (want.browser) browsers -= 1;
+    if (want.bench && c.line in pool) pool[c.line]! -= 1;
+    if (want.browser) {
+      if (dry) dryBrowsers -= 1;
+      else browsers -= 1;
+    }
 
     if (c.kind === 'trial') {
       dispatches.push({
         action: 'trial',
         trial: c.slug,
         line: c.line,
-        source: 'requested',
-        reason: `requested — trial of ${c.subject}`,
+        source: c.requested ? 'requested' : 'workshop',
+        reason: c.requested ? `requested — trial of ${c.subject}` : `workshop — validating ${c.subject}`,
+      });
+      continue;
+    }
+    if (c.kind === 'workshop') {
+      dispatches.push({
+        action: 'workshop',
+        workshop: c.id,
+        line: c.line,
+        source: 'workshop',
+        reason: `workshop — ${c.label}`,
       });
       continue;
     }
@@ -951,7 +1106,7 @@ function decideConcurrent(input: PolicyInput, free: NonNullable<PolicyInput['fre
       reason = 'requested — somebody asked for this app';
     } else {
       const last = input.lastDoneAt[subject]?.[line];
-      const stale = daysSince(last, now);
+      const stale = daysSince(last, input.now);
       reason = Number.isFinite(stale)
         ? `last run ${String(last).slice(0, 10)}, ${Math.floor(stale)}d ago`
         : 'never run';
@@ -972,53 +1127,11 @@ function decideConcurrent(input: PolicyInput, free: NonNullable<PolicyInput['fre
     });
   }
 
-  // ── the workshop, last ──────────────────────────────────────────────────────────────────
-  let workshopHold: string | undefined;
-  const ws = input.workshop;
-  if (ws?.slot && !ws.running) {
-    const slot = ws.slot;
-    const want = needs(DEFAULT_TARGET);
-    const ahead = requests({ ...input, workshop: undefined }).length;
-    // A disarmed scheduler decides backlog dispatches that `runTick` will never start, so on
-    // such a box they neither count as "in the pipe" nor hold the pair the workshop needs.
-    if (!ws.backlogCounts) {
-      for (const d of dispatches) {
-        if (d.source !== 'backlog') continue;
-        const w = needs(d.line);
-        if (w.bench && d.line in benches) benches[d.line]! += 1;
-        if (w.browser) browsers += 1;
-      }
-    }
-    if (ahead > 0 || dispatches.some((d) => d.source === 'requested')) {
-      workshopHold = `waits for quiet — ${Math.max(ahead, 1)} request(s) ahead`;
-    } else if (slot.class === 'idle' && busy) {
-      workshopHold = 'waits for the audit in flight';
-    } else if (slot.class === 'idle' && ws.backlogCounts && eligible.length > 0) {
-      workshopHold = `waits for the backlog — ${eligible.length} due`;
-    } else if (!available(DEFAULT_TARGET)) {
-      workshopHold = gateText([DEFAULT_TARGET]);
-    } else if (free.browsersHealthy === 0) {
-      workshopHold = 'no usable browser';
-    } else if (DEFAULT_TARGET in benches && benches[DEFAULT_TARGET]! <= 0) {
-      workshopHold = `every ${DEFAULT_TARGET} bench is in use`;
-    } else if (want.browser && browsers <= 0) {
-      workshopHold = 'every browser is in use';
-    } else {
-      if (DEFAULT_TARGET in benches) benches[DEFAULT_TARGET]! -= 1;
-      browsers -= 1;
-      dispatches.push({
-        action: 'workshop',
-        workshop: slot.id,
-        line: DEFAULT_TARGET,
-        source: 'workshop',
-        reason: `workshop — ${slot.label}`,
-      });
-    }
-  }
-
   const held = [...holds.values()];
   const gated = held.filter((h) => h.why === 'gated').map((h) => h.line);
-  const first = dispatches[0];
+  // The headline is the first dispatch that will actually start; a disarmed tick's dry
+  // backlog only headlines when nothing real did.
+  const first = dispatches.find((d) => armed || d.source !== 'backlog') ?? dispatches[0];
   const waitingOn = held.find((h) => h.waiting_on)?.waiting_on;
 
   let reason: string;
@@ -1088,7 +1201,7 @@ function scopeOf(input: PolicyInput, line: LineKey): string[] {
  */
 export function queue(input: PolicyInput): QueueRow[] {
   const { constants, now } = input;
-  const { schedule, eligible, restandard, rechanged, reflagged, lines } = plan(input);
+  const { schedule, eligible, restandard, rechanged, reflagged, lines, tier } = plan(input);
   const position = new Map(eligible.map((cell, i) => [cellKey(cell.subject, cell.line), i + 1]));
 
   /** How actionable a state is. The subject's row shows the most actionable of its cells. */
@@ -1130,6 +1243,7 @@ export function queue(input: PolicyInput): QueueRow[] {
         ...(restandard.has(key) ? { standard_moved: true } : {}),
         ...(rechanged.has(key) ? { subject_changed: true } : {}),
         ...(reflagged.has(key) ? { flagged: true } : {}),
+        ...(position.has(key) && !reflagged.has(key) && tier.has(key) ? { tier: TIER_NAME[tier.get(key)!] } : {}),
         ...(cell?.parked_at ? { parked_at: cell.parked_at } : {}),
         ...(cell?.claim ? { claim_since: cell.claim.since } : {}),
       };
@@ -1165,6 +1279,8 @@ export function queue(input: PolicyInput): QueueRow[] {
       // Reported from the *derived* set rather than from `flagged_at` being present, so a
       // flag the last attempt already answered stops showing the moment it stops counting.
       ...(cells.some((c) => c.flagged) ? { flagged: true } : {}),
+      // The best tier of any line, which is the one that sets this row's position.
+      ...(bestTier(cells) ? { tier: bestTier(cells)! } : {}),
       ...(best.parked_at ? { parked_at: best.parked_at } : {}),
       ...(best.claim_since ? { claim_since: best.claim_since } : {}),
     };
@@ -1218,25 +1334,18 @@ export function requests(input: PolicyInput): RequestRow[] {
       ...(lines.length > 1 ? { lines: pending } : {}),
     });
   }
-  for (const t of input.queuedTrials ?? []) {
-    rows.push({
-      kind: 'trial',
-      id: t.slug,
-      label: t.subject,
-      requested_at: t.queued_at,
-      position: 0,
-      state: 'waiting',
-    });
-  }
+  const trialRow = (t: QueuedTrial, state: RequestRow['state']): RequestRow => ({
+    kind: 'trial',
+    id: t.slug,
+    label: t.subject,
+    requested_at: t.asked_at ?? t.queued_at,
+    position: 0,
+    state,
+    ...(t.background ? { background: true } : {}),
+  });
+  for (const t of input.queuedTrials ?? []) rows.push(trialRow(t, 'waiting'));
   for (const t of input.runningTrials ?? (input.runningTrial ? [input.runningTrial] : [])) {
-    rows.push({
-      kind: 'trial',
-      id: t.slug,
-      label: t.subject,
-      requested_at: t.queued_at,
-      position: 0,
-      state: 'running',
-    });
+    rows.push(trialRow(t, 'running'));
   }
   const ws = input.workshop;
   if (ws?.running) {
@@ -1256,6 +1365,7 @@ export function requests(input: PolicyInput): RequestRow[] {
       requested_at: ws.slot.asked_at,
       position: 0,
       state: 'waiting',
+      ...(ws.slot.class === 'idle' ? { background: true } : {}),
     });
   }
 
@@ -1265,10 +1375,11 @@ export function requests(input: PolicyInput): RequestRow[] {
     const ra = a.state === 'running' ? 0 : 1;
     const rb = b.state === 'running' ? 0 : 1;
     if (ra !== rb) return ra - rb;
-    // A waiting workshop entry is last whenever it was asked for: it waits for quiet.
-    const wa = a.kind === 'workshop' ? 1 : 0;
-    const wb = b.kind === 'workshop' ? 1 : 0;
-    if (wa !== wb) return wa - wb;
+    // Foreground before background (requirements §26): a person's work, whatever kind, in
+    // the order it was asked for; then what the workshop is doing for itself.
+    const ba = a.background ? 1 : 0;
+    const bb = b.background ? 1 : 0;
+    if (ba !== bb) return ba - bb;
     const ta = Date.parse(a.requested_at);
     const tb = Date.parse(b.requested_at);
     // An unparseable ask sorts last rather than first — it keeps its place in the queue
