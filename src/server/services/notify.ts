@@ -120,6 +120,8 @@ const ROUTES: Record<string, { beacon: boolean; push: boolean }> = {
   PROPOSAL_PUSHED: { beacon: true, push: true },
   PROPOSAL_REVERTED: { beacon: true, push: true },
   PROPOSAL_CANNOT: { beacon: false, push: true },
+  // Nothing to act on: the store already says what the brief asked for, and a re-audit will show it.
+  PROPOSAL_NO_CHANGE: { beacon: false, push: false },
 };
 
 export function routeFor(code: string): { beacon: boolean; push: boolean } {

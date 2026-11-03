@@ -186,7 +186,12 @@ export type TaskOutcome =
   | 'cannot'
   | 'failed_validation'
   /** Every round ended without a submission: the author worked and produced nothing to trial. */
-  | 'no_submission';
+  | 'no_submission'
+  /**
+   * The author submitted a working copy identical to the store — typically because the store
+   * already carries the fix and the archive has not caught up. Waits for the input to change.
+   */
+  | 'no_change';
 
 export interface TaskMemory {
   input_sha: string;

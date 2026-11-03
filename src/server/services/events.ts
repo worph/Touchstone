@@ -130,6 +130,7 @@ export const EVENT_CODES = {
   AUTHORING_ENDED: { category: 'workshop', label: 'authoring ended' },
   PROPOSAL_INFRA: { category: 'workshop', label: 'proposal held by infrastructure' },
   PROPOSAL_CANNOT: { category: 'workshop', label: 'proposal cannot be done' },
+  PROPOSAL_NO_CHANGE: { category: 'workshop', label: 'proposal changed nothing' },
   PROPOSAL_VALIDATING: { category: 'workshop', label: 'proposal sent to validation' },
   PROPOSAL_READY: { category: 'workshop', label: 'proposal passed validation' },
   PROPOSAL_REVISING: { category: 'workshop', label: 'proposal failed a round' },
@@ -296,6 +297,7 @@ interface EventDetails {
   AUTHORING_ENDED: { proposal: string; app: string; round: number; outcome: string; reason?: string };
   PROPOSAL_INFRA: { proposal: string; app: string; reason: string; retry_after?: string };
   PROPOSAL_CANNOT: { proposal: string; app: string; reason: string };
+  PROPOSAL_NO_CHANGE: { proposal: string; app: string; reason: string };
   PROPOSAL_VALIDATING: { proposal: string; app: string; round: number; trials: string[] };
   PROPOSAL_READY: { proposal: string; app: string; round: number };
   PROPOSAL_REVISING: { proposal: string; app: string; round: number; failing: string[] };

@@ -728,6 +728,13 @@ export class Workshop {
     p = this.opts.store.get(p.id) ?? p;
 
     if (session?.ended?.kind === 'submit') {
+      // A submit of the store's own bytes is not work to validate: it would pass, reach `ready`,
+      // be refused at delivery, and hold the idle slot for ever (2026-11-02, TrelloMCP, 30 h).
+      if (await this.changesNothing(p.id)) {
+        this.ended(p, 'no change');
+        await this.nothingToChange(p, session.ended.summary);
+        return;
+      }
       this.ended(p, 'submitted');
       await this.startValidation(p, session.ended.summary);
       return;
@@ -905,6 +912,35 @@ export class Workshop {
       level: 'warn',
       code: 'PROPOSAL_CANNOT',
       message: `The author says ${p.app} cannot be done as asked — ${reason.slice(0, 160)}`,
+      detail: { proposal: p.id, app: p.app, reason },
+    });
+    await this.opts.store.pruneFiles(p.id);
+  }
+
+  private async changesNothing(id: string): Promise<boolean> {
+    const d = await this.opts.store.diff(id);
+    return d.added.length + d.modified.length + d.deleted.length === 0;
+  }
+
+  /**
+   * The working copy is the store's app as it stands. An end, like `cannot`, and remembered
+   * against the input the same way: the task is what the archive says, and until the archive
+   * (or the standard, or the app) moves, asking again gets the same empty answer.
+   */
+  private async nothingToChange(p: Proposal, summary: string): Promise<void> {
+    const reason = `nothing to change — the working copy is identical to the store. ${summary}`.slice(0, 4_000);
+    await this.opts.store.update(p.id, { state: 'cannot', reason });
+    await this.opts.store.remember(p.task_key, {
+      input_sha: p.input_sha,
+      last_attempt_at: this.now().toISOString(),
+      outcome: 'no_change',
+      reason,
+      proposal_id: p.id,
+    });
+    this.opts.events.log({
+      level: 'info',
+      code: 'PROPOSAL_NO_CHANGE',
+      message: `${p.app} needed no change to its listing; a re-audit should clear what the archive still says`,
       detail: { proposal: p.id, app: p.app, reason },
     });
     await this.opts.store.pruneFiles(p.id);
@@ -1221,8 +1257,10 @@ export class Workshop {
       if (err instanceof WorkshopRefusal) throw err;
       return this.submitFailed(p, err);
     }
-    const diff = await this.opts.store.diff(p.id);
-    if (diff.added.length + diff.modified.length + diff.deleted.length === 0) {
+    if (await this.changesNothing(p.id)) {
+      // Not left `ready`: a ready proposal holds the idle slot, and this one can never be
+      // delivered, so leaving it there stops the workshop without saying so.
+      await this.nothingToChange(p, 'It was refused at submission.');
       throw new WorkshopRefusal(409, 'the working copy changes nothing');
     }
     return this.delivery === 'push' ? this.deliverPush(p, head, by) : this.deliverPr(p, head, by);
