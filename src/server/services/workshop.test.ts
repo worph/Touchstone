@@ -420,6 +420,7 @@ describe('the rules around it', () => {
   it('a validation that did not complete waits out a backoff before it is retried', async () => {
     clock = new Date('2026-10-14T02:00:00Z');
     agentScript = async (prompt, ws) => {
+      await ws.writeFile(tokenOf(prompt), 'docker-compose.yml', 'services: {}\n');
       ws.submit(tokenOf(prompt), 'Tried.');
       return { ok: true, text: '', payload: '' };
     };
@@ -441,6 +442,7 @@ describe('the rules around it', () => {
 
   it('a failing validation goes back with the findings as feedback', async () => {
     agentScript = async (prompt, ws) => {
+      await ws.writeFile(tokenOf(prompt), 'docker-compose.yml', 'services: {}\n');
       ws.submit(tokenOf(prompt), 'Tried.');
       return { ok: true, text: '', payload: '' };
     };
@@ -469,6 +471,45 @@ describe('the rules around it', () => {
     expect(store.memoryOf(p.task_key)).toMatchObject({ outcome: 'cannot', reason: 'the upstream has no arm64 image' });
     const row = (await workshop.candidates()).find((c) => c.task_key === p.task_key)!;
     expect(row.eligible).toBe(false);
+  });
+
+  it('a submit that changes nothing is an end, not a validation, and waits for the input to change', async () => {
+    agentScript = async (prompt, ws) => {
+      ws.submit(tokenOf(prompt), 'Main already carries the fix.');
+      return { ok: true, text: '', payload: '' };
+    };
+    const p = await workshop.propose({ subject: 'X', kind: 'fix' }, 'operator');
+    await workshop.dispatch(p.id, lease);
+    const after = store.get(p.id)!;
+    expect(after.state).toBe('cannot');
+    expect(after.reason).toMatch(/nothing to change.*Main already carries the fix/);
+    expect(after.trials).toHaveLength(0);
+    expect(trials.queued()).toHaveLength(0);
+    expect(store.memoryOf(p.task_key)).toMatchObject({ outcome: 'no_change' });
+    expect(events.query({}).some((e) => e.code === 'PROPOSAL_NO_CHANGE')).toBe(true);
+    const row = (await workshop.candidates()).find((c) => c.task_key === p.task_key)!;
+    expect(row.eligible).toBe(false);
+  });
+
+  it('a ready proposal that changes nothing is ended at submission rather than left holding the slot', async () => {
+    agentScript = async (prompt, ws) => {
+      await ws.writeFile(tokenOf(prompt), 'docker-compose.yml', 'services: {}\n');
+      ws.submit(tokenOf(prompt), 'x');
+      return { ok: true, text: '', payload: '' };
+    };
+    const p = await workshop.propose({ subject: 'X', kind: 'fix' }, 'operator');
+    await workshop.dispatch(p.id, lease);
+    await finishTrials({});
+    expect(store.get(p.id)!.state).toBe('ready');
+    // The working copy put back to the base: what a submit of the store's own bytes looks like.
+    const base = await store.baseFiles(p.id);
+    await store.put(p.id, 'docker-compose.yml', base.get('docker-compose.yml')!);
+    workshop.setAutoSubmit(true);
+    await workshop.maybeSubmit();
+    expect(store.get(p.id)!.state).toBe('cannot');
+    expect(store.memoryOf(p.task_key)).toMatchObject({ outcome: 'no_change' });
+    expect(store.list().some((x) => x.state === 'ready')).toBe(false);
+    expect(ghCalls.some((c) => c.method === 'POST' && JSON.stringify(c.body) !== '{}')).toBe(false);
   });
 
   it('discards a ready proposal the store moved under, charging nothing', async () => {

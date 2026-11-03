@@ -78,7 +78,7 @@ export const WORKSHOP_TOOLS: McpToolDef[] = [
   {
     name: 'submit',
     description:
-      'You are finished. The summary is what the reviewer reads first: what you changed and why, citing the findings or release notes it answers. Ends the session.',
+      'You are finished. The summary is what the reviewer reads first: what you changed and why, citing the findings or release notes it answers. Ends the session. If you changed nothing, use cannot instead.',
     inputSchema: {
       type: 'object',
       properties: { ...TOKEN, summary: { type: 'string' } },
@@ -88,7 +88,7 @@ export const WORKSHOP_TOOLS: McpToolDef[] = [
   {
     name: 'cannot',
     description:
-      'This cannot be done in a store listing. Say exactly why (no multi-arch image, needs code changes, …). Ends the session.',
+      'This cannot be done in a store listing, or nothing needs doing (the store already has the fix). Say exactly why (no multi-arch image, needs code changes, already fixed in <commit>, …). Ends the session.',
     inputSchema: {
       type: 'object',
       properties: { ...TOKEN, reason: { type: 'string' } },
