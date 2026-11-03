@@ -1033,16 +1033,40 @@ describe('several runs at once', () => {
   });
 
   /** Each line waits out its own cooldown: a Yundera finish does not hold the FOSS line. */
-  it('applies the cooldown per line, to the backlog only', () => {
+  it('has no per-line cooldown on this path — a bench rests instead, and the hold says so', () => {
+    // The anchor that used to hold the Yundera line for 55 minutes is ignored here now: the
+    // gap belongs to the bench (`services/leases.ts`) and reaches the policy as `resting`.
     const d = decide(
       concurrent({
         lastFinishedAtByLine: { [LINE]: minutesAgo(5) },
-        lastDoneAt: {},
+        free: {
+          benches: { [LINE]: 0, [FOSS]: 1 },
+          browsers: 3,
+          browsersHealthy: 3,
+          resting: { [LINE]: { count: 2, until: new Date(NOW.getTime() + 3 * 60_000).toISOString() } },
+        },
       }),
     );
     expect(started(d)).toEqual([`Alpha@${FOSS}`]);
     expect(d.held).toEqual(
-      expect.arrayContaining([expect.objectContaining({ line: LINE, why: 'cooldown' })]),
+      expect.arrayContaining([
+        expect.objectContaining({ line: LINE, why: 'resting', reason: `transition — a ${LINE} bench is free again in 3m` }),
+      ]),
+    );
+  });
+
+  it('applies the rest to a request too — the gap is between every job', () => {
+    const d = decide(
+      concurrent({
+        ...input({ schedule: { Gamma: { try_n: 0, flagged_at: minutesAgo(1) } } }),
+        sections: concurrent().sections,
+        capabilities: concurrent().capabilities,
+        free: { benches: { [LINE]: 0, [FOSS]: 0 }, browsers: 3, browsersHealthy: 3, resting: { [LINE]: { count: 1 } } },
+      }),
+    );
+    expect(started(d)).toEqual([]);
+    expect(d.held?.find((h) => h.line === LINE)).toEqual(
+      expect.objectContaining({ why: 'resting', waiting_on: 'Gamma' }),
     );
   });
 
@@ -1134,23 +1158,28 @@ describe('a request older than its line', () => {
 });
 
 /**
- * The workshop — last in the queue (docs/auto-app-pr.md §6.1).
+ * The workshop's place in the one line — requirements §26.
  *
- * The rule the user asked for in so many words: no workshop task while an audit or a trial
- * somebody asked for is in the pipe. Work the workshop picked for itself waits for more —
- * nothing running at all, and no backlog due while the scheduler is working one.
+ * An operator's proposal is foreground: it waits in ask order with every audit and trial a
+ * person asked for, nothing more. One the workshop picked for itself is background at tier 3 —
+ * after app-changed/never-audited and retries, before stale and protocol-moved — and its
+ * validation trials finish before it authors anything new.
  */
 describe('the workshop slot', () => {
   const fresh = { Alpha: daysAgo(1), Beta: daysAgo(1), Gamma: daysAgo(1) };
+  const one = { benches: { [LINE]: 1 }, browsers: 1, browsersHealthy: 1 };
+  const op = (asked: string) => ({ slot: { id: 'p1', label: 'fix Alpha', class: 'operator' as const, asked_at: asked } });
+  const idle = { slot: { id: 'cand:x', label: 'fix Alpha', class: 'idle' as const, asked_at: minutesAgo(1) } };
 
   function quiet(over: Partial<PolicyInput> = {}, flat: FlatInput = {}): PolicyInput {
     return {
       ...input({ lastDoneAt: fresh, ...flat }),
-      free: { benches: { [LINE]: 1 }, browsers: 1, browsersHealthy: 1 },
-      workshop: { slot: { id: 'p1', label: 'fix Alpha', class: 'operator', asked_at: minutesAgo(5) }, backlogCounts: true },
+      free: one,
+      workshop: op(minutesAgo(5)),
       ...over,
     };
   }
+  const actions = (d: ReturnType<typeof decide>) => (d.dispatches ?? []).map((x) => x.action);
 
   it('starts when the line is quiet, on the default target', () => {
     const d = decide(quiet());
@@ -1161,63 +1190,90 @@ describe('the workshop slot', () => {
     expect(d.workshop_hold).toBeUndefined();
   });
 
-  it('waits for an audit request, even one asked for later', () => {
+  it('an operator proposal goes ahead of a request asked for later', () => {
     const d = decide(quiet({}, { schedule: { Beta: { try_n: 0, flagged_at: minutesAgo(1) } } }));
-    expect((d.dispatches ?? []).map((x) => x.action)).toEqual(['audit']);
-    expect(d.workshop_hold).toContain('waits for quiet');
+    expect(actions(d)).toEqual(['workshop']);
   });
 
-  it('waits for a queued trial', () => {
-    const d = decide(quiet({ queuedTrials: [{ slug: 't1', subject: 'X', queued_at: minutesAgo(30) }], free: { benches: { [LINE]: 2 }, browsers: 2, browsersHealthy: 2 } }));
-    expect((d.dispatches ?? []).map((x) => x.action)).toEqual(['trial']);
-    expect(d.workshop_hold).toContain('waits for quiet');
-  });
-
-  it('waits for a running trial', () => {
-    const d = decide(quiet({ runningTrials: [{ slug: 't1', subject: 'X', queued_at: minutesAgo(30) }] }));
-    expect(d.dispatches ?? []).toEqual([]);
-    expect(d.workshop_hold).toContain('1 request(s) ahead');
-  });
-
-  it('an operator proposal does not wait for the backlog; an idle one does while it is worked', () => {
-    const due = { lastDoneAt: { Alpha: daysAgo(30), Beta: daysAgo(1), Gamma: daysAgo(1) } };
-    const free = { benches: { [LINE]: 2 }, browsers: 2, browsersHealthy: 2 };
-    const op = decide(quiet({ free }, due));
-    expect((op.dispatches ?? []).map((x) => x.action)).toEqual(['audit', 'workshop']);
-
-    const idle = decide(
-      quiet({ free, workshop: { slot: { id: 'cand:x', label: 'fix Alpha', class: 'idle', asked_at: minutesAgo(1) }, backlogCounts: true } }, due),
-    );
-    expect((idle.dispatches ?? []).map((x) => x.action)).toEqual(['audit']);
-    expect(idle.workshop_hold).toBe('waits for the backlog — 1 due');
-
-    // A disarmed scheduler's backlog is not "in the pipe": nothing will ever work it, and the
-    // dispatch it decides must not hold the pair either.
-    const one = { benches: { [LINE]: 1 }, browsers: 1, browsersHealthy: 1 };
-    const disarmed = decide(
-      quiet({ free: one, workshop: { slot: { id: 'cand:x', label: 'fix Alpha', class: 'idle', asked_at: minutesAgo(1) }, backlogCounts: false } }, due),
-    );
-    expect((disarmed.dispatches ?? []).map((x) => x.action)).toEqual(['audit', 'workshop']);
-
-    // But an audit actually in flight holds idle work, armed or not.
-    const inFlight = decide(
-      quiet(
-        { free, workshop: { slot: { id: 'cand:x', label: 'fix Alpha', class: 'idle', asked_at: minutesAgo(1) }, backlogCounts: false } },
-        { schedule: { Beta: { try_n: 0, claim: { since: minutesAgo(5), try_n: 1 } } } },
-      ),
-    );
-    expect(inFlight.workshop_hold).toBe('waits for the audit in flight');
-  });
-
-  it('takes only what the tick left over', () => {
-    const due = { lastDoneAt: { Alpha: daysAgo(30), Beta: daysAgo(1), Gamma: daysAgo(1) } };
-    const d = decide(quiet({}, due));
-    expect((d.dispatches ?? []).map((x) => x.action)).toEqual(['audit']);
+  it('an operator proposal waits behind a request asked for earlier, and says so', () => {
+    const d = decide(quiet({}, { schedule: { Beta: { try_n: 0, flagged_at: minutesAgo(30) } } }));
+    expect(actions(d)).toEqual(['audit']);
     expect(d.workshop_hold).toBe(`every ${LINE} bench is in use`);
   });
 
+  it('an operator proposal waits behind a trial queued before it', () => {
+    const d = decide(quiet({ queuedTrials: [{ slug: 't1', subject: 'X', queued_at: minutesAgo(30) }] }));
+    expect(actions(d)).toEqual(['trial']);
+  });
+
+  it('an operator validation trial keeps the proposal’s place, not the time it was queued', () => {
+    const d = decide(
+      quiet(
+        { workshop: {}, queuedTrials: [{ slug: 'v1', subject: 'Alpha', queued_at: minutesAgo(1), asked_at: minutesAgo(60) }] },
+        { schedule: { Beta: { try_n: 0, flagged_at: minutesAgo(30) } } },
+      ),
+    );
+    expect(d.dispatches?.[0]).toEqual(expect.objectContaining({ action: 'trial', trial: 'v1', source: 'requested' }));
+  });
+
+  it('an operator proposal does not wait for the backlog', () => {
+    const d = decide(quiet({}, { lastDoneAt: { Alpha: daysAgo(30), Beta: daysAgo(1), Gamma: daysAgo(1) } }));
+    expect(actions(d)).toEqual(['workshop']);
+  });
+
+  it('idle work waits for app-changed / never-audited and retries, and goes ahead of stale', () => {
+    // Never audited: tier 1, ahead of the workshop.
+    const never = decide(quiet({ workshop: idle }, { lastDoneAt: { Alpha: daysAgo(1), Beta: daysAgo(1) } }));
+    expect(actions(never)).toEqual(['audit']);
+    expect(never.workshop_hold).toBe(`every ${LINE} bench is in use`);
+
+    // A retry: tier 2, ahead of the workshop.
+    const retry = decide(quiet({ workshop: idle }, { schedule: { Beta: { try_n: 1 } } }));
+    expect(actions(retry)).toEqual(['audit']);
+
+    // Stale: tier 4, behind it.
+    const stale = decide(quiet({ workshop: idle }, { lastDoneAt: { Alpha: daysAgo(30), Beta: daysAgo(1), Gamma: daysAgo(1) } }));
+    expect(actions(stale)).toEqual(['workshop']);
+  });
+
+  it('idle work goes ahead of a protocol change', () => {
+    const d = decide(
+      quiet(
+        { workshop: idle },
+        { lastAttemptAt: fresh, standardMovedAt: minutesAgo(1) },
+      ),
+    );
+    expect(d.backlog).toBe(3);
+    expect(actions(d)).toEqual(['workshop']);
+  });
+
+  it('a background validation trial goes before new authoring and after a retry', () => {
+    const bg = [{ slug: 'v1', subject: 'Alpha', queued_at: minutesAgo(1), background: true }];
+    const two = { benches: { [LINE]: 2 }, browsers: 2, browsersHealthy: 2 };
+    const d = decide(quiet({ free: two, workshop: idle, queuedTrials: bg }, { schedule: { Beta: { try_n: 1 } } }));
+    expect((d.dispatches ?? []).map((x) => `${x.action}:${x.source}`)).toEqual(['audit:backlog', 'trial:workshop']);
+    expect(d.workshop_hold).toBe(`every ${LINE} bench is in use`);
+  });
+
+  it('a disarmed backlog is decided as a dry run and holds no pair', () => {
+    const d = decide(
+      quiet(
+        { armed: false, workshop: idle },
+        { lastDoneAt: { Alpha: daysAgo(1), Beta: daysAgo(1) } },
+      ),
+    );
+    expect((d.dispatches ?? []).map((x) => `${x.action}:${x.source}`)).toEqual(['audit:backlog', 'workshop:workshop']);
+    expect(d.action).toBe('workshop');
+  });
+
+  it('holds on a gated line like anything else', () => {
+    const d = decide(quiet({ capabilities: { [LINE]: { available: false } } }));
+    expect(actions(d)).toEqual([]);
+    expect(d.workshop_hold).toBe('no usable demo bench');
+  });
+
   it('never runs a second session', () => {
-    const d = decide(quiet({ workshop: { running: { id: 'p0', label: 'fix Beta', started_at: minutesAgo(3) }, slot: { id: 'p1', label: 'fix Alpha', class: 'operator', asked_at: minutesAgo(5) }, backlogCounts: true } }));
+    const d = decide(quiet({ workshop: { running: { id: 'p0', label: 'fix Beta', started_at: minutesAgo(3) }, ...op(minutesAgo(5)) } }));
     expect(d.dispatches ?? []).toEqual([]);
   });
 
@@ -1226,12 +1282,110 @@ describe('the workshop slot', () => {
     expect(decide(single).action).not.toBe('workshop');
   });
 
-  it('is listed last while waiting, and first while running', () => {
-    const waiting = requests(quiet({}, { schedule: { Beta: { try_n: 0, flagged_at: minutesAgo(1) } } }));
-    expect(waiting.map((r) => r.kind)).toEqual(['audit', 'workshop']);
+  it('is listed in ask order when it is a person’s, after the foreground when it is idle, and first while running', () => {
+    const asked = requests(quiet({}, { schedule: { Beta: { try_n: 0, flagged_at: minutesAgo(1) } } }));
+    expect(asked.map((r) => r.kind)).toEqual(['workshop', 'audit']);
+
+    const background = requests(
+      quiet(
+        { workshop: idle, queuedTrials: [{ slug: 'v1', subject: 'Alpha', queued_at: minutesAgo(90), background: true }] },
+        { schedule: { Beta: { try_n: 0, flagged_at: minutesAgo(1) } } },
+      ),
+    );
+    expect(background.map((r) => `${r.kind}${r.background ? ':bg' : ''}`)).toEqual(['audit', 'trial:bg', 'workshop:bg']);
+
     const running = requests(
-      quiet({ workshop: { running: { id: 'p0', label: 'fix Beta', started_at: minutesAgo(3) }, backlogCounts: true } }, { schedule: { Beta: { try_n: 0, flagged_at: minutesAgo(1) } } }),
+      quiet({ workshop: { running: { id: 'p0', label: 'fix Beta', started_at: minutesAgo(3) } } }, { schedule: { Beta: { try_n: 0, flagged_at: minutesAgo(1) } } }),
     );
     expect(running.map((r) => `${r.kind}:${r.state}`)).toEqual(['workshop:running', 'audit:waiting']);
+  });
+});
+
+/** Requirements §26 — the background's kinds of work, in the order they are served. */
+describe('background tiers', () => {
+  const all = { Alpha: daysAgo(30), Beta: daysAgo(2), Gamma: daysAgo(2), Delta: daysAgo(3) };
+  const subjects = ['Alpha', 'Beta', 'Gamma', 'Delta'];
+
+  it('app changed beats stale, and stale beats a protocol change', () => {
+    const rows = queue(
+      input({
+        subjects,
+        lastDoneAt: all,
+        lastAttemptAt: all,
+        // Beta's compose moved; Gamma and Delta only had the rubric move under them.
+        currentVersion: { Beta: 'new' },
+        auditedVersion: { Beta: 'old' },
+        standardMovedAt: daysAgo(1),
+      }),
+    );
+    expect(rows.filter((r) => r.position).map((r) => `${r.subject}:${r.tier}`)).toEqual([
+      'Beta:changed',
+      'Alpha:stale',
+      'Delta:standard',
+      'Gamma:standard',
+    ]);
+  });
+
+  it('never audited shares the top tier with app changed, oldest first', () => {
+    const rows = queue(
+      input({
+        subjects,
+        lastDoneAt: { Alpha: daysAgo(30), Beta: daysAgo(2) },
+        lastAttemptAt: { Alpha: daysAgo(30), Beta: daysAgo(2) },
+        currentVersion: { Beta: 'new' },
+        auditedVersion: { Beta: 'old' },
+      }),
+    );
+    expect(rows.filter((r) => r.position).map((r) => `${r.subject}:${r.tier}`)).toEqual([
+      'Gamma:changed',
+      'Delta:changed',
+      'Beta:changed',
+      'Alpha:stale',
+    ]);
+  });
+
+  it('a retry sits between app changed and stale', () => {
+    const rows = queue(
+      input({
+        subjects,
+        lastDoneAt: { ...all, Gamma: daysAgo(1) },
+        lastAttemptAt: { ...all, Gamma: daysAgo(1) },
+        schedule: { Gamma: { try_n: 1 } },
+        currentVersion: { Beta: 'new' },
+        auditedVersion: { Beta: 'old' },
+      }),
+    );
+    expect(rows.filter((r) => r.position).map((r) => r.subject)).toEqual(['Beta', 'Gamma', 'Alpha']);
+  });
+
+  it('a cell that is both changed and under a moved standard takes the higher tier', () => {
+    const rows = queue(
+      input({
+        subjects: ['Alpha', 'Beta'],
+        lastDoneAt: { Alpha: daysAgo(30), Beta: daysAgo(2) },
+        lastAttemptAt: { Alpha: daysAgo(30), Beta: daysAgo(2) },
+        currentVersion: { Beta: 'new' },
+        auditedVersion: { Beta: 'old' },
+        standardMovedAt: daysAgo(1),
+      }),
+    );
+    expect(rows.filter((r) => r.position).map((r) => `${r.subject}:${r.tier}`)).toEqual(['Beta:changed', 'Alpha:stale']);
+    expect(rows[0]?.standard_moved).toBe(true);
+  });
+
+  it('a request carries no tier and still goes first', () => {
+    const rows = queue(
+      input({
+        subjects,
+        lastDoneAt: all,
+        lastAttemptAt: all,
+        schedule: { Delta: { try_n: 0, flagged_at: minutesAgo(5) } },
+        currentVersion: { Beta: 'new' },
+        auditedVersion: { Beta: 'old' },
+      }),
+    );
+    expect(rows[0]?.subject).toBe('Delta');
+    expect(rows[0]?.tier).toBeUndefined();
+    expect(rows[1]?.subject).toBe('Beta');
   });
 });

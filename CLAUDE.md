@@ -69,11 +69,20 @@ and the only one that is not about the world changing. It is spent by the next a
 that attempt concluded, so nothing has to remember to clear it. It **releases a park**, since
 2026-08-31, because a park is an automatic judgement about a failing app and a person asking
 outranks it. And since 2026-09-01 it **goes to the front**: requests are worked before the
-backlog, in the order they were asked for, bypassing the cooldown but not the bench gate. The
+backlog, in the order they were asked for, held by the bench gate and the bench's rest like
+everything else. The
 field is still called `flagged_at` on disk and the events are still `SUBJECT_FLAGGED` —
-identifiers are stable, vocabulary moved), **queue** (the requests, oldest ask first, audits and
-trials in one line, served in ask order as (bench, browser) pairs come free — `policy.requests()`,
-`GET /schedule`'s `requests`. Derived, except for its trial half; see invariant 8), **lease** (a
+identifiers are stable, vocabulary moved), **queue** (everything that can take a bench, in the
+order it is served — requirements §26. **Foreground** first: what a person asked for (audits,
+trials, operator workshop proposals and their validation), first in first out with no
+distinction by kind. Then **background**, the loop's own work, by **tier**: app changed or never
+audited → retry → the workshop's own work → stale → only the standard moved (filler, so an idle
+box really has nothing to do). `policy.requests()`, `GET /schedule`'s `requests` (background rows
+carry `background: true`); `QueueRow.tier` says which tier set a backlog row's place. Derived,
+except for its trial half; see invariant 8), **rest** (the gap a *bench* takes after any job on
+it ends, foreground or not, for `scheduler.cooldown_min` minutes (default 5) — `services/leases.ts`,
+in memory. It replaced the per-platform cooldown that only paced backlog audits; a pool whose
+free benches are all resting holds `resting`, not `full`), **lease** (a
 *(bench, browser)* pair one run holds for its whole duration — `services/leases.ts`. Since
 2026-10 runs are concurrent and **capacity is whatever pairs are free**: two Yundera benches and
 one browser is one run at a time, add a sidecar and it is two. Never a configured number. A pool
@@ -282,9 +291,11 @@ because its data access was smeared through two 200-line n8n Code nodes.
   remember to clear it, and a flag set while a run is already in flight survives that run
   (the comparison is against the attempt's **start**). `record.ts` therefore never clears it —
   a finisher cannot tell whether the flag arrived before it started. **Unlike** the other two
-  it goes to the *front*: a rubric edit and a compose change are facts about the world and can
-  wait for the rotation, while a request is a person waiting for an answer. It bypasses the
-  cooldown and releases a park; it does not bypass the bench gate, which holds the whole line
+  it goes to the *front*: a rubric edit and a compose change are facts about the world and are
+  served by tier (a compose change near the top, a rubric edit last, as filler — requirements
+  §26), while a request is a person waiting for an answer. It bypasses the cooldown on the
+  single-flight path, releases a park, and on the concurrent path goes before all background
+  work; it does not bypass the bench gate or a bench's rest, which hold the whole line
   rather than skipping — a request that cannot run says why instead of producing a verdict about
   half the rubric. `POST /assays` is now the only thing that writes it, so there is one verb.
 - **`routes/mcp-admin.ts`** — the *same* eighteen tools, served as an MCP server at
@@ -327,9 +338,11 @@ because its data access was smeared through two 200-line n8n Code nodes.
   refused if the app changed since (docs/auto-app-pr.md §14). `mcp-workshop.ts` is the
   author's surface — edit the working copy, `stage` it for the bench, end with `submit` or
   `cannot` — and is a **separate route** from `/mcp` so the auditor never sees `write_file` and
-  the author never sees `record_requirement`. The scheduler offers the workshop a slot **last**
-  (`PolicyInput.workshop`): never while a request is queued or running, and for idle work never
-  while an audit runs or armed backlog is due. Validation is one trial per scoring target,
+  the author never sees `record_requirement`. The workshop's slot (`PolicyInput.workshop`) is a
+  candidate in the scheduler's one walk (requirements §26): an **operator** proposal is
+  foreground, in ask order with every request; an **idle** one is background tier 3, after
+  app-changed/never-audited and retries, before stale and filler. Validation trials take their
+  proposal's class (`TrialRecord.background` / `asked_at`). Validation is one trial per scoring target,
   derived from the protocol; `TrialRunDeps.finished(slug)` is how a round learns it ended.
   **A round is spent only on an attempt**: an authoring session that called no workshop tool,
   any agent failure, and a trial section that settled nothing (blocked, unusable answer, or
@@ -638,7 +651,8 @@ because its data access was smeared through two 200-line n8n Code nodes.
   (since 2026-10-27) writes it into `config.yaml` — until then it was an override in
   `state/schedule.json`. Stopping
   means "claim nothing further" and deliberately leaves the audit in flight alone.
-  **It gates the backlog and nothing else.** Requested audits and trials still drain while it is
+  **It gates the backlog's audits and nothing else.** Requested audits and trials — and the
+  workshop's background validation, which answers to `workshop.armed` — still drain while it is
   off, which is not new behaviour dressed up — `POST /assays` never consulted this switch — but
   it is newly *visible*, so the Automation page says so on the switch itself. The switch stops
   the loop helping itself; it is not a lock on the agent, and an operator who disarms and then

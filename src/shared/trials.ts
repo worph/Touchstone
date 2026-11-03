@@ -134,6 +134,18 @@ export interface TrialRecord {
   error?: string;
   /** The workshop proposal this trial validates — docs/auto-app-pr.md §7. */
   proposal_id?: string;
+  /**
+   * The loop's own work rather than a person's — a validation trial of a proposal the
+   * workshop picked for itself. Served in the background, at the workshop's tier
+   * (requirements §26). Absent is a person's trial, which is every row written before it.
+   */
+  background?: boolean;
+  /**
+   * When the work this trial belongs to was asked for, if earlier than `queued_at` — an
+   * operator proposal's validation keeps the proposal's place in the line. `queued_at` keeps
+   * meaning "entered the queue".
+   */
+  asked_at?: string;
 }
 
 /**

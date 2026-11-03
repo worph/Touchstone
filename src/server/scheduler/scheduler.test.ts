@@ -1168,18 +1168,22 @@ describe('several runs at once', () => {
     await s.record(jobs[0]!.subject, { kind: 'verdict' }, new Date(), jobs[0]!.target);
     await s.tick();
     expect(jobs).toHaveLength(2);
-    expect(jobs[1]!.target).toBe(FOSS);
+    // Which line goes next is the queue's business, not this test's: since requirements §26
+    // there is no per-line cooldown to push it onto FOSS. What matters is that it resumed.
+    expect(jobs[1]!.lease?.id).toBeDefined();
   });
 
   /** A Yundera finish starts Yundera's cooldown and nobody else's. */
-  it('keeps a cooldown per line', async () => {
+  it('records each line’s finish, and shows no per-line countdown — a bench rests instead', async () => {
     const targets = platforms(['demo1'], ['demofoss1']);
     const s = make({ armed: true, targets, leases: leasesFor(targets, ['b1', 'b2']), sections: SECTIONS });
     await s.load();
     await s.record('Beta', { kind: 'verdict' }, new Date(), LINE);
     const lines = s.snapshot().lines;
-    expect(lines.find((l) => l.line === LINE)?.cooldown_left_min).toBeGreaterThan(0);
-    expect(lines.find((l) => l.line === FOSS)?.cooldown_left_min).toBe(0);
+    expect(lines.find((l) => l.line === LINE)?.last_finished_at).not.toBeNull();
+    expect(lines.find((l) => l.line === FOSS)?.last_finished_at).toBeNull();
+    // Requirements §26: the gap is the lease registry's, per bench, for every job.
+    expect(lines.every((l) => l.cooldown_left_min === 0)).toBe(true);
   });
 
   it('settles the claim of the line the run was on, not whichever line it finds first', async () => {

@@ -152,7 +152,7 @@ export interface Dispatch {
  */
 export interface LineHold {
   line: LineKey;
-  why: 'gated' | 'full' | 'cooldown';
+  why: 'gated' | 'full' | 'resting' | 'cooldown';
   reason: string;
   /** The request at the head of this line, when one is waiting. */
   waiting_on?: string;
@@ -264,6 +264,14 @@ export interface TickDecision {
  */
 export type QueueState = 'running' | 'retry' | 'never' | 'due' | 'fresh' | 'parked';
 
+/**
+ * Which kind of background work a due row is — requirements §26. Served in this order:
+ * `changed` (the store's compose moved, or never audited), `retry`, the workshop, `stale`
+ * (past `fresh_days`), `standard` (only the rubric moved — filler). A request carries none:
+ * it is served before all of them, in ask order.
+ */
+export type QueueTier = 'changed' | 'retry' | 'workshop' | 'stale' | 'standard';
+
 /** One subject's state on one platform. The row above summarises these. */
 export interface QueueLineRow extends Omit<QueueRow, 'subject' | 'lines'> {
   line: LineKey;
@@ -312,6 +320,8 @@ export interface QueueRow {
    * on the server.
    */
   flagged?: boolean;
+  /** The background tier that sets `position`, when the row is due and nobody asked for it. */
+  tier?: QueueTier;
   try_n: number;
   parked_at?: string;
   claim_since?: string;
@@ -331,11 +341,16 @@ export interface QueueRow {
  */
 export interface RequestRow {
   /**
-   * `workshop` is the proposal the workshop would author next, or is authoring — always last
-   * while waiting, because it waits for the rest of the queue to be quiet (docs/auto-app-pr.md
-   * §6.1), and first while running, like anything else that is running.
+   * `workshop` is the proposal the workshop would author next, or is authoring. An operator's
+   * proposal waits in ask order like any request; one the workshop picked for itself is
+   * `background` (requirements §26). Running rows are first, like anything else running.
    */
   kind: 'audit' | 'trial' | 'workshop';
+  /**
+   * The loop's own work — an idle workshop proposal or its validation trial — listed after
+   * everything a person asked for, because it is served after it.
+   */
+  background?: boolean;
   /** The subject key for an audit, the slug for a trial — the address, not the label. */
   id: string;
   /** What to show a person: the bare app name. */
@@ -402,8 +417,8 @@ export interface ScheduleResponse {
     label: string;
     last_finished_at: string | null;
     cooldown_left_min: number;
-    /** Benches of this platform nobody holds, of how many healthy ones. */
-    benches?: { free: number; total: number };
+    /** Benches of this platform nobody holds, of how many healthy ones; `resting` are in their transition gap. */
+    benches?: { free: number; total: number; resting?: number };
   }[];
   /** Browser sidecars nobody holds, of how many healthy ones — shared by every line. */
   browsers?: { free: number; total: number };

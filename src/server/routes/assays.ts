@@ -10,7 +10,8 @@
  * decision lives in the tick** — is the agent free, is there a bench, who asked first, is the
  * loop armed — so this route duplicates none of it and cannot drift from it. "Starts
  * immediately" is not a special case here: it is what the tick does when the line is empty,
- * and a request bypasses the cooldown so an idle box really does start within the second.
+ * and a request goes before all background work, so an idle box starts it as soon as a bench
+ * has finished resting.
  *
  * Two refusals survive, and they are configuration answers rather than admission ones: there
  * is no runner, or the runner is switched off. Neither is fixed by waiting, and enqueuing into

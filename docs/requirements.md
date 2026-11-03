@@ -44,6 +44,7 @@ surprise.
 | — | An app the store has stopped offering is marked, unscheduled, and deletable — *delisted* | ✅ done 2026-08-31 — §20 |
 | **R16** | Every way of asking for the single agent is one queue, drained in order — and one verb | ✅ built 2026-09-01 — §21 |
 | **R17** | Touchstone proposes fixes, updates and new apps as pull requests — the *workshop* | ✅ built 2026-10-02; direct delivery, auto-submit and no-regression 2026-10-07 — §24, design in [auto-app-pr.md](auto-app-pr.md) |
+| **R18** | Bench priority: a person's work first in ask order, the loop's own work by kind, one rest between every job | ✅ built 2026-11-03 — §26 |
 
 Legend: ✅ done · ◑ partial · ⬜ open
 
@@ -1889,3 +1890,99 @@ the same claude-code agent, and nothing recorded what any of them cost.
 - **Cost is list price.** On a subscription login `total_cost_usd` is what the API would have
   charged, not a bill; the token counts are exact either way.
 - **Nothing judges on it.** No budget, no alert, no effect on the scheduler.
+
+## 26. R18 — Bench priority: foreground FIFO, background tiers, one rest — 2026-11-03
+
+### 26.1 The requirement
+
+Raised by the operator while reviewing what can take a bench. The queue had three different ideas
+of priority at once. Requests and trials ran in ask order. The backlog was sorted by age alone,
+so "app changed" and "protocol changed" tied and both came after every stale app. The workshop
+was always last: an operator's proposal waited behind every request, and an idle one waited until
+the whole backlog was empty. Validation trials of an *automated* proposal joined the *person's*
+line. The operator wanted one rule that fits in a sentence:
+
+- **Foreground** (a person is waiting): first in, first out, with no distinction between kinds
+  of work.
+- **Background** (the loop's own work): ordered by kind. One rubric edit must not put 73 apps
+  ahead of anything real, but it should still keep Touchstone busy, so an idle box really means
+  there is nothing to do.
+- **One rest between every job on a bench**, manual jobs included. The operator's words: "like
+  the blank we have between music".
+
+| Order | Class | Work |
+| --- | --- | --- |
+| 0 | foreground, by ask time | requested audits; trials; operator workshop proposals, with their revisions and validation trials, which keep the **proposal's** ask time |
+| 1 | background | app changed in the store, **or** never audited |
+| 2 | background | retry (`try_n > 0`) |
+| 3 | background | the workshop's own work: its validation trials, then new authoring (fix → currency → wish) |
+| 4 | background | stale (past `fresh_days`) |
+| 5 | background | only the standard moved (**filler**) |
+
+Within a tier the order is oldest first, the comparator that already existed. A cell that
+qualifies for two tiers takes the higher one. Nothing preempts a run in progress, and no pair is
+reserved for foreground work: a request waits for whatever is running, then goes before all
+background work.
+
+### 26.2 Why these, and not others
+
+- **A protocol change is filler, not a trigger.** The `older standard` chip already qualifies the
+  verdict on display (`domain/standards.ts`), so re-judging under the new rubric is not urgent.
+  It stays eligible rather than being dropped because the operator wants spare capacity used. The
+  cost is tokens, about 73 agent runs per edit. A daily cap would go here if that ever matters.
+- **App changed is the top background tier** because there the board is *wrong*, not merely old:
+  the verdict describes bytes the store no longer offers. A never-audited app is the same case,
+  with no verdict at all.
+- **The idle workshop sits above stale.** A stale audit of an unchanged app under an unchanged
+  standard mostly re-finds the same verdict. A fix closes a defect already known about. It
+  sits below app changed and retries because a fix needs a verdict under the current standard
+  anyway (`candidates()` refuses with "audit first").
+- **The rest belongs to the bench, not the platform.** The old `cooldown_min` was a per-platform
+  anchor that paced only backlog audits. With two benches in a pool, that idled the second bench
+  every time the first one finished. Since only `services/leases.ts` knows which bench a job had,
+  the rest lives there.
+
+### 26.3 What it took
+
+- `scheduler/policy.ts`: `TIER` and `tierOf()`. `plan()` sorts by requested → tier → staleness.
+  `decideConcurrent()` walks one candidate list, foreground then tiers 1–2, the workshop's tier,
+  then tiers 4–5. The workshop became a candidate kind inside the walk instead of a separate block
+  with holds of its own ("waits for quiet", "waits for the backlog"), so it holds at a line's head
+  like anything else and `workshop_hold` comes from that hold. `QueueRow.tier` and
+  `RequestRow.background` carry the result to the pages.
+- **Disarmed** (`scheduler.armed: false`): background audits are still decided and logged as a
+  dry run, but they are spent from a budget of their own, so they take no pair and hold no line.
+  This replaces `workshop.backlogCounts`. `PolicyInput.armed` carries the switch. `runTick`'s
+  `mayStart` is now `armed || source !== 'backlog'`, because a background validation trial
+  belongs to `workshop.armed`, not to this switch.
+- `services/workshop.ts`: `slot()` offers operator proposals first, in ask order, then the
+  workshop's own (revision before new). `startValidation()` marks an idle proposal's trials
+  `background` and gives an operator's trials the proposal's `asked_at`. `TrialRecord` carries
+  both, optionally. A row without them is a person's trial, which is every row written before.
+- `services/leases.ts`: a released bench is not free for `cooldown_min` minutes, whatever held it
+  (`restUntil`, in memory). `capacity()` reports `resting`, and the policy holds with
+  `why: 'resting'` ("transition — a bench is free again in 3m") rather than `full`. A timer wakes
+  the tick when a rest ends. The key keeps its name for stable identifiers. Its default went from
+  55 to **5**, and its control now reads "Bench rest between jobs". A box whose `config.yaml`
+  says 55 keeps 55 until somebody changes it.
+- The single-flight path (no lease registry) keeps the old global cooldown, unchanged.
+
+### 26.4 What it reverses, and the risk it takes
+
+- §21 / §24's "the workshop is last in the one line" and `auto-app-pr.md` §6.1's "waits for real
+  quiet". An operator proposal is a request now. An idle proposal is background and shares
+  benches with everything below it.
+- The 2026-09-01 rule that a rubric edit and a compose change "merely add to the backlog" and sort
+  by age. The compose change now jumps the rotation, and the rubric edit trails it.
+- **Invariant 3's throttle on a dead agent endpoint.** `agent_auth` stamps the finish so the
+  cooldown spaces out failures. With the rest at 5 minutes and per bench, a dead endpoint is
+  tried about every 31 minutes rather than every 81. It still charges no subject; `agent.auth`
+  is the alert that says so.
+
+### 26.5 Not done, deliberately
+
+- **No preemption** and **no reserved foreground pair**. The operator sees the line as a queue: a
+  request waits for the run in front of it.
+- **No cap on filler.** One can be added at tier 5 if the token cost starts to matter.
+- **The rest does not survive a restart.** A restart is a gap in itself.
+

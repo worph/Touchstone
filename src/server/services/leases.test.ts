@@ -3,7 +3,7 @@
  * sharing a bench or a browser.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { BenchHealth } from '../../shared/activity.js';
 import { Leases } from './leases.js';
@@ -134,5 +134,72 @@ describe('Leases', () => {
       benches: { yundera: { free: 2, total: 2 }, foss: { free: 0, total: 1 } },
       browsers: { free: 1, total: 2 },
     });
+  });
+});
+
+/** Requirements §26 — the blank between two songs. */
+describe('the bench rest', () => {
+  function resting(gapMin: number, start = Date.parse('2026-11-03T12:00:00Z')) {
+    let now = start;
+    const freed: number[] = [];
+    const leases = new Leases({
+      benches: () => [bench('demo1'), bench('demo2')],
+      browsers: () => [browser('b1'), browser('b2')],
+      now: () => new Date(now),
+      gapMin: () => gapMin,
+      onFreed: () => void freed.push(now),
+    });
+    return { leases, advance: (min: number) => void (now += min * 60_000), freed };
+  }
+
+  it('keeps a released bench out of the free count until its rest ends, whoever held it', () => {
+    const { leases, advance } = resting(5);
+    const a = leases.reserve('yundera', BOTH, 'trial t1');
+    if (!a.ok) throw new Error('expected a lease');
+    leases.release(a.lease.id);
+    expect(leases.capacity(['yundera'])).toEqual({
+      benches: { yundera: 1 },
+      browsers: 2,
+      resting: { yundera: { count: 1, until: '2026-11-03T12:05:00.000Z' } },
+    });
+    // The next job gets the other bench, not the resting one.
+    const b = leases.reserve('yundera', BOTH, 'audit');
+    expect(b.ok && b.lease.bench?.name).toBe('demo2');
+    expect(leases.reserve('yundera', BOTH, 'third')).toEqual({ ok: false, full: 'bench' });
+    advance(5);
+    const c = leases.reserve('yundera', BOTH, 'third');
+    expect(c.ok && c.lease.bench?.name).toBe('demo1');
+  });
+
+  it('rests the bench only — the browser is free at once', () => {
+    const { leases } = resting(5);
+    const a = leases.reserve('yundera', BOTH, 'A');
+    if (!a.ok) throw new Error('expected a lease');
+    leases.release(a.lease.id);
+    expect(leases.capacity(['yundera']).browsers).toBe(2);
+    expect(leases.usage(['yundera']).benches.yundera).toEqual({ free: 1, total: 2, resting: 1 });
+  });
+
+  it('is off at 0', () => {
+    const { leases } = resting(0);
+    const a = leases.reserve('yundera', BOTH, 'A');
+    if (!a.ok) throw new Error('expected a lease');
+    leases.release(a.lease.id);
+    expect(leases.capacity(['yundera'])).toEqual({ benches: { yundera: 2 }, browsers: 2 });
+  });
+
+  it('wakes the scheduler when the rest ends', async () => {
+    vi.useFakeTimers();
+    try {
+      const { leases, freed } = resting(5);
+      const a = leases.reserve('yundera', BOTH, 'A');
+      if (!a.ok) throw new Error('expected a lease');
+      leases.release(a.lease.id);
+      expect(freed).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(5 * 60_000 + 100);
+      expect(freed).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

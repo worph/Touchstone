@@ -82,6 +82,10 @@ export interface TrialSpec {
   store_token: string;
   /** The workshop proposal this trial validates, when it is one. */
   proposal_id?: string;
+  /** Served in the background — see `TrialRecord.background`. */
+  background?: boolean;
+  /** The ordering key, when earlier than the queue time — see `TrialRecord.asked_at`. */
+  asked_at?: string;
 }
 
 export interface TrialRunDeps {
@@ -309,6 +313,8 @@ export function specFromFiles(
     /** The rubric anchor, when the subject resolves to no origin (a wish). */
     repo?: string;
     proposal_id?: string;
+    background?: boolean;
+    asked_at?: string;
   },
   at: string,
 ): { ok: true; spec: TrialSpec; compare_to?: string } | Refusal {
@@ -350,6 +356,8 @@ export function specFromFiles(
       zip: packAppStore(files, subject, slug),
       store_token: randomBytes(24).toString('base64url'),
       ...(input.proposal_id ? { proposal_id: input.proposal_id } : {}),
+      ...(input.background ? { background: true } : {}),
+      ...(input.asked_at ? { asked_at: input.asked_at } : {}),
     },
   };
 }
@@ -406,6 +414,8 @@ export async function enqueueTrial(
     ...(compareTo ? { compare_to: compareTo } : {}),
     store_token: spec.store_token,
     ...(spec.proposal_id ? { proposal_id: spec.proposal_id } : {}),
+    ...(spec.background ? { background: true } : {}),
+    ...(spec.asked_at ? { asked_at: spec.asked_at } : {}),
     started_at: startedAt,
     // The marker that this row entered a queue, as opposed to having been started outright by
     // a version that had none. `queued()` requires it; `reconcile()` closes rows without it.
