@@ -551,6 +551,11 @@ Three decisions worth keeping:
   so that one prefix is outside the SSO gate). Because the URL is minted per trial, Maison's store
   cache cannot be serving an older copy of it — the 2026-08-20 failure mode is removed rather than
   mitigated.
+- **Uploads are outside the SSO gate too — 2026-11-04.** `open_trial` hands back
+  `/api/v1/uploads/<token>/…`, but behind AppShield an outside caller got a 302 to the login page,
+  so the no-commit loop only worked from `pcs`. `api/v1/uploads` is now an `ALLOWED_PATHS` entry:
+  the session token is the credential (unknown and lapsed both 404, byte caps per file and per
+  session), and the routes never serve uploaded bytes back.
 - **An app no store offers yet is a subject here — 2026-09-04.** `open_trial` resolved its
   `subject` against the archive and the registry and refused anything neither knew, which made
   the new-app case impossible: a store's registry is its `Apps/` listing on GitHub, so an app

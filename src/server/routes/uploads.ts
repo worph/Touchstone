@@ -10,13 +10,17 @@
  * remove, `GET` to see what is there. If a human ever does want to mount it, WebDAV can be laid
  * over the same `UploadStore` without any of this changing.
  *
- * **Why under `/api/v1` and not `/public`.** Two reasons, and they point the same way. The
- * caller is on `pcs`, where the beaconified MCP surface already reaches the backend directly,
- * so nothing needs an anonymous prefix to get here — and from outside the box these paths sit
- * behind the AppShield gate like every other operator route. `/public` meanwhile is read-only
- * by a boot-time check (invariant 10); a write route under it would not merely be unwise, it
- * would fail to start. Being under `/api/` also keeps these clear of the SPA catch-all, which
- * answers any other unknown path with `index.html` and a 200.
+ * **Why under `/api/v1` and not `/public`.** `/public` is read-only by a boot-time check
+ * (invariant 10); a write route under it would not merely be unwise, it would fail to start.
+ * Being under `/api/` also keeps these clear of the SPA catch-all, which answers any other
+ * unknown path with `index.html` and a 200.
+ *
+ * **Reachable from outside the box.** The writer is not always on `pcs`: an agent or a person
+ * elsewhere drives open_trial → PUT → run_trial too, so the listing's gate lets `api/v1/uploads`
+ * through (`ALLOWED_PATHS`, 2026-11-04). That is safe only because of the two rules below: the
+ * token is the whole credential, and nothing here ever serves an uploaded file's bytes back —
+ * `GET` answers a JSON manifest — so an upload cannot render on this origin, which also serves
+ * the SSO-gated operator UI.
  *
  * **The token is the whole credential**, so a token that is unknown *or* lapsed gets the same
  * 404. "Expired" and "never existed" are the same answer to anybody who should not be holding
