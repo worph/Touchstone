@@ -228,7 +228,13 @@ services:
       # render there. The backend also sets `nosniff`, but measured 2026-08-22 that header does
       # not survive the AppShield → Caddy → Cloudflare chain — the content type and the
       # disposition do, and either alone is enough, so do not count on three.
-      ALLOWED_PATHS: "public,api/v1/public,assets,api/v1/trialstore"
+      # `api/v1/uploads` is the fifth: the files a trial audits, written by an agent or a person
+      # who is not on `pcs` (open_trial → PUT → run_trial). Same guard as trialstore: the
+      # per-session token in the path (192 random bits) is the credential, unknown or lapsed
+      # answers 404, and per-file / per-session byte caps apply (`config.uploads`). These routes
+      # never serve an uploaded file back — GET lists a JSON manifest — so nothing uploaded can
+      # render on this origin.
+      ALLOWED_PATHS: "public,api/v1/public,assets,api/v1/trialstore,api/v1/uploads"
     depends_on:
       - touchstone-backend
     networks:
