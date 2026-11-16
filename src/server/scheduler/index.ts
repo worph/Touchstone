@@ -164,19 +164,6 @@ function renameCapabilityLines(
 }
 
 /**
- * Was this tick stopped by the bench gate?
- *
- * The condition, never the reason string: `benchNote()` interpolates each bench's countdown,
- * so two consecutive gated ticks produce two different `reason`s and any equality check would
- * report a transition every five minutes — which is the repetition this predicate exists to
- * end. `decide()` builds the reason with this exact prefix (`policy.ts`), and `policy.test.ts`
- * pins it.
- */
-function benchGated(decision: TickDecision | undefined): boolean {
-  return gatedLines(decision).length > 0;
-}
-
-/**
  * Which lines the gate is holding, whatever this tick did.
  *
  * Read off `decision.gated` rather than from `action === 'idle'`, and that is the whole point
@@ -1336,18 +1323,9 @@ export class Scheduler {
       });
     }
 
-    if (started > 0 || (decision.dispatches?.length ?? 0) > 0) {
-      // Logged above, per dispatch.
-    } else if (benchGated(decision)) {
-      // Logged above, as a transition rather than once per tick.
-    } else {
-      this.opts.events.log({
-        level: 'debug',
-        code: 'TICK_IDLE',
-        message: 'The tick had nothing to do',
-        detail: { reason: decision.reason, backlog: decision.backlog },
-      });
-    }
+    // An idle tick logs nothing: dispatches and bench-gate transitions are logged above, and
+    // "nothing to do" once a tick only buried them in the Activity log. The decision is still
+    // on `lastTick` (GET /schedule) for anyone asking why the loop is quiet.
 
     this.lastTick = { at: now.toISOString(), state: stateLine(decision), decision };
     await this.persist();
