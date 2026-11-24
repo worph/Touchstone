@@ -278,7 +278,6 @@ export const CONTROLS: ControlDef[] = [
     group: WORKSHOP,
     kind: 'number',
     min: 0,
-    max: 10,
     operatorOnly: true,
     description:
       'At most this many submissions — pull requests opened or commits pushed — in any rolling 24 hours. 0 builds and validates proposals but never submits one.',
